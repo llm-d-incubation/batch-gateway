@@ -1,0 +1,15 @@
+# See the OWNERS docs: https://git.k8s.io/community/contributors/guide/owners.md
+
+# List of usernames who may use /lgtm
+reviewers:
+  - wseaton
+  - lioraron
+  - yizhaodev
+  - j-mok-dev
+  
+# List of usernames who may use /approve
+approvers:
+  - wseaton
+  - lioraron
+  - yizhaodev
+  - j-mok-dev
