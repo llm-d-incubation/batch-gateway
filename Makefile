@@ -1,15 +1,28 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor test test-verbose test-coverage clean lint fmt vet install-tools
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-race test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor
+
+SHELL := /usr/bin/env bash
+
+TARGETARCH ?= $(shell go env GOARCH)
 
 # Variables
+DEV_VERSION ?= 0.0.1
 APISERVER_BINARY=batch-gateway-apiserver
 PROCESSOR_BINARY=batch-gateway-processor
 APISERVER_PATH=./bin/$(APISERVER_BINARY)
 PROCESSOR_PATH=./bin/$(PROCESSOR_BINARY)
 CMD_APISERVER=./cmd/apiserver
 CMD_PROCESSOR=./cmd/processor
+APISERVER_IMAGE_TAG_BASE ?= ghcr.io/llm-d/$(APISERVER_BINARY)
+APISERVER_IMG = $(APISERVER_IMAGE_TAG_BASE):$(DEV_VERSION)
+PROCESSOR_IMAGE_TAG_BASE ?= ghcr.io/llm-d/$(PROCESSOR_BINARY)
+PROCESSOR_IMG = $(APISERVER_IMAGE_TAG_BASE):$(DEV_VERSION)
 GO=go
 GOFLAGS=
 LDFLAGS=-ldflags "-s -w"
+
+CONTAINER_TOOL := $(shell (command -v docker >/dev/null 2>&1 && echo docker) || (command -v podman >/dev/null 2>&1 && echo podman) || echo "")
+BUILDER := $(shell command -v buildah >/dev/null 2>&1 && echo buildah || echo $(CONTAINER_TOOL))
+PLATFORMS ?= linux/amd64 # linux/arm64 # linux/s390x,linux/ppc64le
 
 # Default target
 .DEFAULT_GOAL := help
@@ -131,15 +144,30 @@ check: fmt vet test-race
 ci: fmt vet lint test-race
 	@echo "All CI checks passed!"
 
+check-container-tool:
+	@command -v $(CONTAINER_TOOL) >/dev/null 2>&1 || { \
+	  echo "❌ $(CONTAINER_TOOL) is not installed."; \
+	  echo "🔧 Try: sudo apt install $(CONTAINER_TOOL) OR brew install $(CONTAINER_TOOL)"; exit 1; }
+
 ## image-build-apiserver: Build apiserver Docker image
-image-build-apiserver:
-	@echo "Building apiserver Docker image..."
-	docker build -t $(APISERVER_BINARY):latest -f Dockerfile.apiserver .
+image-build-apiserver: check-container-tool
+	@printf "\033[33;1m==== Building Docker image $(APISERVER_IMG) ====\033[0m\n"
+	$(CONTAINER_TOOL) build \
+		--platform linux/$(TARGETARCH) \
+		--build-arg TARGETOS=linux \
+		--build-arg TARGETARCH=$(TARGETARCH) \
+		-f docker/Dockerfile.apiserver \
+		-t $(APISERVER_IMG) .
 
 ## image-build-processor: Build processor Docker image
-image-build-processor:
-	@echo "Building processor Docker image..."
-	docker build -t $(PROCESSOR_BINARY):latest -f Dockerfile.processor .
+image-build-processor: check-container-tool
+	@printf "\033[33;1m==== Building Docker image $(PROCESSOR_IMG) ====\033[0m\n"
+	$(CONTAINER_TOOL) build \
+		--platform linux/$(TARGETARCH) \
+		--build-arg TARGETOS=linux \
+		--build-arg TARGETARCH=$(TARGETARCH) \
+		-f docker/Dockerfile.processor \
+		-t $(PROCESSOR_IMG) .
 
 ## image-build: Build all Docker images
 image-build: image-build-apiserver image-build-processor
