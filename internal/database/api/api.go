@@ -8,13 +8,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
-// type BatchDBClient interface {
-
-// 	// SendEvent sends events for the specified jobs.
-// 	// The events are sent and consumed in FIFO order.
-// 	SendEvent(ctx context.Context, logger logging.Logger, events []BatchEvent) (sentIDs []string, err error)
-// }
-
 type BatchJob struct {
 	ID     string    // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the job. This ID must be unique.
 	SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the job should be prioritized relative to other jobs.
@@ -37,8 +30,18 @@ func (bj *BatchJob) IsValid() error {
 	return nil
 }
 
+type BatchClientAdmin interface {
+
+	// Get a default derived context for a call.
+	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
+
+	// Close closes the client.
+	Close() error
+}
+
 // BatchDBClient enables to manage batch job metadata objects in persistent storage.
 type BatchDBClient interface {
+	BatchClientAdmin
 
 	// Store stores a batch job.
 	// Returns the ID of the job in the database.
@@ -68,12 +71,20 @@ type BatchDBClient interface {
 
 	// Delete deletes batch jobs.
 	Delete(ctx context.Context, logger logging.Logger, jobIDs []string) (deletedJobIDs []string, err error)
+}
 
-	// Get a default derived context for a DB request.
-	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
+type TagsLogicalCond int
 
-	// Close closes the client.
-	Close() error
+const (
+	TagsLogicalCondNa TagsLogicalCond = iota
+	TagsLogicalCondAnd
+	TagsLogicalCondOr
+	TagsLogicalCondMaxVal // [Internal] Indicates the max value for the enum. Don't use this value.
+)
+
+var TagsLogicalCondNames = map[TagsLogicalCond]string{
+	TagsLogicalCondAnd: "and",
+	TagsLogicalCondOr:  "or",
 }
 
 type BatchJobPriority struct {
@@ -83,20 +94,20 @@ type BatchJobPriority struct {
 
 // BatchPriorityQueueClient enables to perform operation on a priority queue.
 type BatchPriorityQueueClient interface {
+	BatchClientAdmin
 
 	// Enqueue adds a job priority object to the queue.
 	Enqueue(ctx context.Context, logger logging.Logger, jobPriority *BatchJobPriority) error
 
-	// Dequeue returns the job priority object at the head of the queue.
+	// Dequeue returns the job priority objects at the head of the queue,
+	// up to the maximum number of objects specified in maxObjs.
 	// The function blocks up to the timeout value for a job priority object to be available.
 	// If the timeout value is zero, the function returns immediately.
-	Dequeue(ctx context.Context, logger logging.Logger, timeout time.Duration) (jobPriority *BatchJobPriority, err error)
+	Dequeue(ctx context.Context, logger logging.Logger, timeout time.Duration, maxObjs int) (
+		jobPriority []*BatchJobPriority, err error)
 
 	// Remove deletes a job priority object from the queue.
 	Remove(ctx context.Context, logger logging.Logger, jobPriority *BatchJobPriority) error
-
-	// Close closes the client.
-	Close() error
 }
 
 type BatchEventType int
@@ -133,59 +144,31 @@ type BatchEventsChan struct {
 	CloseFn func()          // Function for closing the channel and the associated resources. Must be called by the listener when the job's processing is finished.
 }
 
-// map to whatever the implementation is
+// BatchEventChannelClient enables to create and use an event channel for a batch job being processed.
 type BatchEventChannelClient interface {
+	BatchClientAdmin
 
-	// 	// GetForProcessing retrieves batch jobs for processing.
-	// 	// This function blocks for the duration specified by timeout. If timeout is zero, the function does not block.
-	// 	// This function will attempt to pull the maximum number of jobs specified in maxJobs.
-	// 	// Returns a list of jobs and a list of event channels, corresponding to the jobs.
-	// 	// For each returned job whose processing is finished by the caller - the caller MUST call the function
-	// 	// CloseFn specified in BatchEventsChan, to close the associated resources.
-	// 	GetForProcessing(ctx context.Context, logger logging.Logger, timeout time.Duration, maxJobs int) (
-	// 		jobs []*BatchJob, events []*BatchEventsChan, err error)
-
-	// Get gets an event channel based on the jobId and runId
+	// GetChannel gets an events channel for the jobID.
+	// When processing of job is finished by the caller - the caller MUST call the function
 	// CloseFn specified in BatchEventsChan, to close the associated resources.
-	Get(ctx context.Context, logger logging.Logger, jobID string) (event BatchEventsChan, err error)
+	GetChannel(ctx context.Context, logger logging.Logger, jobID string) (batchEventsChan *BatchEventsChan, err error)
 
 	// Send sends events for the specified jobs.
 	// The events are sent and consumed in FIFO order.
-	Send(ctx context.Context, logger logging.Logger, events BatchEvent) (sentID string, err error)
+	SendEvent(ctx context.Context, logger logging.Logger, events []BatchEvent) (sentIDs []string, err error)
 }
 
-type TagsLogicalCond int
+// BatchStatusClient enables to manage temporary job information.
+type BatchStatusClient interface {
+	BatchClientAdmin
 
-const (
-	TagsLogicalCondNa TagsLogicalCond = iota
-	TagsLogicalCondAnd
-	TagsLogicalCondOr
-	TagsLogicalCondMaxVal // [Internal] Indicates the max value for the enum. Don't use this value.
-)
+	// Set stores or updates status data for a job.
+	Set(ctx context.Context, logger logging.Logger, jobID string, TTL int, data []byte) error
 
-var TagsLogicalCondNames = map[TagsLogicalCond]string{
-	TagsLogicalCondAnd: "and",
-	TagsLogicalCondOr:  "or",
-}
+	// Get retrieves the status data for a job.
+	// If no data exists (nil, nil) is returned.
+	Get(ctx context.Context, logger logging.Logger, jobID string) (data []byte, err error)
 
-//----
-
-// RunProgressDB stores temporary per‑job progress information.
-// Entries are expected to be removed once the job finishes.
-type RunProgressDB interface {
-	// Set stores or updates progress data for a given job run.
-	Set(ctx context.Context, logger logging.Logger, runId string, data []byte) error
-
-	// Get retrieves the progress data for a given job run.
-	// If no data exists, (nil, nil) is returned.
-	Get(ctx context.Context, logger logging.Logger, runId string) (data []byte, err error)
-
-	// Delete removes the progress entry for a completed or cancelled job run.
-	Delete(ctx context.Context, logger logging.Logger, runId string) error
-
-	// GetContext returns a derived context with a timeout for DB operations.
-	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
-
-	// Close releases any resources held by the implementation.
-	Close() error
+	// Delete removes the status data for a job.
+	Delete(ctx context.Context, logger logging.Logger, jobID string) error
 }
