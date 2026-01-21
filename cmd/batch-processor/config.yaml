@@ -1,0 +1,9 @@
+# Database Connection
+database_url: ""
+
+# Worker Settings
+worker_poll_interval: "5s"
+max_workers: 20
+
+# Metrics & Health Check
+metrics_address: ":9090"
