@@ -29,8 +29,8 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
+	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 )
 
 func main() {
@@ -44,7 +44,6 @@ func main() {
 
 	cfgFilePath := fs.String("config", "cmd/batch-processor/config.yaml", "Path to configuration file")
 	klog.InitFlags(fs)
-	cfg.AddFlags(fs)
 	fs.Parse(os.Args[1:])
 
 	if err := cfg.LoadFromYAML(*cfgFilePath); err != nil {

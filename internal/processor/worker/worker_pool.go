@@ -19,36 +19,29 @@ limitations under the License.
 package worker
 
 import (
-    "context"
-    "time"
-
-    "k8s.io/klog/v2"
-
-    "github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-    "github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
+	"sync"
 )
 
 type WorkerPool struct {
-    sem chan struct{}
-    wg sync.WaitGroup
+	sem chan struct{}
+	wg  sync.WaitGroup
 }
 
-
 func (wp *WorkerPool) TryAcquire() bool {
-    select {
-    case wp.sem <- struct{}{}:
-        wp.wg.Add(1)
-        return true
-    default:
-        return false
-    }
+	select {
+	case wp.sem <- struct{}{}:
+		wp.wg.Add(1)
+		return true
+	default:
+		return false
+	}
 }
 
 func (wp *WorkerPool) Release() {
-    <-wp.sem
-    wp.wg.Done()
+	<-wp.sem
+	wp.wg.Done()
 }
 
 func (wp *WorkerPool) WaitAll() {
-    wp.wg.Wait()
+	wp.wg.Wait()
 }

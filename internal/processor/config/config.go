@@ -19,16 +19,16 @@ limitations under the License.
 package config
 
 import (
-	"time"
-	"flag"
 	"os"
+	"time"
+
 	"gopkg.in/yaml.v3"
 )
 
 type ProcessorConfig struct {
-	DatabaseURL	   string        `json:"database_url" yaml:"database_url" mapstructure:"database_url"`
-	PollInterval time.Duration `json:"worker_poll_interval" yaml:"worker_poll_interval" mapstructure:"worker_poll_interval"`
-	MaxWorkers   int           `json:"max_workers" yaml:"max_workers" mapstructure:"max_workers"`
+	DatabaseURL    string        `json:"database_url" yaml:"database_url" mapstructure:"database_url"`
+	PollInterval   time.Duration `json:"worker_poll_interval" yaml:"worker_poll_interval" mapstructure:"worker_poll_interval"`
+	MaxWorkers     int           `json:"max_workers" yaml:"max_workers" mapstructure:"max_workers"`
 	MetricsAddress string        `json:"metrics_address" yaml:"metrics_address" mapstructure:"metrics_address"`
 }
 
@@ -50,9 +50,9 @@ func (c *ProcessorConfig) LoadFromYAML(filePath string) error {
 // NewConfig returns a new ProcessorConfig with default values.
 func NewConfig() *ProcessorConfig {
 	return &ProcessorConfig{
-		DatabaseURL:   "",
-		PollInterval:  5 * time.Second,
-		MaxWorkers:    10,
+		DatabaseURL:    "",
+		PollInterval:   5 * time.Second,
+		MaxWorkers:     10,
 		MetricsAddress: ":9090",
 	}
 }

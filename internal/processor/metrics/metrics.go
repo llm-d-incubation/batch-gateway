@@ -16,6 +16,8 @@ limitations under the License.
 
 package metrics
 
+import "github.com/prometheus/client_golang/prometheus"
+
 var (
 	// number of jobs processed so far
 	JobsProcessed = prometheus.NewCounter(
