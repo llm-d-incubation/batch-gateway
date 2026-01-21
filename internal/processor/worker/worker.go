@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// 파일 전체 설명 들어갈 곳
+// this file contains the worker logic for processing batch requests.
 package worker
 
 import (
