@@ -31,6 +31,8 @@ const (
 	TRACE   = 5
 )
 
+type Logger klog.Logger
+
 func GetRequestLogger(r *http.Request) klog.Logger {
 	return klog.FromContext(r.Context())
 }

@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.ibm.com/WML/utils-lib-go/pkg/logging"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 type BatchDBClient interface {
 
 	// Store stores a batch job, and adds the job to the processing queue.
 	// Returns the ID of the job in the database.
-	Store(ctx context.Context, logger logging.Log, job *BatchJob) (ID string, err error)
+	Store(ctx context.Context, logger logging.Logger, job *BatchJob) (ID string, err error)
 
 	// GetForProcessing retrieves batch jobs for processing.
 	// This function blocks for the duration specified by timeout. If timeout is zero, the function does not block.
@@ -20,7 +20,7 @@ type BatchDBClient interface {
 	// Returns a list of jobs and a list of event channels, corresponding to the jobs.
 	// For each returned job whose processing is finished by the caller - the caller MUST call the function
 	// CloseFn specified in BatchEventsChan, to close the associated resources.
-	GetForProcessing(ctx context.Context, logger logging.Log, timeout time.Duration, maxJobs int) (
+	GetForProcessing(ctx context.Context, logger logging.Logger, timeout time.Duration, maxJobs int) (
 		jobs []*BatchJob, events []*BatchEventsChan, err error)
 
 	// Update updates the dynamic parts of a batch job, and optionally adds the job ID back to the processing queue.
@@ -28,7 +28,7 @@ type BatchDBClient interface {
 	// Any dynamic field that is empty in the given job object - will not be updated in the job's record in the database.
 	// If 'addJobToQueue' is set to true then the job's object SLO field must be non empty, and the function will
 	// add the job's ID to the processing queue.
-	Update(ctx context.Context, logger logging.Log, job *BatchJob, addJobToQueue bool) (err error)
+	Update(ctx context.Context, logger logging.Logger, job *BatchJob, addJobToQueue bool) (err error)
 
 	// Get gets the information (static and dynamic) of batch jobs.
 	// If IDs are specified, this function will get jobs by the specified IDs.
@@ -42,16 +42,16 @@ type BatchDBClient interface {
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// jobs is a slice of returned jobs.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
-	Get(ctx context.Context, logger logging.Log, IDs []string, tags []string, tagsLogicalCond TagsLogicalCond,
+	Get(ctx context.Context, logger logging.Logger, IDs []string, tags []string, tagsLogicalCond TagsLogicalCond,
 		includeStatic bool, start, limit int) (
 		jobs []*BatchJob, cursor int, err error)
 
 	// SendEvent sends events for the specified jobs.
 	// The events are sent and consumed in FIFO order.
-	SendEvent(ctx context.Context, logger logging.Log, events []BatchEvent) (sentIDs []string, err error)
+	SendEvent(ctx context.Context, logger logging.Logger, events []BatchEvent) (sentIDs []string, err error)
 
 	// Delete deletes batch jobs.
-	Delete(ctx context.Context, logger logging.Log, IDs []string) (deletedIDs []string, err error)
+	Delete(ctx context.Context, logger logging.Logger, IDs []string) (deletedIDs []string, err error)
 
 	// Get default context for the DB request.
 	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
@@ -130,25 +130,27 @@ var TagsLogicalCondNames = map[TagsLogicalCond]string{
 	TagsLogicalCondOr:  "or",
 }
 
+//----
+
 // BatchDB is responsible for persisting batch metadata.
 type BatchDB interface {
 	// Store saves a new batch run metadata.
-	Store(ctx context.Context, logger logging.Log, runMeta *RunMetadata, DBtype string, DBOptions any) (runId string, err error)
+	Store(ctx context.Context, logger logging.Logger, runMeta *RunMetadata, DBtype string, DBOptions any) (runId string, err error)
 
 	// List batch runs by conditions
-	List(ctx context.Context, logger logging.Log, DBtype string, DBOptions any) (runs []*RunMetadata, next int, err error)
+	List(ctx context.Context, logger logging.Logger, DBtype string, DBOptions any) (runs []*RunMetadata, next int, err error)
 
 	// Get run by id
-	Get(ctx context.Context, logger logging.Log, DBtype string, DBOptions any) (run *RunMetadata, err error)
+	Get(ctx context.Context, logger logging.Logger, DBtype string, DBOptions any) (run *RunMetadata, err error)
 
 	// Update modifies mutable fields of a batch run.
-	Update(ctx context.Context, logger logging.Log, run *RunMetadata, DBtype string, DBOptions any) (err error)
+	Update(ctx context.Context, logger logging.Logger, run *RunMetadata, DBtype string, DBOptions any) (err error)
 
 	// Delete removes batch run metadata.
-	Delete(ctx context.Context, logger logging.Log, DBtype string, DBOptions any) (deletedId string, err error)
+	Delete(ctx context.Context, logger logging.Logger, DBtype string, DBOptions any) (deletedId string, err error)
 
 	// Cancel marks batch run as canceled.
-	Cancel(ctx context.Context, logger logging.Log, DBtype string, DBOptions any) (canceledId string, err error)
+	Cancel(ctx context.Context, logger logging.Logger, DBtype string, DBOptions any) (canceledId string, err error)
 
 	// GetContext returns a derived context with a timeout for DB operations.
 	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
@@ -175,14 +177,14 @@ type JobsOptions struct {
 // RunQueue handles enqueuing, dequeuing and removal of runs from the processing queue.
 type RunQueue interface {
 	// Enqueue adds a run id to the processing queue.
-	Enqueue(ctx context.Context, logger logging.Log, jobId, runId string, SLO time.Time) error
+	Enqueue(ctx context.Context, logger logging.Logger, jobId, runId string, SLO time.Time) error
 
 	// Dequeue blocks up to timeout for a run id to become available.
 	// If timeout is zero, it returns immediately with no runs.
-	Dequeue(ctx context.Context, logger logging.Log, timeout time.Duration) (jobId, runId string, err error)
+	Dequeue(ctx context.Context, logger logging.Logger, timeout time.Duration) (jobId, runId string, err error)
 
 	// Remove deletes a run id from the queue (e.g., when a run is cancelled).
-	Remove(ctx context.Context, logger logging.Log, runId string) error
+	Remove(ctx context.Context, logger logging.Logger, runId string) error
 
 	// Close releases any resources held by the implementation.
 	Close() error
@@ -192,24 +194,24 @@ type RunQueue interface {
 type EventChannel interface {
 	// Get gets an event channel based on the jobId and runId
 	// CloseFn specified in BatchEventsChan, to close the associated resources.
-	Get(ctx context.Context, logger logging.Log, jobId, runId string) (event BatchEventsChan, err error)
+	Get(ctx context.Context, logger logging.Logger, jobId, runId string) (event BatchEventsChan, err error)
 	// Send sends events for the specified jobs.
 	// The events are sent and consumed in FIFO order.
-	Send(ctx context.Context, logger logging.Log, events BatchEvent) (sentID string, err error)
+	Send(ctx context.Context, logger logging.Logger, events BatchEvent) (sentID string, err error)
 }
 
 // RunProgressDB stores temporary per‑job progress information.
 // Entries are expected to be removed once the job finishes.
 type RunProgressDB interface {
 	// Set stores or updates progress data for a given job run.
-	Set(ctx context.Context, logger logging.Log, runId string, data []byte) error
+	Set(ctx context.Context, logger logging.Logger, runId string, data []byte) error
 
 	// Get retrieves the progress data for a given job run.
 	// If no data exists, (nil, nil) is returned.
-	Get(ctx context.Context, logger logging.Log, runId string) (data []byte, err error)
+	Get(ctx context.Context, logger logging.Logger, runId string) (data []byte, err error)
 
 	// Delete removes the progress entry for a completed or cancelled job run.
-	Delete(ctx context.Context, logger logging.Log, runId string) error
+	Delete(ctx context.Context, logger logging.Logger, runId string) error
 
 	// GetContext returns a derived context with a timeout for DB operations.
 	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
