@@ -20,7 +20,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,15 +32,8 @@ import (
 func main() {
 	config := common.NewConfig()
 
-	// load and validate config
-	fs := flag.NewFlagSet("batch-gateway-apiserver", flag.ContinueOnError)
-	klog.InitFlags(fs)
-	config.AddFlags(fs)
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		klog.Fatalf("failed to parse config: %v", err)
-	}
-	if err := config.Validate(); err != nil {
-		klog.Fatalf("failed to validate config: %v", err)
+	if err := config.Load(); err != nil {
+		klog.Fatalf("failed to load config: %v", err)
 	}
 
 	// make sure to flush logs before exiting
