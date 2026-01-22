@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-race test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor
 
 SHELL := /usr/bin/env bash
 
@@ -70,15 +70,35 @@ run-processor-dev: build-processor
 	@echo "Starting $(PROCESSOR_BINARY) in development mode..."
 	$(PROCESSOR_PATH) --v=5
 
-## test: Run all tests
+## test: Run tests with -race flag
 test:
-	@echo "Running tests..."
-	$(GO) test -v ./...
+	@$(MAKE) --no-print-directory run-test TEST_FLAGS="-race"
 
 ## test-short: Run tests with -short flag
 test-short:
-	@echo "Running short tests..."
-	$(GO) test -short -v ./...
+	@$(MAKE) --no-print-directory run-test TEST_FLAGS="-short"
+
+# Internal helper target for running tests with summary
+run-test:
+	@echo "Running tests..."
+	@$(GO) test $(TEST_FLAGS) -v ./... 2>&1 | tee /tmp/test-output.txt; \
+	TEST_EXIT=$${PIPESTATUS[0]}; \
+	PASS_COUNT=$$(grep -- '--- PASS:' /tmp/test-output.txt 2>/dev/null | wc -l | tr -d ' '); \
+	FAIL_COUNT=$$(grep -- '--- FAIL:' /tmp/test-output.txt 2>/dev/null | wc -l | tr -d ' '); \
+	SKIP_COUNT=$$(grep -- '--- SKIP:' /tmp/test-output.txt 2>/dev/null | wc -l | tr -d ' '); \
+	echo ""; \
+	echo "========== Test Summary =========="; \
+	grep -E "^\s*--- (PASS|FAIL|SKIP):" /tmp/test-output.txt || true; \
+	echo ""; \
+	echo "Passed: $$PASS_COUNT | Failed: $$FAIL_COUNT | Skipped: $$SKIP_COUNT"; \
+	echo ""; \
+	if [ $$TEST_EXIT -eq 0 ]; then \
+		echo "✅ All tests passed!"; \
+	else \
+		echo "❌ Tests failed with exit code $$TEST_EXIT"; \
+	fi; \
+	rm -f /tmp/test-output.txt; \
+	exit $$TEST_EXIT
 
 ## test-coverage: Run tests with coverage
 test-coverage:
@@ -92,11 +112,6 @@ test-coverage-func:
 	@echo "Running tests with coverage..."
 	$(GO) test -coverprofile=coverage.out ./...
 	$(GO) tool cover -func=coverage.out
-
-## test-race: Run tests with race detector
-test-race:
-	@echo "Running tests with race detector..."
-	$(GO) test -race -v ./...
 
 ## bench: Run benchmarks
 bench:
@@ -137,11 +152,11 @@ install-tools:
 	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	@echo "Tools installed"
 
-## check: Run fmt, vet, and test-race
-check: fmt vet test-race
+## check: Run fmt, vet, and test
+check: fmt vet test
 
-## ci: Run all CI checks (fmt, vet, lint, test-race)
-ci: fmt vet lint test-race
+## ci: Run all CI checks (fmt, vet, lint, test)
+ci: fmt vet lint test
 	@echo "All CI checks passed!"
 
 check-container-tool:
