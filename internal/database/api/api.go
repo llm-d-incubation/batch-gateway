@@ -22,8 +22,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 // -- Admin interfaces --
@@ -69,7 +67,7 @@ type BatchDBClient interface {
 
 	// Store stores a batch job metadata object.
 	// Returns the ID of the job in the database.
-	Store(ctx context.Context, logger logging.Logger, job *BatchJob) (ID string, err error)
+	Store(ctx context.Context, job *BatchJob) (ID string, err error)
 
 	// Get gets the information (static and dynamic) of batch jobs.
 	// If IDs are specified, this function will get jobs by the specified IDs.
@@ -83,7 +81,7 @@ type BatchDBClient interface {
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// jobs is a slice of returned jobs.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
-	Get(ctx context.Context, logger logging.Logger, IDs []string, tags []string, tagsLogicalCond TagsLogicalCond,
+	Get(ctx context.Context, IDs []string, tags []string, tagsLogicalCond TagsLogicalCond,
 		includeStatic bool, start, limit int) (
 		jobs []*BatchJob, cursor int, err error)
 
@@ -91,10 +89,10 @@ type BatchDBClient interface {
 	// The function will update in the job's record in the database - all the dynamic fields of the job which are not empty
 	// in the given job object.
 	// Any dynamic field that is empty in the given job object - will not be updated in the job's record in the database.
-	Update(ctx context.Context, logger logging.Logger, job *BatchJob) (err error)
+	Update(ctx context.Context, job *BatchJob) (err error)
 
 	// Delete deletes batch jobs.
-	Delete(ctx context.Context, logger logging.Logger, IDs []string) (deletedIDs []string, err error)
+	Delete(ctx context.Context, IDs []string) (deletedIDs []string, err error)
 }
 
 type TagsLogicalCond int
@@ -123,17 +121,17 @@ type BatchPriorityQueueClient interface {
 	BatchClientAdmin
 
 	// Enqueue adds a job priority object to the queue.
-	Enqueue(ctx context.Context, logger logging.Logger, jobPriority *BatchJobPriority) error
+	Enqueue(ctx context.Context, jobPriority *BatchJobPriority) error
 
 	// Dequeue returns the job priority objects at the head of the queue,
 	// up to the maximum number of objects specified in maxObjs.
 	// The function blocks up to the timeout value for a job priority object to be available.
 	// If the timeout value is zero, the function returns immediately.
-	Dequeue(ctx context.Context, logger logging.Logger, timeout time.Duration, maxObjs int) (
+	Dequeue(ctx context.Context, timeout time.Duration, maxObjs int) (
 		jobPriorities []*BatchJobPriority, err error)
 
 	// Remove deletes a job priority object from the queue.
-	Remove(ctx context.Context, logger logging.Logger, jobPriority *BatchJobPriority) error
+	Remove(ctx context.Context, jobPriority *BatchJobPriority) error
 }
 
 // -- Batch jobs events and channels --
@@ -179,11 +177,11 @@ type BatchEventChannelClient interface {
 	// ConsumerGetChannel gets an events channel for the job ID, to be used by a consumer to listen for events.
 	// When the caller finishes processing a job - the caller must call the function CloseFn specified in BatchEventsChan,
 	// to close the associated resources.
-	ConsumerGetChannel(ctx context.Context, logger logging.Logger, ID string) (batchEventsChan *BatchEventsChan, err error)
+	ConsumerGetChannel(ctx context.Context, ID string) (batchEventsChan *BatchEventsChan, err error)
 
 	// ProducerSendEvents sends the specified events via associated event channels.
 	// The events are sent and consumed in FIFO order.
-	ProducerSendEvents(ctx context.Context, logger logging.Logger, events []BatchEvent) (sentIDs []string, err error)
+	ProducerSendEvents(ctx context.Context, events []BatchEvent) (sentIDs []string, err error)
 }
 
 // -- Batch jobs temporary status store --
@@ -193,12 +191,12 @@ type BatchStatusClient interface {
 	BatchClientAdmin
 
 	// Set stores or updates status data for a job.
-	Set(ctx context.Context, logger logging.Logger, ID string, TTL int, data []byte) error
+	Set(ctx context.Context, ID string, TTL int, data []byte) error
 
 	// Get retrieves the status data of a job.
 	// If no data exists (nil, nil) is returned.
-	Get(ctx context.Context, logger logging.Logger, ID string) (data []byte, err error)
+	Get(ctx context.Context, ID string) (data []byte, err error)
 
 	// Delete removes the status data for a job.
-	Delete(ctx context.Context, logger logging.Logger, ID string) error
+	Delete(ctx context.Context, ID string) error
 }
