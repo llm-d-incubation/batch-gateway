@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file specifies the interfaces for the batch jobs data structures layer.
+// This file specifies the interfaces for the batch jobs data structures system.
 
 package api
 
