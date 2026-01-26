@@ -16,11 +16,15 @@ limitations under the License.
 
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 var (
 	// number of jobs processed so far
-	JobsProcessed = prometheus.NewCounter(
+	jobsProcessed = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "jobs_processed_total",
 			Help: "Total number of jobs processed",
@@ -28,7 +32,7 @@ var (
 	)
 
 	// duration of job processing
-	JobProcessingDuration = prometheus.NewHistogram(
+	jobProcessingDuration = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Name:    "job_processing_duration_seconds",
 			Help:    "Duration of job processing in seconds",
@@ -37,23 +41,15 @@ var (
 	)
 
 	// current number of active workers
-	ActiveWorkers = prometheus.NewGauge(
+	activeWorkers = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "active_workers",
 			Help: "Current number of active workers processing jobs",
 		},
 	)
 
-	// current number of idled workers
-	IdleWorkers = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "idled_workers",
-			Help: "Current number of idled workers waiting for jobs",
-		},
-	)
-
 	// errors by model
-	JobErrorsModelTotal = prometheus.NewCounterVec(
+	jobErrorsModelTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "job_errors_by_model_total",
 			Help: "Total number of job processing errors by model",
@@ -63,9 +59,35 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(JobsProcessed)
-	prometheus.MustRegister(JobProcessingDuration)
-	prometheus.MustRegister(ActiveWorkers)
-	prometheus.MustRegister(IdleWorkers)
-	prometheus.MustRegister(JobErrorsModelTotal)
+	prometheus.MustRegister(jobsProcessed)
+	prometheus.MustRegister(jobProcessingDuration)
+	prometheus.MustRegister(activeWorkers)
+	prometheus.MustRegister(jobErrorsModelTotal)
+}
+
+// Recorder funcs
+
+// RecordJobProcessed increments the total processed jobs count.
+func RecordJobProcessed() {
+	jobsProcessed.Inc()
+}
+
+// RecordJobDuration observes the time taken to process a job.
+func RecordJobDuration(duration time.Duration) {
+	jobProcessingDuration.Observe(duration.Seconds())
+}
+
+// IncActiveWorkers increments the gauge for active workers.
+func IncActiveWorkers() {
+	activeWorkers.Inc()
+}
+
+// DecActiveWorkers decrements the gauge for active workers.
+func DecActiveWorkers() {
+	activeWorkers.Dec()
+}
+
+// RecordJobError increments the error count for a specific model.
+func RecordJobError(model string) {
+	jobErrorsModelTotal.WithLabelValues(model).Inc()
 }

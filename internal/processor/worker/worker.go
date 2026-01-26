@@ -83,10 +83,6 @@ func (p *Processor) prepare(ctx context.Context) error {
 		return fmt.Errorf("critical clients are missing in Processor")
 	}
 
-	// init metrics - all workers are initially idle.
-	metrics.IdleWorkers.Set(float64(p.cfg.MaxWorkers))
-	metrics.ActiveWorkers.Set(0)
-
 	logger.Info("Processor pre-flight check done", "max_workers", p.cfg.MaxWorkers)
 	return nil
 }
@@ -204,19 +200,24 @@ func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriorit
 					jobLogger.Error(fmt.Errorf("%v", r), "Panic recovered in worker", "workerID", id, "jobID", j.ID)
 				}
 				p.workerPool.Release(id)
-				metrics.ActiveWorkers.Dec()
-				metrics.IdleWorkers.Inc()
+				metrics.DecActiveWorkers()
 			}()
 
 			// metric & status update
-			metrics.ActiveWorkers.Inc()
-			metrics.IdleWorkers.Dec()
+			metrics.IncActiveWorkers()
 			p.processJob(jobCtx, id, j)
 		}(workerId, job)
 	}
 }
 
 func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJob) {
+	// metrics
+	startTime := time.Now()
+	defer func() {
+		metrics.RecordJobDuration(time.Since(startTime))
+		metrics.RecordJobProcessed()
+	}()
+
 	logger := klog.FromContext(ctx)
 
 	// status update - inprogress (TTL 24h)
