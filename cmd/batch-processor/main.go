@@ -28,9 +28,11 @@ import (
 
 	"k8s.io/klog/v2"
 
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
 )
 
 func main() {
@@ -47,7 +49,7 @@ func main() {
 	fs.Parse(os.Args[1:])
 
 	if err := cfg.LoadFromYAML(*cfgFilePath); err != nil {
-		klog.InfoS("Failed to load config file, using defaults", "path", *cfgFilePath)
+		klog.InfoS("Failed to load config file, using defaults", "path", *cfgFilePath, "err", err)
 	}
 
 	// setup context with graceful shutdown
@@ -64,10 +66,10 @@ func main() {
 
 		sig = <-signalChan
 		klog.InfoS("Received second shutdown signal, forcing shutdown...", "signal", sig)
+		klog.Flush()
 		os.Exit(1) // force exit immediately for second signal
 	}()
 
-	// setup metrics and health checks endpoints (background goroutine)
 	go func() {
 		m := http.NewServeMux()
 
@@ -82,17 +84,24 @@ func main() {
 		}
 	}()
 
+	// Todo:: db/llmd client setup
+	var dbClient db.BatchDBClient
+	var pqClient db.BatchPriorityQueueClient
+	var statusClient db.BatchStatusClient
+	var eventClient db.BatchEventChannelClient
+	var inferenceClient batch.InferenceClient
+	processorClients := worker.ProcessorClients{
+		Database:      dbClient,
+		PriorityQueue: pqClient,
+		Status:        statusClient,
+		Event:         eventClient,
+		Inference:     inferenceClient,
+	}
+
 	// initialize processor (worker pool manager)
 	// get max worker from cfg then decide the worker pool size
 	klog.InfoS("Initializing worker processor", "maxWorkers", cfg.MaxWorkers)
-	proc := worker.NewProcessor(cfg)
-
-	// initialize resources
-	klog.InfoS("Initializing processor resources")
-	if err := proc.InitResources(ctx); err != nil {
-		klog.ErrorS(err, "Failed to initialize processor resources")
-		os.Exit(1)
-	}
+	proc := worker.NewProcessor(cfg, processorClients)
 
 	// start the main polling loop
 	// this polls for new tasks, check for empty worker slots, and assign tasks to workers

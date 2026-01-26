@@ -26,17 +26,17 @@ const (
 	ErrCategoryUnknown    ErrorCategory = "UNKNOWN"      // not retryable
 )
 
-type LLMError struct {
+type InferenceError struct {
 	Category ErrorCategory
 	Message  string
 	RawError error // original error message
 }
 
-func (e *LLMError) Error() string {
+func (e *InferenceError) Error() string {
 	return e.Message
 }
 
 // checks if the error is retryable
-func (e *LLMError) IsRetryable() bool {
+func (e *InferenceError) IsRetryable() bool {
 	return e.Category == ErrCategoryRateLimit || e.Category == ErrCategoryServer
 }

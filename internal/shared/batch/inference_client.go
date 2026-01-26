@@ -18,11 +18,11 @@ package batch
 
 import "context"
 
-type LLMClient interface {
-	Generate(ctx context.Context, req *LLMRequest) (*LLMResponse, *LLMError)
+type InferenceClient interface {
+	Generate(ctx context.Context, req *InferenceRequest) (*InferenceResponse, *InferenceError)
 }
 
-type LLMRequest struct {
+type InferenceRequest struct {
 	RequestID string                 // unique request id set by user
 	Model     string                 // model id (also inside Params)
 	Params    map[string]interface{} // parameters
@@ -63,7 +63,7 @@ type LLMRequest struct {
 //	  ],
 //	  "tool_choice": "auto"
 //	}
-type LLMResponse struct {
+type InferenceResponse struct {
 	RequestID string
 	Response  []byte
 	RawData   interface{}
