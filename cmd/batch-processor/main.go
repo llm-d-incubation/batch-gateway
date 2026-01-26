@@ -41,6 +41,15 @@ func main() {
 	defer klog.Flush()
 
 	// load configuration & logging setup
+	rootLogger := klog.Background()
+	ctx := klog.NewContext(context.Background(), rootLogger)
+
+	hostname, _ := os.Hostname()
+	rootLogger = rootLogger.WithValues("hostname", hostname, "service", "batch-processor")
+	ctx = klog.NewContext(ctx, rootLogger)
+
+	logger := klog.FromContext(ctx)
+
 	cfg := config.NewConfig()
 	fs := flag.NewFlagSet("batch-gateway-processor", flag.ExitOnError)
 
@@ -49,11 +58,11 @@ func main() {
 	fs.Parse(os.Args[1:])
 
 	if err := cfg.LoadFromYAML(*cfgFilePath); err != nil {
-		klog.InfoS("Failed to load config file, using defaults", "path", *cfgFilePath, "err", err)
+		logger.Info("Failed to load config file, using defaults", "path", *cfgFilePath, "err", err)
 	}
 
 	// setup context with graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	signalChan := make(chan os.Signal, 2)
@@ -61,11 +70,11 @@ func main() {
 
 	go func() {
 		sig := <-signalChan
-		klog.InfoS("Received shutdown signal, starting graceful shutdown...", "signal", sig)
+		logger.Info("Received shutdown signal, starting graceful shutdown...", "signal", sig)
 		cancel() // stop polling loop by cancelling context
 
 		sig = <-signalChan
-		klog.InfoS("Received second shutdown signal, forcing shutdown...", "signal", sig)
+		logger.Info("Received second shutdown signal, forcing shutdown...", "signal", sig)
 		klog.Flush()
 		os.Exit(1) // force exit immediately for second signal
 	}()
@@ -78,9 +87,9 @@ func main() {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
 		})
-		klog.InfoS("Starting observability server")
+		logger.Info("Starting observability server")
 		if err := http.ListenAndServe(cfg.MetricsAddress, m); err != nil {
-			klog.ErrorS(err, "Observability server failed")
+			logger.Error(err, "Observability server failed")
 		}
 	}()
 
@@ -100,18 +109,18 @@ func main() {
 
 	// initialize processor (worker pool manager)
 	// get max worker from cfg then decide the worker pool size
-	klog.InfoS("Initializing worker processor", "maxWorkers", cfg.MaxWorkers)
+	logger.Info("Initializing worker processor", "maxWorkers", cfg.MaxWorkers)
 	proc := worker.NewProcessor(cfg, processorClients)
 
 	// start the main polling loop
 	// this polls for new tasks, check for empty worker slots, and assign tasks to workers
-	klog.InfoS("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
+	logger.Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	if err := proc.RunPollingLoop(ctx); err != nil {
-		klog.ErrorS(err, "Processor polling loop exited with error")
+		logger.Error(err, "Processor polling loop exited with error")
 	}
 
 	// cleanup and shutdown
-	klog.InfoS("Processor polling loop exited, shutting down")
-	proc.Stop() // wait for all workers to finish
-	klog.InfoS("Processor polling loop exited gracefully")
+	logger.Info("Processor polling loop exited, shutting down")
+	proc.Stop(ctx) // wait for all workers to finish
+	logger.Info("Processor polling loop exited gracefully")
 }
