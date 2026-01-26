@@ -123,13 +123,9 @@ func main() {
 	var statusClient db.BatchStatusClient
 	var eventClient db.BatchEventChannelClient
 	var inferenceClient batch.InferenceClient
-	processorClients := worker.ProcessorClients{
-		Database:      dbClient,
-		PriorityQueue: pqClient,
-		Status:        statusClient,
-		Event:         eventClient,
-		Inference:     inferenceClient,
-	}
+	processorClients := worker.NewProcessorClients(
+		dbClient, pqClient, statusClient, eventClient, inferenceClient,
+	)
 
 	// initialize processor (worker pool manager)
 	// get max worker from cfg then decide the worker pool size

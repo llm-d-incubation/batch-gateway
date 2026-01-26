@@ -32,12 +32,29 @@ import (
 )
 
 type ProcessorClients struct {
-	Database      db.BatchDBClient
-	PriorityQueue db.BatchPriorityQueueClient
-	Status        db.BatchStatusClient
-	Event         db.BatchEventChannelClient
-	Inference     batch.InferenceClient
+	database      db.BatchDBClient
+	priorityQueue db.BatchPriorityQueueClient
+	status        db.BatchStatusClient
+	event         db.BatchEventChannelClient
+	inference     batch.InferenceClient
 }
+
+func NewProcessorClients(
+	db db.BatchDBClient,
+	pq db.BatchPriorityQueueClient,
+	status db.BatchStatusClient,
+	event db.BatchEventChannelClient,
+	inference batch.InferenceClient,
+) ProcessorClients {
+	return ProcessorClients{
+		database:      db,
+		priorityQueue: pq,
+		status:        status,
+		event:         event,
+		inference:     inference,
+	}
+}
+
 type Processor struct {
 	cfg        *config.ProcessorConfig
 	workerPool *WorkerPool
@@ -61,7 +78,7 @@ func (p *Processor) prepare(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
 	// check injections
-	if p.clients.Database == nil || p.clients.Inference == nil || p.clients.PriorityQueue == nil || p.clients.Event == nil || p.clients.Status == nil {
+	if p.clients.database == nil || p.clients.inference == nil || p.clients.priorityQueue == nil || p.clients.event == nil || p.clients.status == nil {
 		// detailed error logging needed (TODO)
 		return fmt.Errorf("critical clients are missing in Processor")
 	}
@@ -126,7 +143,7 @@ func (p *Processor) dispatchTasks(ctx context.Context) []*db.BatchJobPriority {
 	}
 
 	// dequeue max number of tasks
-	tasks, err := p.clients.PriorityQueue.Dequeue(ctx, p.cfg.TaskWaitTime, availableWorkers)
+	tasks, err := p.clients.priorityQueue.Dequeue(ctx, p.cfg.TaskWaitTime, availableWorkers)
 	if err != nil {
 		logger.Error(err, "Failed to dequeue batch jobs")
 		return nil
@@ -148,11 +165,11 @@ func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriorit
 	}
 
 	// get all job db data
-	jobs, _, err := p.clients.Database.Get(ctx, ids, nil, db.TagsLogicalCondNa, true, 0, len(ids))
+	jobs, _, err := p.clients.database.Get(ctx, ids, nil, db.TagsLogicalCondNa, true, 0, len(ids))
 	if err != nil {
 		logger.Error(err, "Failed to fetch detailed job info, re-queueing all IDs")
 		for _, task := range tasks {
-			p.clients.PriorityQueue.Enqueue(ctx, task)
+			p.clients.priorityQueue.Enqueue(ctx, task)
 		}
 		logger.Info("Successfully re-queued IDs")
 		return
@@ -169,7 +186,7 @@ func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriorit
 			// find the original task BatchJobPriority then enqueue
 			if originalTask, exists := taskMap[job.ID]; exists {
 				logger.Info("message", "No Worker available, re-queueing jobs", "jobID", job.ID)
-				err := p.clients.PriorityQueue.Enqueue(ctx, originalTask)
+				err := p.clients.priorityQueue.Enqueue(ctx, originalTask)
 				if err != nil {
 					logger.Error(err, "CRITICAL: Failed to re-enqueue job", "jobID", originalTask.ID, "SLO", originalTask.SLO)
 				}
@@ -203,11 +220,11 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	logger := klog.FromContext(ctx)
 
 	// status update - inprogress (TTL 24h)
-	p.clients.Status.Set(ctx, job.ID, 24*60*60, []byte(batch.InProgress.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.InProgress.String()))
 	logger.Info("Worker started job", "workerID", workerId, "jobID", job.ID)
 
 	// TODO:: file validating
-	p.clients.Status.Set(ctx, job.ID, 24*60*60, []byte(batch.Validating.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.Validating.String()))
 
 	// TODO:: download file, streaming
 	// check if the method in the request is allowed
@@ -246,7 +263,7 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 
 			// mock request
 			mockRequest := &batch.InferenceRequest{}
-			result, err := p.clients.Inference.Generate(ctx, mockRequest)
+			result, err := p.clients.inference.Generate(ctx, mockRequest)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -274,13 +291,13 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	}
 
 	// status update
-	p.clients.Status.Set(ctx, job.ID, 24*60*60, []byte(batch.Finalizing.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.Finalizing.String()))
 
 	// db update (job.Status should be updated before this line)
-	if err := p.clients.Database.Update(ctx, job); err != nil {
+	if err := p.clients.database.Update(ctx, job); err != nil {
 		logger.Error(err, "Failed to update final job status in DB", "jobID", job.ID)
 	}
-	p.clients.Status.Set(ctx, job.ID, 24*60*60, []byte(finalStatus.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(finalStatus.String()))
 	logger.Info("Job Processed", "jobID", job.ID, "status", finalStatus.String())
 }
 
