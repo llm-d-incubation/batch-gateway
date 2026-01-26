@@ -23,6 +23,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
 
 func main() {
@@ -67,16 +69,52 @@ func main() {
 
 	go func() {
 		m := http.NewServeMux()
-
 		m.Handle("/metrics", metrics.NewMetricsHandler())
 		m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
 		})
-		logger.Info("Starting observability server")
-		if err := http.ListenAndServe(cfg.MetricsAddress, m); err != nil {
+
+		server := &http.Server{
+			Addr:    cfg.Port,
+			Handler: m,
+		}
+
+		// tls setup
+		if cfg.SSLEnabled() {
+			tlsConfig, err := tls.GetTlsConfig(tls.LOAD_TYPE_SERVER, false, cfg.SSLCertFile, cfg.SSLKeyFile, "")
+			if err != nil {
+				logger.Error(err, "Failed to configure TLS for observability server")
+				return
+			}
+			server.TLSConfig = tlsConfig
+			logger.Info("Observability server TLS configured")
+		}
+
+		// http server shutdown when context cancels
+		go func() {
+			<-ctx.Done()
+			logger.Info("Shutting down observability server")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				logger.Error(err, "Observability server shutdown failed")
+			}
+		}()
+
+		logger.Info("Start observability server", "port", cfg.Port, "tls", cfg.SSLEnabled())
+
+		var err error
+		if cfg.SSLEnabled() {
+			err = server.ListenAndServeTLS("", "")
+		} else {
+			err = server.ListenAndServe()
+		}
+
+		if err != nil && err != http.ErrServerClosed {
 			logger.Error(err, "Observability server failed")
 		}
+
 	}()
 
 	// Todo:: db/llmd client setup
@@ -103,7 +141,6 @@ func main() {
 	logger.Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	if err := proc.RunPollingLoop(ctx); err != nil {
 		logger.Error(err, "Processor polling loop exited with error")
-		klog.Flush()
 		os.Exit(1)
 	}
 

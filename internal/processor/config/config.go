@@ -26,10 +26,16 @@ import (
 )
 
 type ProcessorConfig struct {
-	PollInterval   time.Duration `json:"worker_poll_interval" yaml:"worker_poll_interval" mapstructure:"worker_poll_interval"`
-	TaskWaitTime   time.Duration `json:"task_wait_time" yaml:"task_wait_time" mapstructure:"task_wait_time"`
-	MaxWorkers     int           `json:"max_workers" yaml:"max_workers" mapstructure:"max_workers"`
-	MetricsAddress string        `json:"metrics_address" yaml:"metrics_address" mapstructure:"metrics_address"`
+	TaskWaitTime time.Duration `yaml:"task_wait_time"`
+	MaxWorkers   int           `yaml:"max_workers"`
+	PollInterval time.Duration `yaml:"poll_interval"`
+	Port         string        `yaml:"port"`
+	SSLCertFile  string        `yaml:"ssl_cert_file"`
+	SSLKeyFile   string        `yaml:"ssl_key_file"`
+}
+
+func (pc *ProcessorConfig) SSLEnabled() bool {
+	return pc.SSLCertFile != "" && pc.SSLKeyFile != ""
 }
 
 // LoadFromYaml loads the configuration from a YAML file.
@@ -51,9 +57,22 @@ func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 // TaskWaitTime has to be shorter than poll interval
 func NewConfig() *ProcessorConfig {
 	return &ProcessorConfig{
-		PollInterval:   5 * time.Second,
-		TaskWaitTime:   1 * time.Second,
-		MaxWorkers:     10,
-		MetricsAddress: ":9090",
+		PollInterval: 5 * time.Second,
+		TaskWaitTime: 1 * time.Second,
+
+		MaxWorkers: 10,
+		Port:       ":9090",
 	}
+}
+
+func (c *ProcessorConfig) Validate() error {
+	if c.SSLEnabled() {
+		if _, err := os.Stat(c.SSLCertFile); err != nil {
+			return err
+		}
+		if _, err := os.Stat(c.SSLKeyFile); err != nil {
+			return err
+		}
+	}
+	return nil
 }
