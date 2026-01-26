@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/batch"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/files"
@@ -36,7 +35,7 @@ import (
 )
 
 type Server struct {
-	logger logr.Logger
+	logger klog.Logger
 	config *common.ServerConfig
 }
 
