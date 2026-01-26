@@ -29,6 +29,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 type ProcessorClients struct {
@@ -83,7 +84,7 @@ func (p *Processor) prepare(ctx context.Context) error {
 		return fmt.Errorf("critical clients are missing in Processor")
 	}
 
-	logger.Info("Processor pre-flight check done", "max_workers", p.cfg.MaxWorkers)
+	logger.V(logging.DEBUG).Info("Processor pre-flight check done", "max_workers", p.cfg.MaxWorkers)
 	return nil
 }
 
@@ -94,7 +95,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 	}
 
 	logger := klog.FromContext(ctx)
-	logger.Info(
+	logger.V(logging.INFO).Info(
 		"Polling loop started",
 		"loopInterval", p.cfg.PollInterval,
 		"maxWorkers", p.cfg.MaxWorkers,
@@ -105,11 +106,11 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Shutting down polling loop")
+			logger.V(logging.INFO).Info("Shutting down job polling loop")
 			return nil
 		case <-ticker.C:
 			// dispatch new jobs from the database
-			logger.Info("Job polling loop ticked")
+			logger.V(logging.DEBUG).Info("Job polling loop ticked")
 			tasks := p.dispatchTasks(ctx)
 			if len(tasks) == 0 {
 				continue
@@ -132,7 +133,7 @@ func (p *Processor) dispatchTasks(ctx context.Context) []*db.BatchJobPriority {
 
 	// check how many workers are available
 	availableWorkers := len(p.workerPool.workerIds)
-	logger.Info("Dispathcing jobs", "available_workers", availableWorkers)
+	logger.V(logging.INFO).Info("Dispathcing jobs", "available_workers", availableWorkers)
 
 	if availableWorkers <= 0 {
 		return nil // skip this turn as there's no available workers
@@ -141,10 +142,10 @@ func (p *Processor) dispatchTasks(ctx context.Context) []*db.BatchJobPriority {
 	// dequeue max number of tasks
 	tasks, err := p.clients.priorityQueue.Dequeue(ctx, p.cfg.TaskWaitTime, availableWorkers)
 	if err != nil {
-		logger.Error(err, "Failed to dequeue batch jobs")
+		logger.V(logging.ERROR).Error(err, "Failed to dequeue batch jobs")
 		return nil
 	}
-	logger.Info("Dispatched jobs", "jobs", len(tasks))
+	logger.V(logging.INFO).Info("Dispatched jobs", "jobs", len(tasks))
 
 	return tasks
 }
@@ -152,7 +153,7 @@ func (p *Processor) dispatchTasks(ctx context.Context) []*db.BatchJobPriority {
 func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriority) {
 	// get all job ids from pq & create a task/id map for fast search/db fetch
 	logger := klog.FromContext(ctx)
-	logger.Info("Fetching detailed job data from DB")
+	logger.V(logging.DEBUG).Info("Fetching detailed job data from DB")
 	taskMap := make(map[string]*db.BatchJobPriority)
 	ids := make([]string, len(tasks))
 	for i, task := range tasks {
@@ -163,15 +164,18 @@ func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriorit
 	// get all job db data
 	jobs, _, err := p.clients.database.Get(ctx, ids, nil, db.TagsLogicalCondNa, true, 0, len(ids))
 	if err != nil {
-		logger.Error(err, "Failed to fetch detailed job info, re-queueing all IDs")
+		logger.V(logging.ERROR).Error(err, "Failed to fetch detailed job info, re-queueing all IDs")
 		for _, task := range tasks {
-			p.clients.priorityQueue.Enqueue(ctx, task)
+			err := p.clients.priorityQueue.Enqueue(ctx, task)
+			if err != nil {
+				logger.Error(err, "CRITICAL: Failed to re-enqueue job", "jobID", task.ID, "SLO", task.SLO)
+			}
 		}
-		logger.Info("Successfully re-queued IDs")
+		logger.V(logging.DEBUG).Info("Successfully re-queued IDs")
 		return
 	}
 
-	logger.Info("Fetched job data from DB")
+	logger.V(logging.DEBUG).Info("Fetched job data from DB")
 
 	// worker assigning loop
 	for _, job := range jobs {
@@ -181,7 +185,7 @@ func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriorit
 			// edge case: no worker available - this can happen if dispatching took too long?
 			// find the original task BatchJobPriority then enqueue
 			if originalTask, exists := taskMap[job.ID]; exists {
-				logger.Info("message", "No Worker available, re-queueing jobs", "jobID", job.ID)
+				logger.V(logging.WARNING).Info("message", "No Worker available, re-queueing jobs", "jobID", job.ID)
 				err := p.clients.priorityQueue.Enqueue(ctx, originalTask)
 				if err != nil {
 					logger.Error(err, "CRITICAL: Failed to re-enqueue job", "jobID", originalTask.ID, "SLO", originalTask.SLO)
@@ -197,7 +201,7 @@ func (p *Processor) processJobs(ctx context.Context, tasks []*db.BatchJobPriorit
 			// release resources
 			defer func() {
 				if r := recover(); r != nil {
-					jobLogger.Error(fmt.Errorf("%v", r), "Panic recovered in worker", "workerID", id, "jobID", j.ID)
+					jobLogger.V(logging.ERROR).Error(fmt.Errorf("%v", r), "Panic recovered in worker", "workerID", id, "jobID", j.ID)
 				}
 				p.workerPool.Release(id)
 				metrics.DecActiveWorkers()
@@ -222,7 +226,7 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 
 	// status update - inprogress (TTL 24h)
 	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.InProgress.String()))
-	logger.Info("Worker started job", "workerID", workerId, "jobID", job.ID)
+	logger.V(logging.DEBUG).Info("Worker started job", "workerID", workerId, "jobID", job.ID)
 
 	// TODO:: file validating
 	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.Validating.String()))
@@ -287,7 +291,7 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	// final status decision
 	finalStatus := batch.Completed
 	if !metadata.Validate() {
-		logger.Info("Job finished with partial failures", "jobID", job.ID, "metadata", metadata)
+		logger.V(logging.WARNING).Info("Job finished with partial failures", "jobID", job.ID, "metadata", metadata)
 		finalStatus = batch.Failed
 	}
 
@@ -296,22 +300,22 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 
 	// db update (job.Status should be updated before this line)
 	if err := p.clients.database.Update(ctx, job); err != nil {
-		logger.Error(err, "Failed to update final job status in DB", "jobID", job.ID)
+		logger.V(logging.ERROR).Error(err, "Failed to update final job status in DB", "jobID", job.ID)
 	}
 	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(finalStatus.String()))
-	logger.Info("Job Processed", "jobID", job.ID, "status", finalStatus.String())
+	logger.V(logging.INFO).Info("Job Processed", "jobID", job.ID, "status", finalStatus.String())
 }
 
 func (p *Processor) handleError(ctx context.Context, err error) {
 	// TODO:: error handling.
 	logger := klog.FromContext(ctx)
-	logger.Error(err, "Inference request failed")
+	logger.V(logging.ERROR).Error(err, "Inference request failed")
 }
 
 func (p *Processor) handleResponse(ctx context.Context, inferenceResponse *batch.InferenceResponse) error {
 	// TODO:: response handling + writing line to the output file ...
 	logger := klog.FromContext(ctx)
-	logger.Info("Handling response")
+	logger.V(logging.DEBUG).Info("Handling response")
 	return nil
 }
 
@@ -319,5 +323,5 @@ func (p *Processor) handleResponse(ctx context.Context, inferenceResponse *batch
 func (p *Processor) Stop(ctx context.Context) {
 	logger := klog.FromContext(ctx)
 	p.workerPool.WaitAll()
-	logger.Info("All workers have finished")
+	logger.V(logging.INFO).Info("All workers have finished")
 }

@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"k8s.io/klog/v2"
 )
 
@@ -22,11 +23,11 @@ func ContextWithSignal(parent context.Context) (context.Context, context.CancelF
 
 	go func() {
 		sig := <-signalChan
-		logger.Info("Received shutdown signal, starting graceful shutdown...", "signal", sig)
+		logger.V(logging.INFO).Info("Received shutdown signal, starting graceful shutdown...", "signal", sig)
 		cancel()
 
 		sig = <-signalChan
-		logger.Info("Received second shutdown signal, forcing shutdown...", "signal", sig)
+		logger.V(logging.INFO).Info("Received second shutdown signal, forcing shutdown...", "signal", sig)
 		klog.Flush()
 		os.Exit(1)
 	}()

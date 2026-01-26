@@ -33,6 +33,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
 
@@ -59,7 +60,7 @@ func main() {
 	fs.Parse(os.Args[1:])
 
 	if err := cfg.LoadFromYAML(*cfgFilePath); err != nil {
-		logger.Info("Failed to load config file. Processor cannot start", "path", *cfgFilePath, "err", err)
+		logger.V(logging.ERROR).Error(err, "Failed to load config file. Processor cannot start", "path", *cfgFilePath, "err", err)
 		os.Exit(1)
 	}
 
@@ -84,25 +85,25 @@ func main() {
 		if cfg.SSLEnabled() {
 			tlsConfig, err := tls.GetTlsConfig(tls.LOAD_TYPE_SERVER, false, cfg.SSLCertFile, cfg.SSLKeyFile, "")
 			if err != nil {
-				logger.Error(err, "Failed to configure TLS for observability server")
+				logger.V(logging.ERROR).Error(err, "Failed to configure TLS for observability server")
 				return
 			}
 			server.TLSConfig = tlsConfig
-			logger.Info("Observability server TLS configured")
+			logger.V(logging.INFO).Info("Observability server TLS configured")
 		}
 
 		// http server shutdown when context cancels
 		go func() {
 			<-ctx.Done()
-			logger.Info("Shutting down observability server")
+			logger.V(logging.INFO).Info("Shutting down observability server")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := server.Shutdown(shutdownCtx); err != nil {
-				logger.Error(err, "Observability server shutdown failed")
+				logger.V(logging.ERROR).Error(err, "Observability server shutdown failed")
 			}
 		}()
 
-		logger.Info("Start observability server", "port", cfg.Port, "tls", cfg.SSLEnabled())
+		logger.V(logging.INFO).Info("Start observability server", "port", cfg.Port, "tls", cfg.SSLEnabled())
 
 		var err error
 		if cfg.SSLEnabled() {
@@ -112,7 +113,7 @@ func main() {
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			logger.Error(err, "Observability server failed")
+			logger.V(logging.ERROR).Error(err, "Observability server failed")
 		}
 
 	}()
@@ -129,19 +130,19 @@ func main() {
 
 	// initialize processor (worker pool manager)
 	// get max worker from cfg then decide the worker pool size
-	logger.Info("Initializing worker processor", "maxWorkers", cfg.MaxWorkers)
+	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.MaxWorkers)
 	proc := worker.NewProcessor(cfg, processorClients)
 
 	// start the main polling loop
 	// this polls for new tasks, check for empty worker slots, and assign tasks to workers
-	logger.Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
+	logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	if err := proc.RunPollingLoop(ctx); err != nil {
-		logger.Error(err, "Processor polling loop exited with error")
+		logger.V(logging.ERROR).Error(err, "Processor polling loop exited with error")
 		os.Exit(1)
 	}
 
 	// cleanup and shutdown
-	logger.Info("Processor exited, shutting down")
+	logger.V(logging.INFO).Info("Processor exited, shutting down")
 	proc.Stop(ctx) // wait for all workers to finish
-	logger.Info("Processor exited gracefully")
+	logger.V(logging.INFO).Info("Processor exited gracefully")
 }
