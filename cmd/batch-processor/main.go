@@ -23,8 +23,6 @@ import (
 	"flag"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"k8s.io/klog/v2"
 
@@ -33,6 +31,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 )
 
 func main() {
@@ -58,26 +57,13 @@ func main() {
 	fs.Parse(os.Args[1:])
 
 	if err := cfg.LoadFromYAML(*cfgFilePath); err != nil {
-		logger.Info("Failed to load config file, using defaults", "path", *cfgFilePath, "err", err)
+		logger.Info("Failed to load config file. Processor cannot start", "path", *cfgFilePath, "err", err)
+		os.Exit(1)
 	}
 
 	// setup context with graceful shutdown
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := interrupt.ContextWithSignal(ctx)
 	defer cancel()
-
-	signalChan := make(chan os.Signal, 2)
-	signal.Notify(signalChan, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		sig := <-signalChan
-		logger.Info("Received shutdown signal, starting graceful shutdown...", "signal", sig)
-		cancel() // stop polling loop by cancelling context
-
-		sig = <-signalChan
-		logger.Info("Received second shutdown signal, forcing shutdown...", "signal", sig)
-		klog.Flush()
-		os.Exit(1) // force exit immediately for second signal
-	}()
 
 	go func() {
 		m := http.NewServeMux()
@@ -117,10 +103,12 @@ func main() {
 	logger.Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	if err := proc.RunPollingLoop(ctx); err != nil {
 		logger.Error(err, "Processor polling loop exited with error")
+		klog.Flush()
+		os.Exit(1)
 	}
 
 	// cleanup and shutdown
-	logger.Info("Processor polling loop exited, shutting down")
+	logger.Info("Processor exited, shutting down")
 	proc.Stop(ctx) // wait for all workers to finish
-	logger.Info("Processor polling loop exited gracefully")
+	logger.Info("Processor exited gracefully")
 }
