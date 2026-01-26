@@ -9,8 +9,8 @@ require (
 	github.com/onsi/ginkgo/v2 v2.27.5
 	github.com/onsi/gomega v1.39.0
 	github.com/prometheus/client_golang v1.23.2
-	gopkg.in/yaml.v3 v3.0.1
 	github.com/redis/go-redis/v9 v9.17.2
+	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/klog/v2 v2.130.1
 )
 
