@@ -17,12 +17,66 @@ limitations under the License.
 package batch
 
 // Job represents a task polled from queue.
-type Job struct {
-	RequetId    string
+type Request struct {
+	RequestId   string
 	Model       string
 	ID          string
 	SLO         string
 	EndPoint    string
 	RequestBody []byte
+	Status      RequestStatus
 	//... other job fields
+}
+
+// JobResultMetadata
+type JobResultMetadata struct {
+	Total     int
+	Succeeded int
+	Failed    int
+}
+
+func (rm JobResultMetadata) Validate() bool {
+	return rm.Succeeded+rm.Failed == rm.Total
+}
+
+// RequestLineStatus
+type RequestStatus int
+
+const (
+	StatusOK RequestStatus = iota
+	Error
+)
+
+func (rs RequestStatus) String() string {
+	return [...]string{
+		"OK", "ERROR",
+	}[rs]
+}
+
+// BatchStatus
+type BatchStatus int
+
+const (
+	Pending BatchStatus = iota
+	Validating
+	InProgress
+	Finalizing
+	Completed
+	Failed
+	Expired
+	Cancelling
+	Cancelled
+)
+
+func (bs BatchStatus) String() string {
+	return [...]string{
+		"validating",
+		"in_progress",
+		"finalizing",
+		"completed",
+		"failed",
+		"expired",
+		"cancelling",
+		"cancelled",
+	}[bs]
 }

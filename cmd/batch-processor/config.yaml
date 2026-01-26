@@ -1,8 +1,9 @@
 # Database Connection
 database_url: ""
 
-# Worker Settings
-worker_poll_interval: "5s"
+# Worker Settings - task wait time needs to be shorter than poll interval
+task_wait_time: "1s"
+worker_poll_interval: "5s" 
 max_workers: 20
 
 # Metrics & Health Check

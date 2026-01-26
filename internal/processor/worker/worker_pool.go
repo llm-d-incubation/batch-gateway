@@ -22,23 +22,36 @@ import (
 	"sync"
 )
 
+// worker id is integer that starts with 1 to the max number of worker
 type WorkerPool struct {
-	sem chan struct{}
-	wg  sync.WaitGroup
+	workerIds chan int
+	wg        sync.WaitGroup
 }
 
-func (wp *WorkerPool) TryAcquire() bool {
-	select {
-	case wp.sem <- struct{}{}:
-		wp.wg.Add(1)
-		return true
-	default:
-		return false
+func NewWorkerPool(maxWorkers int) *WorkerPool {
+	ids := make(chan int, maxWorkers)
+	for i := 1; i <= maxWorkers; i++ {
+		ids <- i // fill worker ids first
+	}
+	return &WorkerPool{
+		workerIds: ids,
 	}
 }
 
-func (wp *WorkerPool) Release() {
-	<-wp.sem
+// return worker id and bool showing if the acquisition was succesful
+// id 0 means the worker was not acquired
+func (wp *WorkerPool) TryAcquire() (int, bool) {
+	select {
+	case id := <-wp.workerIds:
+		wp.wg.Add(1)
+		return id, true
+	default:
+		return 0, false
+	}
+}
+
+func (wp *WorkerPool) Release(id int) {
+	wp.workerIds <- id
 	wp.wg.Done()
 }
 

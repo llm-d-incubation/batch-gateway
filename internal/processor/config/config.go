@@ -26,14 +26,14 @@ import (
 )
 
 type ProcessorConfig struct {
-	DatabaseURL    string        `json:"database_url" yaml:"database_url" mapstructure:"database_url"`
 	PollInterval   time.Duration `json:"worker_poll_interval" yaml:"worker_poll_interval" mapstructure:"worker_poll_interval"`
+	TaskWaitTime   time.Duration `json:"task_wait_time" yaml:"task_wait_time" mapstructure:"task_wait_time"`
 	MaxWorkers     int           `json:"max_workers" yaml:"max_workers" mapstructure:"max_workers"`
 	MetricsAddress string        `json:"metrics_address" yaml:"metrics_address" mapstructure:"metrics_address"`
 }
 
 // LoadFromYaml loads the configuration from a YAML file.
-func (c *ProcessorConfig) LoadFromYAML(filePath string) error {
+func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -41,17 +41,18 @@ func (c *ProcessorConfig) LoadFromYAML(filePath string) error {
 	defer file.Close()
 
 	decoder := yaml.NewDecoder(file)
-	if err := decoder.Decode(c); err != nil {
+	if err := decoder.Decode(pc); err != nil {
 		return err
 	}
 	return nil
 }
 
 // NewConfig returns a new ProcessorConfig with default values.
+// TaskWaitTime has to be shorter than poll interval
 func NewConfig() *ProcessorConfig {
 	return &ProcessorConfig{
-		DatabaseURL:    "",
 		PollInterval:   5 * time.Second,
+		TaskWaitTime:   1 * time.Second,
 		MaxWorkers:     10,
 		MetricsAddress: ":9090",
 	}
