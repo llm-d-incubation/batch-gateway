@@ -20,12 +20,10 @@ package main
 
 import (
 	"context"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/server"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"k8s.io/klog/v2"
 )
 
@@ -41,16 +39,8 @@ func main() {
 
 	// graceful shutdown
 	parentCtx := context.Background()
-	c := make(chan os.Signal, 2)
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancel := interrupt.ContextWithSignal(parentCtx)
 	defer cancel()
-	signal.Notify(c, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-c
-		cancel()
-		<-c
-		os.Exit(1)
-	}()
 
 	// start server
 	logger := klog.FromContext(ctx)
