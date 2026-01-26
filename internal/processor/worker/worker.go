@@ -236,6 +236,8 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	// check if the model in the request is allowed (optional)
 	// set total request num in result obj + init other fields
 	// goroutine per one line reading
+	// limit goroutines using config's max job concurrency
+	sem := make(chan struct{}, p.cfg.MaxJobConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex // for metadata update
 
@@ -259,9 +261,19 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	}()
 
 	for line := range lineChan {
+		// check context termination
+		select {
+		case <-ctx.Done():
+			logger.V(logging.INFO).Info("Stopping line processing due to shutdown")
+			return
+		case sem <- struct{}{}: // wait here if max concurrency is reached
+		}
 		wg.Add(1)
 		go func(l string) {
-			defer wg.Done()
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
 			// TODO:: line parsing
 			// TODO:: check allowed methods
 			// TODO:: request validation

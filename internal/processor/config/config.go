@@ -26,12 +26,13 @@ import (
 )
 
 type ProcessorConfig struct {
-	TaskWaitTime time.Duration `yaml:"task_wait_time"`
-	MaxWorkers   int           `yaml:"max_workers"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	Port         string        `yaml:"port"`
-	SSLCertFile  string        `yaml:"ssl_cert_file"`
-	SSLKeyFile   string        `yaml:"ssl_key_file"`
+	TaskWaitTime      time.Duration `yaml:"task_wait_time"`
+	MaxWorkers        int           `yaml:"max_workers"`
+	MaxJobConcurrency int           `yaml:"max_job_concurrency"`
+	PollInterval      time.Duration `yaml:"poll_interval"`
+	Port              string        `yaml:"port"`
+	SSLCertFile       string        `yaml:"ssl_cert_file"`
+	SSLKeyFile        string        `yaml:"ssl_key_file"`
 }
 
 func (pc *ProcessorConfig) SSLEnabled() bool {
@@ -60,8 +61,9 @@ func NewConfig() *ProcessorConfig {
 		PollInterval: 5 * time.Second,
 		TaskWaitTime: 1 * time.Second,
 
-		MaxWorkers: 10,
-		Port:       ":9090",
+		MaxJobConcurrency: 10,
+		MaxWorkers:        10,
+		Port:              ":9090",
 	}
 }
 
