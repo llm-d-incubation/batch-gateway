@@ -71,7 +71,7 @@ func NewConfig() *ProcessorConfig {
 		TaskWaitTime: 1 * time.Second,
 
 		MaxJobConcurrency: 10,
-		NumWorkers:        10,
+		NumWorkers:        1,
 		Port:              ":9090",
 	}
 }
