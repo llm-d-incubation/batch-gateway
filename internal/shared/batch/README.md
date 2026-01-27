@@ -27,7 +27,9 @@ The `HTTPInferenceClient` is an implementation that works with OpenAI-compatible
 - ✅ Configurable timeouts
 - ✅ Context-aware cancellation
 - ✅ Comprehensive error categorization (rate limit, server errors, auth errors, etc.)
-- ✅ Retry detection (retryable vs non-retryable errors)
+- ✅ **Built-in retry logic with exponential backoff and jitter**
+- ✅ Automatic retry on retryable errors (rate limit, server errors)
+- ✅ Configurable retry parameters (max retries, backoff settings)
 - ✅ Optional API key authentication
 - ✅ Request ID tracking
 
@@ -94,6 +96,8 @@ func main() {
 
 The `HTTPInferenceClientConfig` struct supports the following fields:
 
+#### HTTP Client Configuration
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `BaseURL` | `string` | Required | Base URL of the inference gateway (e.g., `http://localhost:8000`) |
@@ -101,6 +105,69 @@ The `HTTPInferenceClientConfig` struct supports the following fields:
 | `MaxIdleConns` | `int` | `100` | Maximum number of idle connections in the pool |
 | `IdleConnTimeout` | `time.Duration` | `90 seconds` | How long an idle connection remains in the pool |
 | `APIKey` | `string` | `""` | Optional API key for authentication (sent as `Bearer` token) |
+
+#### Retry Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `MaxRetries` | `int` | `0` (disabled) | Maximum number of retry attempts (set > 0 to enable) |
+| `InitialBackoff` | `time.Duration` | `1 second` | Initial backoff duration for first retry |
+| `MaxBackoff` | `time.Duration` | `60 seconds` | Maximum backoff duration between retries |
+| `BackoffFactor` | `float64` | `2.0` | Exponential backoff multiplier |
+| `JitterFraction` | `float64` | `0.1` (10%) | Random jitter as fraction of backoff (prevents thundering herd) |
+
+**Retry Behavior:**
+- Automatically retries on **rate limit errors (429)** and **server errors (5xx)**
+- Does NOT retry on **client errors (4xx)** except rate limits
+- Uses exponential backoff formula: `backoff = min(initial * factor^attempt, maxBackoff) * (1 ± jitter)`
+- Respects context cancellation during retry backoff
+- Logs retry attempts at verbosity level 3
+
+### Retry with Exponential Backoff
+
+The client includes built-in retry logic with exponential backoff:
+
+```go
+// Enable retry with default settings
+config := batch.HTTPInferenceClientConfig{
+    BaseURL:    "http://localhost:8000",
+    MaxRetries: 3, // Enable retry (default backoff settings apply)
+}
+client := batch.NewHTTPInferenceClient(config)
+
+// The client will automatically retry on rate limits and server errors
+resp, err := client.Generate(ctx, req)
+// Backoff timeline (with defaults):
+// Attempt 1: immediate
+// Attempt 2: ~1s backoff  (1s * 2^0 ± 10%)
+// Attempt 3: ~2s backoff  (1s * 2^1 ± 10%)
+// Attempt 4: ~4s backoff  (1s * 2^2 ± 10%)
+```
+
+#### Custom Retry Configuration
+
+```go
+// For rate-limited APIs, use aggressive backoff
+config := batch.HTTPInferenceClientConfig{
+    BaseURL:        "http://api.rate-limited.com",
+    MaxRetries:     5,               // More retries
+    InitialBackoff: 5 * time.Second, // Longer initial wait
+    MaxBackoff:     5 * time.Minute, // Allow longer waits
+    BackoffFactor:  3.0,             // More aggressive exponential growth
+    JitterFraction: 0.2,             // More jitter (±20%)
+}
+client := batch.NewHTTPInferenceClient(config)
+```
+
+#### Disable Retry
+
+```go
+// Set MaxRetries to 0 to disable retry
+config := batch.HTTPInferenceClientConfig{
+    BaseURL:    "http://localhost:8000",
+    MaxRetries: 0, // No retry
+}
+```
 
 ### Endpoint Detection
 
@@ -272,6 +339,13 @@ The client is designed to be used with the batch processor. Add the following to
 inference_gateway_url: "http://localhost:8000"
 inference_request_timeout: 5m
 inference_api_key: ""  # Optional
+
+# Retry configuration
+inference_max_retries: 3           # Maximum retry attempts
+inference_initial_backoff: 1s      # Initial backoff duration
+inference_max_backoff: 60s         # Maximum backoff cap
+inference_backoff_factor: 2.0      # Exponential multiplier (optional, default: 2.0)
+inference_jitter_fraction: 0.1     # Jitter percentage (optional, default: 0.1)
 ```
 
 Then in your processor code:
@@ -284,11 +358,18 @@ import (
 
 func setupInferenceClient(cfg *config.ProcessorConfig) batch.InferenceClient {
     clientConfig := batch.HTTPInferenceClientConfig{
-        BaseURL:        cfg.InferenceGatewayURL,
-        Timeout:        cfg.InferenceRequestTimeout,
-        MaxIdleConns:   100,
+        BaseURL:         cfg.InferenceGatewayURL,
+        Timeout:         cfg.InferenceRequestTimeout,
+        MaxIdleConns:    100,
         IdleConnTimeout: 90 * time.Second,
-        APIKey:         cfg.InferenceAPIKey,
+        APIKey:          cfg.InferenceAPIKey,
+
+        // Retry configuration (all configurable via YAML)
+        MaxRetries:      cfg.InferenceMaxRetries,
+        InitialBackoff:  cfg.InferenceInitialBackoff,
+        MaxBackoff:      cfg.InferenceMaxBackoff,
+        BackoffFactor:   cfg.InferenceBackoffFactor,
+        JitterFraction:  cfg.InferenceJitterFraction,
     }
     return batch.NewHTTPInferenceClient(clientConfig)
 }
@@ -338,7 +419,9 @@ See `examples_test.go` for more usage examples.
 
 - [ ] gRPC client for native GAIE support
 - [ ] Streaming support for real-time responses
-- [ ] Built-in retry logic with exponential backoff
-- [ ] Metrics and observability
+- [x] ~~Built-in retry logic with exponential backoff~~ ✅ Implemented!
+- [ ] Metrics and observability (Prometheus)
 - [ ] Circuit breaker pattern
 - [ ] Response caching
+- [ ] Request/response middleware hooks
+- [ ] Per-request retry override

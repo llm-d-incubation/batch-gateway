@@ -27,13 +27,20 @@ import (
 
 // ExampleHTTPInferenceClient_chatCompletion demonstrates making a chat completion request
 func ExampleHTTPInferenceClient_chatCompletion() {
-	// Create client configuration
+	// Create client configuration with retry enabled
 	config := batch.HTTPInferenceClientConfig{
-		BaseURL:        "http://localhost:8000",
-		Timeout:        30 * time.Second,
-		MaxIdleConns:   100,
+		BaseURL:         "http://localhost:8000",
+		Timeout:         30 * time.Second,
+		MaxIdleConns:    100,
 		IdleConnTimeout: 90 * time.Second,
-		APIKey:         "", // Optional: set if authentication is required
+		APIKey:          "", // Optional: set if authentication is required
+
+		// Retry configuration (optional)
+		MaxRetries:     3,               // Retry up to 3 times
+		InitialBackoff: 1 * time.Second, // Start with 1 second backoff
+		MaxBackoff:     60 * time.Second, // Max 60 seconds between retries
+		BackoffFactor:  2.0,              // Double the backoff each time
+		JitterFraction: 0.1,              // Add ±10% jitter
 	}
 
 	// Create the client
@@ -231,9 +238,12 @@ func ExampleHTTPInferenceClient_toolCalls() {
 
 // ExampleHTTPInferenceClient_errorHandling demonstrates error handling patterns
 func ExampleHTTPInferenceClient_errorHandling() {
+	// Create client without retry to show manual error handling
+	// (In production, you'd typically enable retry)
 	config := batch.HTTPInferenceClientConfig{
-		BaseURL: "http://localhost:8000",
-		Timeout: 10 * time.Second,
+		BaseURL:    "http://localhost:8000",
+		Timeout:    10 * time.Second,
+		MaxRetries: 0, // Disable automatic retry for this example
 	}
 	client := batch.NewHTTPInferenceClient(config)
 
@@ -280,6 +290,95 @@ func ExampleHTTPInferenceClient_errorHandling() {
 			fmt.Println("This error should not be retried")
 		}
 
+		return
+	}
+
+	fmt.Printf("Success! Response ID: %s\n", resp.RequestID)
+}
+
+// ExampleHTTPInferenceClient_withRetry demonstrates automatic retry with exponential backoff
+func ExampleHTTPInferenceClient_withRetry() {
+	// Create client with retry configuration
+	config := batch.HTTPInferenceClientConfig{
+		BaseURL: "http://localhost:8000",
+
+		// Retry configuration
+		MaxRetries:     3,               // Retry up to 3 times (total 4 attempts)
+		InitialBackoff: 1 * time.Second, // Start with 1 second backoff
+		MaxBackoff:     60 * time.Second, // Maximum 60 seconds between retries
+		BackoffFactor:  2.0,              // Double the backoff each time (1s, 2s, 4s, ...)
+		JitterFraction: 0.1,              // Add ±10% random jitter to prevent thundering herd
+	}
+	client := batch.NewHTTPInferenceClient(config)
+
+	req := &batch.InferenceRequest{
+		RequestID: "retry-example-001",
+		Model:     "gpt-4",
+		Params: map[string]interface{}{
+			"model": "gpt-4",
+			"messages": []map[string]interface{}{
+				{
+					"role":    "user",
+					"content": "Hello!",
+				},
+			},
+		},
+	}
+
+	// The client will automatically retry on:
+	// - Rate limit errors (429)
+	// - Server errors (500, 502, 503, 504)
+	//
+	// It will NOT retry on:
+	// - Bad request errors (400)
+	// - Authentication errors (401, 403)
+	// - Other client errors (4xx)
+	ctx := context.Background()
+	resp, err := client.Generate(ctx, req)
+	if err != nil {
+		// If we get an error after all retries are exhausted
+		fmt.Printf("Request failed after retries: %s (category: %s)\n", err.Message, err.Category)
+		return
+	}
+
+	fmt.Printf("Success! Response ID: %s\n", resp.RequestID)
+}
+
+// ExampleHTTPInferenceClient_customBackoff demonstrates custom retry backoff configuration
+func ExampleHTTPInferenceClient_customBackoff() {
+	// For rate-limited APIs, you might want aggressive retry with longer backoff
+	config := batch.HTTPInferenceClientConfig{
+		BaseURL:        "http://api.rate-limited.com",
+		MaxRetries:     5,                // More retries for rate limits
+		InitialBackoff: 5 * time.Second,  // Start with longer backoff
+		MaxBackoff:     5 * time.Minute,  // Allow up to 5 minutes between retries
+		BackoffFactor:  3.0,               // More aggressive exponential backoff
+		JitterFraction: 0.2,               // More jitter (±20%)
+	}
+	client := batch.NewHTTPInferenceClient(config)
+
+	req := &batch.InferenceRequest{
+		RequestID: "custom-backoff-001",
+		Model:     "gpt-4",
+		Params: map[string]interface{}{
+			"model": "gpt-4",
+			"messages": []map[string]interface{}{
+				{"role": "user", "content": "Test"},
+			},
+		},
+	}
+
+	// With this configuration, backoff will be approximately:
+	// Attempt 1: immediate
+	// Attempt 2: ~5s (5s * 3^0 ± 20%)
+	// Attempt 3: ~15s (5s * 3^1 ± 20%)
+	// Attempt 4: ~45s (5s * 3^2 ± 20%)
+	// Attempt 5: ~135s (5s * 3^3 ± 20%)
+	// Attempt 6: ~300s (capped at MaxBackoff)
+	ctx := context.Background()
+	resp, err := client.Generate(ctx, req)
+	if err != nil {
+		fmt.Printf("Error: %s\n", err.Message)
 		return
 	}
 
