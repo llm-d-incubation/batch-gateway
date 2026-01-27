@@ -20,8 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
-	"math/rand"
 	"net/http"
 	"time"
 
@@ -32,19 +30,7 @@ import (
 // HTTPInferenceClient implements InferenceClient interface for HTTP-based inference gateways
 // Supports both llm-d (OpenAI-compatible) and GAIE endpoints
 type HTTPInferenceClient struct {
-	client       *resty.Client
-	baseURL      string
-	apiKey       string        // optional API key for authentication
-	retryConfig  RetryConfig   // retry configuration
-}
-
-// RetryConfig holds retry configuration with exponential backoff
-type RetryConfig struct {
-	MaxRetries     int           // Maximum number of retry attempts (default: 3)
-	InitialBackoff time.Duration // Initial backoff duration (default: 1 second)
-	MaxBackoff     time.Duration // Maximum backoff duration (default: 60 seconds)
-	BackoffFactor  float64       // Backoff multiplier (default: 2.0)
-	JitterFraction float64       // Jitter as fraction of backoff (default: 0.1 = 10%)
+	client *resty.Client
 }
 
 // HTTPInferenceClientConfig holds configuration for the HTTP client
@@ -56,11 +42,10 @@ type HTTPInferenceClientConfig struct {
 	APIKey          string        // Optional API key for authentication
 
 	// Retry configuration (optional, set MaxRetries > 0 to enable)
-	MaxRetries     int           // Maximum number of retry attempts (default: 3)
-	InitialBackoff time.Duration // Initial backoff duration (default: 1 second)
-	MaxBackoff     time.Duration // Maximum backoff duration (default: 60 seconds)
-	BackoffFactor  float64       // Backoff multiplier (default: 2.0)
-	JitterFraction float64       // Jitter as fraction of backoff (default: 0.1 = 10%)
+	// Uses resty's built-in exponential backoff with jitter
+	MaxRetries     int           // Maximum number of retry attempts (default: 0 = disabled)
+	InitialBackoff time.Duration // Initial/minimum retry wait time (default: 1 second)
+	MaxBackoff     time.Duration // Maximum retry wait time (default: 60 seconds)
 }
 
 // NewHTTPInferenceClient creates a new HTTP-based inference client
@@ -77,26 +62,12 @@ func NewHTTPInferenceClient(config HTTPInferenceClientConfig) *HTTPInferenceClie
 	}
 
 	// Set defaults for retry configuration
-	retryConfig := RetryConfig{
-		MaxRetries:     config.MaxRetries,
-		InitialBackoff: config.InitialBackoff,
-		MaxBackoff:     config.MaxBackoff,
-		BackoffFactor:  config.BackoffFactor,
-		JitterFraction: config.JitterFraction,
-	}
-
-	if retryConfig.MaxRetries > 0 {
-		if retryConfig.InitialBackoff == 0 {
-			retryConfig.InitialBackoff = 1 * time.Second
+	if config.MaxRetries > 0 {
+		if config.InitialBackoff == 0 {
+			config.InitialBackoff = 1 * time.Second
 		}
-		if retryConfig.MaxBackoff == 0 {
-			retryConfig.MaxBackoff = 60 * time.Second
-		}
-		if retryConfig.BackoffFactor == 0 {
-			retryConfig.BackoffFactor = 2.0
-		}
-		if retryConfig.JitterFraction == 0 {
-			retryConfig.JitterFraction = 0.1
+		if config.MaxBackoff == 0 {
+			config.MaxBackoff = 60 * time.Second
 		}
 	}
 
@@ -105,6 +76,11 @@ func NewHTTPInferenceClient(config HTTPInferenceClientConfig) *HTTPInferenceClie
 		SetBaseURL(config.BaseURL).
 		SetTimeout(config.Timeout).
 		SetHeader("Content-Type", "application/json")
+
+	// Set auth token if provided (adds "Authorization: Bearer <token>" to all requests)
+	if config.APIKey != "" {
+		client.SetAuthToken(config.APIKey)
+	}
 
 	// Configure transport for connection pooling
 	transport := &http.Transport{
@@ -115,10 +91,13 @@ func NewHTTPInferenceClient(config HTTPInferenceClientConfig) *HTTPInferenceClie
 	client.SetTransport(transport)
 
 	// Configure retry only if enabled
-	if retryConfig.MaxRetries > 0 {
-		client.SetRetryCount(retryConfig.MaxRetries)
+	if config.MaxRetries > 0 {
+		client.SetRetryCount(config.MaxRetries).
+			SetRetryWaitTime(config.InitialBackoff).    // Min wait time between retries
+			SetRetryMaxWaitTime(config.MaxBackoff)      // Max wait time between retries
+		// Resty automatically applies exponential backoff with jitter
 
-		// Custom retry condition: retry on server errors and rate limits
+		// Retry condition: retry on server errors, rate limits, and network errors
 		client.AddRetryCondition(func(r *resty.Response, err error) bool {
 			if err != nil {
 				return true // Retry on network errors
@@ -128,38 +107,19 @@ func NewHTTPInferenceClient(config HTTPInferenceClientConfig) *HTTPInferenceClie
 			// Retry on 429 (rate limit) and 5xx (server errors)
 			return statusCode == http.StatusTooManyRequests || statusCode >= 500
 		})
+
+		// Add retry hook for logging
+		client.AddRetryHook(func(resp *resty.Response, err error) {
+			if reqID := resp.Request.Header.Get("X-Request-ID"); reqID != "" {
+				klog.V(3).Infof("Retrying request_id=%s (attempt %d/%d)",
+					reqID, resp.Request.Attempt, config.MaxRetries)
+			}
+		})
 	}
 
-	httpClient := &HTTPInferenceClient{
-		client:      client,
-		baseURL:     config.BaseURL,
-		apiKey:      config.APIKey,
-		retryConfig: retryConfig,
+	return &HTTPInferenceClient{
+		client: client,
 	}
-
-	// Set custom backoff strategy if retry is enabled
-	if retryConfig.MaxRetries > 0 {
-		client.SetRetryAfter(httpClient.customRetryAfter)
-	}
-
-	return httpClient
-}
-
-// customRetryAfter implements custom exponential backoff with jitter for resty
-func (c *HTTPInferenceClient) customRetryAfter(client *resty.Client, resp *resty.Response) (time.Duration, error) {
-	// Extract attempt number from resty's internal state
-	// Resty counts attempts starting from 1, adjust to 0-based for calculateBackoff
-	attempt := resp.Request.Attempt - 1
-
-	backoff := c.calculateBackoff(attempt)
-
-	// Log retry with backoff duration
-	if reqID := resp.Request.Header.Get("X-Request-ID"); reqID != "" {
-		klog.V(3).Infof("Retrying request_id=%s after %v (attempt %d/%d)",
-			reqID, backoff, resp.Request.Attempt, c.retryConfig.MaxRetries)
-	}
-
-	return backoff, nil
 }
 
 // Generate makes an inference request to the HTTP gateway with automatic retry logic
@@ -177,10 +137,7 @@ func (c *HTTPInferenceClient) Generate(ctx context.Context, req *InferenceReques
 	// Create resty request with context
 	restyReq := c.client.R().SetContext(ctx)
 
-	// Set headers
-	if c.apiKey != "" {
-		restyReq.SetHeader("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
-	}
+	// Set request ID header if provided
 	if req.RequestID != "" {
 		restyReq.SetHeader("X-Request-ID", req.RequestID)
 	}
@@ -189,7 +146,7 @@ func (c *HTTPInferenceClient) Generate(ctx context.Context, req *InferenceReques
 	restyReq.SetBody(req.Params)
 
 	klog.V(4).Infof("Sending inference request to %s with request_id=%s, model=%s",
-		c.baseURL+endpoint, req.RequestID, req.Model)
+		endpoint, req.RequestID, req.Model)
 
 	// Execute request (resty handles retries automatically)
 	resp, err := restyReq.Post(endpoint)
@@ -320,28 +277,4 @@ func (c *HTTPInferenceClient) mapStatusCodeToCategory(statusCode int) ErrorCateg
 		}
 		return ErrCategoryUnknown
 	}
-}
-
-// calculateBackoff calculates the backoff duration with exponential backoff and jitter
-// Formula: backoff = min(initial * factor^attempt, maxBackoff) * (1 ± jitter)
-func (c *HTTPInferenceClient) calculateBackoff(attempt int) time.Duration {
-	// Calculate exponential backoff: initial * factor^attempt
-	backoff := float64(c.retryConfig.InitialBackoff) * math.Pow(c.retryConfig.BackoffFactor, float64(attempt))
-
-	// Cap at max backoff
-	if backoff > float64(c.retryConfig.MaxBackoff) {
-		backoff = float64(c.retryConfig.MaxBackoff)
-	}
-
-	// Add jitter: randomize by ±jitterFraction
-	// For example, with jitterFraction=0.1, the backoff will be randomized by ±10%
-	jitter := backoff * c.retryConfig.JitterFraction * (rand.Float64()*2 - 1)
-	backoff += jitter
-
-	// Ensure backoff is positive
-	if backoff < 0 {
-		backoff = float64(c.retryConfig.InitialBackoff)
-	}
-
-	return time.Duration(backoff)
 }
