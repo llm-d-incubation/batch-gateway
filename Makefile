@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-integration-up test-integration-down test-integration-logs test-all
 
 SHELL := /usr/bin/env bash
 
@@ -196,3 +196,33 @@ deps-get:
 deps-verify:
 	@echo "Verifying dependencies..."
 	$(GO) mod verify
+
+## test-integration-up: Start mock server for integration tests
+test-integration-up:
+	@echo "Starting mock server for integration tests..."
+	@docker compose -f docker-compose.test.yml up -d
+	@echo "Waiting for mock server to be ready..."
+	@timeout 30 sh -c 'until curl -s http://localhost:8100/health > /dev/null 2>&1; do sleep 1; done' || \
+		(echo "Mock server failed to start" && docker compose -f docker-compose.test.yml logs && exit 1)
+	@echo "✅ Mock server is ready at http://localhost:8100"
+
+## test-integration-down: Stop mock server
+test-integration-down:
+	@echo "Stopping mock server..."
+	@docker compose -f docker-compose.test.yml down
+
+## test-integration-logs: Show mock server logs
+test-integration-logs:
+	@docker compose -f docker-compose.test.yml logs -f
+
+## test-integration: Run integration tests with mock server
+test-integration: test-integration-up
+	@echo "Running integration tests..."
+	@$(GO) test -v -tags=integration ./internal/shared/batch/... -run TestHTTPInferenceClientIntegration || \
+		(echo "\n❌ Integration tests failed. Check logs with: make test-integration-logs" && \
+		 make test-integration-down && exit 1)
+	@echo "\n✅ Integration tests passed!"
+	@make test-integration-down
+
+## test-all: Run all tests (unit + integration)
+test-all: test test-integration
