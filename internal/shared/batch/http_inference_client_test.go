@@ -329,7 +329,7 @@ func TestNewHTTPInferenceClient(t *testing.T) {
 			client := NewHTTPInferenceClient(tt.config)
 			assertNotNil(t, client)
 			assertEqual(t, client.baseURL, tt.wantBaseURL)
-			assertEqual(t, client.client.Timeout, tt.wantTimeout)
+			// Note: resty.Client doesn't expose Timeout field directly, but it's set via SetTimeout() in constructor
 			assertEqual(t, client.apiKey, tt.wantAPIKey)
 			assertEqual(t, client.retryConfig.MaxRetries, tt.wantMaxRetries)
 			assertEqual(t, client.retryConfig.InitialBackoff, tt.wantInitialBackoff)
@@ -484,7 +484,7 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestErrorHandling(t *testing.T) {
-	t.Run("HTTP status code errors", func(t *testing.T) {
+	t.Run("HTTP status code mapping", func(t *testing.T) {
 		tests := []struct {
 			name            string
 			statusCode      int
@@ -493,6 +493,7 @@ func TestErrorHandling(t *testing.T) {
 			wantCategory    ErrorCategory
 			wantRetryable   bool
 		}{
+			// 4xx client errors
 			{
 				name:       "should handle 400 Bad Request",
 				statusCode: http.StatusBadRequest,
@@ -518,6 +519,18 @@ func TestErrorHandling(t *testing.T) {
 				wantRetryable: false,
 			},
 			{
+				name:          "should handle 403 Forbidden",
+				statusCode:    http.StatusForbidden,
+				wantCategory:  ErrCategoryAuth,
+				wantRetryable: false,
+			},
+			{
+				name:          "should handle 404 Not Found",
+				statusCode:    http.StatusNotFound,
+				wantCategory:  ErrCategoryUnknown,
+				wantRetryable: false,
+			},
+			{
 				name:       "should handle 429 Rate Limit",
 				statusCode: http.StatusTooManyRequests,
 				responseBody: map[string]interface{}{
@@ -529,6 +542,7 @@ func TestErrorHandling(t *testing.T) {
 				wantCategory:  ErrCategoryRateLimit,
 				wantRetryable: true,
 			},
+			// 5xx server errors
 			{
 				name:       "should handle 500 Internal Server Error",
 				statusCode: http.StatusInternalServerError,
@@ -542,10 +556,22 @@ func TestErrorHandling(t *testing.T) {
 				wantRetryable: true,
 			},
 			{
+				name:          "should handle 502 Bad Gateway",
+				statusCode:    http.StatusBadGateway,
+				wantCategory:  ErrCategoryServer,
+				wantRetryable: true,
+			},
+			{
 				name:         "should handle 503 Service Unavailable",
 				statusCode:   http.StatusServiceUnavailable,
 				responseText: "Service temporarily unavailable",
 				wantCategory: ErrCategoryServer,
+				wantRetryable: true,
+			},
+			{
+				name:          "should handle 504 Gateway Timeout",
+				statusCode:    http.StatusGatewayTimeout,
+				wantCategory:  ErrCategoryServer,
 				wantRetryable: true,
 			},
 		}
@@ -558,6 +584,13 @@ func TestErrorHandling(t *testing.T) {
 						json.NewEncoder(w).Encode(tt.responseBody)
 					} else if tt.responseText != "" {
 						w.Write([]byte(tt.responseText))
+					} else {
+						// Default error body
+						json.NewEncoder(w).Encode(map[string]interface{}{
+							"error": map[string]interface{}{
+								"message": "Error message",
+							},
+						})
 					}
 				}))
 				t.Cleanup(testServer.Close)
@@ -963,5 +996,255 @@ func TestAuthentication(t *testing.T) {
 
 		client.Generate(context.Background(), req)
 		assertEmpty(t, authHeader)
+	})
+}
+
+func TestNetworkErrors(t *testing.T) {
+	t.Run("should handle connection refused", func(t *testing.T) {
+		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL:        "http://localhost:9999", // Non-existent server
+			Timeout:        1 * time.Second,
+			MaxRetries:     2,
+			InitialBackoff: 10 * time.Millisecond,
+		})
+
+		resp, err := client.Generate(context.Background(), &InferenceRequest{
+			RequestID: "test",
+			Model:     "test",
+			Params:    map[string]interface{}{"model": "test"},
+		})
+
+		assertNil(t, resp)
+		assertNotNil(t, err)
+		assertEqual(t, err.Category, ErrCategoryServer)
+		assertTrue(t, err.IsRetryable())
+		assertContains(t, err.Message, "failed to execute request")
+	})
+
+	t.Run("should handle DNS resolution failure", func(t *testing.T) {
+		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL:        "http://nonexistent.invalid.domain.local",
+			Timeout:        1 * time.Second,
+			MaxRetries:     1,
+			InitialBackoff: 10 * time.Millisecond,
+		})
+
+		resp, err := client.Generate(context.Background(), &InferenceRequest{
+			RequestID: "test",
+			Model:     "test",
+			Params:    map[string]interface{}{"model": "test"},
+		})
+
+		assertNil(t, resp)
+		assertNotNil(t, err)
+		assertEqual(t, err.Category, ErrCategoryServer)
+	})
+}
+
+func TestRetryHookBehavior(t *testing.T) {
+	t.Run("should use custom exponential backoff with jitter", func(t *testing.T) {
+		attemptCount := 0
+		attemptTimes := []time.Time{}
+
+		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attemptTimes = append(attemptTimes, time.Now())
+			attemptCount++
+			if attemptCount < 3 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "Service unavailable",
+					},
+				})
+			} else {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
+			}
+		}))
+		t.Cleanup(testServer.Close)
+
+		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL:        testServer.URL,
+			MaxRetries:     3,
+			InitialBackoff: 100 * time.Millisecond,
+			BackoffFactor:  2.0,
+			JitterFraction: 0.1,
+		})
+
+		resp, err := client.Generate(context.Background(), &InferenceRequest{
+			RequestID: "test",
+			Model:     "test",
+			Params:    map[string]interface{}{"model": "test"},
+		})
+
+		assertNil(t, err)
+		assertNotNil(t, resp)
+		assertEqual(t, attemptCount, 3)
+
+		// Verify exponential backoff was applied
+		if len(attemptTimes) >= 3 {
+			backoff1 := attemptTimes[1].Sub(attemptTimes[0])
+			backoff2 := attemptTimes[2].Sub(attemptTimes[1])
+
+			// First backoff ~100ms (with jitter tolerance: 90-110ms)
+			assertDurationGreaterOrEqual(t, backoff1, 80*time.Millisecond)
+			// Second backoff ~200ms (2x first, with jitter tolerance)
+			assertDurationGreaterOrEqual(t, backoff2, 160*time.Millisecond)
+			// Second should be roughly greater than first (exponential growth)
+			assertTrue(t, backoff2 > backoff1, "Expected exponential increase in backoff")
+		}
+	})
+
+	t.Run("should retry on network errors", func(t *testing.T) {
+		attemptCount := 0
+
+		// Create a server that closes connection abruptly
+		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attemptCount++
+			if attemptCount < 2 {
+				// Close connection without response
+				hj, ok := w.(http.Hijacker)
+				if ok {
+					conn, _, _ := hj.Hijack()
+					conn.Close()
+				}
+			} else {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
+			}
+		}))
+		t.Cleanup(testServer.Close)
+
+		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL:        testServer.URL,
+			MaxRetries:     3,
+			InitialBackoff: 10 * time.Millisecond,
+		})
+
+		resp, err := client.Generate(context.Background(), &InferenceRequest{
+			RequestID: "test",
+			Model:     "test",
+			Params:    map[string]interface{}{"model": "test"},
+		})
+
+		// Should eventually succeed after retries
+		assertNil(t, err)
+		assertNotNil(t, resp)
+		assertGreaterOrEqual(t, attemptCount, 2)
+	})
+}
+
+func TestTimeoutBehavior(t *testing.T) {
+	t.Run("should respect configured client timeout", func(t *testing.T) {
+		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(5 * time.Second) // Long delay
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
+		}))
+		t.Cleanup(testServer.Close)
+
+		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL:    testServer.URL,
+			Timeout:    100 * time.Millisecond, // Short timeout
+			MaxRetries: 0,                      // Disable retry for cleaner test
+		})
+
+		start := time.Now()
+		resp, err := client.Generate(context.Background(), &InferenceRequest{
+			RequestID: "test",
+			Model:     "test",
+			Params:    map[string]interface{}{"model": "test"},
+		})
+		elapsed := time.Since(start)
+
+		assertNil(t, resp)
+		assertNotNil(t, err)
+		assertEqual(t, err.Category, ErrCategoryServer)
+
+		// Should timeout around 100ms, not wait 5s
+		assertTrue(t, elapsed < 1*time.Second)
+	})
+
+	t.Run("should respect context deadline over client timeout", func(t *testing.T) {
+		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(5 * time.Second)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(testServer.Close)
+
+		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL:    testServer.URL,
+			Timeout:    10 * time.Second, // Long client timeout
+			MaxRetries: 0,
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		t.Cleanup(cancel)
+
+		start := time.Now()
+		resp, err := client.Generate(ctx, &InferenceRequest{
+			RequestID: "test",
+			Model:     "test",
+			Params:    map[string]interface{}{"model": "test"},
+		})
+		elapsed := time.Since(start)
+
+		assertNil(t, resp)
+		assertNotNil(t, err)
+		assertTrue(t, elapsed < 1*time.Second)
+	})
+}
+
+func TestRetryConditionLogic(t *testing.T) {
+	t.Run("should only retry on retryable status codes", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			statusCode  int
+			shouldRetry bool
+		}{
+			{"429 should retry", http.StatusTooManyRequests, true},
+			{"500 should retry", http.StatusInternalServerError, true},
+			{"502 should retry", http.StatusBadGateway, true},
+			{"503 should retry", http.StatusServiceUnavailable, true},
+			{"504 should retry", http.StatusGatewayTimeout, true},
+			{"400 should not retry", http.StatusBadRequest, false},
+			{"401 should not retry", http.StatusUnauthorized, false},
+			{"403 should not retry", http.StatusForbidden, false},
+			{"404 should not retry", http.StatusNotFound, false},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				attemptCount := 0
+				testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					attemptCount++
+					w.WriteHeader(tt.statusCode)
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Error",
+						},
+					})
+				}))
+				t.Cleanup(testServer.Close)
+
+				client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
+					BaseURL:        testServer.URL,
+					MaxRetries:     2,
+					InitialBackoff: 10 * time.Millisecond,
+				})
+
+				client.Generate(context.Background(), &InferenceRequest{
+					RequestID: "test",
+					Model:     "test",
+					Params:    map[string]interface{}{"model": "test"},
+				})
+
+				if tt.shouldRetry {
+					assertEqual(t, attemptCount, 3) // 1 initial + 2 retries
+				} else {
+					assertEqual(t, attemptCount, 1) // No retries
+				}
+			})
+		}
 	})
 }

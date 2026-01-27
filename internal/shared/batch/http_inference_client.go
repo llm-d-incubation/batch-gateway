@@ -17,23 +17,22 @@ limitations under the License.
 package batch
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
 	"net/http"
 	"time"
 
+	"github.com/go-resty/resty/v2"
 	"k8s.io/klog/v2"
 )
 
 // HTTPInferenceClient implements InferenceClient interface for HTTP-based inference gateways
 // Supports both llm-d (OpenAI-compatible) and GAIE endpoints
 type HTTPInferenceClient struct {
-	client       *http.Client
+	client       *resty.Client
 	baseURL      string
 	apiKey       string        // optional API key for authentication
 	retryConfig  RetryConfig   // retry configuration
@@ -86,7 +85,6 @@ func NewHTTPInferenceClient(config HTTPInferenceClientConfig) *HTTPInferenceClie
 		JitterFraction: config.JitterFraction,
 	}
 
-	// Apply retry defaults if MaxRetries is set but other fields are zero
 	if retryConfig.MaxRetries > 0 {
 		if retryConfig.InitialBackoff == 0 {
 			retryConfig.InitialBackoff = 1 * time.Second
@@ -102,22 +100,66 @@ func NewHTTPInferenceClient(config HTTPInferenceClientConfig) *HTTPInferenceClie
 		}
 	}
 
-	// Create HTTP client with custom transport for connection pooling
+	// Create resty client
+	client := resty.New().
+		SetBaseURL(config.BaseURL).
+		SetTimeout(config.Timeout).
+		SetHeader("Content-Type", "application/json")
+
+	// Configure transport for connection pooling
 	transport := &http.Transport{
 		MaxIdleConns:        config.MaxIdleConns,
 		MaxIdleConnsPerHost: config.MaxIdleConns,
 		IdleConnTimeout:     config.IdleConnTimeout,
 	}
+	client.SetTransport(transport)
 
-	return &HTTPInferenceClient{
-		client: &http.Client{
-			Timeout:   config.Timeout,
-			Transport: transport,
-		},
+	// Configure retry only if enabled
+	if retryConfig.MaxRetries > 0 {
+		client.SetRetryCount(retryConfig.MaxRetries)
+
+		// Custom retry condition: retry on server errors and rate limits
+		client.AddRetryCondition(func(r *resty.Response, err error) bool {
+			if err != nil {
+				return true // Retry on network errors
+			}
+
+			statusCode := r.StatusCode()
+			// Retry on 429 (rate limit) and 5xx (server errors)
+			return statusCode == http.StatusTooManyRequests || statusCode >= 500
+		})
+	}
+
+	httpClient := &HTTPInferenceClient{
+		client:      client,
 		baseURL:     config.BaseURL,
 		apiKey:      config.APIKey,
 		retryConfig: retryConfig,
 	}
+
+	// Set custom backoff strategy if retry is enabled
+	if retryConfig.MaxRetries > 0 {
+		client.SetRetryAfter(httpClient.customRetryAfter)
+	}
+
+	return httpClient
+}
+
+// customRetryAfter implements custom exponential backoff with jitter for resty
+func (c *HTTPInferenceClient) customRetryAfter(client *resty.Client, resp *resty.Response) (time.Duration, error) {
+	// Extract attempt number from resty's internal state
+	// Resty counts attempts starting from 1, adjust to 0-based for calculateBackoff
+	attempt := resp.Request.Attempt - 1
+
+	backoff := c.calculateBackoff(attempt)
+
+	// Log retry with backoff duration
+	if reqID := resp.Request.Header.Get("X-Request-ID"); reqID != "" {
+		klog.V(3).Infof("Retrying request_id=%s after %v (attempt %d/%d)",
+			reqID, backoff, resp.Request.Attempt, c.retryConfig.MaxRetries)
+	}
+
+	return backoff, nil
 }
 
 // Generate makes an inference request to the HTTP gateway with automatic retry logic
@@ -129,162 +171,91 @@ func (c *HTTPInferenceClient) Generate(ctx context.Context, req *InferenceReques
 		}
 	}
 
-	// If retry is disabled, make a single request
-	if c.retryConfig.MaxRetries == 0 {
-		return c.generateOnce(ctx, req)
-	}
-
-	// Retry loop with exponential backoff
-	var lastErr *InferenceError
-	for attempt := 0; attempt <= c.retryConfig.MaxRetries; attempt++ {
-		// Make the request
-		resp, err := c.generateOnce(ctx, req)
-		if err == nil {
-			// Success
-			if attempt > 0 {
-				klog.V(3).Infof("Request succeeded after %d retries for request_id=%s", attempt, req.RequestID)
-			}
-			return resp, nil
-		}
-
-		lastErr = err
-
-		// Check if we should retry
-		if !err.IsRetryable() {
-			klog.V(3).Infof("Non-retryable error for request_id=%s: %s", req.RequestID, err.Message)
-			return nil, err
-		}
-
-		// Check if we've exhausted retries
-		if attempt >= c.retryConfig.MaxRetries {
-			klog.V(3).Infof("Max retries (%d) exhausted for request_id=%s", c.retryConfig.MaxRetries, req.RequestID)
-			break
-		}
-
-		// Check if context is cancelled
-		if ctx.Err() != nil {
-			klog.V(3).Infof("Context cancelled, stopping retries for request_id=%s", req.RequestID)
-			return nil, err
-		}
-
-		// Calculate backoff duration with exponential backoff and jitter
-		backoff := c.calculateBackoff(attempt)
-		klog.V(3).Infof("Retrying request_id=%s after %v (attempt %d/%d, error: %s)",
-			req.RequestID, backoff, attempt+1, c.retryConfig.MaxRetries, err.Category)
-
-		// Wait for backoff duration or until context is cancelled
-		select {
-		case <-time.After(backoff):
-			// Continue to next retry
-		case <-ctx.Done():
-			klog.V(3).Infof("Context cancelled during backoff for request_id=%s", req.RequestID)
-			return nil, &InferenceError{
-				Category: ErrCategoryUnknown,
-				Message:  "request cancelled during retry",
-				RawError: ctx.Err(),
-			}
-		}
-	}
-
-	// All retries exhausted
-	return nil, lastErr
-}
-
-// generateOnce makes a single inference request without retry logic
-func (c *HTTPInferenceClient) generateOnce(ctx context.Context, req *InferenceRequest) (*InferenceResponse, *InferenceError) {
-
 	// Determine endpoint based on request parameters
 	endpoint := c.determineEndpoint(req.Params)
 
-	// Marshal request parameters to JSON
-	requestBody, err := json.Marshal(req.Params)
-	if err != nil {
-		return nil, &InferenceError{
-			Category: ErrCategoryInvalidReq,
-			Message:  fmt.Sprintf("failed to marshal request: %v", err),
-			RawError: err,
-		}
-	}
-
-	// Create HTTP request
-	url := c.baseURL + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
-	if err != nil {
-		return nil, &InferenceError{
-			Category: ErrCategoryUnknown,
-			Message:  fmt.Sprintf("failed to create HTTP request: %v", err),
-			RawError: err,
-		}
-	}
+	// Create resty request with context
+	restyReq := c.client.R().SetContext(ctx)
 
 	// Set headers
-	httpReq.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+		restyReq.SetHeader("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
 	}
 	if req.RequestID != "" {
-		httpReq.Header.Set("X-Request-ID", req.RequestID)
+		restyReq.SetHeader("X-Request-ID", req.RequestID)
 	}
 
-	// Log the request
-	klog.V(4).Infof("Sending inference request to %s with request_id=%s, model=%s", url, req.RequestID, req.Model)
+	// Set request body (resty handles JSON marshaling)
+	restyReq.SetBody(req.Params)
 
-	// Execute request
-	httpResp, err := c.client.Do(httpReq)
+	klog.V(4).Infof("Sending inference request to %s with request_id=%s, model=%s",
+		c.baseURL+endpoint, req.RequestID, req.Model)
+
+	// Execute request (resty handles retries automatically)
+	resp, err := restyReq.Post(endpoint)
+
+	// Handle request-level errors (network, timeout, etc.)
 	if err != nil {
-		// Check if context was cancelled or timed out
-		if ctx.Err() == context.Canceled {
-			return nil, &InferenceError{
-				Category: ErrCategoryUnknown,
-				Message:  "request cancelled",
-				RawError: err,
-			}
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, &InferenceError{
-				Category: ErrCategoryServer,
-				Message:  "request timeout",
-				RawError: err,
-			}
-		}
-		return nil, &InferenceError{
-			Category: ErrCategoryServer,
-			Message:  fmt.Sprintf("failed to execute request: %v", err),
-			RawError: err,
-		}
-	}
-	defer httpResp.Body.Close()
-
-	// Read response body
-	responseBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, &InferenceError{
-			Category: ErrCategoryServer,
-			Message:  fmt.Sprintf("failed to read response body: %v", err),
-			RawError: err,
-		}
+		return c.handleRequestError(ctx, err, req)
 	}
 
-	// Check status code
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, c.handleErrorResponse(httpResp.StatusCode, responseBody)
+	// Check for non-retryable errors after all retries exhausted
+	if resp.StatusCode() != http.StatusOK {
+		return nil, c.handleErrorResponse(resp.StatusCode(), resp.Body())
 	}
 
-	// Parse response to extract RawData
+	// Log success with retry info
+	if resp.Request.Attempt > 1 {
+		klog.V(3).Infof("Request succeeded after %d retries for request_id=%s",
+			resp.Request.Attempt-1, req.RequestID)
+	}
+
+	// Parse response body
 	var rawData interface{}
-	if err := json.Unmarshal(responseBody, &rawData); err != nil {
-		klog.Warningf("Failed to unmarshal response as JSON: %v", err)
-		// Continue anyway, just set rawData to nil
-		rawData = nil
+	if len(resp.Body()) > 0 {
+		if jsonErr := json.Unmarshal(resp.Body(), &rawData); jsonErr != nil {
+			klog.Warningf("Failed to unmarshal response as JSON for request_id=%s: %v",
+				req.RequestID, jsonErr)
+			rawData = nil
+		}
 	}
 
-	klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d", req.RequestID, httpResp.StatusCode, len(responseBody))
+	klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d",
+		req.RequestID, resp.StatusCode(), len(resp.Body()))
 
 	return &InferenceResponse{
 		RequestID: req.RequestID,
-		Response:  responseBody,
+		Response:  resp.Body(),
 		RawData:   rawData,
 	}, nil
+}
+
+// handleRequestError processes request-level errors (network, timeout, cancellation)
+func (c *HTTPInferenceClient) handleRequestError(ctx context.Context, err error, req *InferenceRequest) (*InferenceResponse, *InferenceError) {
+	// Check if context was cancelled or timed out
+	if ctx.Err() == context.Canceled {
+		klog.V(3).Infof("Request cancelled for request_id=%s", req.RequestID)
+		return nil, &InferenceError{
+			Category: ErrCategoryUnknown,
+			Message:  "request cancelled",
+			RawError: err,
+		}
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		klog.V(3).Infof("Request timeout for request_id=%s", req.RequestID)
+		return nil, &InferenceError{
+			Category: ErrCategoryServer,
+			Message:  "request timeout",
+			RawError: err,
+		}
+	}
+
+	klog.V(3).Infof("Request failed with network error for request_id=%s: %v", req.RequestID, err)
+	return nil, &InferenceError{
+		Category: ErrCategoryServer,
+		Message:  fmt.Sprintf("failed to execute request: %v", err),
+		RawError: err,
+	}
 }
 
 // determineEndpoint determines which endpoint to use based on request parameters
