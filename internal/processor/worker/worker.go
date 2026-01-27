@@ -233,11 +233,11 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	logger := klog.FromContext(ctx)
 
 	// status update - inprogress (TTL 24h)
-	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.InProgress.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.StatusInProgress.String()))
 	logger.V(logging.DEBUG).Info("Worker started job", "workerID", workerId, "jobID", job.ID)
 
 	// TODO:: file validating
-	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.Validating.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.StatusValidating.String()))
 
 	// TODO:: download file, streaming
 	// check if the method in the request is allowed
@@ -318,14 +318,14 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	wg.Wait()
 
 	// final status decision
-	finalStatus := batch.Completed
+	finalStatus := batch.StatusCompleted
 	if !metadata.Validate() {
 		logger.V(logging.WARNING).Info("Job finished with partial failures", "jobID", job.ID, "metadata", metadata)
-		finalStatus = batch.Failed
+		finalStatus = batch.StatusFailed
 	}
 
 	// status update
-	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.Finalizing.String()))
+	p.clients.status.Set(ctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing.String()))
 
 	// db update (job.Status should be updated before this line)
 	if err := p.clients.database.Update(ctx, job); err != nil {

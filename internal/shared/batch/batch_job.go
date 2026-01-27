@@ -57,19 +57,20 @@ func (rs RequestStatus) String() string {
 type BatchStatus int
 
 const (
-	Pending BatchStatus = iota
-	Validating
-	InProgress
-	Finalizing
-	Completed
-	Failed
-	Expired
-	Cancelling
-	Cancelled
+	StatusPending BatchStatus = iota
+	StatusValidating
+	StatusInProgress
+	StatusFinalizing
+	StatusCompleted
+	StatusFailed
+	StatusExpired
+	StatusCancelling
+	StatusCancelled
 )
 
 func (bs BatchStatus) String() string {
 	return [...]string{
+		"pending",
 		"validating",
 		"in_progress",
 		"finalizing",

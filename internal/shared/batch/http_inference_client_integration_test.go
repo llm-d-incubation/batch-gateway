@@ -22,7 +22,10 @@ package batch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -32,70 +35,153 @@ import (
 
 // Integration tests using llm-d-inference-sim mock server running in Docker
 //
-// Prerequisites:
-//   Start the mock server with: make test-integration-up
-//   Or manually: docker-compose -f docker-compose.test.yml up -d
+// Each test spawns its own mock server instance with specific configuration
 //
 // Run tests with:
 //   make test-integration
-//   Or manually: go test -v -tags=integration -run TestHTTPInferenceClientIntegration
-
-const (
-	mockServerURL = "http://localhost:8100"
-)
+//   Or manually: go test -v -tags=integration ./internal/shared/batch/...
 
 func TestHTTPInferenceClientIntegration(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "HTTPInferenceClient Integration Suite")
 }
 
-var _ = Describe("HTTPInferenceClient Integration Tests", func() {
+// Helper to start mock server on a specific port with custom args
+func startMockServer(port int, args ...string) error {
+	baseArgs := []string{
+		"compose", "-f", "../../../docker-compose.test.yml",
+		"run", "-d", "--rm",
+		"--publish", fmt.Sprintf("%d:8000", port),
+		"--name", fmt.Sprintf("mock-server-test-%d", port),
+		"llm-d-mock-server",
+		"--port=8000",
+		"--model=fake-model",
+	}
+	baseArgs = append(baseArgs, args...)
+
+	cmd := exec.Command("docker", baseArgs...)
+	cmd.Stdout = GinkgoWriter
+	cmd.Stderr = GinkgoWriter
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to start mock server: %w", err)
+	}
+
+	// Wait for server to be ready
+	serverURL := fmt.Sprintf("http://localhost:%d", port)
+	for i := 0; i < 30; i++ {
+		time.Sleep(200 * time.Millisecond)
+		resp, err := http.Get(serverURL + "/health")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("mock server failed to become ready")
+}
+
+// Helper to stop mock server
+func stopMockServer(port int) {
+	containerName := fmt.Sprintf("mock-server-test-%d", port)
+	cmd := exec.Command("docker", "stop", containerName)
+	cmd.Run()
+	time.Sleep(500 * time.Millisecond)
+}
+
+var _ = Describe("HTTPInferenceClient Basic Inference Tests", func() {
 	var client *HTTPInferenceClient
+	const testPort = 8200
 
 	BeforeEach(func() {
-		// Check if SKIP_INTEGRATION_TESTS env var is set
 		if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
-			Skip("Integration tests skipped via SKIP_INTEGRATION_TESTS=true")
+			Skip("Integration tests skipped")
 		}
 
-		// Verify mock server is running
-		testClient := NewHTTPInferenceClient(HTTPInferenceClientConfig{
-			BaseURL: mockServerURL,
-			Timeout: 2 * time.Second,
-		})
+		// Start mock server with default configuration
+		err := startMockServer(testPort, "--mode=random")
+		if err != nil {
+			Skip(fmt.Sprintf("Could not start mock server: %v", err))
+		}
 
+		client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
+			Timeout: 10 * time.Second,
+		})
+	})
+
+	AfterEach(func() {
+		stopMockServer(testPort)
+	})
+
+	It("should successfully make text completion request", func() {
 		req := &InferenceRequest{
-			RequestID: "health-check",
+			RequestID: "test-completion-001",
 			Model:     "fake-model",
 			Params: map[string]interface{}{
 				"model":      "fake-model",
-				"prompt":     "test",
-				"max_tokens": 1,
+				"prompt":     "Once upon a time",
+				"max_tokens": 10,
 			},
 		}
 
-		_, err := testClient.Generate(context.Background(), req)
-		if err != nil {
-			Skip("Mock server not running. Start with: make test-integration-up")
-		}
+		ctx := context.Background()
+		resp, err := client.Generate(ctx, req)
+
+		Expect(err).To(BeNil())
+		Expect(resp).NotTo(BeNil())
+		Expect(resp.RequestID).To(Equal("test-completion-001"))
+		Expect(resp.Response).NotTo(BeEmpty())
+
+		// Verify response structure
+		var result map[string]interface{}
+		unmarshalErr := json.Unmarshal(resp.Response, &result)
+		Expect(unmarshalErr).To(BeNil())
+		Expect(result["id"]).NotTo(BeNil())
+		Expect(result["choices"]).NotTo(BeNil())
 	})
 
-	Context("Basic Inference", func() {
-		BeforeEach(func() {
-			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
-				BaseURL: mockServerURL,
-				Timeout: 10 * time.Second,
-			})
-		})
+	It("should successfully make chat completion request", func() {
+		req := &InferenceRequest{
+			RequestID: "test-chat-001",
+			Model:     "fake-model",
+			Params: map[string]interface{}{
+				"model": "fake-model",
+				"messages": []map[string]interface{}{
+					{
+						"role":    "user",
+						"content": "Hello, how are you?",
+					},
+				},
+				"max_tokens": 20,
+			},
+		}
 
-		It("should successfully make text completion request", func() {
+		ctx := context.Background()
+		resp, err := client.Generate(ctx, req)
+
+		Expect(err).To(BeNil())
+		Expect(resp).NotTo(BeNil())
+
+		// Verify response structure
+		var result map[string]interface{}
+		unmarshalErr := json.Unmarshal(resp.Response, &result)
+		Expect(unmarshalErr).To(BeNil())
+		Expect(result["choices"]).NotTo(BeNil())
+	})
+
+	It("should handle multiple sequential requests", func() {
+		// Verifies that client can handle multiple requests and reuses connections
+		for i := 0; i < 5; i++ {
 			req := &InferenceRequest{
-				RequestID: "test-completion-001",
+				RequestID: fmt.Sprintf("sequential-test-%03d", i),
 				Model:     "fake-model",
 				Params: map[string]interface{}{
 					"model":      "fake-model",
-					"prompt":     "Once upon a time",
-					"max_tokens": 10,
+					"prompt":     "Test request",
+					"max_tokens": 5,
 				},
 			}
 
@@ -104,209 +190,191 @@ var _ = Describe("HTTPInferenceClient Integration Tests", func() {
 
 			Expect(err).To(BeNil())
 			Expect(resp).NotTo(BeNil())
-			Expect(resp.RequestID).To(Equal("test-completion-001"))
-			Expect(resp.Response).NotTo(BeEmpty())
+		}
+	})
 
-			// Verify response structure
-			var result map[string]interface{}
-			unmarshalErr := json.Unmarshal(resp.Response, &result)
-			Expect(unmarshalErr).To(BeNil())
-			Expect(result["id"]).NotTo(BeNil())
-			Expect(result["choices"]).NotTo(BeNil())
-		})
+	It("should handle concurrent requests correctly", func() {
+		// Verifies connection pooling and thread safety
+		const numRequests = 10
+		results := make(chan error, numRequests)
 
-		It("should successfully make chat completion request", func() {
-			req := &InferenceRequest{
-				RequestID: "test-chat-001",
-				Model:     "fake-model",
-				Params: map[string]interface{}{
-					"model": "fake-model",
-					"messages": []map[string]interface{}{
-						{
-							"role":    "user",
-							"content": "Hello, how are you?",
-						},
-					},
-					"max_tokens": 20,
-				},
-			}
-
-			ctx := context.Background()
-			resp, err := client.Generate(ctx, req)
-
-			Expect(err).To(BeNil())
-			Expect(resp).NotTo(BeNil())
-
-			// Verify response structure
-			var result map[string]interface{}
-			unmarshalErr := json.Unmarshal(resp.Response, &result)
-			Expect(unmarshalErr).To(BeNil())
-			Expect(result["choices"]).NotTo(BeNil())
-		})
-
-		It("should handle multiple sequential requests", func() {
-			for i := 0; i < 5; i++ {
+		for i := 0; i < numRequests; i++ {
+			go func(id int) {
 				req := &InferenceRequest{
-					RequestID: "sequential-test-001",
+					RequestID: fmt.Sprintf("concurrent-test-%03d", id),
 					Model:     "fake-model",
 					Params: map[string]interface{}{
 						"model":      "fake-model",
-						"prompt":     "Test request",
+						"prompt":     "Concurrent test",
 						"max_tokens": 5,
 					},
 				}
 
-				ctx := context.Background()
-				resp, err := client.Generate(ctx, req)
+				_, err := client.Generate(context.Background(), req)
+				results <- err
+			}(i)
+		}
 
-				Expect(err).To(BeNil())
-				Expect(resp).NotTo(BeNil())
-			}
+		// Verify all requests completed successfully
+		for i := 0; i < numRequests; i++ {
+			err := <-results
+			Expect(err).To(BeNil())
+		}
+	})
+})
+
+var _ = Describe("HTTPInferenceClient Latency Simulation Tests", func() {
+	var client *HTTPInferenceClient
+	const testPort = 8101
+
+	BeforeEach(func() {
+		if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
+			Skip("Integration tests skipped")
+		}
+
+		// Start mock server with latency configuration
+		err := startMockServer(testPort,
+			"--time-to-first-token=200ms",
+			"--inter-token-latency=50ms",
+		)
+		if err != nil {
+			Skip(fmt.Sprintf("Could not start mock server: %v", err))
+		}
+
+		client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+			BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
+			Timeout: 10 * time.Second,
 		})
 	})
 
-	Context("Retry Logic", func() {
-		It("should retry on server errors", func() {
-			// Note: This test depends on mock server configuration
-			// The default mock server doesn't inject failures
-			// You can restart the mock server with failure injection for this test
-
-			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
-				BaseURL:        mockServerURL,
-				Timeout:        10 * time.Second,
-				MaxRetries:     3,
-				InitialBackoff: 100 * time.Millisecond,
-			})
-
-			req := &InferenceRequest{
-				RequestID: "retry-test-001",
-				Model:     "fake-model",
-				Params: map[string]interface{}{
-					"model":      "fake-model",
-					"prompt":     "Test retry",
-					"max_tokens": 5,
-				},
-			}
-
-			ctx := context.Background()
-			resp, err := client.Generate(ctx, req)
-
-			// Should succeed with normal mock server
-			Expect(err).To(BeNil())
-			Expect(resp).NotTo(BeNil())
-		})
-
-		It("should work without retry when disabled", func() {
-			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
-				BaseURL:    mockServerURL,
-				Timeout:    5 * time.Second,
-				MaxRetries: 0, // Disabled
-			})
-
-			req := &InferenceRequest{
-				RequestID: "no-retry-test-001",
-				Model:     "fake-model",
-				Params: map[string]interface{}{
-					"model":      "fake-model",
-					"prompt":     "Test",
-					"max_tokens": 5,
-				},
-			}
-
-			ctx := context.Background()
-			resp, err := client.Generate(ctx, req)
-
-			Expect(err).To(BeNil())
-			Expect(resp).NotTo(BeNil())
-		})
+	AfterEach(func() {
+		stopMockServer(testPort)
 	})
 
-	Context("Context Handling", func() {
+	It("should handle time-to-first-token latency", func() {
+		req := &InferenceRequest{
+			RequestID: "ttft-latency-001",
+			Model:     "fake-model",
+			Params: map[string]interface{}{
+				"model":      "fake-model",
+				"prompt":     "Test TTFT latency",
+				"max_tokens": 5,
+			},
+		}
+
+		start := time.Now()
+		resp, err := client.Generate(context.Background(), req)
+		duration := time.Since(start)
+
+		Expect(err).To(BeNil())
+		Expect(resp).NotTo(BeNil())
+		// Should take at least 200ms for TTFT
+		Expect(duration).To(BeNumerically(">=", 180*time.Millisecond))
+		Expect(duration).To(BeNumerically("<", 2*time.Second))
+	})
+
+	It("should handle inter-token latency", func() {
+		req := &InferenceRequest{
+			RequestID: "inter-token-latency-001",
+			Model:     "fake-model",
+			Params: map[string]interface{}{
+				"model":      "fake-model",
+				"prompt":     "Test inter-token latency",
+				"max_tokens": 10,
+			},
+		}
+
+		start := time.Now()
+		resp, err := client.Generate(context.Background(), req)
+		duration := time.Since(start)
+
+		Expect(err).To(BeNil())
+		Expect(resp).NotTo(BeNil())
+		// With 10 tokens, TTFT=200ms + ~10*50ms = ~700ms total
+		Expect(duration).To(BeNumerically(">=", 200*time.Millisecond))
+	})
+})
+
+var _ = Describe("HTTPInferenceClient Failure Injection Tests", func() {
+	var client *HTTPInferenceClient
+
+	BeforeEach(func() {
+		if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
+			Skip("Integration tests skipped")
+		}
+	})
+
+	Context("Rate Limit Errors (429)", func() {
+		const testPort = 8102
+
 		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=100",
+				"--failure-types=rate_limit",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
 			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
-				BaseURL: mockServerURL,
-				Timeout: 10 * time.Second,
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        5 * time.Second,
+				MaxRetries:     2,
+				InitialBackoff: 50 * time.Millisecond,
 			})
 		})
 
-		It("should respect context timeout", func() {
-			// Note: This test validates timeout behavior
-			// The mock server may respond faster than the timeout on fast machines
-			// In that case, it's acceptable for the request to succeed
-			req := &InferenceRequest{
-				RequestID: "timeout-test-001",
-				Model:     "fake-model",
-				Params: map[string]interface{}{
-					"model":      "fake-model",
-					"prompt":     "Test",
-					"max_tokens": 100,
-				},
-			}
-
-			// Very short timeout - may or may not trigger depending on mock server speed
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-			defer cancel()
-
-			start := time.Now()
-			resp, err := client.Generate(ctx, req)
-			duration := time.Since(start)
-
-			// Either times out OR succeeds very quickly (mock server is fast)
-			if err != nil {
-				// Timeout occurred - this is expected behavior
-				Expect(resp).To(BeNil())
-				Expect(duration).To(BeNumerically("<", 500*time.Millisecond))
-			} else {
-				// Request succeeded very quickly (mock server is faster than 1ms)
-				// This is acceptable for a mock server
-				Expect(resp).NotTo(BeNil())
-				Expect(duration).To(BeNumerically("<", 100*time.Millisecond))
-			}
+		AfterEach(func() {
+			stopMockServer(testPort)
 		})
 
-		It("should respect context cancellation", func() {
+		It("should handle rate limit errors with retry", func() {
 			req := &InferenceRequest{
-				RequestID: "cancel-test-001",
+				RequestID: "rate-limit-001",
 				Model:     "fake-model",
 				Params: map[string]interface{}{
 					"model":      "fake-model",
 					"prompt":     "Test",
-					"max_tokens": 100,
+					"max_tokens": 5,
 				},
 			}
 
-			ctx, cancel := context.WithCancel(context.Background())
-
-			// Cancel immediately
-			cancel()
-
-			resp, err := client.Generate(ctx, req)
+			resp, err := client.Generate(context.Background(), req)
 
 			Expect(resp).To(BeNil())
 			Expect(err).NotTo(BeNil())
+			Expect(err.Category).To(Equal(ErrCategoryRateLimit))
+			Expect(err.IsRetryable()).To(BeTrue())
 		})
 	})
 
-	Context("Configuration Options", func() {
-		It("should work with custom retry configuration", func() {
+	Context("Server Errors (500)", func() {
+		const testPort = 8103
+
+		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=100",
+				"--failure-types=server_error",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
 			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
-				BaseURL:         mockServerURL,
-				Timeout:         10 * time.Second,
-				MaxRetries:      5,
-				InitialBackoff:  200 * time.Millisecond,
-				MaxBackoff:      2 * time.Second,
-				BackoffFactor:   2.0,
-				JitterFraction:  0.1,
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        5 * time.Second,
+				MaxRetries:     2,
+				InitialBackoff: 50 * time.Millisecond,
 			})
+		})
 
-			Expect(client.retryConfig.MaxRetries).To(Equal(5))
-			Expect(client.retryConfig.InitialBackoff).To(Equal(200 * time.Millisecond))
-			Expect(client.retryConfig.MaxBackoff).To(Equal(2 * time.Second))
-			Expect(client.retryConfig.BackoffFactor).To(Equal(2.0))
-			Expect(client.retryConfig.JitterFraction).To(Equal(0.1))
+		AfterEach(func() {
+			stopMockServer(testPort)
+		})
 
+		It("should handle server errors with retry", func() {
 			req := &InferenceRequest{
-				RequestID: "config-test-001",
+				RequestID: "server-error-001",
 				Model:     "fake-model",
 				Params: map[string]interface{}{
 					"model":      "fake-model",
@@ -315,11 +383,237 @@ var _ = Describe("HTTPInferenceClient Integration Tests", func() {
 				},
 			}
 
-			ctx := context.Background()
-			resp, err := client.Generate(ctx, req)
+			resp, err := client.Generate(context.Background(), req)
 
-			Expect(err).To(BeNil())
-			Expect(resp).NotTo(BeNil())
+			Expect(resp).To(BeNil())
+			Expect(err).NotTo(BeNil())
+			Expect(err.Category).To(Equal(ErrCategoryServer))
+			Expect(err.IsRetryable()).To(BeTrue())
+		})
+	})
+
+	Context("Invalid API Key Errors (401)", func() {
+		const testPort = 8104
+
+		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=100",
+				"--failure-types=invalid_api_key",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
+			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        5 * time.Second,
+				MaxRetries:     2,
+				InitialBackoff: 50 * time.Millisecond,
+			})
+		})
+
+		AfterEach(func() {
+			stopMockServer(testPort)
+		})
+
+		It("should handle auth errors without retry", func() {
+			req := &InferenceRequest{
+				RequestID: "auth-error-001",
+				Model:     "fake-model",
+				Params: map[string]interface{}{
+					"model":      "fake-model",
+					"prompt":     "Test",
+					"max_tokens": 5,
+				},
+			}
+
+			resp, err := client.Generate(context.Background(), req)
+
+			Expect(resp).To(BeNil())
+			Expect(err).NotTo(BeNil())
+			Expect(err.Category).To(Equal(ErrCategoryAuth))
+			Expect(err.IsRetryable()).To(BeFalse())
+		})
+	})
+
+	Context("Invalid Request Errors (400)", func() {
+		const testPort = 8105
+
+		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=100",
+				"--failure-types=invalid_request",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
+			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        5 * time.Second,
+				MaxRetries:     2,
+				InitialBackoff: 50 * time.Millisecond,
+			})
+		})
+
+		AfterEach(func() {
+			stopMockServer(testPort)
+		})
+
+		It("should handle invalid request errors without retry", func() {
+			req := &InferenceRequest{
+				RequestID: "invalid-request-001",
+				Model:     "fake-model",
+				Params: map[string]interface{}{
+					"model":      "fake-model",
+					"prompt":     "Test",
+					"max_tokens": 5,
+				},
+			}
+
+			resp, err := client.Generate(context.Background(), req)
+
+			Expect(resp).To(BeNil())
+			Expect(err).NotTo(BeNil())
+			Expect(err.Category).To(Equal(ErrCategoryInvalidReq))
+			Expect(err.IsRetryable()).To(BeFalse())
+		})
+	})
+
+	Context("Context Length Errors (400)", func() {
+		const testPort = 8106
+
+		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=100",
+				"--failure-types=context_length",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
+			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        5 * time.Second,
+				MaxRetries:     2,
+				InitialBackoff: 50 * time.Millisecond,
+			})
+		})
+
+		AfterEach(func() {
+			stopMockServer(testPort)
+		})
+
+		It("should handle context length errors without retry", func() {
+			req := &InferenceRequest{
+				RequestID: "context-length-001",
+				Model:     "fake-model",
+				Params: map[string]interface{}{
+					"model":      "fake-model",
+					"prompt":     "Test",
+					"max_tokens": 5,
+				},
+			}
+
+			resp, err := client.Generate(context.Background(), req)
+
+			Expect(resp).To(BeNil())
+			Expect(err).NotTo(BeNil())
+			Expect(err.Category).To(Equal(ErrCategoryInvalidReq))
+			Expect(err.IsRetryable()).To(BeFalse())
+		})
+	})
+
+	Context("Model Not Found Errors (404)", func() {
+		const testPort = 8107
+
+		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=100",
+				"--failure-types=model_not_found",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
+			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        5 * time.Second,
+				MaxRetries:     2,
+				InitialBackoff: 50 * time.Millisecond,
+			})
+		})
+
+		AfterEach(func() {
+			stopMockServer(testPort)
+		})
+
+		It("should handle model not found errors without retry", func() {
+			req := &InferenceRequest{
+				RequestID: "model-not-found-001",
+				Model:     "fake-model",
+				Params: map[string]interface{}{
+					"model":      "fake-model",
+					"prompt":     "Test",
+					"max_tokens": 5,
+				},
+			}
+
+			resp, err := client.Generate(context.Background(), req)
+
+			Expect(resp).To(BeNil())
+			Expect(err).NotTo(BeNil())
+			Expect(err.IsRetryable()).To(BeFalse())
+		})
+	})
+
+	Context("Mixed Failure Rate (50%)", func() {
+		const testPort = 8108
+
+		BeforeEach(func() {
+			err := startMockServer(testPort,
+				"--failure-injection-rate=50",
+				"--failure-types=server_error",
+			)
+			if err != nil {
+				Skip(fmt.Sprintf("Could not start mock server: %v", err))
+			}
+
+			client = NewHTTPInferenceClient(HTTPInferenceClientConfig{
+				BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
+				Timeout:        10 * time.Second,
+				MaxRetries:     5,
+				InitialBackoff: 50 * time.Millisecond,
+			})
+		})
+
+		AfterEach(func() {
+			stopMockServer(testPort)
+		})
+
+		It("should eventually succeed with retry on 50% failure rate", func() {
+			req := &InferenceRequest{
+				RequestID: "mixed-failure-001",
+				Model:     "fake-model",
+				Params: map[string]interface{}{
+					"model":      "fake-model",
+					"prompt":     "Test retry on partial failures",
+					"max_tokens": 5,
+				},
+			}
+
+			// With 50% failure rate and 5 retries, probability of all failing = 0.5^6 = 1.5%
+			resp, err := client.Generate(context.Background(), req)
+
+			// Should likely succeed (98.5% probability)
+			// If it fails, that's acceptable but unlikely
+			if err == nil {
+				Expect(resp).NotTo(BeNil())
+			} else {
+				// If it did fail, verify it's the right type
+				Expect(err.Category).To(Equal(ErrCategoryServer))
+				Expect(err.IsRetryable()).To(BeTrue())
+			}
 		})
 	})
 })

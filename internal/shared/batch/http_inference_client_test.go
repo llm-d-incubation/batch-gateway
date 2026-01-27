@@ -1,3 +1,6 @@
+//go:build !integration
+// +build !integration
+
 /*
 Copyright 2026 The llm-d Authors
 
