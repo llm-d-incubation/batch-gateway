@@ -24,191 +24,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
-
-// Test helper functions
-
-func assertEqual(t *testing.T, got, want interface{}, msgAndArgs ...interface{}) {
-	t.Helper()
-	if got != want {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: got %v, want %v", msg, got, want)
-		} else {
-			t.Errorf("got %v, want %v", got, want)
-		}
-	}
-}
-
-func assertNotNil(t *testing.T, obj interface{}, msgAndArgs ...interface{}) {
-	t.Helper()
-	if obj == nil {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected non-nil value", msg)
-		} else {
-			t.Errorf("expected non-nil value")
-		}
-	}
-}
-
-func assertNil(t *testing.T, obj interface{}, msgAndArgs ...interface{}) {
-	t.Helper()
-	// Use reflection to properly check for nil, including typed nil pointers
-	if obj == nil {
-		return
-	}
-
-	v := reflect.ValueOf(obj)
-	if v.Kind() == reflect.Ptr && v.IsNil() {
-		return
-	}
-
-	msg := ""
-	if len(msgAndArgs) > 0 {
-		if format, ok := msgAndArgs[0].(string); ok {
-			msg = format
-		}
-	}
-	if msg != "" {
-		t.Errorf("%s: expected nil, got %v", msg, obj)
-	} else {
-		t.Errorf("expected nil, got %v", obj)
-	}
-}
-
-func assertTrue(t *testing.T, condition bool, msgAndArgs ...interface{}) {
-	t.Helper()
-	if !condition {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected true", msg)
-		} else {
-			t.Errorf("expected true")
-		}
-	}
-}
-
-func assertFalse(t *testing.T, condition bool, msgAndArgs ...interface{}) {
-	t.Helper()
-	if condition {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected false", msg)
-		} else {
-			t.Errorf("expected false")
-		}
-	}
-}
-
-func assertContains(t *testing.T, s, substr string, msgAndArgs ...interface{}) {
-	t.Helper()
-	if !strings.Contains(s, substr) {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: string %q does not contain %q", msg, s, substr)
-		} else {
-			t.Errorf("string %q does not contain %q", s, substr)
-		}
-	}
-}
-
-func assertEmpty(t *testing.T, s string, msgAndArgs ...interface{}) {
-	t.Helper()
-	if s != "" {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected empty string, got %q", msg, s)
-		} else {
-			t.Errorf("expected empty string, got %q", s)
-		}
-	}
-}
-
-func assertNotEmpty(t *testing.T, s string, msgAndArgs ...interface{}) {
-	t.Helper()
-	if s == "" {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected non-empty string", msg)
-		} else {
-			t.Errorf("expected non-empty string")
-		}
-	}
-}
-
-func assertGreaterOrEqual(t *testing.T, actual, expected int, msgAndArgs ...interface{}) {
-	t.Helper()
-	if actual < expected {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected %d >= %d", msg, actual, expected)
-		} else {
-			t.Errorf("expected %d >= %d", actual, expected)
-		}
-	}
-}
-
-func assertLessOrEqual(t *testing.T, actual, expected int, msgAndArgs ...interface{}) {
-	t.Helper()
-	if actual > expected {
-		msg := ""
-		if len(msgAndArgs) > 0 {
-			if format, ok := msgAndArgs[0].(string); ok {
-				msg = format
-			}
-		}
-		if msg != "" {
-			t.Errorf("%s: expected %d <= %d", msg, actual, expected)
-		} else {
-			t.Errorf("expected %d <= %d", actual, expected)
-		}
-	}
-}
 
 func TestNewHTTPInferenceClient(t *testing.T) {
 	tests := []struct {
@@ -260,8 +80,8 @@ func TestNewHTTPInferenceClient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := NewHTTPInferenceClient(tt.config)
-			assertNotNil(t, client)
-			assertNotNil(t, client.client)
+			assert.NotNil(t, client)
+			assert.NotNil(t, client.client)
 			// Note: resty.Client internal state (timeout, auth, retry config) is not directly accessible
 			// Behavior is validated through integration and functional tests
 		})
@@ -272,11 +92,11 @@ func TestGenerate(t *testing.T) {
 	t.Run("should successfully make inference request with chat completion", func(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Verify headers
-			assertEqual(t, r.Header.Get("Content-Type"), "application/json")
+			assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 
 			// Verify request ID if present
 			if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
-				assertEqual(t, requestID, "test-request-123")
+				assert.Equal(t, "test-request-123", requestID)
 			}
 
 			// Return success response
@@ -324,17 +144,17 @@ func TestGenerate(t *testing.T) {
 		ctx := context.Background()
 		resp, err := client.Generate(ctx, req)
 
-		assertNil(t, err)
-		assertNotNil(t, resp)
-		assertEqual(t, resp.RequestID, "test-request-123")
-		assertNotNil(t, resp.Response)
-		assertNotNil(t, resp.RawData)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+		assert.Equal(t, "test-request-123", resp.RequestID)
+		assert.NotNil(t, resp.Response)
+		assert.NotNil(t, resp.RawData)
 
 		// Verify response can be unmarshaled
 		var data map[string]interface{}
 		unmarshalErr := json.Unmarshal(resp.Response, &data)
-		assertNil(t, unmarshalErr)
-		assertEqual(t, data["id"], "chatcmpl-123")
+		assert.Nil(t, unmarshalErr)
+		assert.Equal(t, "chatcmpl-123", data["id"])
 	})
 
 	t.Run("should handle nil request", func(t *testing.T) {
@@ -351,10 +171,10 @@ func TestGenerate(t *testing.T) {
 		ctx := context.Background()
 		resp, err := client.Generate(ctx, nil)
 
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, err.Category, ErrCategoryInvalidReq)
-		assertContains(t, err.Message, "cannot be nil")
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, ErrCategoryInvalidReq, err.Category)
+		assert.Contains(t, err.Message, "cannot be nil")
 	})
 
 	t.Run("should use endpoint from request", func(t *testing.T) {
@@ -383,7 +203,7 @@ func TestGenerate(t *testing.T) {
 		}
 
 		client.Generate(context.Background(), req)
-		assertEqual(t, endpoint, "/v1/chat/completions")
+		assert.Equal(t, "/v1/chat/completions", endpoint)
 	})
 
 	t.Run("should fail when endpoint is empty", func(t *testing.T) {
@@ -410,10 +230,10 @@ func TestGenerate(t *testing.T) {
 		}
 
 		resp, err := client.Generate(context.Background(), req)
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, err.Category, ErrCategoryInvalidReq)
-		assertContains(t, err.Message, "endpoint cannot be empty")
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, ErrCategoryInvalidReq, err.Category)
+		assert.Contains(t, err.Message, "endpoint cannot be empty")
 	})
 }
 
@@ -539,13 +359,13 @@ func TestErrorHandling(t *testing.T) {
 				}
 
 				resp, err := client.Generate(context.Background(), req)
-				assertNil(t, resp)
-				assertNotNil(t, err)
-				assertEqual(t, err.Category, tt.wantCategory)
+				assert.Nil(t, resp)
+				assert.NotNil(t, err)
+				assert.Equal(t, tt.wantCategory, err.Category)
 				if tt.wantRetryable {
-					assertTrue(t, err.IsRetryable())
+					assert.True(t, err.IsRetryable())
 				} else {
-					assertFalse(t, err.IsRetryable())
+					assert.False(t, err.IsRetryable())
 				}
 			})
 		}
@@ -570,11 +390,11 @@ func TestErrorHandling(t *testing.T) {
 
 		resp, err := client.Generate(context.Background(), req)
 		// Implementation continues despite JSON parse errors, returning success with nil RawData
-		assertNil(t, err)
-		assertNotNil(t, resp)
-		assertEqual(t, resp.RequestID, "test")
-		assertNil(t, resp.RawData) // RawData should be nil for malformed JSON
-		assertNotNil(t, resp.Response)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+		assert.Equal(t, "test", resp.RequestID)
+		assert.Nil(t, resp.RawData) // RawData should be nil for malformed JSON
+		assert.NotNil(t, resp.Response)
 	})
 
 	t.Run("should handle empty response body", func(t *testing.T) {
@@ -595,11 +415,11 @@ func TestErrorHandling(t *testing.T) {
 
 		resp, err := client.Generate(context.Background(), req)
 		// Implementation handles empty body as successful response
-		assertNil(t, err)
-		assertNotNil(t, resp)
-		assertEqual(t, resp.RequestID, "test")
-		assertNil(t, resp.RawData) // RawData should be nil for empty JSON
-		assertNotNil(t, resp.Response)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+		assert.Equal(t, "test", resp.RequestID)
+		assert.Nil(t, resp.RawData) // RawData should be nil for empty JSON
+		assert.NotNil(t, resp.Response)
 	})
 
 	t.Run("should handle context cancellation", func(t *testing.T) {
@@ -622,9 +442,9 @@ func TestErrorHandling(t *testing.T) {
 		cancel() // Cancel immediately
 
 		resp, err := client.Generate(ctx, req)
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertContains(t, err.Message, "cancelled")
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Contains(t, err.Message, "cancelled")
 	})
 
 	t.Run("should handle context timeout", func(t *testing.T) {
@@ -648,9 +468,9 @@ func TestErrorHandling(t *testing.T) {
 
 		ctx := context.Background()
 		resp, err := client.Generate(ctx, req)
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, err.Category, ErrCategoryServer)
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, ErrCategoryServer, err.Category)
 	})
 }
 
@@ -744,15 +564,15 @@ func TestRetryLogic(t *testing.T) {
 				}
 
 				resp, err := client.Generate(context.Background(), req)
-				assertEqual(t, attemptCount, tt.wantAttemptCount)
+				assert.Equal(t, tt.wantAttemptCount, attemptCount)
 
 				if tt.wantSuccess {
-					assertNil(t, err)
-					assertNotNil(t, resp)
+					assert.Nil(t, err)
+					assert.NotNil(t, resp)
 				} else {
-					assertNil(t, resp)
-					assertNotNil(t, err)
-					assertEqual(t, err.Category, tt.wantErrorCategory)
+					assert.Nil(t, resp)
+					assert.NotNil(t, err)
+					assert.Equal(t, tt.wantErrorCategory, err.Category)
 				}
 			})
 		}
@@ -786,9 +606,9 @@ func TestRetryLogic(t *testing.T) {
 		}
 
 		resp, err := client.Generate(context.Background(), req)
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, attemptCount, 3) // Initial + 2 retries
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, 3, attemptCount) // Initial + 2 retries
 	})
 
 	t.Run("should stop retrying when context is cancelled", func(t *testing.T) {
@@ -825,9 +645,9 @@ func TestRetryLogic(t *testing.T) {
 		}()
 
 		resp, err := client.Generate(ctx, req)
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertLessOrEqual(t, attemptCount, 3) // Should stop early
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.LessOrEqual(t, attemptCount, 3) // Should stop early
 	})
 
 	t.Run("should work without retry when MaxRetries is 0", func(t *testing.T) {
@@ -852,9 +672,9 @@ func TestRetryLogic(t *testing.T) {
 		}
 
 		resp, err := client.Generate(context.Background(), req)
-		assertNil(t, err)
-		assertNotNil(t, resp)
-		assertEqual(t, attemptCount, 1)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+		assert.Equal(t, 1, attemptCount)
 	})
 }
 
@@ -865,17 +685,17 @@ func TestTLSConfiguration(t *testing.T) {
 			TLSInsecureSkipVerify: false, // Default: use system root CAs
 		})
 
-		assertNotNil(t, client)
+		assert.NotNil(t, client)
 
 		// Access the underlying transport to verify TLS configuration
 		httpClient := client.client.GetClient()
 		transport, ok := httpClient.Transport.(*http.Transport)
-		assertTrue(t, ok, "expected *http.Transport")
+		assert.True(t, ok, "expected *http.Transport")
 
 		// Note: Clone() creates a TLSClientConfig with default values
 		// Verify certificate verification is enabled (InsecureSkipVerify = false)
-		assertNotNil(t, transport.TLSClientConfig, "TLSClientConfig should exist")
-		assertFalse(t, transport.TLSClientConfig.InsecureSkipVerify, "Certificate verification should be enabled")
+		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should exist")
+		assert.False(t, transport.TLSClientConfig.InsecureSkipVerify, "Certificate verification should be enabled")
 	})
 
 	t.Run("should disable certificate verification when InsecureSkipVerify is true", func(t *testing.T) {
@@ -884,16 +704,16 @@ func TestTLSConfiguration(t *testing.T) {
 			TLSInsecureSkipVerify: true, // Skip cert verification for testing
 		})
 
-		assertNotNil(t, client)
+		assert.NotNil(t, client)
 
 		// Access the underlying transport to verify TLS configuration
 		httpClient := client.client.GetClient()
 		transport, ok := httpClient.Transport.(*http.Transport)
-		assertTrue(t, ok, "expected *http.Transport")
+		assert.True(t, ok, "expected *http.Transport")
 
 		// Verify InsecureSkipVerify is actually set to true
-		assertNotNil(t, transport.TLSClientConfig, "TLSClientConfig should be set")
-		assertTrue(t, transport.TLSClientConfig.InsecureSkipVerify, "InsecureSkipVerify should be true")
+		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should be set")
+		assert.True(t, transport.TLSClientConfig.InsecureSkipVerify, "InsecureSkipVerify should be true")
 	})
 }
 
@@ -920,7 +740,7 @@ func TestAuthentication(t *testing.T) {
 		}
 
 		client.Generate(context.Background(), req)
-		assertEqual(t, authHeader, "Bearer sk-test-key-123")
+		assert.Equal(t, "Bearer sk-test-key-123", authHeader)
 	})
 
 	t.Run("should not include Authorization header when API key is empty", func(t *testing.T) {
@@ -944,7 +764,7 @@ func TestAuthentication(t *testing.T) {
 		}
 
 		client.Generate(context.Background(), req)
-		assertEmpty(t, authHeader)
+		assert.Empty(t, authHeader)
 	})
 }
 
@@ -964,11 +784,11 @@ func TestNetworkErrors(t *testing.T) {
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, err.Category, ErrCategoryServer)
-		assertTrue(t, err.IsRetryable())
-		assertContains(t, err.Message, "failed to execute request")
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, ErrCategoryServer, err.Category)
+		assert.True(t, err.IsRetryable())
+		assert.Contains(t, err.Message, "failed to execute request")
 	})
 
 	t.Run("should handle DNS resolution failure", func(t *testing.T) {
@@ -986,9 +806,9 @@ func TestNetworkErrors(t *testing.T) {
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, err.Category, ErrCategoryServer)
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, ErrCategoryServer, err.Category)
 	})
 }
 
@@ -1027,9 +847,9 @@ func TestRetryHookBehavior(t *testing.T) {
 		})
 
 		// Should eventually succeed after retries
-		assertNil(t, err)
-		assertNotNil(t, resp)
-		assertGreaterOrEqual(t, attemptCount, 2)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+		assert.GreaterOrEqual(t, attemptCount, 2)
 	})
 }
 
@@ -1057,12 +877,12 @@ func TestTimeoutBehavior(t *testing.T) {
 		})
 		elapsed := time.Since(start)
 
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertEqual(t, err.Category, ErrCategoryServer)
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.Equal(t, ErrCategoryServer, err.Category)
 
 		// Should timeout around 100ms, not wait 5s
-		assertTrue(t, elapsed < 1*time.Second)
+		assert.True(t, elapsed < 1*time.Second)
 	})
 
 	t.Run("should respect context deadline over client timeout", func(t *testing.T) {
@@ -1090,9 +910,9 @@ func TestTimeoutBehavior(t *testing.T) {
 		})
 		elapsed := time.Since(start)
 
-		assertNil(t, resp)
-		assertNotNil(t, err)
-		assertTrue(t, elapsed < 1*time.Second)
+		assert.Nil(t, resp)
+		assert.NotNil(t, err)
+		assert.True(t, elapsed < 1*time.Second)
 	})
 }
 
@@ -1142,9 +962,9 @@ func TestRetryConditionLogic(t *testing.T) {
 				})
 
 				if tt.shouldRetry {
-					assertEqual(t, attemptCount, 3) // 1 initial + 2 retries
+					assert.Equal(t, 3, attemptCount) // 1 initial + 2 retries
 				} else {
-					assertEqual(t, attemptCount, 1) // No retries
+					assert.Equal(t, 1, attemptCount) // No retries
 				}
 			})
 		}

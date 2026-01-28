@@ -29,6 +29,9 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Integration tests using llm-d-inference-sim mock server running in Docker
@@ -118,31 +121,17 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 		ctx := context.Background()
 		resp, err := client.Generate(ctx, req)
 
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected non-nil response")
-		}
-		if resp.RequestID != "test-completion-001" {
-			t.Errorf("expected RequestID %q, got %q", "test-completion-001", resp.RequestID)
-		}
-		if len(resp.Response) == 0 {
-			t.Error("expected non-empty response")
-		}
+		assert.Nil(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "test-completion-001", resp.RequestID)
+		assert.NotEmpty(t, resp.Response)
 
 		// Verify response structure
 		var result map[string]interface{}
 		unmarshalErr := json.Unmarshal(resp.Response, &result)
-		if unmarshalErr != nil {
-			t.Fatalf("failed to unmarshal response: %v", unmarshalErr)
-		}
-		if result["id"] == nil {
-			t.Error("expected id field in response")
-		}
-		if result["choices"] == nil {
-			t.Error("expected choices field in response")
-		}
+		assert.Nil(t, unmarshalErr)
+		assert.Contains(t, result, "id")
+		assert.Contains(t, result, "choices")
 	})
 
 	t.Run("should successfully make chat completion request", func(t *testing.T) {
@@ -165,22 +154,14 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 		ctx := context.Background()
 		resp, err := client.Generate(ctx, req)
 
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected non-nil response")
-		}
+		assert.Nil(t, err)
+		require.NotNil(t, resp)
 
 		// Verify response structure
 		var result map[string]interface{}
 		unmarshalErr := json.Unmarshal(resp.Response, &result)
-		if unmarshalErr != nil {
-			t.Fatalf("failed to unmarshal response: %v", unmarshalErr)
-		}
-		if result["choices"] == nil {
-			t.Error("expected choices field in response")
-		}
+		assert.Nil(t, unmarshalErr)
+		assert.Contains(t, result, "choices")
 	})
 
 	t.Run("should handle multiple sequential requests", func(t *testing.T) {
@@ -200,12 +181,8 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 			ctx := context.Background()
 			resp, err := client.Generate(ctx, req)
 
-			if err != nil {
-				t.Fatalf("request %d failed: %v", i, err)
-			}
-			if resp == nil {
-				t.Fatalf("request %d returned nil response", i)
-			}
+			assert.Nil(t, err, "request %d failed", i)
+			require.NotNil(t, resp, "request %d returned nil response", i)
 		}
 	})
 
@@ -235,9 +212,7 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 		// Verify all requests completed successfully
 		for i := 0; i < numRequests; i++ {
 			inferr := <-results
-			if inferr != nil {
-				t.Errorf("concurrent request %d failed: %v", i, inferr)
-			}
+			assert.Nil(t, inferr, "concurrent request %d failed", i)
 		}
 	})
 }
@@ -280,19 +255,11 @@ func TestHTTPInferenceClientLatencySimulation(t *testing.T) {
 		resp, err := client.Generate(context.Background(), req)
 		duration := time.Since(start)
 
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected non-nil response")
-		}
+		assert.Nil(t, err)
+		require.NotNil(t, resp)
 		// Should take at least 200ms for TTFT
-		if duration < 180*time.Millisecond {
-			t.Errorf("expected duration >= 180ms, got %v", duration)
-		}
-		if duration >= 2*time.Second {
-			t.Errorf("expected duration < 2s, got %v", duration)
-		}
+		assert.GreaterOrEqual(t, duration, 180*time.Millisecond)
+		assert.Less(t, duration, 2*time.Second)
 	})
 
 	t.Run("should handle inter-token latency", func(t *testing.T) {
@@ -311,16 +278,10 @@ func TestHTTPInferenceClientLatencySimulation(t *testing.T) {
 		resp, err := client.Generate(context.Background(), req)
 		duration := time.Since(start)
 
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected non-nil response")
-		}
+		assert.Nil(t, err)
+		require.NotNil(t, resp)
 		// With 10 tokens, TTFT=200ms + ~10*50ms = ~700ms total
-		if duration < 200*time.Millisecond {
-			t.Errorf("expected duration >= 200ms, got %v", duration)
-		}
+		assert.GreaterOrEqual(t, duration, 200*time.Millisecond)
 	})
 }
 
@@ -369,17 +330,11 @@ func TestHTTPInferenceClientFailureInjection(t *testing.T) {
 		// Should likely succeed (98.5% probability)
 		// If it fails, that's acceptable but unlikely
 		if inferr == nil {
-			if resp == nil {
-				t.Error("expected non-nil response when error is nil")
-			}
+			assert.NotNil(t, resp)
 		} else {
 			// If it did fail, verify it's the right type
-			if inferr.Category != ErrCategoryServer {
-				t.Errorf("expected error category %v, got %v", ErrCategoryServer, inferr.Category)
-			}
-			if !inferr.IsRetryable() {
-				t.Error("expected error to be retryable")
-			}
+			assert.Equal(t, ErrCategoryServer, inferr.Category)
+			assert.True(t, inferr.IsRetryable())
 		}
 	})
 }
