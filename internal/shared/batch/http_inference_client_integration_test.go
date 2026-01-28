@@ -87,7 +87,15 @@ func stopMockServer(port int) {
 	time.Sleep(500 * time.Millisecond)
 }
 
-func TestHTTPInferenceClientBasicInference(t *testing.T) {
+// TestHTTPInferenceClientIntegration aggregates all integration test cases
+// Run with: go test -tags=integration -run TestHTTPInferenceClientIntegration
+func TestHTTPInferenceClientIntegration(t *testing.T) {
+	t.Run("BasicInference", testHTTPInferenceClientBasicInference)
+	t.Run("LatencySimulation", testHTTPInferenceClientLatencySimulation)
+	t.Run("FailureInjection", testHTTPInferenceClientFailureInjection)
+}
+
+func testHTTPInferenceClientBasicInference(t *testing.T) {
 	if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
 		t.Skip("Integration tests skipped")
 	}
@@ -217,7 +225,7 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 	})
 }
 
-func TestHTTPInferenceClientLatencySimulation(t *testing.T) {
+func testHTTPInferenceClientLatencySimulation(t *testing.T) {
 	if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
 		t.Skip("Integration tests skipped")
 	}
@@ -285,7 +293,7 @@ func TestHTTPInferenceClientLatencySimulation(t *testing.T) {
 	})
 }
 
-func TestHTTPInferenceClientFailureInjection(t *testing.T) {
+func testHTTPInferenceClientFailureInjection(t *testing.T) {
 	if os.Getenv("SKIP_INTEGRATION_TESTS") == "true" {
 		t.Skip("Integration tests skipped")
 	}

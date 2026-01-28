@@ -30,7 +30,22 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewHTTPInferenceClient(t *testing.T) {
+// TestInferenceClient aggregates all HTTPInferenceClient test cases
+// Run with: go test -run TestInferenceClient
+func TestInferenceClient(t *testing.T) {
+	t.Run("NewHTTPInferenceClient", testNewHTTPInferenceClient)
+	t.Run("Generate", testGenerate)
+	t.Run("ErrorHandling", testErrorHandling)
+	t.Run("RetryLogic", testRetryLogic)
+	t.Run("TLSConfiguration", testTLSConfiguration)
+	t.Run("Authentication", testAuthentication)
+	t.Run("NetworkErrors", testNetworkErrors)
+	t.Run("RetryHookBehavior", testRetryHookBehavior)
+	t.Run("TimeoutBehavior", testTimeoutBehavior)
+	t.Run("RetryConditionLogic", testRetryConditionLogic)
+}
+
+func testNewHTTPInferenceClient(t *testing.T) {
 	tests := []struct {
 		name   string
 		config HTTPInferenceClientConfig
@@ -88,7 +103,7 @@ func TestNewHTTPInferenceClient(t *testing.T) {
 	}
 }
 
-func TestGenerate(t *testing.T) {
+func testGenerate(t *testing.T) {
 	t.Run("should successfully make inference request with chat completion", func(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Verify headers
@@ -237,7 +252,7 @@ func TestGenerate(t *testing.T) {
 	})
 }
 
-func TestErrorHandling(t *testing.T) {
+func testErrorHandling(t *testing.T) {
 	t.Run("HTTP status code mapping", func(t *testing.T) {
 		tests := []struct {
 			name          string
@@ -474,7 +489,7 @@ func TestErrorHandling(t *testing.T) {
 	})
 }
 
-func TestRetryLogic(t *testing.T) {
+func testRetryLogic(t *testing.T) {
 	t.Run("retry behavior for different error types", func(t *testing.T) {
 		tests := []struct {
 			name                  string
@@ -678,7 +693,7 @@ func TestRetryLogic(t *testing.T) {
 	})
 }
 
-func TestTLSConfiguration(t *testing.T) {
+func testTLSConfiguration(t *testing.T) {
 	t.Run("should use secure TLS defaults when InsecureSkipVerify is false", func(t *testing.T) {
 		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
 			BaseURL:               "https://localhost:8000",
@@ -717,7 +732,7 @@ func TestTLSConfiguration(t *testing.T) {
 	})
 }
 
-func TestAuthentication(t *testing.T) {
+func testAuthentication(t *testing.T) {
 	t.Run("should include API key in Authorization header", func(t *testing.T) {
 		var authHeader string
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -768,7 +783,7 @@ func TestAuthentication(t *testing.T) {
 	})
 }
 
-func TestNetworkErrors(t *testing.T) {
+func testNetworkErrors(t *testing.T) {
 	t.Run("should handle connection refused", func(t *testing.T) {
 		client := NewHTTPInferenceClient(HTTPInferenceClientConfig{
 			BaseURL:        "http://localhost:9999", // Non-existent server
@@ -812,7 +827,7 @@ func TestNetworkErrors(t *testing.T) {
 	})
 }
 
-func TestRetryHookBehavior(t *testing.T) {
+func testRetryHookBehavior(t *testing.T) {
 	t.Run("should retry on network errors", func(t *testing.T) {
 		attemptCount := 0
 
@@ -853,7 +868,7 @@ func TestRetryHookBehavior(t *testing.T) {
 	})
 }
 
-func TestTimeoutBehavior(t *testing.T) {
+func testTimeoutBehavior(t *testing.T) {
 	t.Run("should respect configured client timeout", func(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(5 * time.Second) // Long delay
@@ -916,7 +931,7 @@ func TestTimeoutBehavior(t *testing.T) {
 	})
 }
 
-func TestRetryConditionLogic(t *testing.T) {
+func testRetryConditionLogic(t *testing.T) {
 	t.Run("should only retry on retryable status codes", func(t *testing.T) {
 		tests := []struct {
 			name        string
