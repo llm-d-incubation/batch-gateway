@@ -28,7 +28,12 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
-func TestRecoveryMiddleware_NoPanic(t *testing.T) {
+func TestRecoveryMiddleware(t *testing.T) {
+	t.Run("NoPanic", doTestRecoveryMiddlewareNoPanic)
+	t.Run("WithPanic", doTestRecoveryMiddlewareWithPanic)
+}
+
+func doTestRecoveryMiddlewareNoPanic(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("success"))
@@ -51,7 +56,7 @@ func TestRecoveryMiddleware_NoPanic(t *testing.T) {
 	}
 }
 
-func TestRecoveryMiddleware_WithPanic(t *testing.T) {
+func doTestRecoveryMiddlewareWithPanic(t *testing.T) {
 	tests := []struct {
 		name       string
 		panicValue interface{}
