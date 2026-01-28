@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
@@ -37,7 +38,7 @@ type ProcessorClients struct {
 	priorityQueue db.BatchPriorityQueueClient
 	status        db.BatchStatusClient
 	event         db.BatchEventChannelClient
-	inference     batch.InferenceClient
+	inference     inference.Client
 }
 
 func NewProcessorClients(
@@ -45,7 +46,7 @@ func NewProcessorClients(
 	pq db.BatchPriorityQueueClient,
 	status db.BatchStatusClient,
 	event db.BatchEventChannelClient,
-	inference batch.InferenceClient,
+	inference inference.Client,
 ) ProcessorClients {
 	return ProcessorClients{
 		database:      db,
@@ -314,7 +315,7 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 			// TODO:: request validation
 
 			// mock request
-			mockRequest := &batch.InferenceRequest{}
+			mockRequest := &inference.GenerateRequest{}
 			result, err := p.clients.inference.Generate(jobctx, mockRequest)
 
 			// shared resources (metadata / totaljoblines) lock
@@ -364,7 +365,7 @@ func (p *Processor) handleError(ctx context.Context, err error) {
 	logger.V(logging.ERROR).Error(err, "Inference request failed")
 }
 
-func (p *Processor) handleResponse(ctx context.Context, inferenceResponse *batch.InferenceResponse) error {
+func (p *Processor) handleResponse(ctx context.Context, inferenceResponse *inference.GenerateResponse) error {
 	// TODO:: response handling + writing line to the output file ...
 	logger := klog.FromContext(ctx)
 	logger.V(logging.DEBUG).Info("Handling response")

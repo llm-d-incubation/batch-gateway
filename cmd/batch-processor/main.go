@@ -28,10 +28,10 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/tls"
@@ -130,7 +130,25 @@ func main() {
 	var pqClient db.BatchPriorityQueueClient
 	var statusClient db.BatchStatusClient
 	var eventClient db.BatchEventChannelClient
-	var inferenceClient batch.InferenceClient
+
+	// Initialize inference client with configuration
+	inferenceClient := inference.NewHTTPClient(inference.HTTPClientConfig{
+		BaseURL:                   cfg.InferenceGatewayURL,
+		Timeout:                   cfg.InferenceRequestTimeout,
+		APIKey:                    cfg.InferenceAPIKey,
+		MaxRetries:                cfg.InferenceMaxRetries,
+		InitialBackoff:            cfg.InferenceInitialBackoff,
+		MaxBackoff:                cfg.InferenceMaxBackoff,
+		TLSInsecureSkipVerify:     cfg.InferenceTLSInsecureSkipVerify,
+		TLSCACertFile:             cfg.InferenceTLSCACertFile,
+		TLSClientCertFile:         cfg.InferenceTLSClientCertFile,
+		TLSClientKeyFile:          cfg.InferenceTLSClientKeyFile,
+	})
+	logger.V(logging.INFO).Info("Initialized inference client",
+		"baseURL", cfg.InferenceGatewayURL,
+		"timeout", cfg.InferenceRequestTimeout,
+		"maxRetries", cfg.InferenceMaxRetries)
+
 	processorClients := worker.NewProcessorClients(
 		dbClient, pqClient, statusClient, eventClient, inferenceClient,
 	)

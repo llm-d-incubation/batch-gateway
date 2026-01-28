@@ -14,8 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package batch
+package inference
 
+// ErrorCategory defines the category of an inference error
 type ErrorCategory string
 
 const (
@@ -26,17 +27,18 @@ const (
 	ErrCategoryUnknown    ErrorCategory = "UNKNOWN"      // not retryable
 )
 
-type InferenceError struct {
+// ClientError represents an inference client error with category and context
+type ClientError struct {
 	Category ErrorCategory
 	Message  string
 	RawError error // original error message
 }
 
-func (e *InferenceError) Error() string {
+func (e *ClientError) Error() string {
 	return e.Message
 }
 
-// checks if the error is retryable
-func (e *InferenceError) IsRetryable() bool {
+// IsRetryable checks if the error is retryable
+func (e *ClientError) IsRetryable() bool {
 	return e.Category == ErrCategoryRateLimit || e.Category == ErrCategoryServer
 }

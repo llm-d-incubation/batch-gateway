@@ -48,6 +48,36 @@ type ProcessorConfig struct {
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`
 	SSLKeyFile  string `yaml:"ssl_key_file"`
+
+	// InferenceGatewayURL is the base URL of the inference gateway (llm-d or GAIE)
+	InferenceGatewayURL string `yaml:"inference_gateway_url"`
+
+	// InferenceRequestTimeout is the timeout for individual inference requests
+	InferenceRequestTimeout time.Duration `yaml:"inference_request_timeout"`
+
+	// InferenceAPIKey is the optional API key for authenticating with the inference gateway
+	InferenceAPIKey string `yaml:"inference_api_key"`
+
+	// InferenceMaxRetries is the maximum number of retry attempts for failed requests
+	InferenceMaxRetries int `yaml:"inference_max_retries"`
+
+	// InferenceInitialBackoff is the initial backoff duration for retries
+	InferenceInitialBackoff time.Duration `yaml:"inference_initial_backoff"`
+
+	// InferenceMaxBackoff is the maximum backoff duration for retries
+	InferenceMaxBackoff time.Duration `yaml:"inference_max_backoff"`
+
+	// InferenceTLSInsecureSkipVerify skips TLS certificate verification (INSECURE, only for testing)
+	InferenceTLSInsecureSkipVerify bool `yaml:"inference_tls_insecure_skip_verify"`
+
+	// InferenceTLSCACertFile is the path to custom CA certificate file (for private CAs)
+	InferenceTLSCACertFile string `yaml:"inference_tls_ca_cert_file"`
+
+	// InferenceTLSClientCertFile is the path to client certificate file (for mTLS)
+	InferenceTLSClientCertFile string `yaml:"inference_tls_client_cert_file"`
+
+	// InferenceTLSClientKeyFile is the path to client private key file (for mTLS)
+	InferenceTLSClientKeyFile string `yaml:"inference_tls_client_key_file"`
 }
 
 type BucketConfig struct {
@@ -95,6 +125,13 @@ func NewConfig() *ProcessorConfig {
 		MaxJobConcurrency: 10,
 		NumWorkers:        1,
 		Addr:              ":9090",
+
+		InferenceGatewayURL:     "http://localhost:8000",
+		InferenceRequestTimeout: 5 * time.Minute,
+		InferenceAPIKey:         "",
+		InferenceMaxRetries:     3,
+		InferenceInitialBackoff: 1 * time.Second,
+		InferenceMaxBackoff:     60 * time.Second,
 	}
 }
 

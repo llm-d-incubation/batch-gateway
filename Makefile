@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all
 
 SHELL := /usr/bin/env bash
 
@@ -198,3 +198,13 @@ deps-get:
 deps-verify:
 	@echo "Verifying dependencies..."
 	$(GO) mod verify
+
+## test-integration: Run integration tests (each test spawns its own mock server)
+test-integration:
+	@echo "Running integration tests..."
+	@$(GO) test -v -tags=integration ./internal/inference/... || \
+		(echo "\n❌ Integration tests failed" && exit 1)
+	@echo "\n✅ Integration tests passed!"
+
+## test-all: Run all tests (unit + integration)
+test-all: test test-integration

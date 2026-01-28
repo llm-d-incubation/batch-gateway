@@ -1,0 +1,359 @@
+/*
+Copyright 2026 The llm-d Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package inference
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/go-resty/resty/v2"
+	"k8s.io/klog/v2"
+)
+
+// HTTPClient implements InferenceClient interface for HTTP-based inference gateways
+// Supports both llm-d (OpenAI-compatible) and GAIE endpoints
+type HTTPClient struct {
+	client *resty.Client
+}
+
+// HTTPClientConfig holds configuration for the HTTP client
+type HTTPClientConfig struct {
+	BaseURL         string        // Base URL of the inference gateway (e.g., "http://localhost:8000")
+	Timeout         time.Duration // Request timeout (default: 5 minutes)
+	MaxIdleConns    int           // Maximum idle connections (default: 100)
+	IdleConnTimeout time.Duration // Idle connection timeout (default: 90 seconds)
+	APIKey          string        // Optional API key for authentication
+
+	// TLS configuration (optional)
+	TLSInsecureSkipVerify bool   // Skip TLS certificate verification (default: false - INSECURE, only for testing)
+	TLSCACertFile         string // Path to custom CA certificate file (for private CAs)
+	TLSClientCertFile     string // Path to client certificate file (for mTLS)
+	TLSClientKeyFile      string // Path to client private key file (for mTLS)
+	TLSMinVersion         uint16 // Minimum TLS version (default: TLS 1.2). Use tls.VersionTLS12, tls.VersionTLS13
+	TLSMaxVersion         uint16 // Maximum TLS version (default: 0 = no max, use latest)
+
+	// Retry configuration (optional, set MaxRetries > 0 to enable)
+	// Uses resty's built-in exponential backoff with jitter
+	MaxRetries     int           // Maximum number of retry attempts (default: 0 = disabled)
+	InitialBackoff time.Duration // Initial/minimum retry wait time (default: 1 second)
+	MaxBackoff     time.Duration // Maximum retry wait time (default: 60 seconds)
+}
+
+// NewHTTPClient creates a new HTTP-based inference client
+func NewHTTPClient(config HTTPClientConfig) *HTTPClient {
+	// Set defaults for HTTP client
+	if config.Timeout == 0 {
+		config.Timeout = 5 * time.Minute
+	}
+	if config.MaxIdleConns == 0 {
+		config.MaxIdleConns = 100
+	}
+	if config.IdleConnTimeout == 0 {
+		config.IdleConnTimeout = 90 * time.Second
+	}
+
+	// Set defaults for retry configuration
+	if config.MaxRetries > 0 {
+		if config.InitialBackoff == 0 {
+			config.InitialBackoff = 1 * time.Second
+		}
+		if config.MaxBackoff == 0 {
+			config.MaxBackoff = 60 * time.Second
+		}
+	}
+
+	// Create resty client
+	client := resty.New().
+		SetBaseURL(config.BaseURL).
+		SetTimeout(config.Timeout).
+		SetHeader("Content-Type", "application/json")
+
+	// Set auth token if provided (adds "Authorization: Bearer <token>" to all requests)
+	if config.APIKey != "" {
+		client.SetAuthToken(config.APIKey)
+	}
+
+	// Configure transport - start with Go's secure defaults (http.DefaultTransport)
+	// This gives us: TLS 1.2+, system root CAs, certificate verification, proper timeouts
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	// Override only the settings we need to customize for batch processing
+	transport.MaxIdleConns = config.MaxIdleConns
+	transport.MaxIdleConnsPerHost = config.MaxIdleConns // Higher than default (17) for batch workloads
+	transport.IdleConnTimeout = config.IdleConnTimeout
+	transport.ResponseHeaderTimeout = 30 * time.Second // Prevent hanging on slow backends
+
+	// Configure custom TLS if needed
+	tlsConfig, err := buildTLSConfig(config)
+	if err != nil {
+		klog.Errorf("Failed to build TLS config: %v", err)
+		// Fall back to default (system root CAs)
+	} else if tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig
+	}
+	// Otherwise, TLSClientConfig stays nil = Go uses system root CAs + TLS 1.2+ defaults
+
+	client.SetTransport(transport)
+
+	// Configure retry only if enabled
+	if config.MaxRetries > 0 {
+		client.SetRetryCount(config.MaxRetries).
+			SetRetryWaitTime(config.InitialBackoff).    // Min wait time between retries
+			SetRetryMaxWaitTime(config.MaxBackoff)      // Max wait time between retries
+		// Resty automatically applies exponential backoff with jitter
+
+		// Retry condition: retry on server errors, rate limits, and network errors
+		client.AddRetryCondition(func(r *resty.Response, err error) bool {
+			if err != nil {
+				return true // Retry on network errors
+			}
+
+			statusCode := r.StatusCode()
+			// Retry on 429 (rate limit) and 5xx (server errors)
+			return statusCode == http.StatusTooManyRequests || statusCode >= 500
+		})
+
+		// Add retry hook for logging
+		client.AddRetryHook(func(resp *resty.Response, err error) {
+			if reqID := resp.Request.Header.Get("X-Request-ID"); reqID != "" {
+				klog.V(3).Infof("Retrying request_id=%s (attempt %d/%d)",
+					reqID, resp.Request.Attempt, config.MaxRetries)
+			}
+		})
+	}
+
+	return &HTTPClient{
+		client: client,
+	}
+}
+
+// Generate makes an inference request to the HTTP gateway with automatic retry logic
+func (c *HTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*GenerateResponse, *ClientError) {
+	if req == nil {
+		return nil, &ClientError{
+			Category: ErrCategoryInvalidReq,
+			Message:  "request cannot be nil",
+		}
+	}
+
+	// Use endpoint from request (provided by caller from batch.Request.EndPoint)
+	endpoint := req.Endpoint
+	if endpoint == "" {
+		return nil, &ClientError{
+			Category: ErrCategoryInvalidReq,
+			Message:  "endpoint cannot be empty",
+			RawError: nil,
+		}
+	}
+
+	// Create resty request with context
+	restyReq := c.client.R().SetContext(ctx)
+
+	// Set request ID header if provided
+	if req.RequestID != "" {
+		restyReq.SetHeader("X-Request-ID", req.RequestID)
+	}
+
+	// Set request body (resty handles JSON marshaling)
+	restyReq.SetBody(req.Params)
+
+	klog.V(4).Infof("Sending inference request to %s with request_id=%s, model=%s",
+		endpoint, req.RequestID, req.Model)
+
+	// Execute request (resty handles retries automatically)
+	resp, err := restyReq.Post(endpoint)
+
+	// Handle request-level errors (network, timeout, etc.)
+	if err != nil {
+		return c.handleRequestError(ctx, err, req)
+	}
+
+	// Check for non-retryable errors after all retries exhausted
+	if resp.StatusCode() != http.StatusOK {
+		return nil, c.handleErrorResponse(resp.StatusCode(), resp.Body())
+	}
+
+	// Log success with retry info
+	if resp.Request.Attempt > 1 {
+		klog.V(3).Infof("Request succeeded after %d retries for request_id=%s",
+			resp.Request.Attempt-1, req.RequestID)
+	}
+
+	// Parse response body
+	var rawData interface{}
+	if len(resp.Body()) > 0 {
+		if jsonErr := json.Unmarshal(resp.Body(), &rawData); jsonErr != nil {
+			klog.Warningf("Failed to unmarshal response as JSON for request_id=%s: %v",
+				req.RequestID, jsonErr)
+			rawData = nil
+		}
+	}
+
+	klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d",
+		req.RequestID, resp.StatusCode(), len(resp.Body()))
+
+	return &GenerateResponse{
+		RequestID: req.RequestID,
+		Response:  resp.Body(),
+		RawData:   rawData,
+	}, nil
+}
+
+// handleRequestError processes request-level errors (network, timeout, cancellation)
+func (c *HTTPClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest) (*GenerateResponse, *ClientError) {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		klog.V(3).Infof("Request cancelled for request_id=%s", req.RequestID)
+		return nil, &ClientError{
+			Category: ErrCategoryUnknown,
+			Message:  "request cancelled",
+			RawError: err,
+		}
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		klog.V(3).Infof("Request timeout for request_id=%s", req.RequestID)
+		return nil, &ClientError{
+			Category: ErrCategoryServer,
+			Message:  "request timeout",
+			RawError: err,
+		}
+	}
+
+	klog.V(3).Infof("Request failed with network error for request_id=%s: %v", req.RequestID, err)
+	return nil, &ClientError{
+		Category: ErrCategoryServer,
+		Message:  fmt.Sprintf("failed to execute request: %v", err),
+		RawError: err,
+	}
+}
+
+// handleErrorResponse parses error response and maps to Error
+func (c *HTTPClient) handleErrorResponse(statusCode int, body []byte) *ClientError {
+	// Try to parse OpenAI-style error response
+	var errorResp struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+
+	message := string(body)
+	if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.Error.Message != "" {
+		message = errorResp.Error.Message
+	}
+
+	// Map HTTP status codes to error categories
+	category := c.mapStatusCodeToCategory(statusCode)
+
+	klog.V(3).Infof("Inference request failed with status=%d, category=%s, message=%s", statusCode, category, message)
+
+	return &ClientError{
+		Category: category,
+		Message:  fmt.Sprintf("HTTP %d: %s", statusCode, message),
+		RawError: fmt.Errorf("status code: %d, body: %s", statusCode, string(body)),
+	}
+}
+
+// mapStatusCodeToCategory maps HTTP status codes to error categories
+func (c *HTTPClient) mapStatusCodeToCategory(statusCode int) ErrorCategory {
+	switch statusCode {
+	case http.StatusBadRequest: // 400
+		return ErrCategoryInvalidReq
+	case http.StatusUnauthorized, http.StatusForbidden: // 401, 403
+		return ErrCategoryAuth
+	case http.StatusTooManyRequests: // 429
+		return ErrCategoryRateLimit
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout: // 500, 502, 503, 504
+		return ErrCategoryServer
+	default:
+		if statusCode >= 500 {
+			return ErrCategoryServer
+		}
+		return ErrCategoryUnknown
+	}
+}
+
+// buildTLSConfig constructs a custom TLS configuration based on provided options
+// Returns nil if no custom TLS config is needed (use system defaults)
+func buildTLSConfig(config HTTPClientConfig) (*tls.Config, error) {
+	if !config.TLSInsecureSkipVerify &&
+		config.TLSCACertFile == "" &&
+		config.TLSClientCertFile == "" &&
+		config.TLSClientKeyFile == "" &&
+		config.TLSMinVersion == 0 &&
+		config.TLSMaxVersion == 0 {
+		return nil, nil
+	}
+
+	// At least one custom TLS option is set - build custom config
+	tlsConfig := &tls.Config{}
+
+	// 1. InsecureSkipVerify (testing only)
+	if config.TLSInsecureSkipVerify {
+		tlsConfig.InsecureSkipVerify = true
+		klog.Warning("TLS certificate verification is disabled - this is insecure and should only be used for testing")
+	}
+
+	// 2. Custom CA certificate (for private CAs)
+	if config.TLSCACertFile != "" {
+		caCert, err := os.ReadFile(config.TLSCACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate file %s: %w", config.TLSCACertFile, err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", config.TLSCACertFile)
+		}
+
+		tlsConfig.RootCAs = caCertPool
+		klog.V(3).Infof("Loaded custom CA certificate from %s", config.TLSCACertFile)
+	}
+
+	// 3. Client certificate (for mTLS)
+	if config.TLSClientCertFile != "" && config.TLSClientKeyFile != "" {
+		clientCert, err := tls.LoadX509KeyPair(config.TLSClientCertFile, config.TLSClientKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate/key pair: %w", err)
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{clientCert}
+		klog.V(3).Infof("Loaded client certificate from %s", config.TLSClientCertFile)
+	} else if config.TLSClientCertFile != "" || config.TLSClientKeyFile != "" {
+		return nil, fmt.Errorf("both TLSClientCertFile and TLSClientKeyFile must be specified for mTLS")
+	}
+
+	// 4. TLS version constraints
+	if config.TLSMinVersion != 0 {
+		tlsConfig.MinVersion = config.TLSMinVersion
+		klog.V(3).Infof("Set minimum TLS version to 0x%04x", config.TLSMinVersion)
+	}
+	if config.TLSMaxVersion != 0 {
+		tlsConfig.MaxVersion = config.TLSMaxVersion
+		klog.V(3).Infof("Set maximum TLS version to 0x%04x", config.TLSMaxVersion)
+	}
+
+	return tlsConfig, nil
+}
