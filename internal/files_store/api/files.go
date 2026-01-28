@@ -14,16 +14,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file specifies the interfaces for the batch files storage.
-
+// Package api provides interfaces for batch file storage operations.
 package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/store"
+)
+
+var (
+	// ErrFileTooLarge is returned when the file size exceeds the limit.
+	ErrFileTooLarge = errors.New("file size exceeds limit")
+	// ErrTooManyLines is returned when the file exceeds the line limit.
+	ErrTooManyLines = errors.New("file exceeds line limit")
+	// ErrFileExists is returned when attempting to store a file that already exists.
+	ErrFileExists = errors.New("file already exists")
 )
 
 type BatchFileMetadata struct {
@@ -41,8 +50,8 @@ type BatchFilesClient interface {
 		fileMd *BatchFileMetadata, err error)
 
 	// Retrieve retrieves a file from the files storage.
-	Retrieve(ctx context.Context, location string) (reader io.Reader, fileMd *BatchFileMetadata, err error)
+	Retrieve(ctx context.Context, fileName, folderName string) (reader io.ReadCloser, fileMd *BatchFileMetadata, err error)
 
 	// Delete deletes the file in the specified location.
-	Delete(ctx context.Context, location string) (err error)
+	Delete(ctx context.Context, fileName, folderName string) (err error)
 }
