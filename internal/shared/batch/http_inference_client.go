@@ -131,8 +131,15 @@ func (c *HTTPInferenceClient) Generate(ctx context.Context, req *InferenceReques
 		}
 	}
 
-	// Determine endpoint based on request parameters
-	endpoint := c.determineEndpoint(req.Params)
+	// Use endpoint from request (provided by caller from batch.Request.EndPoint)
+	endpoint := req.Endpoint
+	if endpoint == "" {
+		return nil, &InferenceError{
+			Category: ErrCategoryInvalidReq,
+			Message:  "endpoint cannot be empty",
+			RawError: nil,
+		}
+	}
 
 	// Create resty request with context
 	restyReq := c.client.R().SetContext(ctx)
@@ -213,22 +220,6 @@ func (c *HTTPInferenceClient) handleRequestError(ctx context.Context, err error,
 		Message:  fmt.Sprintf("failed to execute request: %v", err),
 		RawError: err,
 	}
-}
-
-// determineEndpoint determines which endpoint to use based on request parameters
-func (c *HTTPInferenceClient) determineEndpoint(params map[string]interface{}) string {
-	// Check if messages field exists (indicates chat completion)
-	if _, hasMessages := params["messages"]; hasMessages {
-		return "/v1/chat/completions"
-	}
-
-	// Check if prompt field exists (indicates text completion)
-	if _, hasPrompt := params["prompt"]; hasPrompt {
-		return "/v1/completions"
-	}
-
-	// Default to chat completions
-	return "/v1/chat/completions"
 }
 
 // handleErrorResponse parses error response and maps to InferenceError

@@ -107,6 +107,7 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test-completion-001",
 			Model:     "fake-model",
+			Endpoint:  "/v1/chat/completions",
 			Params: map[string]interface{}{
 				"model":      "fake-model",
 				"prompt":     "Once upon a time",
@@ -148,6 +149,7 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test-chat-001",
 			Model:     "fake-model",
+			Endpoint:  "/v1/chat/completions",
 			Params: map[string]interface{}{
 				"model": "fake-model",
 				"messages": []map[string]interface{}{
@@ -187,6 +189,7 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 			req := &InferenceRequest{
 				RequestID: fmt.Sprintf("sequential-test-%03d", i),
 				Model:     "fake-model",
+				Endpoint:  "/v1/chat/completions",
 				Params: map[string]interface{}{
 					"model":      "fake-model",
 					"prompt":     "Test request",
@@ -216,6 +219,7 @@ func TestHTTPInferenceClientBasicInference(t *testing.T) {
 				req := &InferenceRequest{
 					RequestID: fmt.Sprintf("concurrent-test-%03d", id),
 					Model:     "fake-model",
+					Endpoint:  "/v1/chat/completions",
 					Params: map[string]interface{}{
 						"model":      "fake-model",
 						"prompt":     "Concurrent test",
@@ -264,6 +268,7 @@ func TestHTTPInferenceClientLatencySimulation(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "ttft-latency-001",
 			Model:     "fake-model",
+			Endpoint:  "/v1/chat/completions",
 			Params: map[string]interface{}{
 				"model":      "fake-model",
 				"prompt":     "Test TTFT latency",
@@ -294,6 +299,7 @@ func TestHTTPInferenceClientLatencySimulation(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "inter-token-latency-001",
 			Model:     "fake-model",
+			Endpoint:  "/v1/chat/completions",
 			Params: map[string]interface{}{
 				"model":      "fake-model",
 				"prompt":     "Test inter-token latency",
@@ -349,6 +355,7 @@ func TestHTTPInferenceClientFailureInjection(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "mixed-failure-001",
 			Model:     "fake-model",
+			Endpoint:  "/v1/completions",
 			Params: map[string]interface{}{
 				"model":      "fake-model",
 				"prompt":     "Test retry on partial failures",

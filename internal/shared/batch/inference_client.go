@@ -25,6 +25,7 @@ type InferenceClient interface {
 type InferenceRequest struct {
 	RequestID string                 // unique request id set by user
 	Model     string                 // model id (also inside Params)
+	Endpoint  string                 // API endpoint (e.g., "/v1/chat/completions") from batch.Request.EndPoint
 	Params    map[string]interface{} // parameters
 }
 

@@ -309,6 +309,7 @@ func TestGenerate(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test-request-123",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params: map[string]interface{}{
 				"model": "gpt-4",
 				"messages": []map[string]interface{}{
@@ -356,7 +357,7 @@ func TestGenerate(t *testing.T) {
 		assertContains(t, err.Message, "cannot be nil")
 	})
 
-	t.Run("should use chat completions endpoint for messages", func(t *testing.T) {
+	t.Run("should use endpoint from request", func(t *testing.T) {
 		endpoint := ""
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			endpoint = r.URL.Path
@@ -373,6 +374,7 @@ func TestGenerate(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params: map[string]interface{}{
 				"messages": []map[string]interface{}{
 					{"role": "user", "content": "test"},
@@ -384,10 +386,8 @@ func TestGenerate(t *testing.T) {
 		assertEqual(t, endpoint, "/v1/chat/completions")
 	})
 
-	t.Run("should use completions endpoint for prompt", func(t *testing.T) {
-		endpoint := ""
+	t.Run("should fail when endpoint is empty", func(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			endpoint = r.URL.Path
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
 		}))
@@ -401,25 +401,31 @@ func TestGenerate(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "", // Empty endpoint
 			Params: map[string]interface{}{
-				"prompt": "Hello world",
+				"messages": []map[string]interface{}{
+					{"role": "user", "content": "test"},
+				},
 			},
 		}
 
-		client.Generate(context.Background(), req)
-		assertEqual(t, endpoint, "/v1/completions")
+		resp, err := client.Generate(context.Background(), req)
+		assertNil(t, resp)
+		assertNotNil(t, err)
+		assertEqual(t, err.Category, ErrCategoryInvalidReq)
+		assertContains(t, err.Message, "endpoint cannot be empty")
 	})
 }
 
 func TestErrorHandling(t *testing.T) {
 	t.Run("HTTP status code mapping", func(t *testing.T) {
 		tests := []struct {
-			name            string
-			statusCode      int
-			responseBody    map[string]interface{}
-			responseText    string
-			wantCategory    ErrorCategory
-			wantRetryable   bool
+			name          string
+			statusCode    int
+			responseBody  map[string]interface{}
+			responseText  string
+			wantCategory  ErrorCategory
+			wantRetryable bool
 		}{
 			// 4xx client errors
 			{
@@ -490,10 +496,10 @@ func TestErrorHandling(t *testing.T) {
 				wantRetryable: true,
 			},
 			{
-				name:         "should handle 503 Service Unavailable",
-				statusCode:   http.StatusServiceUnavailable,
-				responseText: "Service temporarily unavailable",
-				wantCategory: ErrCategoryServer,
+				name:          "should handle 503 Service Unavailable",
+				statusCode:    http.StatusServiceUnavailable,
+				responseText:  "Service temporarily unavailable",
+				wantCategory:  ErrCategoryServer,
 				wantRetryable: true,
 			},
 			{
@@ -528,6 +534,7 @@ func TestErrorHandling(t *testing.T) {
 				req := &InferenceRequest{
 					RequestID: "test",
 					Model:     "gpt-4",
+					Endpoint:  "/v1/chat/completions",
 					Params:    map[string]interface{}{"model": "gpt-4"},
 				}
 
@@ -557,6 +564,7 @@ func TestErrorHandling(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -581,6 +589,7 @@ func TestErrorHandling(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -605,6 +614,7 @@ func TestErrorHandling(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -632,6 +642,7 @@ func TestErrorHandling(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -646,13 +657,13 @@ func TestErrorHandling(t *testing.T) {
 func TestRetryLogic(t *testing.T) {
 	t.Run("retry behavior for different error types", func(t *testing.T) {
 		tests := []struct {
-			name                   string
-			statusCode             int
-			errorMessage           string
-			failuresBeforeSuccess  int
-			wantAttemptCount       int
-			wantSuccess            bool
-			wantErrorCategory      ErrorCategory
+			name                  string
+			statusCode            int
+			errorMessage          string
+			failuresBeforeSuccess int
+			wantAttemptCount      int
+			wantSuccess           bool
+			wantErrorCategory     ErrorCategory
 		}{
 			{
 				name:                  "should retry on rate limit error",
@@ -728,6 +739,7 @@ func TestRetryLogic(t *testing.T) {
 				req := &InferenceRequest{
 					RequestID: "test",
 					Model:     "gpt-4",
+					Endpoint:  "/v1/chat/completions",
 					Params:    map[string]interface{}{"model": "gpt-4"},
 				}
 
@@ -769,6 +781,7 @@ func TestRetryLogic(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -801,6 +814,7 @@ func TestRetryLogic(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -833,6 +847,7 @@ func TestRetryLogic(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -861,6 +876,7 @@ func TestAuthentication(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -884,6 +900,7 @@ func TestAuthentication(t *testing.T) {
 		req := &InferenceRequest{
 			RequestID: "test",
 			Model:     "gpt-4",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
@@ -904,6 +921,7 @@ func TestNetworkErrors(t *testing.T) {
 		resp, err := client.Generate(context.Background(), &InferenceRequest{
 			RequestID: "test",
 			Model:     "test",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
@@ -925,6 +943,7 @@ func TestNetworkErrors(t *testing.T) {
 		resp, err := client.Generate(context.Background(), &InferenceRequest{
 			RequestID: "test",
 			Model:     "test",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
@@ -964,6 +983,7 @@ func TestRetryHookBehavior(t *testing.T) {
 		resp, err := client.Generate(context.Background(), &InferenceRequest{
 			RequestID: "test",
 			Model:     "test",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
@@ -993,6 +1013,7 @@ func TestTimeoutBehavior(t *testing.T) {
 		resp, err := client.Generate(context.Background(), &InferenceRequest{
 			RequestID: "test",
 			Model:     "test",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "test"},
 		})
 		elapsed := time.Since(start)
@@ -1025,6 +1046,7 @@ func TestTimeoutBehavior(t *testing.T) {
 		resp, err := client.Generate(ctx, &InferenceRequest{
 			RequestID: "test",
 			Model:     "test",
+			Endpoint:  "/v1/chat/completions",
 			Params:    map[string]interface{}{"model": "test"},
 		})
 		elapsed := time.Since(start)
@@ -1076,6 +1098,7 @@ func TestRetryConditionLogic(t *testing.T) {
 				client.Generate(context.Background(), &InferenceRequest{
 					RequestID: "test",
 					Model:     "test",
+					Endpoint:  "/v1/chat/completions",
 					Params:    map[string]interface{}{"model": "test"},
 				})
 
