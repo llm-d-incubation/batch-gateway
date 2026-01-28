@@ -1,0 +1,16 @@
+# Default configuration for batch-gateway API server
+# This file is used for local development and testing
+
+# Server host (empty string means all interfaces)
+host: ""
+
+# Server port
+port: "8000"
+
+# SSL certificate file path (optional)
+# Uncomment and set paths to enable HTTPS
+# ssl_cert_file: "path/to/cert.pem"
+# ssl_key_file: "path/to/key.pem"
+
+# Batch TTL in seconds (default: 30 days)
+batch_ttl_seconds: 2592000
