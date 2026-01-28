@@ -16,7 +16,11 @@ limitations under the License.
 
 package batch
 
-import "time"
+import (
+	"time"
+
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+)
 
 // Job represents a batch job data from DB TODO:: job struct to use in processor.
 
@@ -63,31 +67,16 @@ func (rs RequestStatus) String() string {
 	}[rs]
 }
 
-// BatchStatus
-type BatchStatus int
+// BatchStatus - follows the OpenAI batch statuses
+type BatchStatus openai.BatchStatus
 
 const (
-	Pending BatchStatus = iota
-	Validating
-	InProgress
-	Finalizing
-	Completed
-	Failed
-	Expired
-	Cancelling
-	Cancelled
+	StatusValidating BatchStatus = BatchStatus(openai.BatchStatusValidating)
+	StatusInProgress BatchStatus = BatchStatus(openai.BatchStatusInProgress)
+	StatusFinalizing BatchStatus = BatchStatus(openai.BatchStatusFinalizing)
+	StatusCompleted  BatchStatus = BatchStatus(openai.BatchStatusCompleted)
+	StatusFailed     BatchStatus = BatchStatus(openai.BatchStatusFailed)
+	StatusExpired    BatchStatus = BatchStatus(openai.BatchStatusExpired)
+	StatusCancelling BatchStatus = BatchStatus(openai.BatchStatusCancelling)
+	StatusCancelled  BatchStatus = BatchStatus(openai.BatchStatusCancelled)
 )
-
-func (bs BatchStatus) String() string {
-	return [...]string{
-		"pending",
-		"validating",
-		"in_progress",
-		"finalizing",
-		"completed",
-		"failed",
-		"expired",
-		"cancelling",
-		"cancelled",
-	}[bs]
-}

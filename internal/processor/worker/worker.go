@@ -253,11 +253,11 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	}()
 
 	// status update - inprogress (TTL 24h)
-	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(batch.InProgress.String()))
+	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(batch.StatusInProgress))
 	logger.V(logging.DEBUG).Info("Worker started job", "workerID", workerId, "jobID", job.ID)
 
 	// TODO:: file validating
-	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(batch.Validating.String()))
+	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(batch.StatusValidating))
 
 	// TODO:: download file, streaming
 	// check if the method in the request is allowed
@@ -341,21 +341,21 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchJ
 	// TODO:: final status decision (should be included in the job object)
 	// openai batch set the job as completed even there are some failures - should we do the same?
 	// failed status is used when the file is not valid or the batch request is not started properly
-	finalStatus := batch.Completed
+	finalStatus := batch.StatusCompleted
 	if !metadata.Validate() {
 		logger.V(logging.WARNING).Info("Job finished with partial failures", "jobID", job.ID, "metadata", metadata)
 		// TODO:: finalStatus = batch.Failed
 	}
 
 	// status update
-	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(batch.Finalizing.String()))
+	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing))
 
 	// db update (job.Status should be updated before this line)
 	if err := p.clients.database.Update(jobctx, job); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update final job status in DB", "jobID", job.ID)
 	}
-	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(finalStatus.String()))
-	logger.V(logging.INFO).Info("Job Processed", "jobID", job.ID, "status", finalStatus.String())
+	p.clients.status.Set(jobctx, job.ID, 24*60*60, []byte(finalStatus))
+	logger.V(logging.INFO).Info("Job Processed", "jobID", job.ID, "status", finalStatus)
 }
 
 func (p *Processor) handleError(ctx context.Context, err error) {
