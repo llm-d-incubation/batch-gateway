@@ -16,6 +16,7 @@ limitations under the License.
 
 // This file specifies the interfaces for the batch files storage.
 
+// Package api provides interfaces for batch file storage operations.
 package api
 
 import (
@@ -25,6 +26,11 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/store"
 )
+
+type BatchClientAdmin interface {
+	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
+	Close() error
+}
 
 type BatchFileMetadata struct {
 	Location string    // Absolute location of the file.
