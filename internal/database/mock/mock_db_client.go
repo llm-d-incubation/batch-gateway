@@ -43,30 +43,64 @@ func (m *MockBatchDBClient) DBGet(
 	ctx context.Context, query *api.BatchDBQuery,
 	includeStatic bool, start, limit int) (
 	[]*api.BatchItem, int, bool, error) {
-	var results []*api.BatchItem
+	var allMatches []*api.BatchItem
 
 	// If IDs are specified, get by IDs
 	if len(query.IDs) > 0 {
 		for _, id := range query.IDs {
 			if value, ok := m.jobs.Load(id); ok {
 				if job, ok := value.(*api.BatchItem); ok {
-					results = append(results, job)
+					allMatches = append(allMatches, job)
 				}
 			}
 		}
 	} else {
+		// Collect all items
 		m.jobs.Range(func(key, value any) bool {
 			if job, ok := value.(*api.BatchItem); ok {
-				results = append(results, job)
-				if len(results) >= limit && limit > 0 {
-					return false
+				// Filter by TagSelectors if specified
+				if len(query.TagSelectors) > 0 {
+					matches := true
+					for tagKey, tagValue := range query.TagSelectors {
+						if jobTagValue, ok := job.Tags[tagKey]; !ok || jobTagValue != tagValue {
+							matches = false
+							break
+						}
+					}
+					if !matches {
+						return true // Continue to next item
+					}
 				}
+				allMatches = append(allMatches, job)
 			}
 			return true
 		})
 	}
 
-	return results, 0, false, nil
+	// Handle pagination
+	totalMatches := len(allMatches)
+
+	// Skip items before start
+	if start >= totalMatches {
+		return []*api.BatchItem{}, start, false, nil
+	}
+
+	allMatches = allMatches[start:]
+
+	// Apply limit
+	var results []*api.BatchItem
+	expectedMore := false
+	if limit > 0 && len(allMatches) > limit {
+		results = allMatches[:limit]
+		expectedMore = true
+	} else {
+		results = allMatches
+	}
+
+	// Calculate next cursor
+	nextCursor := start + len(results)
+
+	return results, nextCursor, expectedMore, nil
 }
 
 func (m *MockBatchDBClient) DBUpdate(

@@ -27,11 +27,14 @@ import (
 )
 
 type ServerConfig struct {
-	Host            string `yaml:"host"`
-	Port            string `yaml:"port"`
-	SSLCertFile     string `yaml:"ssl_cert_file"`
-	SSLKeyFile      string `yaml:"ssl_key_file"`
-	BatchTTLSeconds int    `yaml:"batch_ttl_seconds"`
+	Host                         string `yaml:"host"`
+	Port                         string `yaml:"port"`
+	SSLCertFile                  string `yaml:"ssl_cert_file"`
+	SSLKeyFile                   string `yaml:"ssl_key_file"`
+	BatchTTLSeconds              int    `yaml:"batch_ttl_seconds"`
+	FileDefaultExpirationSeconds int64  `yaml:"file_default_expiration_seconds"`
+	FileMaxSizeBytes             int64  `yaml:"file_max_size_bytes"`
+	FileMaxLineCount             int64  `yaml:"file_max_line_count"`
 }
 
 func NewConfig() *ServerConfig {
@@ -100,4 +103,37 @@ func (c *ServerConfig) loadFromFile(path string) error {
 
 func (c *ServerConfig) SSLEnabled() bool {
 	return (c.SSLCertFile != "" && c.SSLKeyFile != "")
+}
+
+func (c *ServerConfig) GetMaxFileSizeBytes() int64 {
+	if c.FileMaxSizeBytes > 0 {
+		return c.FileMaxSizeBytes
+	}
+	// The file can contain up to 50,000 requests, and can be up to 200 MB in size.
+	// Line counting is enforced via LineCountingReader in the file upload handler.
+	return 200 << 20
+}
+
+func (c *ServerConfig) GetFileDefaultExpirationSeconds() int64 {
+	if c.FileDefaultExpirationSeconds > 0 {
+		return c.FileDefaultExpirationSeconds
+	}
+	// Default to 30 days if not configured
+	return 30 * 24 * 60 * 60 // 2592000 seconds
+}
+
+func (c *ServerConfig) GetBatchTTLSeconds() int {
+	if c.BatchTTLSeconds > 0 {
+		return c.BatchTTLSeconds
+	}
+	// Default to 30 days if not configured
+	return 30 * 24 * 60 * 60 // 2592000 seconds
+}
+
+func (c *ServerConfig) GetMaxFileLineCount() int64 {
+	if c.FileMaxLineCount > 0 {
+		return c.FileMaxLineCount
+	}
+	// Default to 50,000 lines if not configured
+	return 50000
 }

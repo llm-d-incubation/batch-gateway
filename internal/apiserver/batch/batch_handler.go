@@ -401,7 +401,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 			{
 				ID:   batchID,
 				Type: api.BatchEventCancel,
-				TTL:  c.config.BatchTTLSeconds,
+				TTL:  c.config.GetBatchTTLSeconds(),
 			},
 		}
 		_, err = c.eventClient.ECProducerSendEvents(ctx, event)

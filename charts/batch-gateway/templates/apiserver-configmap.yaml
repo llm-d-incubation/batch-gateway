@@ -11,6 +11,9 @@ data:
     host: {{ .Values.apiserver.config.host | quote }}
     port: {{ .Values.apiserver.config.port | quote }}
     batch_ttl_seconds: {{ .Values.apiserver.config.batchTTLSeconds }}
+    file_default_expiration_seconds: {{ .Values.apiserver.config.fileDefaultExpirationSeconds }}
+    file_max_size_bytes: {{ .Values.apiserver.config.fileMaxSizeBytes }}
+    file_max_line_count: {{ .Values.apiserver.config.fileMaxLineCount }}
     {{- if .Values.apiserver.tls.enabled }}
     ssl_cert_file: "/etc/tls/tls.crt"
     ssl_key_file: "/etc/tls/tls.key"

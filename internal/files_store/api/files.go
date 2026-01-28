@@ -37,11 +37,11 @@ type BatchFilesClient interface {
 	store.BatchClientAdmin
 
 	// Store stores a file in the files storage.
-	Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
+	Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.ReadCloser) (
 		fileMd *BatchFileMetadata, err error)
 
 	// Retrieve retrieves a file from the files storage.
-	Retrieve(ctx context.Context, location string) (reader io.Reader, fileMd *BatchFileMetadata, err error)
+	Retrieve(ctx context.Context, location string) (reader io.ReadCloser, fileMd *BatchFileMetadata, err error)
 
 	// Delete deletes the file in the specified location.
 	Delete(ctx context.Context, location string) (err error)

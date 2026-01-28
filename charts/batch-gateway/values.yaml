@@ -85,6 +85,9 @@ apiserver:
     host: ""
     port: "8000"
     batchTTLSeconds: 2592000
+    fileDefaultExpirationSeconds: 2592000
+    fileMaxSizeBytes: 209715200
+    fileMaxLineCount: 50000
 
   # TLS/SSL Configuration
   tls:
