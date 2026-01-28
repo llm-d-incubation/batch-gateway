@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -212,8 +213,7 @@ func (c *HTTPInferenceClient) Generate(ctx context.Context, req *InferenceReques
 
 // handleRequestError processes request-level errors (network, timeout, cancellation)
 func (c *HTTPInferenceClient) handleRequestError(ctx context.Context, err error, req *InferenceRequest) (*InferenceResponse, *InferenceError) {
-	// Check if context was cancelled or timed out
-	if ctx.Err() == context.Canceled {
+	if errors.Is(ctx.Err(), context.Canceled) {
 		klog.V(3).Infof("Request cancelled for request_id=%s", req.RequestID)
 		return nil, &InferenceError{
 			Category: ErrCategoryUnknown,
@@ -221,7 +221,7 @@ func (c *HTTPInferenceClient) handleRequestError(ctx context.Context, err error,
 			RawError: err,
 		}
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		klog.V(3).Infof("Request timeout for request_id=%s", req.RequestID)
 		return nil, &InferenceError{
 			Category: ErrCategoryServer,
