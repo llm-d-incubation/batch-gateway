@@ -61,7 +61,7 @@ type BatchDBClient interface {
 	// Get gets the information (static and dynamic) of batch jobs.
 	// If IDs are specified, this function will get jobs by the specified IDs.
 	// If tags are specified, this function will get jobs by the specified tags.
-	// If no IDs nor tags are specified, the function will return an empty list of jobs.
+	// If no IDs nor tags are specified, the function will return all jobs (paginated).
 	// tagsLogicalCond specifies the logical condition to use for when searching for the tags per job.
 	// includeStatic specifies if to include the static part of a job in the returned output.
 	// start and limit specify the pagination details. This is relevant only for search by tags.
