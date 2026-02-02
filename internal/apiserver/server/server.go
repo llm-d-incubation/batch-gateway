@@ -144,14 +144,14 @@ func (s *Server) buildHandler() http.Handler {
 	}
 
 	// register middlewares
-	var h http.Handler
-	h = middleware.RecoveryMiddleware(mux) // Innermost, catches panics from business logic
+	var h http.Handler = mux
 	//h = middleware.BodySizeLimitMiddleware(h) //  Limit request body size
 	//h = middleware.AuthorizationMiddleware(h) //  Check permissions
 	//h = middleware.AuthenticationMiddleware(h) // Verify API key/JWT
-	h = middleware.RequestMiddleware(h) // Request ID, logging, metrics
 	//h = middleware.RateLimitMiddleware(h)      // Early Rejection
-	h = middleware.SecurityHeadersMiddleware(h) // Outermost, affects all responses
+	h = middleware.SecurityHeadersMiddleware(h) // Add security headers
+	h = middleware.RequestMiddleware(h)         // 2nd Outermost, request monitoring
+	h = middleware.RecoveryMiddleware(h)        // Outermost - catches ALL panics
 
 	return h
 }
