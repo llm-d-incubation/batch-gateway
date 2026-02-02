@@ -18,23 +18,29 @@ limitations under the License.
 package worker
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	files "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 type ProcessorClients struct {
 	database      db.BatchDBClient
+	files         files.BatchFilesClient
 	priorityQueue db.BatchPriorityQueueClient
 	status        db.BatchStatusClient
 	event         db.BatchEventChannelClient
@@ -43,6 +49,7 @@ type ProcessorClients struct {
 
 func NewProcessorClients(
 	db db.BatchDBClient,
+	files files.BatchFilesClient,
 	pq db.BatchPriorityQueueClient,
 	status db.BatchStatusClient,
 	event db.BatchEventChannelClient,
@@ -50,6 +57,7 @@ func NewProcessorClients(
 ) ProcessorClients {
 	return ProcessorClients{
 		database:      db,
+		files:         files,
 		priorityQueue: pq,
 		status:        status,
 		event:         event,
@@ -79,6 +87,9 @@ func (pc *ProcessorClients) Validate() error {
 	if pc.database == nil {
 		return fmt.Errorf("database client is missing")
 	}
+	if pc.files == nil {
+		return fmt.Errorf("files client is missing")
+	}
 	if pc.priorityQueue == nil {
 		return fmt.Errorf("priority queue client is missing")
 	}
@@ -106,7 +117,6 @@ func (p *Processor) prepare(ctx context.Context) error {
 	return nil
 }
 
-// TODO: events implementation (cancel, pause, resume)
 // RunPollingLoop runs the main job polling loop for the processor, try assign the job to the worker,
 func (p *Processor) RunPollingLoop(ctx context.Context) error {
 	if err := p.prepare(ctx); err != nil {
@@ -142,25 +152,28 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(p.cfg.PollInterval):
+			case <-time.After(p.cfg.PollInterval): // wait for poll interval to protect db from frequent queueing if no tasks are available
 				continue
 			}
 		}
 
-		// get detailed job info for processor
+		// queue wait should be recorded here
+		// TODO:: metrics.RecordQueueWait(time.Since(task.EnqueuedAt), tenantID)
+
+		// get detailed job info from db for processor
 		jobDbData, err := p.getJobData(ctx, task)
 		if err != nil {
+			// this task should be skipped as the data is not in db
+			// don't need to re-enqueue the task.
 			p.workerPool.Release(workerId)
+			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+			// we don't have enough information to record job processing duration and errored model (missing tenantID, modelID)
+			// we don't have enough information to update the job status in the db
 			continue
 		}
 
-		// TODO:: get tenant id from job.Spec
-		// tenantID := "unknown"
-		// TODO:: job queue object should have enqueued at field (maybe updated at too)
-		// TODO:: metrics.RecordQueueWait(time.Since(task.EnqueuedAt), tenantID)
-
-		// process job
-		go func(wid int, j *db.BatchItem) {
+		// process job (read downloaded file, process requests line by line, write responses to the output file)
+		go func(c context.Context, wid int, j *db.BatchItem) {
 			defer func() {
 				if r := recover(); r != nil {
 					recoverErr := fmt.Errorf("%v", r)
@@ -171,8 +184,8 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 			}()
 
 			metrics.IncActiveWorkers()
-			p.processJob(ctx, wid, j)
-		}(workerId, jobDbData)
+			p.processJob(c, wid, j)
+		}(ctx, workerId, jobDbData)
 	}
 }
 
@@ -227,140 +240,314 @@ func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (
 	return jobs[0], nil
 }
 
-// TODO:: complete job processing logic
-// read input file, streaming, line processing, result writing, etc.
-// TODO:: add event handling (cancel, pause, resume)
-// TODO:: add metrics (job duration, job processed, job result, job failure reason)
-// TODO:: add logging (job started, job finished, job failed)
-// TODO:: add error handling (error handling. inference request failed)
-// TODO:: add response handling (response handling + writing line to the output file ...)
-// TODO:: add output file writing (output file writing)
-// TODO:: add output file reading (output file reading)
-// TODO:: add output file closing (output file closing)
-func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchItem) {
+// TODO:: status updates and re-enqueue the job if needed
+func (p *Processor) processJob(ctx context.Context, workerId int, jobDbData *db.BatchItem) {
 	// logger and ctx
-	logger := klog.FromContext(ctx).WithValues("jobID", job.ID, "workerID", workerId)
+	logger := klog.FromContext(ctx).WithValues("jobID", jobDbData.ID, "workerID", workerId)
 	jobctx := klog.NewContext(ctx, logger)
+	logger.V(logging.DEBUG).Info("Worker started")
 
-	// metrics
-	startTime := time.Now()
-	metadata := batch.JobResultMetadata{}
-	defer func() {
-		// TODO:: get tenant id from job.Spec (should be included in the job object)
-		// job result / failure reason for metric
-		// TODO:: how to check if the failure is on user or system
-		tenantID := "unknown"
-		jobFailureReason := metrics.ReasonUnknown
-		jobResult := metrics.ResultSuccess
-
-		metrics.RecordJobProcessingDuration(time.Since(startTime), tenantID, metrics.GetSizeBucket(metadata.Total))
-		metrics.RecordJobProcessed(jobResult, jobFailureReason)
-	}()
-
-	// status update - inprogress (TTL 24h)
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusInProgress))
-	logger.V(logging.DEBUG).Info("Worker started job", "workerID", workerId, "jobID", job.ID)
-
-	// TODO:: file validating
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusValidating))
-
-	// TODO:: download file, streaming
-	// check if the method in the request is allowed
-	// check if the model in the request is allowed (optional)
-	// set total request num in result obj + init other fields
-	// goroutine per one line reading
-	// limit goroutines using config's max job concurrency
-	sem := make(chan struct{}, p.cfg.MaxJobConcurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex // for metadata update
-
-	// TODO:: mock file lines
-	lines := []string{"req1", "req2", "req3"}
-
-	// result metadata init
-	metadata = batch.JobResultMetadata{
-		Total:     len(lines),
-		Succeeded: 0,
-		Failed:    0,
+	// convert db job data to openai batch object
+	job, err := batch_utils.FromDBToJobInfo(jobDbData)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to convert job object in DB to batch object")
+		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+		// skipped metrics: job processing duration / job error details
+		// job processing duration recording (missing tenantID, sizeBucket)
+		// job error recording (missing modelID)
+		batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, nil, nil)
+		return
 	}
 
-	// TODO:: read lines + process (mockup)
-	lineChan := make(chan string)
-	go func() {
-		for _, l := range lines {
-			lineChan <- l
+	// check if the job is expired
+	if !batch_utils.IsJobExpired(job.BatchJob) {
+		logger.V(logging.INFO).Info("Job is expired.")
+		// update the job status to expired
+		if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusExpired, nil, nil); err != nil {
+			logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusExpired)
 		}
-		close(lineChan)
-	}()
+		// metrics
+		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+		metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
+		return
+	}
 
-	for line := range lineChan {
-		// check context termination
-		select {
-		case <-jobctx.Done():
-			logger.V(logging.INFO).Info("Stopping line processing due to shutdown")
-			return
-		case sem <- struct{}{}: // wait here if max concurrency is reached
+	// get event channel for the job
+	eventsChan, err := p.clients.event.ECConsumerGetChannel(ctx, job.JobID)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to get event channel")
+		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+		metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
+		// we don't have enough information to record job processing duration(missing sizeBucket)
+		if err = batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, ctx, jobDbData, openai.BatchStatusFailed, nil, nil); err != nil {
+			logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
 		}
-		wg.Add(1)
-		go func(l string) {
-			defer func() {
-				<-sem
-				wg.Done()
-			}()
+		return
+	}
 
-			// check again for signal in the goroutine
+	// atomic request counts
+	var (
+		totalRequests     int64 = 0
+		completedRequests int64 = 0
+		failedRequests    int64 = 0
+	)
+
+	requestCounts := &openai.BatchRequestCounts{
+		Total:     atomic.LoadInt64(&totalRequests),
+		Completed: atomic.LoadInt64(&completedRequests),
+		Failed:    atomic.LoadInt64(&failedRequests),
+	}
+
+	// initialize job result record values
+	jobFailureReason := metrics.ReasonNone
+	jobResult := metrics.ResultSuccess
+	startTime := time.Now()
+
+	// status update - in_progress
+	if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusInProgress, requestCounts, nil); err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. updating to failed instead.", openai.BatchStatusInProgress)
+	}
+
+	// limit goroutines using config's max job concurrency
+	// limit + 2: 1 for file reader/dispatcher, 1 for writer, max job concurrency for inference requests
+	processPipelineGroup, processPipelineCtx := errgroup.WithContext(ctx)
+	processPipelineGroup.SetLimit(p.cfg.MaxJobConcurrency + 2)
+
+	resultChan := make(chan *batch_utils.Response, p.cfg.MaxJobConcurrency)
+
+	// file download - get file reader
+	fileReader, fileSpec, err := p.openInputFileStream(jobctx, job.BatchJob.InputFileID)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to open input file stream")
+		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+		// skipped metrics: job processing duration / job error details
+		// job processing duration recording (missing tenantID, sizeBucket)
+		// job error recording (missing modelID)
+		updateErr := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, nil, nil)
+		if updateErr != nil {
+			logger.V(logging.ERROR).Error(updateErr, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
+		}
+		return
+	}
+
+	// validate file size using config's max batch bytes
+	if fileSpec.Size > p.cfg.MaxBatchBytes {
+		logger.V(logging.ERROR).Error(fmt.Errorf("file size %d exceeds limit %d", fileSpec.Size, p.cfg.MaxBatchBytes), "Failed to open input file stream")
+		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonUserError)
+		// skipped metrics: job processing duration / job error details
+		// job processing duration recording (missing sizeBucket)
+		// job error recording (missing modelID)
+		updateErr := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, nil, nil)
+		if updateErr != nil {
+			logger.V(logging.ERROR).Error(updateErr, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
+		}
+		return
+	}
+
+	// writer goroutine to write the responses to the output file
+	var localoutputPath string
+	processPipelineGroup.Go(func() error {
+		localoutputPath, err = p.writeResultsToFileLoop(processPipelineCtx, job.JobID, resultChan)
+		if err != nil {
+			return err // critical error. processPipelineCtx should be cancelled.
+		}
+		job.BatchJob.OutputFileID = localoutputPath
+		return nil
+	})
+
+	// reader + dispatcher goroutine to process the requests
+	processPipelineGroup.Go(func() error {
+		// defer closing the file reader & result channel
+		defer func() {
+			fileReader.Close()
+			close(resultChan)
+		}()
+
+		// read the input file line by line
+		fileStreamScanner := bufio.NewScanner(fileReader)
+		for fileStreamScanner.Scan() {
+			// context check before each line processing
 			select {
-			case <-jobctx.Done():
-				return
+			case <-processPipelineCtx.Done(): // critical error occured in the group. need to stop the loop immediately
+				return processPipelineCtx.Err() // stops the whole errGroup
+			case <-jobctx.Done(): // process received cancellation request. need to stop the loop immediately
+				logger.V(logging.INFO).Info("Job processing stopped due to system shutdown signal.")
+				if err := batch_utils.UpdateRequestCountsStatus(p.clients.status, processPipelineCtx, job.JobID, requestCounts); err != nil {
+					logger.V(logging.ERROR).Error(err, "Failed to update request counts status", "requestCounts", requestCounts)
+					// non critical error. continue the loop
+				}
+				// status update to failed ?
+				// or update it to validating then re-enqueue the job so we can try again?
+				if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, requestCounts, nil); err != nil {
+					logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
+				}
+
+				// metrics
+				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+				metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
+				metrics.RecordJobProcessingDuration(time.Since(startTime), job.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+
+				// exit the loop safely
+				return nil
+			case ev := <-eventsChan.Events:
+				switch ev.Type {
+				case db.BatchEventCancel:
+					// cancel the processing pipeline
+					logger.V(logging.INFO).Info("Received cancellation request. cancelling the processing pipeline")
+					// request counts status update
+					if err := batch_utils.UpdateRequestCountsStatus(p.clients.status, processPipelineCtx, job.JobID, requestCounts); err != nil {
+						logger.V(logging.ERROR).Error(err, "Failed to update request counts status", "requestCounts", requestCounts)
+					}
+					// status update to cancelling
+					if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelling, requestCounts, nil); err != nil {
+						logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusCancelling)
+					}
+					// what do we need to do here to exit the loop safely?
+
+					// status update to cancelled
+					if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelled, requestCounts, nil); err != nil {
+						logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusCancelled)
+					}
+					return fmt.Errorf("job cancelled")
+				case db.BatchEventPause:
+					logger.Info("Job paused by user. Waiting for resume request.")
+
+					// wait for resume request
+				PauseLoop:
+					for {
+						select {
+						case <-processPipelineCtx.Done():
+							return processPipelineCtx.Err()
+						case resEv := <-eventsChan.Events:
+							if resEv.Type == db.BatchEventResume {
+								break PauseLoop
+							}
+							if resEv.Type == db.BatchEventCancel {
+								return fmt.Errorf("cancel signal received. job cancelled by user.")
+							}
+						}
+					}
+				}
+
 			default:
 			}
-			// TODO:: line parsing
-			// TODO:: check allowed methods
-			// TODO:: request validation
+			// read one line at a time
+			line := fileStreamScanner.Text()
 
-			// mock request
-			mockRequest := &inference.GenerateRequest{}
-			result, err := p.clients.inference.Generate(jobctx, mockRequest)
-
-			// shared resources (metadata / totaljoblines) lock
-			mu.Lock()
-			defer mu.Unlock()
-
-			if err != nil {
-				p.handleError(jobctx, err)
-				metadata.Failed++
-				return
+			// validate the request line's method and request body format
+			if err := p.validateLine(line); err != nil {
+				return err
 			}
-
-			if err := p.handleResponse(jobctx, result); err != nil {
-				metadata.Failed++
-			} else {
-				metadata.Succeeded++
+			// increase request counts
+			atomic.AddInt64(&totalRequests, 1)
+			// update request counts status
+			if err := batch_utils.UpdateRequestCountsStatus(p.clients.status, processPipelineCtx, job.JobID, requestCounts); err != nil {
+				logger.V(logging.ERROR).Error(err, "Failed to update request counts status", "requestCounts", requestCounts)
+				// non critical error. continue the loop
 			}
-		}(line)
+			// send the request to the inference server
+			processPipelineGroup.Go(func() error {
+				currentLine := line
+				// send the request to the inference server >> result sent to resultchan
+				p.doInferenceRequest(processPipelineCtx, currentLine, resultChan, &completedRequests, &failedRequests)
+				// update request counts status
+				if err := batch_utils.UpdateRequestCountsStatus(p.clients.status, processPipelineCtx, job.JobID, requestCounts); err != nil {
+					logger.V(logging.ERROR).Error(err, "Failed to update temp status", "requestCounts", requestCounts)
+					// non critical error. continue the loop
+				}
+				return nil
+			})
+		}
+		return nil
+	})
 
+	if err := processPipelineGroup.Wait(); err != nil {
+		if err.Error() == "job cancelled" {
+			logger.V(logging.INFO).Info("Job processing stopped due to user cancellation.")
+			jobResult = metrics.ResultSuccess
+			metrics.RecordJobProcessed(jobResult, jobFailureReason)
+			metrics.RecordJobProcessingDuration(time.Since(startTime), job.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+			metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
+			batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelled, requestCounts, nil)
+			return
+		}
+		logger.V(logging.ERROR).Error(err, "Failed to execute job processing pipeline")
+		jobResult = metrics.ResultFailed
+		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+		// skipped metrics: job processing duration / job error details
+		// job processing duration recording (missing tenantID, sizeBucket)
+		// job error recording (missing modelID)
+		updateErr := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, nil, nil)
+		if updateErr != nil {
+			logger.V(logging.ERROR).Error(updateErr, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
+		}
+		return
 	}
-	wg.Wait()
 
-	// final status decision
-	// TODO:: final status decision (should be included in the job object)
-	// openai batch set the job as completed even there are some failures - should we do the same?
-	// failed status is used when the file is not valid or the batch request is not started properly
-	finalStatus := batch.StatusCompleted
-	if !metadata.Validate() {
-		logger.V(logging.WARNING).Info("Job finished with partial failures", "jobID", job.ID, "metadata", metadata)
-		// TODO:: finalStatus = batch.Failed
+	logger.V(logging.INFO).Info("Job processing completed successfully.")
+	jobResult = metrics.ResultSuccess
+	metrics.RecordJobProcessed(jobResult, jobFailureReason)
+	metrics.RecordJobProcessingDuration(time.Since(startTime), job.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+	metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
+	if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCompleted, requestCounts, nil); err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB.", openai.BatchStatusCompleted)
+	}
+}
+
+func (p *Processor) doInferenceRequest(
+	ctx context.Context,
+	line string,
+	resultChan chan *batch_utils.Response,
+	completedRequests *int64,
+	failedRequests *int64,
+) error {
+	logger := klog.FromContext(ctx)
+
+	// request parsing
+	var req *batch_utils.Request
+	if err := json.Unmarshal([]byte(line), &req); err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to unmarshal request line")
+		resultChan <- &batch_utils.Response{
+			ID:       "unknown",
+			CustomID: "unknown",
+			Response: nil,
+			Error: &inference.ClientError{
+				Category: inference.ErrCategoryInvalidReq,
+				Message:  err.Error(),
+				RawError: err,
+			},
+		}
+		atomic.AddInt64(failedRequests, 1)
+		return nil
 	}
 
-	// status update
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing))
+	// send the request to the inference server
+	resp, err := p.clients.inference.Generate(ctx, &inference.GenerateRequest{})
 
-	// db update (job.Status should be updated before this line)
-	if err := p.clients.database.DBUpdate(jobctx, job); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update final job status in DB", "jobID", job.ID)
+	// initialize final response
+	finalResp := &batch_utils.Response{
+		CustomID: req.CustomID,
 	}
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(finalStatus))
-	logger.V(logging.INFO).Info("Job Processed", "jobID", job.ID, "status", finalStatus)
+
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to send inference request")
+		atomic.AddInt64(failedRequests, 1)
+		finalResp.Error = err
+	} else {
+		logger.V(logging.TRACE).Info("Inference request successful", "customID", req.CustomID, "requestID", resp.RequestID)
+		atomic.AddInt64(completedRequests, 1)
+		finalResp.Response = resp
+
+		// send the response to the result channel
+		resultChan <- finalResp
+	}
+
+	return nil
+}
+
+func (p *Processor) validateLine(line string) error {
+	// TODO:: validate the request line's method and request body format
+	return nil
 }
 
 func (p *Processor) handleError(ctx context.Context, err error) {
@@ -369,7 +556,7 @@ func (p *Processor) handleError(ctx context.Context, err error) {
 	logger.V(logging.ERROR).Error(err, "Inference request failed")
 }
 
-func (p *Processor) handleResponse(ctx context.Context, inferenceResponse *inference.GenerateResponse) error {
+func (p *Processor) handleResponse(ctx context.Context, response *batch_utils.Response) error {
 	// TODO:: response handling + writing line to the output file ...
 	logger := klog.FromContext(ctx)
 	logger.V(logging.DEBUG).Info("Handling response")

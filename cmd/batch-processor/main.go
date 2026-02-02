@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	files "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -138,19 +139,20 @@ func run() error {
 	var pqClient db.BatchPriorityQueueClient
 	var statusClient db.BatchStatusClient
 	var eventClient db.BatchEventChannelClient
+	var filesClient files.BatchFilesClient
 
 	// Initialize inference client with configuration
 	inferenceClient, err := inference.NewHTTPClient(inference.HTTPClientConfig{
-		BaseURL:                   cfg.InferenceGatewayURL,
-		Timeout:                   cfg.InferenceRequestTimeout,
-		APIKey:                    cfg.InferenceAPIKey,
-		MaxRetries:                cfg.InferenceMaxRetries,
-		InitialBackoff:            cfg.InferenceInitialBackoff,
-		MaxBackoff:                cfg.InferenceMaxBackoff,
-		TLSInsecureSkipVerify:     cfg.InferenceTLSInsecureSkipVerify,
-		TLSCACertFile:             cfg.InferenceTLSCACertFile,
-		TLSClientCertFile:         cfg.InferenceTLSClientCertFile,
-		TLSClientKeyFile:          cfg.InferenceTLSClientKeyFile,
+		BaseURL:               cfg.InferenceGatewayURL,
+		Timeout:               cfg.InferenceRequestTimeout,
+		APIKey:                cfg.InferenceAPIKey,
+		MaxRetries:            cfg.InferenceMaxRetries,
+		InitialBackoff:        cfg.InferenceInitialBackoff,
+		MaxBackoff:            cfg.InferenceMaxBackoff,
+		TLSInsecureSkipVerify: cfg.InferenceTLSInsecureSkipVerify,
+		TLSCACertFile:         cfg.InferenceTLSCACertFile,
+		TLSClientCertFile:     cfg.InferenceTLSClientCertFile,
+		TLSClientKeyFile:      cfg.InferenceTLSClientKeyFile,
 	})
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to initialize inference client")
@@ -162,7 +164,7 @@ func run() error {
 		"maxRetries", cfg.InferenceMaxRetries)
 
 	processorClients := worker.NewProcessorClients(
-		dbClient, pqClient, statusClient, eventClient, inferenceClient,
+		dbClient, filesClient, pqClient, statusClient, eventClient, inferenceClient,
 	)
 
 	// initialize processor (worker pool manager)

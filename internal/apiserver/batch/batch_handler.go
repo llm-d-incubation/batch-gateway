@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
@@ -36,22 +37,6 @@ const (
 	pathParamLimit   = "limit"
 	pathParamAfter   = "after"
 )
-
-func jobToBatch(job *api.BatchItem) (*openai.Batch, error) {
-	batch := &openai.Batch{
-		ID: job.ID,
-	}
-
-	if err := json.Unmarshal(job.Spec, &batch.BatchSpec); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal batch spec: %w", err)
-	}
-
-	if err := json.Unmarshal(job.Status, &batch.BatchStatusInfo); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal batch status: %w", err)
-	}
-
-	return batch, nil
-}
 
 type BatchApiHandler struct {
 	config       *common.ServerConfig
@@ -263,7 +248,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	// Convert jobs to batch responses
 	batches := make([]openai.Batch, 0, len(jobs))
 	for _, job := range jobs {
-		batch, err := jobToBatch(job)
+		batch, err := batch_utils.FromDBToBatchJob(job)
 		if err != nil {
 			logger.Error(err, "failed to convert job to batch", "batch_id", job.ID)
 			continue
@@ -319,7 +304,7 @@ func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 
 	job := jobs[0]
 
-	batch, err := jobToBatch(job)
+	batch, err := batch_utils.FromDBToBatchJob(job)
 	if err != nil {
 		logger.Error(err, "failed to convert job to batch", "batch_id", batchID)
 		common.WriteInternalServerError(ctx, w)
@@ -361,7 +346,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 
 	job := jobs[0]
 
-	batch, err := jobToBatch(job)
+	batch, err := batch_utils.FromDBToBatchJob(job)
 	if err != nil {
 		logger.Error(err, "failed to convert job to batch", "batch_id", batchID)
 		common.WriteInternalServerError(ctx, w)

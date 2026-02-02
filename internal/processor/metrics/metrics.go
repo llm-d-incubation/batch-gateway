@@ -30,9 +30,10 @@ const (
 	ResultFailed  = "failed"
 
 	// reason lables
-	ReasonUnknown     = "unknown"
+	ReasonUnknown     = "unknown"      // unknown reason
 	ReasonUserError   = "user_error"   // method, request validation failed.. etc.,
 	ReasonSystemError = "system_error" // SLO failed, system error.. etc.,
+	ReasonNone        = "none"         // job is successfully completed
 
 	// size bucket labels
 	Bucket100   = "100"   // less than 100 lines

@@ -49,6 +49,12 @@ type ProcessorConfig struct {
 	SSLCertFile string `yaml:"ssl_cert_file"`
 	SSLKeyFile  string `yaml:"ssl_key_file"`
 
+	// MaxBatchLines defines the maximum number of lines allowed in a single batch file (OpenAI default: 50000)
+	MaxBatchLines int `yaml:"max_batch_lines"`
+
+	// MaxBatchBytes defines the maximum file size allowed in bytes (OpenAI default: 200MB)
+	MaxBatchBytes int64 `yaml:"max_batch_bytes"`
+
 	// InferenceGatewayURL is the base URL of the inference gateway (llm-d or GAIE)
 	InferenceGatewayURL string `yaml:"inference_gateway_url"`
 
@@ -125,6 +131,9 @@ func NewConfig() *ProcessorConfig {
 		MaxJobConcurrency: 10,
 		NumWorkers:        1,
 		Addr:              ":9090",
+
+		MaxBatchLines: 50000,
+		MaxBatchBytes: 200 * 1024 * 1024,
 
 		InferenceGatewayURL:     "http://localhost:8000",
 		InferenceRequestTimeout: 5 * time.Minute,
