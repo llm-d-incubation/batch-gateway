@@ -22,28 +22,29 @@ max_batch_lines: 50000
 max_batch_bytes: 209715200 # 200MB
 
 # Inference Client Configuration
-# Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
-inference_gateway_url: "http://localhost:8000"
+inference_config:
+  # Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
+  gateway_url: "http://localhost:8000"
 
-# Request timeout for individual inference requests
-inference_request_timeout: "5m"
+  # Request timeout for individual inference requests
+  request_timeout: "5m"
 
-# Optional API key for authenticating with the inference gateway
-# Leave empty if no authentication is required
-inference_api_key: ""
+  # Optional API key for authenticating with the inference gateway
+  # Leave empty if no authentication is required
+  api_key: ""
 
-# Retry configuration for failed requests
-inference_max_retries: 3
-inference_initial_backoff: "1s"
-inference_max_backoff: "60s"
+  # Retry configuration for failed requests
+  max_retries: 3
+  initial_backoff: "1s"
+  max_backoff: "60s"
 
-# TLS configuration (optional)
-# Skip TLS certificate verification (INSECURE - only for testing with self-signed certs)
-inference_tls_insecure_skip_verify: false
+  # TLS configuration (optional)
+  # Skip TLS certificate verification (INSECURE - only for testing with self-signed certs)
+  tls_insecure_skip_verify: false
 
-# Custom CA certificate for private/corporate CAs
-# inference_tls_ca_cert_file: "/path/to/ca-cert.pem"
+  # Custom CA certificate for private/corporate CAs
+  # inference_tls_ca_cert_file: "/path/to/ca-cert.pem"
 
-# Client certificate and key for mutual TLS (mTLS)
-# inference_tls_client_cert_file: "/path/to/client-cert.pem"
-# inference_tls_client_key_file: "/path/to/client-key.pem"
+  # Client certificate and key for mutual TLS (mTLS)
+  # inference_tls_client_cert_file: "/path/to/client-cert.pem"
+  # inference_tls_client_key_file: "/path/to/client-key.pem"

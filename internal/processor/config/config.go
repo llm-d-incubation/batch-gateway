@@ -55,35 +55,40 @@ type ProcessorConfig struct {
 	// MaxBatchBytes defines the maximum file size allowed in bytes (OpenAI default: 200MB)
 	MaxBatchBytes int64 `yaml:"max_batch_bytes"`
 
-	// InferenceGatewayURL is the base URL of the inference gateway (llm-d or GAIE)
-	InferenceGatewayURL string `yaml:"inference_gateway_url"`
+	// Inference Config
+	InferenceConfig InferenceConfig `yaml:"inference_config"`
+}
 
-	// InferenceRequestTimeout is the timeout for individual inference requests
-	InferenceRequestTimeout time.Duration `yaml:"inference_request_timeout"`
+type InferenceConfig struct {
+	// GatewayURL is the base URL of the inference gateway (llm-d or GAIE)
+	GatewayURL string `yaml:"gateway_url"`
 
-	// InferenceAPIKey is the optional API key for authenticating with the inference gateway
-	InferenceAPIKey string `yaml:"inference_api_key"`
+	// RequestTimeout is the timeout for individual inference requests
+	RequestTimeout time.Duration `yaml:"request_timeout"`
 
-	// InferenceMaxRetries is the maximum number of retry attempts for failed requests
-	InferenceMaxRetries int `yaml:"inference_max_retries"`
+	// APIKey is the optional API key for authenticating with the inference gateway
+	APIKey string `yaml:"api_key"`
 
-	// InferenceInitialBackoff is the initial backoff duration for retries
-	InferenceInitialBackoff time.Duration `yaml:"inference_initial_backoff"`
+	// MaxRetries is the maximum number of retry attempts for failed requests
+	MaxRetries int `yaml:"max_retries"`
 
-	// InferenceMaxBackoff is the maximum backoff duration for retries
-	InferenceMaxBackoff time.Duration `yaml:"inference_max_backoff"`
+	// InitialBackoff is the initial backoff duration for retries
+	InitialBackoff time.Duration `yaml:"initial_backoff"`
 
-	// InferenceTLSInsecureSkipVerify skips TLS certificate verification (INSECURE, only for testing)
-	InferenceTLSInsecureSkipVerify bool `yaml:"inference_tls_insecure_skip_verify"`
+	// MaxBackoff is the maximum backoff duration for retries
+	MaxBackoff time.Duration `yaml:"max_backoff"`
 
-	// InferenceTLSCACertFile is the path to custom CA certificate file (for private CAs)
-	InferenceTLSCACertFile string `yaml:"inference_tls_ca_cert_file"`
+	// TLSInsecureSkipVerify skips TLS certificate verification (INSECURE, only for testing)
+	TLSInsecureSkipVerify bool `yaml:"tls_insecure_skip_verify"`
 
-	// InferenceTLSClientCertFile is the path to client certificate file (for mTLS)
-	InferenceTLSClientCertFile string `yaml:"inference_tls_client_cert_file"`
+	// TLSCACertFile is the path to custom CA certificate file (for private CAs)
+	TLSCACertFile string `yaml:"tls_ca_cert_file"`
 
-	// InferenceTLSClientKeyFile is the path to client private key file (for mTLS)
-	InferenceTLSClientKeyFile string `yaml:"inference_tls_client_key_file"`
+	// TLSClientCertFile is the path to client certificate file (for mTLS)
+	TLSClientCertFile string `yaml:"tls_client_cert_file"`
+
+	// TLSClientKeyFile is the path to client private key file (for mTLS)
+	TLSClientKeyFile string `yaml:"tls_client_key_file"`
 }
 
 type BucketConfig struct {
@@ -135,12 +140,15 @@ func NewConfig() *ProcessorConfig {
 		MaxBatchLines: 50000,
 		MaxBatchBytes: 200 * 1024 * 1024,
 
-		InferenceGatewayURL:     "http://localhost:8000",
-		InferenceRequestTimeout: 5 * time.Minute,
-		InferenceAPIKey:         "",
-		InferenceMaxRetries:     3,
-		InferenceInitialBackoff: 1 * time.Second,
-		InferenceMaxBackoff:     60 * time.Second,
+		InferenceConfig: InferenceConfig{
+			GatewayURL:            "http://localhost:8000",
+			RequestTimeout:        5 * time.Minute,
+			APIKey:                "",
+			MaxRetries:            3,
+			InitialBackoff:        1 * time.Second,
+			MaxBackoff:            60 * time.Second,
+			TLSInsecureSkipVerify: false,
+		},
 	}
 }
 
