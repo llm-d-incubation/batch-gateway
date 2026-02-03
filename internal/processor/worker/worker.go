@@ -241,9 +241,9 @@ func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (
 }
 
 // TODO:: status updates and re-enqueue the job if needed
-func (p *Processor) processJob(ctx context.Context, workerId int, jobDbData *db.BatchItem) {
+func (p *Processor) processJob(ctx context.Context, workerID int, jobDbData *db.BatchItem) {
 	// logger and ctx
-	logger := klog.FromContext(ctx).WithValues("jobID", jobDbData.ID, "workerID", workerId)
+	logger := klog.FromContext(ctx).WithValues("jobID", jobDbData.ID, "workerID", workerID)
 	jobctx := klog.NewContext(ctx, logger)
 	logger.V(logging.DEBUG).Info("Worker started")
 
@@ -260,7 +260,7 @@ func (p *Processor) processJob(ctx context.Context, workerId int, jobDbData *db.
 	}
 
 	// check if the job is expired
-	if !batch_utils.IsJobExpired(job.BatchJob) {
+	if batch_utils.IsJobExpired(job.BatchJob) {
 		logger.V(logging.INFO).Info("Job is expired.")
 		// update the job status to expired
 		if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusExpired, nil, nil); err != nil {
@@ -302,6 +302,13 @@ func (p *Processor) processJob(ctx context.Context, workerId int, jobDbData *db.
 	jobFailureReason := metrics.ReasonNone
 	jobResult := metrics.ResultSuccess
 	startTime := time.Now()
+
+	// check if the job is in processible status
+	if !batch_utils.IsJobProcessible(job.BatchJob) {
+		logger.V(logging.ERROR).Error(fmt.Errorf("job is not in processible status"), "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusInProgress)
+		// skip metrics recording and status update as they've been done in another process
+		return
+	}
 
 	// status update - in_progress
 	if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusInProgress, requestCounts, nil); err != nil {
@@ -436,7 +443,20 @@ func (p *Processor) processJob(ctx context.Context, workerId int, jobDbData *db.
 
 			// validate the request line's method and request body format
 			if err := p.validateLine(line); err != nil {
-				return err
+				logger.V(logging.ERROR).Error(err, "Failed to validate request line")
+				atomic.AddInt64(&failedRequests, 1)
+				atomic.AddInt64(&totalRequests, 1)
+				resultChan <- &batch_utils.Response{
+					ID:       "",
+					CustomID: "",
+					Response: nil,
+					Error: &inference.ClientError{
+						Category: inference.ErrCategoryInvalidReq,
+						Message:  err.Error(),
+						RawError: err,
+					},
+				}
+				continue
 			}
 			// increase request counts
 			atomic.AddInt64(&totalRequests, 1)

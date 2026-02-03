@@ -76,6 +76,12 @@ func IsJobExpired(job *openai.Batch) bool {
 	return time.Now().Unix() >= *job.BatchStatusInfo.ExpiresAt
 }
 
+// IsJobProcessible checks if the job is in processible status
+func IsJobProcessible(job *openai.Batch) bool {
+	return job.BatchStatusInfo.Status == openai.BatchStatusValidating ||
+		job.BatchStatusInfo.Status == openai.BatchStatusInProgress
+}
+
 // UpdateBatchStatusInfo updates the status info of a batch job.
 // It returns the updated status info object and an error if the status is invalid.
 // It does not update the request counts if not provided. (nil allowed)
