@@ -34,7 +34,7 @@ func NewMockBatchStatusClient() *MockBatchStatusClient {
 	}
 }
 
-func (m *MockBatchStatusClient) STSet(ctx context.Context, ID string, TTL int, data []byte) error {
+func (m *MockBatchStatusClient) StatusSet(ctx context.Context, ID string, TTL int, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -50,7 +50,7 @@ func (m *MockBatchStatusClient) STSet(ctx context.Context, ID string, TTL int, d
 	return nil
 }
 
-func (m *MockBatchStatusClient) STGet(ctx context.Context, ID string) ([]byte, error) {
+func (m *MockBatchStatusClient) StatusGet(ctx context.Context, ID string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -67,7 +67,7 @@ func (m *MockBatchStatusClient) STGet(ctx context.Context, ID string) ([]byte, e
 	return dataCopy, nil
 }
 
-func (m *MockBatchStatusClient) STDelete(ctx context.Context, ID string) (nDeleted int, err error) {
+func (m *MockBatchStatusClient) StatusDelete(ctx context.Context, ID string) (nDeleted int, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

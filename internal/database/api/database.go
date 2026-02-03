@@ -207,12 +207,12 @@ type BatchStatusClient interface {
 	store.BatchClientAdmin
 
 	// STSet stores or updates status data for a job.
-	STSet(ctx context.Context, ID string, TTL int, data []byte) (err error)
+	StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error)
 
 	// STGet retrieves the status data of a job.
 	// If no data exists (nil, nil) is returned.
-	STGet(ctx context.Context, ID string) (data []byte, err error)
+	StatusGet(ctx context.Context, ID string) (data []byte, err error)
 
 	// STDelete deletes the status data for a job.
-	STDelete(ctx context.Context, ID string) (nDeleted int, err error)
+	StatusDelete(ctx context.Context, ID string) (nDeleted int, err error)
 }

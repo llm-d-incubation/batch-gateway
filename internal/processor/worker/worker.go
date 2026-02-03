@@ -258,11 +258,11 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchI
 	}()
 
 	// status update - inprogress (TTL 24h)
-	p.clients.status.STSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusInProgress))
+	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusInProgress))
 	logger.V(logging.DEBUG).Info("Worker started job", "workerID", workerId, "jobID", job.ID)
 
 	// TODO:: file validating
-	p.clients.status.STSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusValidating))
+	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusValidating))
 
 	// TODO:: download file, streaming
 	// check if the method in the request is allowed
@@ -353,13 +353,13 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchI
 	}
 
 	// status update
-	p.clients.status.STSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing))
+	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing))
 
 	// db update (job.Status should be updated before this line)
 	if err := p.clients.database.DBUpdate(jobctx, job); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update final job status in DB", "jobID", job.ID)
 	}
-	p.clients.status.STSet(jobctx, job.ID, 24*60*60, []byte(finalStatus))
+	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(finalStatus))
 	logger.V(logging.INFO).Info("Job Processed", "jobID", job.ID, "status", finalStatus)
 }
 
