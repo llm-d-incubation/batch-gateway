@@ -144,11 +144,16 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 	}
 	logger = logger.WithValues("ID", item.ID)
 
+	ptags, err := packTags(item.Tags)
+	if err != nil {
+		logger.Error(err, "DBStore: tags packing failed")
+		return item.ID, err
+	}
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
 		[]string{getKeyForStore(item.ID, c.tableName)},
 		versionV1, item.ID, item.Expiry,
-		packTags(item.Tags), item.Status, item.Spec,
+		ptags, item.Status, item.Spec,
 		ttlSecDefault).Text()
 	ccancel()
 	if err != nil {
@@ -182,13 +187,18 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 	}
 
 	// Update the item in the database.
+	ptags, err := packTags(item.Tags)
+	if err != nil {
+		logger.Error(err, "DBUpdate: tags packing failed")
+		return err
+	}
 	updatedStatus, updatedTags := false, false
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		switch {
 		case len(item.Status) > 0 && len(item.Tags) > 0:
 			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
-				fieldNameStatus, item.Status, fieldNameTags, packTags(item.Tags)).Err()
+				fieldNameStatus, item.Status, fieldNameTags, ptags).Err()
 			updatedStatus, updatedTags = true, true
 		case len(item.Status) > 0:
 			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
@@ -196,7 +206,7 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 			updatedStatus = true
 		case len(item.Tags) > 0:
 			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
-				fieldNameTags, packTags(item.Tags)).Err()
+				fieldNameTags, ptags).Err()
 			updatedTags = true
 		}
 		return nil
@@ -262,8 +272,8 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 }
 
 func (c *BatchDSClientRedis) DBGet(
-	ctx context.Context, IDs []string, tags []string,
-	tagsLogicalCond db_api.GenLogicalCond, includeStatic bool, start, limit int) (
+	ctx context.Context, query *db_api.BatchDBQuery,
+	includeStatic bool, start, limit int) (
 	items []*db_api.BatchItem, cursor int, expectedMore bool, err error) {
 
 	if ctx == nil {
@@ -271,12 +281,12 @@ func (c *BatchDSClientRedis) DBGet(
 	}
 	logger := klog.FromContext(ctx)
 
-	if len(IDs) > 0 {
+	if len(query.IDs) > 0 {
 
 		// Get the item records.
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
-			for _, id := range IDs {
+			for _, id := range query.IDs {
 				if includeStatic {
 					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
 						fieldNameId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
@@ -318,16 +328,16 @@ func (c *BatchDSClientRedis) DBGet(
 		}
 		cursor = len(items)
 
-	} else if len(tags) > 0 {
+	} else if len(query.TagSelectors) > 0 {
 
-		cond, found := db_api.GenLogicalCondNames[tagsLogicalCond]
+		cond, found := db_api.GenLogicalCondNames[query.TagsLogicalCond]
 		if !found {
-			err = fmt.Errorf("invalid logical condition value: %d", tagsLogicalCond)
+			err = fmt.Errorf("invalid logical condition value: %d", query.TagsLogicalCond)
 			logger.Error(err, "DBGet:")
 			return
 		}
 		var res []interface{}
-		ctags := convertTags(tags)
+		ctags := convertTags(query.TagSelectors)
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
 			ctags, strconv.FormatBool(includeStatic), storeKeysPattern, cond, start, limit).Slice()
@@ -375,30 +385,42 @@ func getKeyForStore(key, tableName string) string {
 	return storeKeysPrefix + key + tableName + ":"
 }
 
-func packTags(tags []string) string {
+func packTags(tags map[string]string) (string, error) {
 	if len(tags) == 0 {
-		return ""
+		return "", nil
 	}
-	return fmt.Sprintf("%s%s%s", tagsSep, strings.Join(tags, tagsSep), tagsSep)
+	json, err := json.Marshal(tags)
+	if err != nil {
+		return "", err
+	}
+	return string(json), nil
+	// return fmt.Sprintf("%s%s%s", tagsSep, strings.Join(tags, tagsSep), tagsSep) TBR
 }
 
-func unpackTags(tags string) []string {
-	if len(tags) == 0 {
-		return nil
+func unpackTags(tagsPacked string) (map[string]string, error) {
+	if len(tagsPacked) == 0 {
+		return nil, nil
 	}
-	rTags := strings.Split(tags, tagsSep)
-	if len(rTags) > 2 {
-		return rTags[1 : len(rTags)-1]
-	} else {
-		return rTags
+	var tags map[string]string
+	err := json.Unmarshal([]byte(tagsPacked), &tags)
+	if err != nil {
+		return nil, err
 	}
+	return tags, nil
+	// rTags := strings.Split(tags, tagsSep) TBR
+	// if len(rTags) > 2 {
+	// 	return rTags[1 : len(rTags)-1]
+	// } else {
+	// 	return rTags
+	// }
 }
 
-func convertTags(tags []string) (ctags []string) {
+func convertTags(tags map[string]string) (ctags []string) {
 	if len(tags) > 0 {
-		ctags = make([]string, len(tags))
-		for i, tag := range tags {
-			ctags[i] = fmt.Sprintf("%s%s%s", tagsSep, tag, tagsSep)
+		ctags = make([]string, 0, len(tags))
+		for key, val := range tags {
+			ctags = append(ctags, fmt.Sprintf("\"%s\":\"%s\"", key, val))
+			// ctags[i] = fmt.Sprintf("%s%s%s", tagsSep, tag, tagsSep) TBR
 		}
 	}
 	return
@@ -447,12 +469,17 @@ func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) 
 			spec = ""
 		}
 	}
+	nTags, err := unpackTags(tags)
+	if err != nil {
+		logger.Error(err, "dbItemFromHget:")
+		return nil, err
+	}
 	job := &db_api.BatchItem{
 		ID:     id,
 		Expiry: expiry,
 		Spec:   []byte(spec),
 		Status: []byte(status),
-		Tags:   unpackTags(tags),
+		Tags:   nTags,
 	}
 	return job, nil
 }

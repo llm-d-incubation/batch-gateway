@@ -40,13 +40,14 @@ func (m *MockBatchDBClient) DBStore(ctx context.Context, job *api.BatchItem) (st
 }
 
 func (m *MockBatchDBClient) DBGet(
-	ctx context.Context, IDs []string, tags []string, tagsLogicalCond api.GenLogicalCond, includeStatic bool, start, limit int) (
+	ctx context.Context, query *api.BatchDBQuery,
+	includeStatic bool, start, limit int) (
 	[]*api.BatchItem, int, bool, error) {
 	var results []*api.BatchItem
 
 	// If IDs are specified, get by IDs
-	if len(IDs) > 0 {
-		for _, id := range IDs {
+	if len(query.IDs) > 0 {
+		for _, id := range query.IDs {
 			if value, ok := m.jobs.Load(id); ok {
 				if job, ok := value.(*api.BatchItem); ok {
 					results = append(results, job)
@@ -77,7 +78,7 @@ func (m *MockBatchDBClient) DBUpdate(
 	return nil
 }
 
-func (m *MockBatchDBClient) DBDelete(ctx context.Context, IDs []string, tagSelectors []string, tagsLogicalCond api.GenLogicalCond, expired bool) ([]string, error) {
+func (m *MockBatchDBClient) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
 	var deleted []string
 	for _, id := range IDs {
 		if _, ok := m.jobs.LoadAndDelete(id); ok {

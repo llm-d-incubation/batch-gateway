@@ -122,7 +122,7 @@ func TestBatchHandler(t *testing.T) {
 			ID: batchID,
 			// SLO:    time.Now().UTC().Add(24 * time.Hour),
 			// TTL:    86400,
-			Tags:   []string{},
+			Tags:   map[string]string{},
 			Spec:   specData,
 			Status: statusData,
 		})
@@ -177,7 +177,7 @@ func TestBatchHandler(t *testing.T) {
 				ID: batchID,
 				// SLO:    time.Now().UTC().Add(24 * time.Hour),
 				// TTL:    86400,
-				Tags:   []string{},
+				Tags:   map[string]string{},
 				Spec:   specData,
 				Status: statusData,
 			})
@@ -245,7 +245,7 @@ func TestBatchHandler(t *testing.T) {
 			ID: batchID,
 			// SLO:    time.Now().UTC().Add(24 * time.Hour),
 			// TTL:    86400,
-			Tags:   []string{},
+			Tags:   map[string]string{},
 			Spec:   specData,
 			Status: statusData,
 		})
@@ -322,7 +322,7 @@ func BenchmarkBatchHandler(b *testing.B) {
 			ID: batchID,
 			// SLO:    time.Now().UTC().Add(24 * time.Hour),
 			// TTL:    86400,
-			Tags:   []string{},
+			Tags:   map[string]string{},
 			Spec:   specData,
 			Status: statusData,
 		})
@@ -359,7 +359,7 @@ func BenchmarkBatchHandler(b *testing.B) {
 				ID: batchID,
 				// SLO:    time.Now().UTC().Add(24 * time.Hour),
 				// TTL:    86400,
-				Tags:   []string{},
+				Tags:   map[string]string{},
 				Spec:   specData,
 				Status: statusData,
 			})
@@ -399,7 +399,7 @@ func BenchmarkBatchHandler(b *testing.B) {
 				ID: batchID,
 				// SLO:    time.Now().UTC().Add(24 * time.Hour),
 				// TTL:    86400,
-				Tags:   []string{},
+				Tags:   map[string]string{},
 				Spec:   specData,
 				Status: statusData,
 			})

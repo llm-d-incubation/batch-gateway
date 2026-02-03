@@ -29,19 +29,19 @@ import (
 // -- Batch jobs metadata store --
 
 type BatchItem struct {
-	ID     string   // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
-	Expiry int64    // [optional, immutable, returned by get, parsed by DB] The unix timestamp in seconds when the item is considered expired.
-	Tags   []string // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the internal separator used.
-	Spec   []byte   // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
-	Status []byte   // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
-	//SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the item should be prioritized relative to other items. TBD
+	ID     string // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
+	Expiry int64  // [optional, immutable, returned by get, parsed by DB] The unix timestamp in seconds when the item is considered expired.
+	Tags   Tags   // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the internal separator used.
+	Spec   []byte // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
+	Status []byte // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
+	//SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the item should be prioritized relative to other items. TBR
 }
 
 func (bj *BatchItem) IsValid() error {
 	if len(bj.ID) == 0 {
 		return fmt.Errorf("ID is empty")
 	}
-	// if bj.SLO.IsZero() { TBD
+	// if bj.SLO.IsZero() { TBR
 	// 	return fmt.Errorf("SLO is zero for ID %s", bj.ID)
 	// }
 	// if bj.TTL <= 0 {
@@ -61,7 +61,8 @@ type BatchDBClient interface {
 	// DBGet gets the information (static and dynamic) of batch items.
 	// If IDs are specified, this function will get items by the specified IDs.
 	// If tags are specified, this function will get items by the specified tags.
-	// If no IDs nor tags are specified, the function will return an empty list of items.
+	// If expired is set to true, this function will get expired items. This option can be used with tags selection.
+	// If no IDs nor tags nor expired are specified, the function will return an empty list of items.
 	// tagsLogicalCond specifies the logical condition to use for when searching for the tags per item.
 	// includeStatic specifies if to include the static part of a item in the returned output.
 	// start and limit specify the pagination details. This is relevant only for search by tags.
@@ -70,8 +71,7 @@ type BatchDBClient interface {
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// items is a slice of returned items.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
-	DBGet(ctx context.Context,
-		IDs []string, tagSelectors []string, tagsLogicalCond GenLogicalCond,
+	DBGet(ctx context.Context, query *BatchDBQuery,
 		includeStatic bool, start, limit int) (
 		items []*BatchItem, cursor int, expectedMore bool, err error)
 
@@ -82,12 +82,16 @@ type BatchDBClient interface {
 	DBUpdate(ctx context.Context, item *BatchItem) (err error)
 
 	// DBDelete deletes batch items.
-	// If IDs are specified, this function will delete items by the specified IDs.
-	// If tags are specified, this function will delete items by the specified tags.
-	// If expired is set to true, this function will delete expired items. This option can be used with tags selection.
-	DBDelete(ctx context.Context,
-		IDs []string, tagSelectors []string, tagsLogicalCond GenLogicalCond, expired bool) (
-		deletedIDs []string, err error)
+	DBDelete(ctx context.Context, IDs []string) (deletedIDs []string, err error)
+}
+
+type Tags map[string]string
+
+type BatchDBQuery struct {
+	IDs             []string
+	TagSelectors    Tags
+	TagsLogicalCond GenLogicalCond
+	Expired         bool
 }
 
 type GenLogicalCond int
