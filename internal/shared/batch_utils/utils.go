@@ -29,7 +29,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func FromDBToBatchJob(job *db.BatchJob) (*openai.Batch, error) {
+func FromDBToBatchJob(job *db.BatchItem) (*openai.Batch, error) {
 	batch := &openai.Batch{
 		ID: job.ID,
 	}
@@ -45,7 +45,7 @@ func FromDBToBatchJob(job *db.BatchJob) (*openai.Batch, error) {
 	return batch, nil
 }
 
-func FromDBToJobInfo(job *db.BatchJob) (*JobInfo, error) {
+func FromDBToJobInfo(job *db.BatchItem) (*JobInfo, error) {
 	jobInfo := &JobInfo{
 		JobID:    job.ID,
 		BatchJob: &openai.Batch{},
@@ -148,7 +148,7 @@ func UpdateRequestCountsStatus(
 	payload := []byte(fmt.Sprintf(`{"total": %d, "completed": %d, "failed": %d}`, requestCounts.Total, requestCounts.Completed, requestCounts.Failed))
 
 	// update status client - TTL is set to 24 hours
-	if err := statusClient.Set(ctx, jobID, 24*60*60, payload); err != nil {
+	if err := statusClient.StatusSet(ctx, jobID, 24*60*60, payload); err != nil {
 		return err
 	}
 
@@ -160,7 +160,7 @@ func UpdateDBJobStatus(
 	dbClient db.BatchDBClient,
 	statusClient db.BatchStatusClient,
 	ctx context.Context,
-	dbJob *db.BatchJob,
+	dbJob *db.BatchItem,
 	newStatus openai.BatchStatus,
 	requestCounts *openai.BatchRequestCounts,
 	slo *time.Time,
@@ -191,7 +191,7 @@ func UpdateDBJobStatus(
 	// status update in status client
 	// - TTL is set to 24 hours
 	if requestCounts != nil {
-		if err := statusClient.Set(ctx, dbJob.ID, 24*60*60, statusBytes); err != nil {
+		if err := statusClient.StatusSet(ctx, dbJob.ID, 24*60*60, statusBytes); err != nil {
 			logger.V(logging.ERROR).Error(err, "Failed to update status in status client", "jobID", dbJob.ID)
 			return err
 		}
