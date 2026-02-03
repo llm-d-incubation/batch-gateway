@@ -44,17 +44,48 @@ func (p *Processor) openInputFileStream(ctx context.Context, fileLocation string
 	return readCloser, metadata, nil
 }
 
+// removeLocalFile deletes the temporary local file.
+func (p *Processor) removeLocalFile(jobID string) error {
+	if jobID == "" {
+		return fmt.Errorf("jobID is empty")
+	}
+
+	path := p.getLocalOutputFilePath(jobID)
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to delete local file: %w", err)
+	}
+	return nil
+}
+
+// getLocalOutputFilePath returns the local output file path.
+func (p *Processor) getLocalOutputFilePath(jobID string) string {
+	tempDir := os.TempDir()
+	return filepath.Join(tempDir, fmt.Sprintf("batch_output_%s.jsonl", jobID))
+}
+
+// createOutputFile creates the output file.
+func (p *Processor) createOutputFile(jobID string) (file *os.File, err error) {
+	fileLocation := p.getLocalOutputFilePath(jobID)
+	f, err := os.Create(fileLocation)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create output file: %w", err)
+	}
+	return f, nil
+}
+
+// writeResultsToFileLoop writes the results in the result channel to the output file.
 func (p *Processor) writeResultsToFileLoop(
 	ctx context.Context,
 	jobID string,
 	resChan <-chan *batch_utils.Response,
 ) (outputFileLocation string, err error) {
 	// create the output file
-	tempDir := os.TempDir()
-	fileLocation := filepath.Join(tempDir, fmt.Sprintf("batch_output_%s.jsonl", jobID))
-	f, err := os.Create(fileLocation)
+	f, err := p.createOutputFile(jobID)
 	if err != nil {
-		return "", fmt.Errorf("failed to create output file: %w", err)
+		return "", err
 	}
 
 	defer func() {
@@ -68,15 +99,17 @@ func (p *Processor) writeResultsToFileLoop(
 	for {
 		select {
 		case <-ctx.Done(): // context cancelled.
-			// TODO:: delete the output file
-			// re-enqueue the job / status update to in_progress so we can try again?
+			// delete the output file
+			if err := p.removeLocalFile(jobID); err != nil {
+				return "", err
+			}
 			return "", ctx.Err()
 		case res, ok := <-resChan:
 			if !ok { // channel closed. reader finished processing the input file.
 				if err := writer.Flush(); err != nil {
 					return "", err
 				}
-				return fileLocation, nil
+				return p.getLocalOutputFilePath(jobID), nil
 			}
 
 			// TODO:: create separate response file and error file

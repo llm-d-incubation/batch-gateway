@@ -131,15 +131,15 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 
 	// worker driven non-busy wait
 	for {
-		var workerId int
+		var workerID int
 		select {
 		case <-ctx.Done():
 			return nil
-		case id, ok := <-p.workerPool.workerIds: // wait until at least one worker is available
+		case id, ok := <-p.workerPool.workerIDs: // wait until at least one worker is available
 			if !ok {
 				return nil
 			}
-			workerId = id
+			workerID = id
 		}
 
 		// check queue for available tasks
@@ -147,7 +147,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 
 		// when there's no waiting tasks in the queue
 		if task == nil {
-			p.workerPool.Release(workerId)
+			p.workerPool.Release(workerID)
 			// wait for poll interval to protect db from frequent queueing
 			select {
 			case <-ctx.Done():
@@ -165,7 +165,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 		if err != nil {
 			// this task should be skipped as the data is not in db
 			// don't need to re-enqueue the task.
-			p.workerPool.Release(workerId)
+			p.workerPool.Release(workerID)
 			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			// we don't have enough information to record job processing duration and errored model (missing tenantID, modelID)
 			// we don't have enough information to update the job status in the db
@@ -185,7 +185,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 
 			metrics.IncActiveWorkers()
 			p.processJob(c, wid, j)
-		}(ctx, workerId, jobDbData)
+		}(ctx, workerID, jobDbData)
 	}
 }
 
@@ -381,59 +381,68 @@ func (p *Processor) processJob(ctx context.Context, workerID int, jobDbData *db.
 				logger.V(logging.INFO).Info("Job processing stopped due to system shutdown signal.")
 				if err := batch_utils.UpdateRequestCountsStatus(p.clients.status, processPipelineCtx, job.JobID, requestCounts); err != nil {
 					logger.V(logging.ERROR).Error(err, "Failed to update request counts status", "requestCounts", requestCounts)
-					// non critical error. continue the loop
-				}
-				// status update to failed ?
-				// or update it to validating then re-enqueue the job so we can try again?
-				if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, requestCounts, nil); err != nil {
-					logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
+					// non critical error. continue the shutdown process
 				}
 
-				// metrics
-				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
-				metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
-				metrics.RecordJobProcessingDuration(time.Since(startTime), job.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+				// local file is deleted by the writer goroutine
+				// status update in-progress and re-enqueue the job so we can try again
+				if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusInProgress, requestCounts, nil); err != nil {
+					logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusInProgress)
+					// non critical error. continue the shutdown process
+				}
+				taskToEnqueue := &db.BatchJobPriority{
+					ID:  jobDbData.ID,
+					SLO: jobDbData.SLO,
+				}
+				if err := p.clients.priorityQueue.Enqueue(processPipelineCtx, taskToEnqueue); err != nil {
+					logger.V(logging.ERROR).Error(err, "Failed to re-enqueue job", "jobID", jobDbData.ID)
+					// critial error but we can't do anything about it. continue the shutdown process
+				}
+
+				// metrics: skipped as the job is not completed successfully
 
 				// exit the loop safely
 				return nil
 			case ev := <-eventsChan.Events:
 				switch ev.Type {
 				case db.BatchEventCancel:
-					// cancel the processing pipeline
 					logger.V(logging.INFO).Info("Received cancellation request. cancelling the processing pipeline")
-					// request counts status update
-					if err := batch_utils.UpdateRequestCountsStatus(p.clients.status, processPipelineCtx, job.JobID, requestCounts); err != nil {
-						logger.V(logging.ERROR).Error(err, "Failed to update request counts status", "requestCounts", requestCounts)
-					}
+
 					// status update to cancelling
 					if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelling, requestCounts, nil); err != nil {
 						logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusCancelling)
+						// critical error. but we can't do anything about it. continue the cancel process
 					}
-					// what do we need to do here to exit the loop safely?
 
-					// status update to cancelled
-					if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelled, requestCounts, nil); err != nil {
-						logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusCancelled)
-					}
+					// exit the loop safely
 					return fmt.Errorf("job cancelled")
-				case db.BatchEventPause:
-					logger.Info("Job paused by user. Waiting for resume request.")
+					/*case db.BatchEventPause:
+						logger.Info("Job paused by user. Waiting for resume request.")
 
-					// wait for resume request
-				PauseLoop:
-					for {
-						select {
-						case <-processPipelineCtx.Done():
-							return processPipelineCtx.Err()
-						case resEv := <-eventsChan.Events:
-							if resEv.Type == db.BatchEventResume {
-								break PauseLoop
-							}
-							if resEv.Type == db.BatchEventCancel {
-								return fmt.Errorf("cancel signal received. job cancelled by user.")
+						// wait for resume request
+					PauseLoop:
+						for {
+							select {
+							case <-processPipelineCtx.Done():
+								return processPipelineCtx.Err()
+							case resEv := <-eventsChan.Events:
+								if resEv.Type == db.BatchEventResume {
+									break PauseLoop
+								}
+								if resEv.Type == db.BatchEventCancel {
+									logger.V(logging.INFO).Info("Received cancellation request. cancelling the processing pipeline")
+
+									// status update to cancelling
+									if err := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelling, requestCounts, nil); err != nil {
+										logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusCancelling)
+										// critical error. but we can't do anything about it. continue the cancel process
+									}
+									// exit the loop safely
+									return fmt.Errorf("job cancelled")
+								}
 							}
 						}
-					}
+					*/
 				}
 
 			default:
@@ -484,10 +493,15 @@ func (p *Processor) processJob(ctx context.Context, workerID int, jobDbData *db.
 	if err := processPipelineGroup.Wait(); err != nil {
 		if err.Error() == "job cancelled" {
 			logger.V(logging.INFO).Info("Job processing stopped due to user cancellation.")
+
+			// cancelled jobs are considered as successful jobs (no failure)
 			jobResult = metrics.ResultSuccess
+
+			// metrics recording
 			metrics.RecordJobProcessed(jobResult, jobFailureReason)
 			metrics.RecordJobProcessingDuration(time.Since(startTime), job.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
-			metrics.RecordJobError(job.BatchJob.BatchStatusInfo.Model)
+
+			// status update to cancelled
 			batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusCancelled, requestCounts, nil)
 			return
 		}

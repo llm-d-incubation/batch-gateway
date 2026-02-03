@@ -24,7 +24,7 @@ import (
 
 // worker id is integer that starts with 1 to the max number of worker
 type WorkerPool struct {
-	workerIds chan int
+	workerIDs chan int
 	wg        sync.WaitGroup
 }
 
@@ -34,7 +34,7 @@ func NewWorkerPool(maxWorkers int) *WorkerPool {
 		ids <- i // fill worker ids first
 	}
 	return &WorkerPool{
-		workerIds: ids,
+		workerIDs: ids,
 	}
 }
 
@@ -42,7 +42,7 @@ func NewWorkerPool(maxWorkers int) *WorkerPool {
 // id 0 means the worker was not acquired
 func (wp *WorkerPool) TryAcquire() (int, bool) {
 	select {
-	case id := <-wp.workerIds:
+	case id := <-wp.workerIDs:
 		wp.wg.Add(1)
 		return id, true
 	default:
@@ -51,7 +51,7 @@ func (wp *WorkerPool) TryAcquire() (int, bool) {
 }
 
 func (wp *WorkerPool) Release(id int) {
-	wp.workerIds <- id
+	wp.workerIDs <- id
 	wp.wg.Done()
 }
 
