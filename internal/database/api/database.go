@@ -29,12 +29,12 @@ import (
 // -- Batch jobs metadata store --
 
 type BatchItem struct {
-	ID     string    // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
-	SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the item should be prioritized relative to other items.
-	TTL    int       // [mandatory, immutable, not returned by get, parsed by DB] The number of seconds to set for the TTL of the DB record.
-	Tags   []string  // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the separator.
-	Spec   []byte    // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
-	Status []byte    // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
+	ID     string   // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
+	Expiry int64    // [optional, immutable, returned by get, parsed by DB] The unix timestamp in seconds when the item is considered expired.
+	Tags   []string // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the internal separator used.
+	Spec   []byte   // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
+	Status []byte   // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
+	//SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the item should be prioritized relative to other items. TBD
 }
 
 func (bj *BatchItem) IsValid() error {
@@ -44,9 +44,9 @@ func (bj *BatchItem) IsValid() error {
 	// if bj.SLO.IsZero() { TBD
 	// 	return fmt.Errorf("SLO is zero for ID %s", bj.ID)
 	// }
-	if bj.TTL <= 0 {
-		return fmt.Errorf("TTL is invalid for ID %s", bj.ID)
-	}
+	// if bj.TTL <= 0 {
+	// 	return fmt.Errorf("TTL is invalid for ID %s", bj.ID)
+	// }
 	return nil
 }
 
@@ -70,7 +70,8 @@ type BatchDBClient interface {
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// items is a slice of returned items.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
-	DBGet(ctx context.Context, IDs []string, tags []string, tagsLogicalCond TagsLogicalCond,
+	DBGet(ctx context.Context,
+		IDs []string, tagSelectors []string, tagsLogicalCond GenLogicalCond,
 		includeStatic bool, start, limit int) (
 		items []*BatchItem, cursor int, err error)
 
@@ -81,30 +82,35 @@ type BatchDBClient interface {
 	DBUpdate(ctx context.Context, item *BatchItem) (err error)
 
 	// DBDelete deletes batch items.
-	DBDelete(ctx context.Context, IDs []string) (deletedIDs []string, err error)
+	// If IDs are specified, this function will delete items by the specified IDs.
+	// If tags are specified, this function will delete items by the specified tags.
+	// If expired is set to true, this function will delete expired items. This option can be used with tags selection.
+	DBDelete(ctx context.Context,
+		IDs []string, tagSelectors []string, tagsLogicalCond GenLogicalCond, expired bool) (
+		deletedIDs []string, err error)
 }
 
-type TagsLogicalCond int
+type GenLogicalCond int
 
 const (
-	TagsLogicalCondNa TagsLogicalCond = iota
-	TagsLogicalCondAnd
-	TagsLogicalCondOr
-	TagsLogicalCondMaxVal // [Internal] Indicates the max value for the enum. Don't use this value.
+	GenLogicalCondNa GenLogicalCond = iota
+	GenLogicalCondAnd
+	GenLogicalCondOr
+	GenLogicalCondMaxVal // [Internal] Indicates the max value for the enum. Don't use this value.
 )
 
-var TagsLogicalCondNames = map[TagsLogicalCond]string{
-	TagsLogicalCondAnd: "and",
-	TagsLogicalCondOr:  "or",
+var GenLogicalCondNames = map[GenLogicalCond]string{
+	GenLogicalCondAnd: "and",
+	GenLogicalCondOr:  "or",
 }
 
 // -- Batch jobs priority queue --
 
 type BatchJobPriority struct {
-	ID   string    `json:"id,omitempty"`   // ID of the batch job.
-	SLO  time.Time `json:"slo,omitempty"`  // The SLO value determines the priority of the job.
-	TTL  int       `json:"ttl,omitempty"`  // TTL in seconds for the record.
-	Data []byte    `json:"data,omitempty"` // User defined data.
+	ID   string    `json:"id,omitempty"`   // [mandatory] ID of the batch job.
+	SLO  time.Time `json:"slo,omitempty"`  // [mandatory] The SLO value determines the priority of the job.
+	TTL  int       `json:"ttl,omitempty"`  // [optional] TTL in seconds for the record.
+	Data []byte    `json:"data,omitempty"` // [optional] User defined data.
 }
 
 func (bj *BatchJobPriority) IsValid() error {

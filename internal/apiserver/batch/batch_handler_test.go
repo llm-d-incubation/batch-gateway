@@ -119,9 +119,9 @@ func TestBatchHandler(t *testing.T) {
 			},
 		})
 		dbClient.DBStore(context.Background(), &api.BatchItem{
-			ID:     batchID,
-			SLO:    time.Now().UTC().Add(24 * time.Hour),
-			TTL:    86400,
+			ID: batchID,
+			// SLO:    time.Now().UTC().Add(24 * time.Hour),
+			// TTL:    86400,
 			Tags:   []string{},
 			Spec:   specData,
 			Status: statusData,
@@ -174,9 +174,9 @@ func TestBatchHandler(t *testing.T) {
 				},
 			})
 			dbClient.DBStore(context.Background(), &api.BatchItem{
-				ID:     batchID,
-				SLO:    time.Now().UTC().Add(24 * time.Hour),
-				TTL:    86400,
+				ID: batchID,
+				// SLO:    time.Now().UTC().Add(24 * time.Hour),
+				// TTL:    86400,
 				Tags:   []string{},
 				Spec:   specData,
 				Status: statusData,
@@ -242,9 +242,9 @@ func TestBatchHandler(t *testing.T) {
 			},
 		})
 		dbClient.DBStore(context.Background(), &api.BatchItem{
-			ID:     batchID,
-			SLO:    time.Now().UTC().Add(24 * time.Hour),
-			TTL:    86400,
+			ID: batchID,
+			// SLO:    time.Now().UTC().Add(24 * time.Hour),
+			// TTL:    86400,
 			Tags:   []string{},
 			Spec:   specData,
 			Status: statusData,
@@ -319,9 +319,9 @@ func BenchmarkBatchHandler(b *testing.B) {
 			},
 		})
 		dbClient.DBStore(context.Background(), &api.BatchItem{
-			ID:     batchID,
-			SLO:    time.Now().UTC().Add(24 * time.Hour),
-			TTL:    86400,
+			ID: batchID,
+			// SLO:    time.Now().UTC().Add(24 * time.Hour),
+			// TTL:    86400,
 			Tags:   []string{},
 			Spec:   specData,
 			Status: statusData,
@@ -356,9 +356,9 @@ func BenchmarkBatchHandler(b *testing.B) {
 				},
 			})
 			dbClient.DBStore(context.Background(), &api.BatchItem{
-				ID:     batchID,
-				SLO:    time.Now().UTC().Add(24 * time.Hour),
-				TTL:    86400,
+				ID: batchID,
+				// SLO:    time.Now().UTC().Add(24 * time.Hour),
+				// TTL:    86400,
 				Tags:   []string{},
 				Spec:   specData,
 				Status: statusData,
@@ -396,9 +396,9 @@ func BenchmarkBatchHandler(b *testing.B) {
 				},
 			})
 			dbClient.DBStore(context.Background(), &api.BatchItem{
-				ID:     batchID,
-				SLO:    time.Now().UTC().Add(24 * time.Hour),
-				TTL:    86400,
+				ID: batchID,
+				// SLO:    time.Now().UTC().Add(24 * time.Hour),
+				// TTL:    86400,
 				Tags:   []string{},
 				Spec:   specData,
 				Status: statusData,

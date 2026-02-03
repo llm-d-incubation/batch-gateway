@@ -31,9 +31,9 @@ for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
 	if getStatic == 'true' then
-		contents = redis.call('HMGET', key, "id", "slo", "tags", "status", "spec")
+		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status", "spec")
 	else
-		contents = redis.call('HMGET', key, "id", "slo", "tags", "status")
+		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status")
 	end
 	-- Search for the tags.
 	local ofound = 0

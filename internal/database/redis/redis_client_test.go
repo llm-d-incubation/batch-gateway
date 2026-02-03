@@ -48,7 +48,7 @@ func setupRedisClient(t *testing.T, redisUrl, redisCaCert string) *dbredis.Batch
 			CaCertFile: redisCaCert,
 		}
 	}
-	db_rds, err := dbredis.NewBatchDSClientRedis(context.Background(), cfg, 0)
+	db_rds, err := dbredis.NewBatchDSClientRedis(context.Background(), cfg, 0, "testTable")
 	if err != nil {
 		t.Fatalf("Failed to create db redis client: %v", err)
 	}
@@ -104,9 +104,9 @@ func TestRedisClient(t *testing.T) {
 		for i := 0; i < nJobsRmv; i++ {
 			jobID := uuid.New().String()
 			job := &db_api.BatchItem{
-				ID:     jobID,
-				SLO:    time.Now().Add(time.Hour),
-				TTL:    1,
+				ID: jobID,
+				// SLO:    time.Now().Add(time.Hour),
+				// TTL:    1,
 				Tags:   []string{tagVal1, tagVal2},
 				Spec:   []byte("spec"),
 				Status: []byte("status"),
@@ -128,9 +128,9 @@ func TestRedisClient(t *testing.T) {
 		for i := 0; i < nJobs; i++ {
 			jobID := uuid.New().String()
 			job := &db_api.BatchItem{
-				ID:     jobID,
-				SLO:    time.Now().Add(time.Hour),
-				TTL:    10000,
+				ID: jobID,
+				// SLO:    time.Now().Add(time.Hour),
+				// TTL:    10000,
 				Tags:   []string{tagVal1, tagVal2},
 				Spec:   []byte("spec"),
 				Status: []byte("status"),
@@ -152,7 +152,7 @@ func TestRedisClient(t *testing.T) {
 		wg.Wait()
 		time.Sleep(1 * time.Second) // To make sure the short ttl jobs get expired.
 
-		resJobs, _, err := dbClient.DBGet(context.Background(), jobIDs, nil, db_api.TagsLogicalCondNa, true, 0, nJobs*2)
+		resJobs, _, err := dbClient.DBGet(context.Background(), jobIDs, nil, db_api.GenLogicalCondNa, true, 0, nJobs*2)
 		if err != nil {
 			t.Fatalf("Failed to get items: %v", err)
 		}
@@ -164,9 +164,9 @@ func TestRedisClient(t *testing.T) {
 			if resJob.ID != tJob.ID {
 				t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
 			}
-			if !resJob.SLO.Equal(tJob.SLO) {
-				t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
-			}
+			// if !resJob.SLO.Equal(tJob.SLO) {
+			// 	t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
+			// }
 			if !bytes.Equal(resJob.Spec, tJob.Spec) {
 				t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
 			}

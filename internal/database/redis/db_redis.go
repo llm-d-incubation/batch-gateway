@@ -37,7 +37,7 @@ import (
 const (
 	fieldNameVersion     = "ver"
 	fieldNameId          = "id"
-	fieldNameSlo         = "slo"
+	fieldNameExpiry      = "expiry"
 	fieldNameSpec        = "spec"
 	fieldNameStatus      = "status"
 	fieldNameTags        = "tags"
@@ -52,6 +52,7 @@ const (
 	routineStopTimeout   = 20 * time.Second
 	eventChanTimeout     = 10 * time.Second
 	cmdTimeout           = 20 * time.Second
+	ttlSecDefault        = 60 * 60 * 24 * 30
 	tagsSep              = ";;"
 	eventChanSize        = 100
 	logFreqDefault       = 10 * time.Minute
@@ -71,12 +72,13 @@ var (
 type BatchDSClientRedis struct {
 	redisClient        *goredis.Client
 	redisClientChecker *uredis.RedisClientChecker
+	tableName          string
 	timeout            time.Duration
 	idleLogFreq        time.Duration
 	idleLogLast        time.Time
 }
 
-func NewBatchDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+func NewBatchDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration, tableName string) (
 	*BatchDSClientRedis, error) {
 
 	if ctx == nil {
@@ -100,6 +102,7 @@ func NewBatchDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, 
 	return &BatchDSClientRedis{
 		redisClient:        redisClient,
 		redisClientChecker: redisClientChecker,
+		tableName:          tableName,
 		timeout:            opTimeout,
 		idleLogFreq:        logFreqDefault,
 		idleLogLast:        time.Now(),
@@ -143,10 +146,10 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
-		[]string{getKeyForStore(item.ID)},
-		versionV1, item.ID, strconv.FormatInt(item.SLO.UnixNano(), 10),
+		[]string{getKeyForStore(item.ID, c.tableName)},
+		versionV1, item.ID, item.Expiry,
 		packTags(item.Tags), item.Status, item.Spec,
-		item.TTL).Text()
+		ttlSecDefault).Text()
 	ccancel()
 	if err != nil {
 		logger.Error(err, "DBStore: script failed")
@@ -184,15 +187,15 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 	cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		switch {
 		case len(item.Status) > 0 && len(item.Tags) > 0:
-			pipe.HSet(cctx, getKeyForStore(item.ID),
+			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
 				fieldNameStatus, item.Status, fieldNameTags, packTags(item.Tags)).Err()
 			updatedStatus, updatedTags = true, true
 		case len(item.Status) > 0:
-			pipe.HSet(cctx, getKeyForStore(item.ID),
+			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
 				fieldNameStatus, item.Status).Err()
 			updatedStatus = true
 		case len(item.Tags) > 0:
-			pipe.HSet(cctx, getKeyForStore(item.ID),
+			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
 				fieldNameTags, packTags(item.Tags)).Err()
 			updatedTags = true
 		}
@@ -228,8 +231,8 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
-			res := pipe.HDel(cctx, getKeyForStore(id),
-				fieldNameVersion, fieldNameId, fieldNameSlo, fieldNameTags, fieldNameStatus, fieldNameSpec)
+			res := pipe.HDel(cctx, getKeyForStore(id, c.tableName),
+				fieldNameVersion, fieldNameId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 			resMap[id] = res
 		}
 		return nil
@@ -260,7 +263,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 
 func (c *BatchDSClientRedis) DBGet(
 	ctx context.Context, IDs []string, tags []string,
-	tagsLogicalCond db_api.TagsLogicalCond, includeStatic bool, start, limit int) (
+	tagsLogicalCond db_api.GenLogicalCond, includeStatic bool, start, limit int) (
 	items []*db_api.BatchItem, cursor int, err error) {
 
 	if ctx == nil {
@@ -275,11 +278,11 @@ func (c *BatchDSClientRedis) DBGet(
 		cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 			for _, id := range IDs {
 				if includeStatic {
-					pipe.HMGet(cctx, getKeyForStore(id),
-						fieldNameId, fieldNameSlo, fieldNameTags, fieldNameStatus, fieldNameSpec)
+					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
+						fieldNameId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 				} else {
-					pipe.HMGet(cctx, getKeyForStore(id),
-						fieldNameId, fieldNameSlo, fieldNameTags, fieldNameStatus)
+					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
+						fieldNameId, fieldNameExpiry, fieldNameTags, fieldNameStatus)
 				}
 			}
 			return nil
@@ -317,7 +320,7 @@ func (c *BatchDSClientRedis) DBGet(
 
 	} else if len(tags) > 0 {
 
-		cond, found := db_api.TagsLogicalCondNames[tagsLogicalCond]
+		cond, found := db_api.GenLogicalCondNames[tagsLogicalCond]
 		if !found {
 			err = fmt.Errorf("invalid logical condition value: %d", tagsLogicalCond)
 			logger.Error(err, "DBGet:")
@@ -368,8 +371,8 @@ func (c *BatchDSClientRedis) DBGet(
 	return
 }
 
-func getKeyForStore(key string) string {
-	return storeKeysPrefix + key
+func getKeyForStore(key, tableName string) string {
+	return storeKeysPrefix + key + tableName + ":"
 }
 
 func packTags(tags []string) string {
@@ -409,40 +412,44 @@ func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) 
 		return nil, err
 	}
 	var (
-		id, slo, tags, status, spec string
-		sloTime                     time.Time
-		ok                          bool
+		id, tags, status, spec string
+		expiry                 int64
+		ok                     bool
 	)
 	id, ok = vals[0].(string)
 	if !ok || len(id) == 0 {
 		return nil, nil
 	}
-	slo, ok = vals[1].(string)
-	if ok && len(slo) > 0 {
-		sloNano, err := strconv.ParseInt(slo, 10, 64)
-		if err != nil {
-			logger.Error(err, "dbItemFromHget:")
-			return nil, err
-		}
-		sloTime = time.Unix(0, sloNano)
+	expiry, ok = vals[0].(int64)
+	if !ok {
+		expiry = 0
 	}
-	tags, ok = vals[2].(string)
+	// slo, ok = vals[1].(string) TBD
+	// if ok && len(slo) > 0 {
+	// 	sloNano, err := strconv.ParseInt(slo, 10, 64)
+	// 	if err != nil {
+	// 		logger.Error(err, "dbItemFromHget:")
+	// 		return nil, err
+	// 	}
+	// 	sloTime = time.Unix(0, sloNano)
+	// }
+	tags, ok = vals[1].(string)
 	if !ok {
 		tags = ""
 	}
-	status, ok = vals[3].(string)
+	status, ok = vals[2].(string)
 	if !ok {
 		status = ""
 	}
 	if includeStatic {
-		spec, ok = vals[4].(string)
+		spec, ok = vals[3].(string)
 		if !ok {
 			spec = ""
 		}
 	}
 	job := &db_api.BatchItem{
 		ID:     id,
-		SLO:    sloTime,
+		Expiry: expiry,
 		Spec:   []byte(spec),
 		Status: []byte(status),
 		Tags:   unpackTags(tags),

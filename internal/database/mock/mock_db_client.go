@@ -39,7 +39,7 @@ func (m *MockBatchDBClient) DBStore(ctx context.Context, job *api.BatchItem) (st
 	return job.ID, nil
 }
 
-func (m *MockBatchDBClient) DBGet(ctx context.Context, IDs []string, tags []string, tagsLogicalCond api.TagsLogicalCond, includeStatic bool, start, limit int) ([]*api.BatchItem, int, error) {
+func (m *MockBatchDBClient) DBGet(ctx context.Context, IDs []string, tags []string, tagsLogicalCond api.GenLogicalCond, includeStatic bool, start, limit int) ([]*api.BatchItem, int, error) {
 	var results []*api.BatchItem
 
 	// If IDs are specified, get by IDs
@@ -66,7 +66,8 @@ func (m *MockBatchDBClient) DBGet(ctx context.Context, IDs []string, tags []stri
 	return results, 0, nil
 }
 
-func (m *MockBatchDBClient) DBUpdate(ctx context.Context, job *api.BatchItem) error {
+func (m *MockBatchDBClient) DBUpdate(
+	ctx context.Context, job *api.BatchItem) error {
 	if _, ok := m.jobs.Load(job.ID); !ok {
 		return fmt.Errorf("cannot update job with ID '%s': job doesn't exist", job.ID)
 	}
@@ -74,7 +75,7 @@ func (m *MockBatchDBClient) DBUpdate(ctx context.Context, job *api.BatchItem) er
 	return nil
 }
 
-func (m *MockBatchDBClient) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
+func (m *MockBatchDBClient) DBDelete(ctx context.Context, IDs []string, tagSelectors []string, tagsLogicalCond api.GenLogicalCond, expired bool) ([]string, error) {
 	var deleted []string
 	for _, id := range IDs {
 		if _, ok := m.jobs.LoadAndDelete(id); ok {

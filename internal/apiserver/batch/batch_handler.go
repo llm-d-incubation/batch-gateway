@@ -155,18 +155,18 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	slo := time.Now().UTC().Add(completionDuration)
 
-	ttl := c.config.BatchTTLSeconds
-	if batchReq.OutputExpiresAfter != nil {
-		if batchReq.OutputExpiresAfter.Anchor == "" || batchReq.OutputExpiresAfter.Anchor == "created_at" {
-			// TODO: get the batch file create time, and set TTL to batch file create time + OutputExpiresAfter.Seconds
-			ttl = int(completionDuration.Seconds()) + int(batchReq.OutputExpiresAfter.Seconds)
-		}
-	}
+	// ttl := c.config.BatchTTLSeconds
+	// if batchReq.OutputExpiresAfter != nil {
+	// 	if batchReq.OutputExpiresAfter.Anchor == "" || batchReq.OutputExpiresAfter.Anchor == "created_at" {
+	// 		// TODO: get the batch file create time, and set TTL to batch file create time + OutputExpiresAfter.Seconds
+	// 		ttl = int(completionDuration.Seconds()) + int(batchReq.OutputExpiresAfter.Seconds)
+	// 	}
+	// }
 
 	job := &api.BatchItem{
-		ID:     batchID,
-		SLO:    slo,
-		TTL:    ttl,
+		ID: batchID,
+		// SLO:    slo,
+		// TTL:    ttl,
 		Tags:   nil,
 		Spec:   batchSpecData,
 		Status: batchStatusData,
@@ -186,7 +186,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := c.queueClient.PQEnqueue(ctx, bjp); err != nil {
 		logger.Error(err, "failed to enqueue batch job priority")
-		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}); delErr != nil {
+		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}, nil, api.GenLogicalCondNa, false); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after enqueue failure", "batch_id", batchID)
 		}
 		common.WriteInternalServerError(ctx, w)
@@ -245,7 +245,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: We need a way to associate jobs to a tenant / user
 	// Request limit+1 to check if there are more results
-	jobs, _, err := c.dbClient.DBGet(ctx, nil, nil, api.TagsLogicalCondNa, true, after, limit+1)
+	jobs, _, err := c.dbClient.DBGet(ctx, nil, nil, api.GenLogicalCondNa, true, after, limit+1)
 	if err != nil {
 		logger.Error(err, "failed to list batches from database")
 		common.WriteInternalServerError(ctx, w)
@@ -298,7 +298,7 @@ func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get batch from database
-	jobs, _, err := c.dbClient.DBGet(ctx, []string{batchID}, nil, api.TagsLogicalCondNa, true, 0, 1)
+	jobs, _, err := c.dbClient.DBGet(ctx, []string{batchID}, nil, api.GenLogicalCondNa, true, 0, 1)
 	if err != nil {
 		logger.Error(err, "failed to get batch from database", "batch_id", batchID)
 		common.WriteInternalServerError(ctx, w)
@@ -336,7 +336,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get batch from database
-	jobs, _, err := c.dbClient.DBGet(ctx, []string{batchID}, nil, api.TagsLogicalCondNa, true, 0, 1)
+	jobs, _, err := c.dbClient.DBGet(ctx, []string{batchID}, nil, api.GenLogicalCondNa, true, 0, 1)
 	if err != nil {
 		logger.Error(err, "failed to get batch from database", "batch_id", batchID)
 		common.WriteInternalServerError(ctx, w)
