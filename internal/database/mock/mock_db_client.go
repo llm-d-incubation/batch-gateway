@@ -39,7 +39,9 @@ func (m *MockBatchDBClient) DBStore(ctx context.Context, job *api.BatchItem) (st
 	return job.ID, nil
 }
 
-func (m *MockBatchDBClient) DBGet(ctx context.Context, IDs []string, tags []string, tagsLogicalCond api.GenLogicalCond, includeStatic bool, start, limit int) ([]*api.BatchItem, int, error) {
+func (m *MockBatchDBClient) DBGet(
+	ctx context.Context, IDs []string, tags []string, tagsLogicalCond api.GenLogicalCond, includeStatic bool, start, limit int) (
+	[]*api.BatchItem, int, bool, error) {
 	var results []*api.BatchItem
 
 	// If IDs are specified, get by IDs
@@ -63,7 +65,7 @@ func (m *MockBatchDBClient) DBGet(ctx context.Context, IDs []string, tags []stri
 		})
 	}
 
-	return results, 0, nil
+	return results, 0, false, nil
 }
 
 func (m *MockBatchDBClient) DBUpdate(

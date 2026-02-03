@@ -264,7 +264,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 func (c *BatchDSClientRedis) DBGet(
 	ctx context.Context, IDs []string, tags []string,
 	tagsLogicalCond db_api.GenLogicalCond, includeStatic bool, start, limit int) (
-	items []*db_api.BatchItem, cursor int, err error) {
+	items []*db_api.BatchItem, cursor int, expectedMore bool, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -290,7 +290,7 @@ func (c *BatchDSClientRedis) DBGet(
 		ccancel()
 		if err != nil {
 			logger.Error(err, "DBGet: Pipelined failed")
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 
 		// Process the items.
@@ -306,11 +306,11 @@ func (c *BatchDSClientRedis) DBGet(
 			if !ok {
 				err := fmt.Errorf("unexpected result type from HMGet: %T", cmd)
 				logger.Error(err, "DBGet:")
-				return nil, 0, err
+				return nil, 0, false, err
 			}
 			item, err := dbItemFromHget(hgetRes.Val(), includeStatic, logger)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, false, err
 			}
 			if item != nil {
 				items = append(items, item)
@@ -357,7 +357,7 @@ func (c *BatchDSClientRedis) DBGet(
 		for _, resItem := range resItems {
 			item, err := dbItemFromHget(resItem.([]interface{}), includeStatic, logger)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, false, err
 			}
 			if item != nil {
 				items = append(items, item)

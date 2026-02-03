@@ -73,7 +73,7 @@ type BatchDBClient interface {
 	DBGet(ctx context.Context,
 		IDs []string, tagSelectors []string, tagsLogicalCond GenLogicalCond,
 		includeStatic bool, start, limit int) (
-		items []*BatchItem, cursor int, err error)
+		items []*BatchItem, cursor int, expectedMore bool, err error)
 
 	// DBUpdate updates the dynamic parts of a batch item.
 	// The function will update in the item's record in the database - all the dynamic fields of the item which are not empty

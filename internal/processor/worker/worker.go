@@ -202,7 +202,7 @@ func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (
 
 	// get only one job data
 	ids := []string{task.ID}
-	jobs, _, err := p.clients.database.DBGet(ctx, ids, nil, db.GenLogicalCondNa, true, 0, 1)
+	jobs, _, _, err := p.clients.database.DBGet(ctx, ids, nil, db.GenLogicalCondNa, true, 0, 1)
 
 	// job db data does not exist or failed to fetch the data
 	if err != nil || len(jobs) == 0 {

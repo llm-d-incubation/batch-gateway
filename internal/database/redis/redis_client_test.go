@@ -152,7 +152,7 @@ func TestRedisClient(t *testing.T) {
 		wg.Wait()
 		time.Sleep(1 * time.Second) // To make sure the short ttl jobs get expired.
 
-		resJobs, _, err := dbClient.DBGet(context.Background(), jobIDs, nil, db_api.GenLogicalCondNa, true, 0, nJobs*2)
+		resJobs, _, _, err := dbClient.DBGet(context.Background(), jobIDs, nil, db_api.GenLogicalCondNa, true, 0, nJobs*2)
 		if err != nil {
 			t.Fatalf("Failed to get items: %v", err)
 		}
