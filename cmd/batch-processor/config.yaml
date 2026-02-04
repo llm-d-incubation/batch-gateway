@@ -17,10 +17,6 @@ process_time_bucket:
 # Metrics & Health Check Server Address
 addr: ":9090"
 
-# Batch File Constraints (OpenAI default: 50000 lines, 200MB)
-max_batch_lines: 50000
-max_batch_bytes: 209715200 # 200MB
-
 # Inference Client Configuration
 inference_config:
   # Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
@@ -28,10 +24,6 @@ inference_config:
 
   # Request timeout for individual inference requests
   request_timeout: "5m"
-
-  # Optional API key for authenticating with the inference gateway
-  # Leave empty if no authentication is required
-  api_key: ""
 
   # Retry configuration for failed requests
   max_retries: 3

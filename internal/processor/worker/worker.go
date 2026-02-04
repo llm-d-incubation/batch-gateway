@@ -323,26 +323,12 @@ func (p *Processor) processJob(ctx context.Context, workerID int, jobDbData *db.
 	resultChan := make(chan *batch_utils.Response, p.cfg.MaxJobConcurrency)
 
 	// file download - get file reader
-	fileReader, fileSpec, err := p.openInputFileStream(jobctx, job.BatchJob.InputFileID)
+	fileReader, _, err := p.openInputFileStream(jobctx, job.BatchJob.InputFileID)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to open input file stream")
 		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 		// skipped metrics: job processing duration / job error details
 		// job processing duration recording (missing tenantID, sizeBucket)
-		// job error recording (missing modelID)
-		updateErr := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, nil, nil)
-		if updateErr != nil {
-			logger.V(logging.ERROR).Error(updateErr, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusFailed)
-		}
-		return
-	}
-
-	// validate file size using config's max batch bytes
-	if fileSpec.Size > p.cfg.MaxBatchBytes {
-		logger.V(logging.ERROR).Error(fmt.Errorf("file size %d exceeds limit %d", fileSpec.Size, p.cfg.MaxBatchBytes), "Failed to open input file stream")
-		metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonUserError)
-		// skipped metrics: job processing duration / job error details
-		// job processing duration recording (missing sizeBucket)
 		// job error recording (missing modelID)
 		updateErr := batch_utils.UpdateDBJobStatus(p.clients.database, p.clients.status, jobctx, jobDbData, openai.BatchStatusFailed, nil, nil)
 		if updateErr != nil {
