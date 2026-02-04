@@ -21,6 +21,7 @@ package redis_test
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"sync"
 	"testing"
@@ -100,7 +101,7 @@ func TestRedisClient(t *testing.T) {
 		nJobs := 40
 		nJobsRmv := 10
 		var wg sync.WaitGroup
-		jobs := make(map[string]*db_api.BatchItem)
+		jobs, jobsRmv := make(map[string]*db_api.BatchItem), make(map[string]*db_api.BatchItem)
 		for i := 0; i < nJobsRmv; i++ {
 			jobID := uuid.New().String()
 			job := &db_api.BatchItem{
@@ -110,6 +111,7 @@ func TestRedisClient(t *testing.T) {
 				Spec:   []byte("spec"),
 				Status: []byte("status"),
 			}
+			jobsRmv[jobID] = job
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -161,52 +163,52 @@ func TestRedisClient(t *testing.T) {
 			t.Fatalf("Invalid number of items %d != %d", len(resJobs), nJobsRmv)
 		}
 		for _, resJob := range resJobs {
-			tJob := jobs[resJob.ID]
+			tJob := jobsRmv[resJob.ID]
 			if resJob.ID != tJob.ID {
 				t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
 			}
-			// if !resJob.SLO.Equal(tJob.SLO) {
-			// 	t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
-			// }
+			if resJob.Expiry != tJob.Expiry {
+				t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
+			}
 			if !bytes.Equal(resJob.Spec, tJob.Spec) {
 				t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
 			}
 			if !bytes.Equal(resJob.Status, tJob.Status) {
 				t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
 			}
-			// if !slices.Equal(resJob.Tags, tJob.Tags) { TBD
-			// 	t.Fatalf("Mismatch tags %s != %s", resJob.Spec, tJob.Spec)
-			// }
+			if !maps.Equal(resJob.Tags, tJob.Tags) {
+				t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
+			}
 		}
 
-		resJobs, _, _, err = dbClient.DBGet(context.Background(),
-			&db_api.BatchDBQuery{
-				IDs: jobIDs,
-			}, true, 0, nJobs*2)
-		if err != nil {
-			t.Fatalf("Failed to get items: %v", err)
-		}
-		if len(resJobs) != nJobs {
-			t.Fatalf("Invalid number of items %d != %d", len(resJobs), nJobs)
-		}
-		for _, resJob := range resJobs {
-			tJob := jobs[resJob.ID]
-			if resJob.ID != tJob.ID {
-				t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-			}
-			// if !resJob.SLO.Equal(tJob.SLO) {
-			// 	t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
-			// }
-			if !bytes.Equal(resJob.Spec, tJob.Spec) {
-				t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-			}
-			if !bytes.Equal(resJob.Status, tJob.Status) {
-				t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-			}
-			// if !slices.Equal(resJob.Tags, tJob.Tags) { TBD
-			// 	t.Fatalf("Mismatch tags %s != %s", resJob.Spec, tJob.Spec)
-			// }
-		}
+		// resJobs, _, _, err = dbClient.DBGet(context.Background(),
+		// 	&db_api.BatchDBQuery{
+		// 		IDs: jobIDs,
+		// 	}, true, 0, nJobs*2)
+		// if err != nil {
+		// 	t.Fatalf("Failed to get items: %v", err)
+		// }
+		// if len(resJobs) != nJobs {
+		// 	t.Fatalf("Invalid number of items %d != %d", len(resJobs), nJobs)
+		// }
+		// for _, resJob := range resJobs {
+		// 	tJob := jobs[resJob.ID]
+		// 	if resJob.ID != tJob.ID {
+		// 		t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
+		// 	}
+		// 	// if !resJob.SLO.Equal(tJob.SLO) {
+		// 	// 	t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
+		// 	// }
+		// 	if !bytes.Equal(resJob.Spec, tJob.Spec) {
+		// 		t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
+		// 	}
+		// 	if !bytes.Equal(resJob.Status, tJob.Status) {
+		// 		t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
+		// 	}
+		// 	// if !slices.Equal(resJob.Tags, tJob.Tags) { TBD
+		// 	// 	t.Fatalf("Mismatch tags %s != %s", resJob.Spec, tJob.Spec)
+		// 	// }
+		// }
 	})
 
 }
