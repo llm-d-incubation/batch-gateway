@@ -139,10 +139,10 @@ type BatchPriorityQueueClient interface {
 	PQEnqueue(ctx context.Context, jobPriority *BatchJobPriority) (err error)
 
 	// PQDequeue returns the job priority objects at the head of the queue,
-	// up to the maximum number of objects specified in maxObjs.
+	// up to the maximum number of objects specified in maxItems.
 	// The function blocks up to the timeout value for a job priority object to be available.
 	// If the timeout value is zero, the function returns immediately.
-	PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) (
+	PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
 		jobPriorities []*BatchJobPriority, err error)
 
 	// PQDelete deletes a job priority object from the queue.

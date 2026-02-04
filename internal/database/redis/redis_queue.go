@@ -114,7 +114,7 @@ func (c *BatchDSClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJob
 	return
 }
 
-func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) (
+func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
 	jobPriorities []*db_api.BatchJobPriority, err error) {
 
 	if ctx == nil {
@@ -125,7 +125,7 @@ func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duratio
 	// Get items from the queue.
 	cctx, ccancel := context.WithTimeout(ctx, timeout+2*time.Second)
 	_, vals, err := c.redisClient.BZMPop(
-		cctx, timeout, goredis.Min.String(), int64(maxObjs), priorityQueueKeyName).Result()
+		cctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
 	ccancel()
 	if err != nil {
 		if unrecognizedBlockingError(err) {
@@ -144,7 +144,7 @@ func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duratio
 	}
 	if len(vals) == 0 {
 		if time.Since(c.idleLogLast) >= c.idleLogFreq {
-			logger.Info("PQDequeue: no jobs")
+			logger.Info("PQDequeue: no items")
 			c.idleLogLast = time.Now()
 		}
 		return nil, nil
