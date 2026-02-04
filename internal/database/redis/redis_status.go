@@ -35,13 +35,13 @@ func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, 
 	logger := klog.FromContext(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
-		logger.Error(err, "STSet:")
+		logger.Error(err, "StatusSet:")
 		return
 	}
 	logger = logger.WithValues("ID", ID)
 	if len(data) == 0 {
 		err = fmt.Errorf("empty data")
-		logger.Error(err, "STSet:")
+		logger.Error(err, "StatusSet:")
 		return
 	}
 
@@ -50,15 +50,16 @@ func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, 
 	ccancel()
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
-		logger.Error(err, "STSet:")
+		logger.Error(err, "StatusSet:")
 		return
 	}
 	if err = res.Err(); err != nil {
-		logger.Error(err, "STSet: redis command error")
+		logger.Error(err, "StatusSet: redis command error")
 		return
 	}
 
-	logger.Info("STSet: succeeded")
+	logger.Info("StatusSet: succeeded")
+
 	return
 }
 
@@ -70,7 +71,7 @@ func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []b
 	logger := klog.FromContext(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
-		logger.Error(err, "STGet:")
+		logger.Error(err, "StatusGet:")
 		return
 	}
 	logger = logger.WithValues("ID", ID)
@@ -80,16 +81,17 @@ func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []b
 	ccancel()
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
-		logger.Error(err, "STGet:")
+		logger.Error(err, "StatusGet:")
 		return
 	}
 	if err = res.Err(); err != nil {
-		logger.Error(err, "STGet: redis command error")
+		logger.Error(err, "StatusGet: redis command error")
 		return
 	}
 	data = []byte(res.Val())
 
-	logger.Info("STGet: succeeded", "len(data)", len(data))
+	logger.Info("StatusGet: succeeded", "len(data)", len(data))
+
 	return
 }
 
@@ -101,7 +103,7 @@ func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDele
 	logger := klog.FromContext(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
-		logger.Error(err, "STDelete:")
+		logger.Error(err, "StatusDelete:")
 		return
 	}
 	logger = logger.WithValues("ID", ID)
@@ -111,16 +113,17 @@ func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDele
 	ccancel()
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
-		logger.Error(err, "STDelete:")
+		logger.Error(err, "StatusDelete:")
 		return
 	}
 	if err = res.Err(); err != nil {
-		logger.Error(err, "STDelete: redis command error")
+		logger.Error(err, "StatusDelete: redis command error")
 		return
 	}
 	nDeleted = int(res.Val())
 
-	logger.Info("STDelete: succeded", "nDeleted", nDeleted)
+	logger.Info("StatusDelete: succeded", "nDeleted", nDeleted)
+
 	return
 }
 

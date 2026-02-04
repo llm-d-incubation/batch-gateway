@@ -104,6 +104,7 @@ func (c *BatchDSClientRedis) ECConsumerGetChannel(ctx context.Context, ID string
 	}()
 
 	logger.Info("ECConsumerGetChannel: succeeded")
+
 	return
 }
 
@@ -159,5 +160,6 @@ func (c *BatchDSClientRedis) ECProducerSendEvents(ctx context.Context, events []
 	}
 
 	logger.Info("ECProducerSendEvents: succeeded", "nIDs", len(sentIDs), "sentIDs", sentIDs)
+
 	return
 }
