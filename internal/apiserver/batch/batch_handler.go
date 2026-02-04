@@ -85,6 +85,8 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.GetRequestLogger(r)
 
+	createdAt := time.Now().UTC().Unix()
+
 	// parse request
 	batchReq := &openai.CreateBatchRequest{}
 	if err := json.NewDecoder(r.Body).Decode(&batchReq); err != nil {
@@ -111,7 +113,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		InputFileID:      batchReq.InputFileID,
 		CompletionWindow: batchReq.CompletionWindow,
 		Metadata:         batchReq.Metadata,
-		CreatedAt:        time.Now().UTC().Unix(),
+		CreatedAt:        createdAt,
 	}
 	batchSpecData, err := json.Marshal(batchSpec)
 	if err != nil {
@@ -148,6 +150,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	// 	}
 	// }
 
+	// TODO: add field Expiry
 	job := &api.BatchItem{
 		ID: batchID,
 		// SLO:    slo,
@@ -165,9 +168,22 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// enqueue job
+	bjpData := &batch_utils.BatchJobPriorityData{
+		CreatedAt: createdAt,
+	}
+	bjpDataBytes, err := json.Marshal(bjpData)
+	if err != nil {
+		logger.Error(err, "failed to marshal batch job priority data")
+		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}); delErr != nil {
+			logger.Error(delErr, "failed to cleanup batch job after marshal failure", "batch_id", batchID)
+		}
+		common.WriteInternalServerError(ctx, w)
+		return
+	}
 	bjp := &api.BatchJobPriority{
-		ID:  batchID,
-		SLO: slo,
+		ID:   batchID,
+		SLO:  slo,
+		Data: bjpDataBytes,
 	}
 	if err := c.queueClient.PQEnqueue(ctx, bjp); err != nil {
 		logger.Error(err, "failed to enqueue batch job priority")

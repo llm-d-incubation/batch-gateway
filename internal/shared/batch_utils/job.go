@@ -57,3 +57,7 @@ type BatchError struct {
 	Param   string `json:"param,omitempty"` // Parameter that caused the error
 	Type    string `json:"type,omitempty"`  // Type of error
 }
+
+type BatchJobPriorityData struct {
+	CreatedAt int64 `json:"created_at"`
+}
