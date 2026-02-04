@@ -60,13 +60,12 @@ func TestRedisClient(t *testing.T) {
 	redisCaCert := os.Getenv("REDIS_CACERT_PATH")
 	var (
 		minirds *miniredis.Miniredis
-		//testTagVal1    string              = "test-tag-1"
-		//testTagVal2    string              = "test-tag-2"
 		tagKey1 string = "key-tag-1"
 		tagKey2 string = "key-tag-2"
+		// tagKey3 string = "key-tag-3"
 		tagVal1 string = "val-tag-1"
 		tagVal2 string = "val-tag-2"
-		//tagVal3        string              = "dif-tag-3"
+		// tagVal3 string = "val-tag-3"
 	)
 
 	// Setup: start miniredis if no external redis URL is provided.
@@ -105,9 +104,8 @@ func TestRedisClient(t *testing.T) {
 		for i := 0; i < nJobsRmv; i++ {
 			jobID := uuid.New().String()
 			job := &db_api.BatchItem{
-				ID: jobID,
-				// SLO:    time.Now().Add(time.Hour),
-				// TTL:    1,
+				ID:     jobID,
+				Expiry: time.Now().Add(time.Second).Unix(),
 				Tags:   map[string]string{tagKey1: tagVal1, tagKey2: tagVal2},
 				Spec:   []byte("spec"),
 				Status: []byte("status"),
@@ -129,9 +127,8 @@ func TestRedisClient(t *testing.T) {
 		for i := 0; i < nJobs; i++ {
 			jobID := uuid.New().String()
 			job := &db_api.BatchItem{
-				ID: jobID,
-				// SLO:    time.Now().Add(time.Hour),
-				// TTL:    10000,
+				ID:     jobID,
+				Expiry: time.Now().Add(time.Hour).Unix(),
 				Tags:   map[string]string{tagKey1: tagVal1, tagKey1: tagVal2},
 				Spec:   []byte("spec"),
 				Status: []byte("status"),
@@ -151,9 +148,38 @@ func TestRedisClient(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		time.Sleep(1 * time.Second) // To make sure the short ttl jobs get expired.
+		time.Sleep(2 * time.Second) // To pass the expiry time of the short expiry jobs.
 
 		resJobs, _, _, err := dbClient.DBGet(context.Background(),
+			&db_api.BatchDBQuery{
+				Expired: true,
+			}, true, 0, nJobsRmv*2)
+		if err != nil {
+			t.Fatalf("Failed to get items: %v", err)
+		}
+		if len(resJobs) != nJobsRmv {
+			t.Fatalf("Invalid number of items %d != %d", len(resJobs), nJobsRmv)
+		}
+		for _, resJob := range resJobs {
+			tJob := jobs[resJob.ID]
+			if resJob.ID != tJob.ID {
+				t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
+			}
+			// if !resJob.SLO.Equal(tJob.SLO) {
+			// 	t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
+			// }
+			if !bytes.Equal(resJob.Spec, tJob.Spec) {
+				t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
+			}
+			if !bytes.Equal(resJob.Status, tJob.Status) {
+				t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
+			}
+			// if !slices.Equal(resJob.Tags, tJob.Tags) { TBD
+			// 	t.Fatalf("Mismatch tags %s != %s", resJob.Spec, tJob.Spec)
+			// }
+		}
+
+		resJobs, _, _, err = dbClient.DBGet(context.Background(),
 			&db_api.BatchDBQuery{
 				IDs: jobIDs,
 			}, true, 0, nJobs*2)
