@@ -48,7 +48,6 @@ const (
 	eventKeysPrefix      = keysPrefix + "event:"
 	statusKeysPrefix     = keysPrefix + "status:"
 	priorityQueueKeyName = queueKeysPrefix + "priority"
-	storeKeysPattern     = storeKeysPrefix + "*"
 	routineStopTimeout   = 20 * time.Second
 	eventChanTimeout     = 10 * time.Second
 	cmdTimeout           = 20 * time.Second
@@ -67,6 +66,10 @@ var (
 	//go:embed redis_get_by_tags.lua
 	getByTagsLua         string
 	redisScriptGetByTags = goredis.NewScript(getByTagsLua)
+
+	//go:embed redis_get_by_expiry.lua
+	getByExpiryLua         string
+	redisScriptGetByExpiry = goredis.NewScript(getByExpiryLua)
 
 	_ db_api.BatchDBClient            = (*BatchDSClientRedis)(nil)
 	_ db_api.BatchPriorityQueueClient = (*BatchDSClientRedis)(nil)
@@ -271,7 +274,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 func (c *BatchDSClientRedis) DBGet(
 	ctx context.Context, query *db_api.BatchDBQuery,
 	includeStatic bool, start, limit int) (
-	items []*db_api.BatchItem, cursor int, expectedMore bool, err error) {
+	items []*db_api.BatchItem, cursor int, expectMore bool, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -328,6 +331,7 @@ func (c *BatchDSClientRedis) DBGet(
 			}
 		}
 		cursor = len(items)
+		expectMore = false
 
 	} else if len(query.TagSelectors) > 0 {
 
@@ -341,7 +345,7 @@ func (c *BatchDSClientRedis) DBGet(
 		ctags := convertTags(query.TagSelectors)
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, strconv.FormatBool(includeStatic), storeKeysPattern, cond, start, limit).Slice()
+			ctags, strconv.FormatBool(includeStatic), getKeyPatternForStore(c.tableName), cond, start, limit).Slice()
 		ccancel()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
@@ -375,6 +379,51 @@ func (c *BatchDSClientRedis) DBGet(
 			}
 		}
 		cursor = int(resCursor)
+		expectMore = (cursor != 0)
+
+	} else if query.Expired {
+
+		var res []interface{}
+		curTimestamp := time.Now().Unix()
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
+			[]string{}, curTimestamp, getKeyPatternForStore(c.tableName),
+			strconv.FormatBool(includeStatic), start, limit).Slice()
+		ccancel()
+		if err != nil {
+			logger.Error(err, "DBGet: script failed")
+			return
+		}
+		if len(res) != 2 {
+			err = fmt.Errorf("unexpected result from script")
+			logger.Error(err, "DBGet:")
+			return
+		}
+		resItems, ok := res[1].([]interface{})
+		if !ok {
+			err = fmt.Errorf("unexpected result type from script: %T", res[1])
+			logger.Error(err, "DBGet:")
+			return
+		}
+		resCursor, ok := res[0].(int64)
+		if !ok {
+			err = fmt.Errorf("unexpected result type from script: %T", res[0])
+			logger.Error(err, "DBGet:")
+			return
+		}
+		items = make([]*db_api.BatchItem, 0, len(resItems))
+		for _, resItem := range resItems {
+			item, err := dbItemFromHget(resItem.([]interface{}), includeStatic, logger)
+			if err != nil {
+				return nil, 0, false, err
+			}
+			if item != nil {
+				items = append(items, item)
+			}
+		}
+		cursor = int(resCursor)
+		expectMore = (cursor != 0)
+
 	}
 
 	logger.Info("DBGet: succeeded", "nItems", len(items))
@@ -383,7 +432,11 @@ func (c *BatchDSClientRedis) DBGet(
 }
 
 func getKeyForStore(key, tableName string) string {
-	return storeKeysPrefix + key + tableName + ":"
+	return storeKeysPrefix + tableName + ":" + key
+}
+
+func getKeyPatternForStore(tableName string) string {
+	return storeKeysPrefix + tableName + ":*"
 }
 
 func packTags(tags map[string]string) (string, error) {
@@ -427,32 +480,38 @@ func convertTags(tags map[string]string) (ctags []string) {
 	return
 }
 
-func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) (*db_api.BatchItem, error) {
+func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) (item *db_api.BatchItem, err error) {
 
 	if (includeStatic && len(vals) != 5) || (!includeStatic && len(vals) != 4) {
-		err := fmt.Errorf("unexpected result contents from HMGet: %v", vals)
+		err = fmt.Errorf("unexpected result contents from HMGet: %v", vals)
 		logger.Error(err, "dbItemFromHget:")
-		return nil, err
+		return
 	}
 	var (
-		id, status, spec string
-		expiry           int64
-		ok               bool
+		id, tagsStr, status, spec string
+		expiry                    int64
+		tags                      db_api.Tags
+		ok                        bool
 	)
 	id, ok = vals[0].(string)
 	if !ok || len(id) == 0 {
-		return nil, nil
+		err = fmt.Errorf("invalid id: %v", id)
+		logger.Error(err, "dbItemFromHget:")
+		return
 	}
 	expiry, ok = vals[1].(int64)
 	if !ok {
 		expiry = 0
 	}
-	tags, err := unpackTags(vals[1].(string))
-	if err != nil {
-		logger.Error(err, "dbItemFromHget:")
-		return nil, err
+	tagsStr, ok = vals[2].(string)
+	if ok {
+		tags, err = unpackTags(tagsStr)
+		if err != nil {
+			logger.Error(err, "dbItemFromHget: unpackTags failed")
+			return
+		}
 	}
-	// slo, ok = vals[1].(string) TBD
+	// slo, ok = vals[1].(string) TBR
 	// if ok && len(slo) > 0 {
 	// 	sloNano, err := strconv.ParseInt(slo, 10, 64)
 	// 	if err != nil {
@@ -461,24 +520,24 @@ func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) 
 	// 	}
 	// 	sloTime = time.Unix(0, sloNano)
 	// }
-	status, ok = vals[2].(string)
+	status, ok = vals[3].(string)
 	if !ok {
 		status = ""
 	}
 	if includeStatic {
-		spec, ok = vals[3].(string)
+		spec, ok = vals[4].(string)
 		if !ok {
 			spec = ""
 		}
 	}
-	job := &db_api.BatchItem{
+	item = &db_api.BatchItem{
 		ID:     id,
 		Expiry: expiry,
+		Tags:   tags,
 		Spec:   []byte(spec),
 		Status: []byte(status),
-		Tags:   tags,
 	}
-	return job, nil
+	return
 }
 
 func (c *BatchDSClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJobPriority) (err error) {
@@ -503,11 +562,6 @@ func (c *BatchDSClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJo
 		err = lerr
 		logger.Error(err, "PQEnqueue: Marshal failed")
 		return
-
-	}
-	if err = item.IsValid(); err != nil {
-		logger.Error(err, "PQEnqueue: validation failed")
-		return
 	}
 	zitem := goredis.Z{
 		Score:  float64(item.SLO.UnixMicro()),
@@ -527,6 +581,7 @@ func (c *BatchDSClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJo
 	}
 
 	logger.Info("PQEnqueue: succeeded")
+
 	return
 }
 
@@ -547,10 +602,6 @@ func (c *BatchDSClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJob
 	}
 	logger = logger.WithValues("ID", item.ID)
 
-	if err = item.IsValid(); err != nil {
-		logger.Error(err, "PQDelete: validation failed")
-		return
-	}
 	score := strconv.FormatInt(item.SLO.UnixMicro(), 10)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	res := c.redisClient.ZRemRangeByScore(cctx, priorityQueueKeyName, score, score)
@@ -567,6 +618,7 @@ func (c *BatchDSClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJob
 	nDeleted = int(res.Val())
 
 	logger.Info("PQDelete: succeeded")
+
 	return
 }
 
@@ -618,6 +670,7 @@ func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duratio
 	}
 
 	logger.Info("PQDequeue: succeeded", "nItems", len(jobPriorities))
+
 	return
 }
 

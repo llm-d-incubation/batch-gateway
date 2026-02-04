@@ -61,7 +61,7 @@ type BatchDBClient interface {
 	// DBGet gets the information (static and dynamic) of batch items.
 	// If IDs are specified, this function will get items by the specified IDs.
 	// If tags are specified, this function will get items by the specified tags.
-	// If expired is set to true, this function will get expired items. This option can be used with tags selection.
+	// If expired is set to true, this function will get expired items.
 	// If no IDs nor tags nor expired are specified, the function will return an empty list of items.
 	// tagsLogicalCond specifies the logical condition to use for when searching for the tags per item.
 	// includeStatic specifies if to include the static part of a item in the returned output.
@@ -71,9 +71,10 @@ type BatchDBClient interface {
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// items is a slice of returned items.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
+	// expectMore indicates if there are more items to get.
 	DBGet(ctx context.Context, query *BatchDBQuery,
 		includeStatic bool, start, limit int) (
-		items []*BatchItem, cursor int, expectedMore bool, err error)
+		items []*BatchItem, cursor int, expectMore bool, err error)
 
 	// DBUpdate updates the dynamic parts of a batch item.
 	// The function will update in the item's record in the database - all the dynamic fields of the item which are not empty
