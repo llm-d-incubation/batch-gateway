@@ -164,7 +164,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 		jobDbData, err := p.getJobData(ctx, task)
 		if err != nil {
 			// this task should be skipped as the data is not in db
-			// don't need to re-enqueue the task.
+			// enqueue/dequeue is handled in the getJobData function
 			p.workerPool.Release(workerID)
 			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			// we don't have enough information to record job processing duration and errored model (missing tenantID, modelID)
@@ -221,22 +221,24 @@ func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (
 		},
 		true, 0, 1)
 
-	// job db data does not exist or failed to fetch the data
-	if err != nil || len(jobs) == 0 {
-		jobDataErr := err
-		if len(jobs) == 0 {
-			jobDataErr = fmt.Errorf("Job data for %s does not exist", task.ID)
-		}
-		logger.V(logging.ERROR).Error(jobDataErr, "Failed to fetch detailed job info. re-queueing ID", "jobID", task.ID)
-
-		// can't process the job. put the task back to the queue.
+	// system error. (db connection, etc. temporary error)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Temporary DB error. Re-enqueueing the task.")
 		if enqueueErr := p.clients.priorityQueue.PQEnqueue(ctx, task); enqueueErr != nil {
 			logger.V(logging.ERROR).Error(enqueueErr, "CRITICAL: Failed to re-enqueue job", "jobID", task.ID)
 		}
-		return nil, jobDataErr
+		return nil, err
 	}
 
-	logger.V(logging.TRACE).Info("Job DB Data retrieved", "jobID", task.ID)
+	// data inconsistency. job data is not in the db while the task is in the queue.
+	// re-enqueue might create a zombie job. return error.
+	if len(jobs) == 0 {
+		jobDataErr := fmt.Errorf("Job data for %s does not exist", task.ID)
+		logger.V(logging.ERROR).Error(jobDataErr, "CRITICAL: Job data is not in the DB while the task is in the queue. Returning error.")
+		return nil, fmt.Errorf("Job data for %s does not exist", task.ID)
+	}
+
+	logger.V(logging.DEBUG).Info("Job DB Data retrieved", "jobID", task.ID)
 	return jobs[0], nil
 }
 
@@ -376,14 +378,16 @@ func (p *Processor) processJob(ctx context.Context, workerID int, jobDbData *db.
 					logger.V(logging.ERROR).Error(err, "Failed to update job status to %s in DB. skipping this job.", openai.BatchStatusInProgress)
 					// non critical error. continue the shutdown process
 				}
-				taskToEnqueue := &db.BatchJobPriority{
-					ID:  jobDbData.ID,
-					SLO: jobDbData.SLO,
-				}
-				if err := p.clients.priorityQueue.Enqueue(processPipelineCtx, taskToEnqueue); err != nil {
-					logger.V(logging.ERROR).Error(err, "Failed to re-enqueue job", "jobID", jobDbData.ID)
-					// critial error but we can't do anything about it. continue the shutdown process
-				}
+
+				// TODO:: get SLO from the job db data once it's included in the data.spec
+				// taskToEnqueue := &db.BatchJobPriority{
+				// 	ID:  jobDbData.ID,
+				// 	SLO: jobDbData.SLO,
+				// }
+				// if err := p.clients.priorityQueue.Enqueue(processPipelineCtx, taskToEnqueue); err != nil {
+				// 	logger.V(logging.ERROR).Error(err, "Failed to re-enqueue job", "jobID", jobDbData.ID)
+				// 	// critial error but we can't do anything about it. continue the shutdown process
+				// }
 
 				// metrics: skipped as the job is not completed successfully
 
@@ -433,6 +437,7 @@ func (p *Processor) processJob(ctx context.Context, workerID int, jobDbData *db.
 
 			default:
 			}
+
 			// read one line at a time
 			line := fileStreamScanner.Text()
 
