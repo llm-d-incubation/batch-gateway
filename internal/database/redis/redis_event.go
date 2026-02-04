@@ -14,6 +14,150 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file provides a redis database implementation.
+// This file provides a redis event channel client implementation.
 
 package redis
+
+import (
+	"context"
+	_ "embed"
+	"fmt"
+	"strconv"
+	"time"
+
+	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	goredis "github.com/redis/go-redis/v9"
+	"k8s.io/klog/v2"
+)
+
+func (c *BatchDSClientRedis) ECConsumerGetChannel(ctx context.Context, ID string) (
+	batchEventsChan *db_api.BatchEventsChan, err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx).WithValues("ID", ID)
+
+	// Create the events listener for the job.
+	lctx, lcancel := context.WithCancel(context.Background()) // Use a background context as this should be independent of the context of this call.
+	eventChan := make(chan db_api.BatchEvent, eventChanSize)
+	stopChan := make(chan any, 1)
+	closeFn := func() {
+		logger.Info("Listener: close start")
+		lcancel() // Signal for listener termination.
+		select {
+		case <-stopChan: // Wait for listener termination, with a timeout.
+		case <-time.After(routineStopTimeout):
+		}
+		logger.Info("Listener: close end")
+	}
+	batchEventsChan = &db_api.BatchEventsChan{
+		ID:      ID,
+		Events:  eventChan,
+		CloseFn: closeFn,
+	}
+	go func() {
+		eventsKeyId := getKeyForEvent(ID)
+		logger.Info("Listener: start", "eventsKeyId", eventsKeyId)
+		for {
+			select {
+			case <-lctx.Done():
+				logger.Info("Listener: received termination signal")
+				close(eventChan)
+				stopChan <- struct{}{}
+				return
+			default:
+				logger.V(logging.DEBUG).Info("Listener: Start BLMPop")
+				lcctx, lccancel := context.WithTimeout(lctx, c.timeout+2*time.Second)
+				_, events, err := c.redisClient.BLMPop(lcctx, c.timeout, "left", int64(eventReadCount), eventsKeyId).Result()
+				lccancel()
+				logger.V(logging.DEBUG).Info("Listener: Finished BLMPop")
+				if err != nil {
+					if unrecognizedBlockingError(err) {
+						logger.Error(err, "Listener: BLMPop failed")
+						cerr := c.redisClientChecker.Check(ctx)
+						if cerr != nil {
+							logger.Error(err, "Listener: ClientCheck failed")
+						}
+					}
+					continue
+				}
+				for _, event := range events {
+					eventi, err := strconv.Atoi(event)
+					if err != nil {
+						logger.Error(err, "Listener: strconv failed")
+						continue
+					}
+					select {
+					case eventChan <- db_api.BatchEvent{
+						ID:   ID,
+						Type: db_api.BatchEventType(eventi),
+					}:
+						logger.Info("Listener: dispatched event", "type", event)
+					case <-time.After(eventChanTimeout):
+						logger.Error(fmt.Errorf("couldn't send event"), "Listener:", "type", event)
+					}
+				}
+			}
+		}
+	}()
+
+	logger.Info("ECConsumerGetChannel: succeeded")
+	return
+}
+
+func getKeyForEvent(key string) string {
+	return eventKeysPrefix + key
+}
+
+func (c *BatchDSClientRedis) ECProducerSendEvents(ctx context.Context, events []db_api.BatchEvent) (
+	sentIDs []string, err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if len(events) == 0 {
+		err = fmt.Errorf("empty events")
+		logger.Error(err, "ECProducerSendEvents:")
+		return
+	}
+	for _, event := range events {
+		if err = event.IsValid(); err != nil {
+			logger.Error(err, "ECProducerSendEvents: invalid event")
+			return
+		}
+	}
+
+	resMap := make(map[string]*goredis.IntCmd)
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	_, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
+		for _, event := range events {
+			eventTypeStr := strconv.Itoa(int(event.Type))
+			key := getKeyForEvent(event.ID)
+			res := pipe.RPush(cctx, key, eventTypeStr)
+			resMap[event.ID] = res
+			pipe.Expire(cctx, key, time.Duration(int64(event.TTL)*int64(time.Second)))
+		}
+		return nil
+	})
+	ccancel()
+	if err != nil {
+		logger.Error(err, "ECProducerSendEvents: Pipelined failed")
+		return
+	}
+	sentIDs = make([]string, 0, len(resMap))
+	for id, res := range resMap {
+		if res != nil {
+			if res.Err() == nil && res.Val() > 0 {
+				sentIDs = append(sentIDs, id)
+			} else if res.Err() != nil && err == nil {
+				err = res.Err()
+			}
+		}
+	}
+
+	logger.Info("ECProducerSendEvents: succeeded", "nIDs", len(sentIDs), "sentIDs", sentIDs)
+	return
+}

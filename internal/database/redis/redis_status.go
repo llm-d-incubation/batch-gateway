@@ -14,6 +14,116 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file provides a redis database implementation.
+// This file provides a redis status client implementation.
 
 package redis
+
+import (
+	"context"
+	_ "embed"
+	"fmt"
+	"time"
+
+	"k8s.io/klog/v2"
+)
+
+func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if len(ID) == 0 {
+		err = fmt.Errorf("empty ID")
+		logger.Error(err, "STSet:")
+		return
+	}
+	logger = logger.WithValues("ID", ID)
+	if len(data) == 0 {
+		err = fmt.Errorf("empty data")
+		logger.Error(err, "STSet:")
+		return
+	}
+
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	res := c.redisClient.SetEx(cctx, getKeyForStatus(ID), data, time.Duration(int64(TTL)*int64(time.Second)))
+	ccancel()
+	if res == nil {
+		err = fmt.Errorf("nil redis command result")
+		logger.Error(err, "STSet:")
+		return
+	}
+	if err = res.Err(); err != nil {
+		logger.Error(err, "STSet: redis command error")
+		return
+	}
+
+	logger.Info("STSet: succeeded")
+	return
+}
+
+func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []byte, err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if len(ID) == 0 {
+		err = fmt.Errorf("empty ID")
+		logger.Error(err, "STGet:")
+		return
+	}
+	logger = logger.WithValues("ID", ID)
+
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	res := c.redisClient.Get(cctx, getKeyForStatus(ID))
+	ccancel()
+	if res == nil {
+		err = fmt.Errorf("nil redis command result")
+		logger.Error(err, "STGet:")
+		return
+	}
+	if err = res.Err(); err != nil {
+		logger.Error(err, "STGet: redis command error")
+		return
+	}
+	data = []byte(res.Val())
+
+	logger.Info("STGet: succeeded", "len(data)", len(data))
+	return
+}
+
+func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDeleted int, err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if len(ID) == 0 {
+		err = fmt.Errorf("empty ID")
+		logger.Error(err, "STDelete:")
+		return
+	}
+	logger = logger.WithValues("ID", ID)
+
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	res := c.redisClient.Del(cctx, getKeyForStatus(ID))
+	ccancel()
+	if res == nil {
+		err = fmt.Errorf("nil redis command result")
+		logger.Error(err, "STDelete:")
+		return
+	}
+	if err = res.Err(); err != nil {
+		logger.Error(err, "STDelete: redis command error")
+		return
+	}
+	nDeleted = int(res.Val())
+
+	logger.Info("STDelete: succeded", "nDeleted", nDeleted)
+	return
+}
+
+func getKeyForStatus(key string) string {
+	return statusKeysPrefix + key
+}
