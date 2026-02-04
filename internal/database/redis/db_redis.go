@@ -67,6 +67,11 @@ var (
 	//go:embed redis_get_by_tags.lua
 	getByTagsLua         string
 	redisScriptGetByTags = goredis.NewScript(getByTagsLua)
+
+	_ db_api.BatchDBClient            = (*BatchDSClientRedis)(nil)
+	_ db_api.BatchPriorityQueueClient = (*BatchDSClientRedis)(nil)
+	_ db_api.BatchEventChannelClient  = (*BatchDSClientRedis)(nil)
+	_ db_api.BatchStatusClient        = (*BatchDSClientRedis)(nil)
 )
 
 type BatchDSClientRedis struct {
@@ -144,6 +149,7 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 	}
 	logger = logger.WithValues("ID", item.ID)
 
+	// Store the item.
 	ptags, err := packTags(item.Tags)
 	if err != nil {
 		logger.Error(err, "DBStore: tags packing failed")
@@ -165,7 +171,9 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		logger.Error(err, "DBStore: script failed")
 		return
 	}
+
 	logger.Info("DBStore: succeeded")
+
 	return item.ID, nil
 }
 
@@ -192,35 +200,24 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 		logger.Error(err, "DBUpdate: tags packing failed")
 		return err
 	}
+	key := getKeyForStore(item.ID, c.tableName)
 	updatedStatus, updatedTags := false, false
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-	cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
-		switch {
-		case len(item.Status) > 0 && len(item.Tags) > 0:
-			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
-				fieldNameStatus, item.Status, fieldNameTags, ptags).Err()
-			updatedStatus, updatedTags = true, true
-		case len(item.Status) > 0:
-			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
-				fieldNameStatus, item.Status).Err()
-			updatedStatus = true
-		case len(item.Tags) > 0:
-			pipe.HSet(cctx, getKeyForStore(item.ID, c.tableName),
-				fieldNameTags, ptags).Err()
-			updatedTags = true
-		}
-		return nil
-	})
+	switch {
+	case len(item.Status) > 0 && len(item.Tags) > 0:
+		err = c.redisClient.HSet(cctx, key, fieldNameStatus, item.Status, fieldNameTags, ptags).Err()
+		updatedStatus, updatedTags = true, true
+	case len(item.Status) > 0:
+		err = c.redisClient.HSet(cctx, key, fieldNameStatus, item.Status).Err()
+		updatedStatus = true
+	case len(item.Tags) > 0:
+		err = c.redisClient.HSet(cctx, key, fieldNameTags, ptags).Err()
+		updatedTags = true
+	}
 	ccancel()
 	if err != nil {
-		logger.Error(err, "DBUpdate: Pipelined failed")
+		logger.Error(err, "DBUpdate: redis HSet failed")
 		return err
-	}
-	for _, cmd := range cmds {
-		if err = cmd.Err(); err != nil {
-			logger.Error(err, "DBUpdate: Command inside pipeline failed")
-			return
-		}
 	}
 
 	logger.Info("DBUpdate: succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)
@@ -236,7 +233,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	}
 	logger := klog.FromContext(ctx)
 
-	// Delete the item records.
+	// Delete the items.
 	resMap := make(map[string]*goredis.IntCmd)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
@@ -280,6 +277,10 @@ func (c *BatchDSClientRedis) DBGet(
 		ctx = context.Background()
 	}
 	logger := klog.FromContext(ctx)
+	if query == nil {
+		logger.Info("DBUpdate: empty query")
+		return
+	}
 
 	if len(query.IDs) > 0 {
 
@@ -434,17 +435,22 @@ func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) 
 		return nil, err
 	}
 	var (
-		id, tags, status, spec string
-		expiry                 int64
-		ok                     bool
+		id, status, spec string
+		expiry           int64
+		ok               bool
 	)
 	id, ok = vals[0].(string)
 	if !ok || len(id) == 0 {
 		return nil, nil
 	}
-	expiry, ok = vals[0].(int64)
+	expiry, ok = vals[1].(int64)
 	if !ok {
 		expiry = 0
+	}
+	tags, err := unpackTags(vals[1].(string))
+	if err != nil {
+		logger.Error(err, "dbItemFromHget:")
+		return nil, err
 	}
 	// slo, ok = vals[1].(string) TBD
 	// if ok && len(slo) > 0 {
@@ -455,10 +461,6 @@ func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) 
 	// 	}
 	// 	sloTime = time.Unix(0, sloNano)
 	// }
-	tags, ok = vals[1].(string)
-	if !ok {
-		tags = ""
-	}
 	status, ok = vals[2].(string)
 	if !ok {
 		status = ""
@@ -469,17 +471,12 @@ func dbItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) 
 			spec = ""
 		}
 	}
-	nTags, err := unpackTags(tags)
-	if err != nil {
-		logger.Error(err, "dbItemFromHget:")
-		return nil, err
-	}
 	job := &db_api.BatchItem{
 		ID:     id,
 		Expiry: expiry,
 		Spec:   []byte(spec),
 		Status: []byte(status),
-		Tags:   nTags,
+		Tags:   tags,
 	}
 	return job, nil
 }
@@ -768,7 +765,7 @@ func getKeyForStatus(key string) string {
 	return statusKeysPrefix + key
 }
 
-func (c *BatchDSClientRedis) STSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
+func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -803,7 +800,7 @@ func (c *BatchDSClientRedis) STSet(ctx context.Context, ID string, TTL int, data
 	return
 }
 
-func (c *BatchDSClientRedis) STGet(ctx context.Context, ID string) (data []byte, err error) {
+func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []byte, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -834,7 +831,7 @@ func (c *BatchDSClientRedis) STGet(ctx context.Context, ID string) (data []byte,
 	return
 }
 
-func (c *BatchDSClientRedis) STDelete(ctx context.Context, ID string) (nDeleted int, err error) {
+func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDeleted int, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
