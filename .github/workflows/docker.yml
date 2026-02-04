@@ -1,0 +1,114 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request_target:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    # Require approval for external contributors
+    environment:
+      name: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && 'external' || '' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # For pull_request_target, check out the PR head commit
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.ref }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request_target'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          # Get the commit SHA (short version)
+          COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+
+          # Get the current timestamp
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
+
+          # Determine the version and tag based on the event
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            # For tag pushes, use the tag name as version
+            VERSION="${{ github.ref_name }}"
+            TAG="${{ github.ref_name }}"
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
+            # For main branch, use 'latest'
+            VERSION="main-${COMMIT_SHA}"
+            TAG="latest"
+          else
+            # For PRs and other branches, use 'dev'
+            VERSION="dev-${COMMIT_SHA}"
+            TAG="dev"
+          fi
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker images (PR - no push)
+        if: github.event_name == 'pull_request_target'
+        uses: docker/bake-action@v5
+        with:
+          files: docker-bake.hcl
+          targets: default
+          push: false
+          set: |
+            *.cache-from=
+            *.cache-to=
+        env:
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+
+      - name: Build and push Docker images
+        if: github.event_name != 'pull_request_target'
+        uses: docker/bake-action@v5
+        with:
+          files: docker-bake.hcl
+          targets: default
+          push: true
+        env:
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+
+      - name: Output image tags
+        if: github.event_name != 'pull_request_target'
+        run: |
+          echo "Images pushed:"
+          echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.tag }}"
+          echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
