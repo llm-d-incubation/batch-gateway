@@ -53,7 +53,7 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 
 				requestID := GetRequestIDFromContext(r.Context())
 				oaiErr := openai.NewAPIError(http.StatusInternalServerError, "", "The server had an error while processing your request", &requestID)
-				common.WriteAPIError(r.Context(), w, oaiErr)
+				common.WriteAPIError(w, r, oaiErr)
 			}
 		}()
 

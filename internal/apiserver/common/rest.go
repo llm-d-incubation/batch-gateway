@@ -18,13 +18,12 @@ limitations under the License.
 package common
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"k8s.io/klog/v2"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 type Route struct {
@@ -45,8 +44,8 @@ func RegisterHandler(mux *http.ServeMux, h ApiHandler) {
 	}
 }
 
-func WriteJSONResponse(ctx context.Context, w http.ResponseWriter, status int, obj interface{}) {
-	logger := klog.FromContext(ctx)
+func WriteJSONResponse(w http.ResponseWriter, r *http.Request, status int, obj interface{}) {
+	logger := logging.GetRequestLogger(r)
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -65,20 +64,15 @@ func WriteJSONResponse(ctx context.Context, w http.ResponseWriter, status int, o
 	}
 }
 
-func WriteAPIError(ctx context.Context, w http.ResponseWriter, oaiErr openai.APIError) {
+func WriteAPIError(w http.ResponseWriter, r *http.Request, oaiErr openai.APIError) {
 	errorResp := openai.ErrorResponse{
 		Error: oaiErr,
 	}
 
-	WriteJSONResponse(ctx, w, oaiErr.Code, errorResp)
+	WriteJSONResponse(w, r, oaiErr.Code, errorResp)
 }
 
-func WriteNotImplementedError(ctx context.Context, w http.ResponseWriter) {
-	apiErr := openai.NewAPIError(http.StatusNotImplemented, "", "This is not yet implemented", nil)
-	WriteAPIError(ctx, w, apiErr)
-}
-
-func WriteInternalServerError(ctx context.Context, w http.ResponseWriter) {
+func WriteInternalServerError(w http.ResponseWriter, r *http.Request) {
 	apiErr := openai.NewAPIError(http.StatusInternalServerError, "", "Internal Server Error", nil)
-	WriteAPIError(ctx, w, apiErr)
+	WriteAPIError(w, r, apiErr)
 }
