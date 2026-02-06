@@ -25,23 +25,30 @@ import (
 	"os"
 	"path/filepath"
 
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
 )
 
 // openInputFileStream opens the input file stream and validates the file size
-func (p *Processor) openInputFileStream(ctx context.Context, fileLocation string) (reader io.ReadCloser, metadata *api.BatchFileMetadata, err error) {
-	rawReader, metadata, err := p.clients.files.Retrieve(ctx, fileLocation)
+func (p *Processor) openInputFileStream(ctx context.Context, inputFileId string) (reader io.ReadCloser, metadata *api.BatchFileMetadata, err error) {
+	// file item retrieval from the batch db data
+	items, _, _, err := p.clients.database.DBGet(ctx, &db.BatchDBQuery{IDs: []string{inputFileId}}, true, 0, 1)
+	if err != nil || len(items) == 0 {
+		return nil, nil, fmt.Errorf("failed to get input file metadata: %w", err)
+	}
+	fileItem := items[0]
+
+	fileSpec := &batch_utils.FileSpec{}
+	if err := json.Unmarshal(fileItem.Spec, fileSpec); err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal file spec: %w", err)
+	}
+
+	reader, metadata, err = p.clients.files.Retrieve(ctx, fileSpec.Filename, fileSpec.FolderName)
 	if err != nil {
 		return nil, metadata, fmt.Errorf("failed to open input file stream: %w", err)
 	}
-
-	readCloser, ok := rawReader.(io.ReadCloser)
-	if !ok {
-		readCloser = io.NopCloser(rawReader)
-	}
-
-	return readCloser, metadata, nil
+	return reader, metadata, nil
 }
 
 // removeLocalFile deletes the temporary local file.
