@@ -87,6 +87,14 @@ type BatchDBClient interface {
 
 type Tags map[string]string
 
+// Standard tag keys and values used across batch items
+const (
+	TagKeyPurpose = "purpose"
+
+	TagValueFile  = "file"
+	TagValueBatch = "batch"
+)
+
 type BatchDBQuery struct {
 	IDs             []string
 	TagSelectors    Tags

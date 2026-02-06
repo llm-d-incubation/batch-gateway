@@ -27,11 +27,12 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/batch"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/files"
+	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/file"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/middleware"
-	mockapi "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"k8s.io/klog/v2"
 )
 
@@ -122,21 +123,22 @@ func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// TODO: change to actual implementation
-	dbClient := mockapi.NewMockBatchDBClient()
-	eventClient := mockapi.NewMockBatchEventChannelClient()
-	queueClient := mockapi.NewMockBatchPriorityQueueClient()
-	statusClient := mockapi.NewMockBatchStatusClient()
+	dbClient := mockdb.NewMockBatchDBClient()
+	eventClient := mockdb.NewMockBatchEventChannelClient()
+	queueClient := mockdb.NewMockBatchPriorityQueueClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
 
 	// register handlers
 	healthHandler := health.NewHealthApiHandler()
 	metricsHandler := metrics.NewMetricsApiHandler()
-	filesHandler := files.NewFilesApiHandler()
+	fileHandler := file.NewFileApiHandler(s.config, dbClient, filesClient)
 	batchHandler := batch.NewBatchApiHandler(s.config, dbClient, queueClient, eventClient, statusClient)
 
 	handlers := []common.ApiHandler{
 		healthHandler,
 		metricsHandler,
-		filesHandler,
+		fileHandler,
 		batchHandler,
 	}
 	for _, c := range handlers {

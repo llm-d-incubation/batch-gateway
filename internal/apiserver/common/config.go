@@ -26,12 +26,30 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	// DefaultMaxFileSizeBytes is the default maximum file size (200 MB)
+	DefaultMaxFileSizeBytes = 200 << 20
+	// DefaultFileExpirationSeconds is the default file expiration time (90 days)
+	DefaultFileExpirationSeconds = 90 * 24 * 60 * 60 // 7776000 seconds
+	// DefaultBatchTTLSeconds is the default batch TTL (30 days)
+	DefaultBatchTTLSeconds = 30 * 24 * 60 * 60 // 2592000 seconds
+	// DefaultMaxFileLineCount is the default maximum number of lines per file
+	DefaultMaxFileLineCount = 50000
+)
+
+type FilesAPIConfig struct {
+	DefaultExpirationSeconds int64 `yaml:"default_expiration_seconds"`
+	MaxSizeBytes             int64 `yaml:"max_size_bytes"`
+	MaxLineCount             int64 `yaml:"max_line_count"`
+}
+
 type ServerConfig struct {
-	Host            string `yaml:"host"`
-	Port            string `yaml:"port"`
-	SSLCertFile     string `yaml:"ssl_cert_file"`
-	SSLKeyFile      string `yaml:"ssl_key_file"`
-	BatchTTLSeconds int    `yaml:"batch_ttl_seconds"`
+	Host            string         `yaml:"host"`
+	Port            string         `yaml:"port"`
+	SSLCertFile     string         `yaml:"ssl_cert_file"`
+	SSLKeyFile      string         `yaml:"ssl_key_file"`
+	BatchTTLSeconds int            `yaml:"batch_ttl_seconds"`
+	FilesAPI        FilesAPIConfig `yaml:"files_api"`
 }
 
 func NewConfig() *ServerConfig {
@@ -100,4 +118,37 @@ func (c *ServerConfig) loadFromFile(path string) error {
 
 func (c *ServerConfig) SSLEnabled() bool {
 	return (c.SSLCertFile != "" && c.SSLKeyFile != "")
+}
+
+func (c *ServerConfig) GetBatchTTLSeconds() int {
+	if c.BatchTTLSeconds > 0 {
+		return c.BatchTTLSeconds
+	}
+	// Default to 30 days if not configured
+	return DefaultBatchTTLSeconds
+}
+
+func (c *ServerConfig) GetMaxFileSizeBytes() int64 {
+	if c.FilesAPI.MaxSizeBytes > 0 {
+		return c.FilesAPI.MaxSizeBytes
+	}
+	// The file can contain up to 50,000 requests, and can be up to 200 MB in size.
+	// Line counting is enforced via LineCountingReader in the file upload handler.
+	return DefaultMaxFileSizeBytes
+}
+
+func (c *ServerConfig) GetFileDefaultExpirationSeconds() int64 {
+	if c.FilesAPI.DefaultExpirationSeconds > 0 {
+		return c.FilesAPI.DefaultExpirationSeconds
+	}
+	// Default to 90 days if not configured
+	return DefaultFileExpirationSeconds
+}
+
+func (c *ServerConfig) GetMaxFileLineCount() int64 {
+	if c.FilesAPI.MaxLineCount > 0 {
+		return c.FilesAPI.MaxLineCount
+	}
+	// Default to 50,000 lines if not configured
+	return DefaultMaxFileLineCount
 }
