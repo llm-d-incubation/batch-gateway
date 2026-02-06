@@ -15,7 +15,7 @@ This Helm chart deploys the Batch Gateway on a Kubernetes cluster, which include
 The API server provides a REST API for managing files and batch jobs.
 
 ### Processor (batch-gateway-processor)
-The processor is a background worker component that polls for and processes batch jobs. 
+The processor is a background worker component that polls for and processes batch jobs.
 
 ## Installing the Chart
 
