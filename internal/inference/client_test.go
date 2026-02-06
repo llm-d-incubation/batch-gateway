@@ -1101,4 +1101,3 @@ func testNetworkErrors(t *testing.T) {
 		assert.GreaterOrEqual(t, attemptCount, 2)
 	})
 }
-

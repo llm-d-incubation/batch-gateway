@@ -119,8 +119,8 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	// Configure retry only if enabled
 	if config.MaxRetries > 0 {
 		client.SetRetryCount(config.MaxRetries).
-			SetRetryWaitTime(config.InitialBackoff).    // Min wait time between retries
-			SetRetryMaxWaitTime(config.MaxBackoff)      // Max wait time between retries
+			SetRetryWaitTime(config.InitialBackoff). // Min wait time between retries
+			SetRetryMaxWaitTime(config.MaxBackoff)   // Max wait time between retries
 		// Resty automatically applies exponential backoff with jitter
 
 		// Retry condition: retry on server errors, rate limits, and network errors

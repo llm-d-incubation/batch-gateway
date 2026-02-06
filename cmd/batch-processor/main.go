@@ -141,16 +141,16 @@ func run() error {
 
 	// Initialize inference client with configuration
 	inferenceClient, err := inference.NewHTTPClient(inference.HTTPClientConfig{
-		BaseURL:                   cfg.InferenceGatewayURL,
-		Timeout:                   cfg.InferenceRequestTimeout,
-		APIKey:                    cfg.InferenceAPIKey,
-		MaxRetries:                cfg.InferenceMaxRetries,
-		InitialBackoff:            cfg.InferenceInitialBackoff,
-		MaxBackoff:                cfg.InferenceMaxBackoff,
-		TLSInsecureSkipVerify:     cfg.InferenceTLSInsecureSkipVerify,
-		TLSCACertFile:             cfg.InferenceTLSCACertFile,
-		TLSClientCertFile:         cfg.InferenceTLSClientCertFile,
-		TLSClientKeyFile:          cfg.InferenceTLSClientKeyFile,
+		BaseURL:               cfg.InferenceGatewayURL,
+		Timeout:               cfg.InferenceRequestTimeout,
+		APIKey:                cfg.InferenceAPIKey,
+		MaxRetries:            cfg.InferenceMaxRetries,
+		InitialBackoff:        cfg.InferenceInitialBackoff,
+		MaxBackoff:            cfg.InferenceMaxBackoff,
+		TLSInsecureSkipVerify: cfg.InferenceTLSInsecureSkipVerify,
+		TLSCACertFile:         cfg.InferenceTLSCACertFile,
+		TLSClientCertFile:     cfg.InferenceTLSClientCertFile,
+		TLSClientKeyFile:      cfg.InferenceTLSClientKeyFile,
 	})
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to initialize inference client")
