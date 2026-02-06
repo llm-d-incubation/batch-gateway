@@ -33,7 +33,6 @@ import (
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -70,20 +69,6 @@ func NewFileApiHandler(config *common.ServerConfig, dbClient dbapi.BatchDBClient
 	}
 }
 
-func (c *FileApiHandler) FileInterceptor(handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		fileID := r.PathValue(pathParamFileID)
-		if fileID != "" {
-			logger := logging.GetRequestLogger(r)
-			enrichedLogger := logger.WithValues("fileId", fileID)
-			ctx := klog.NewContext(r.Context(), enrichedLogger)
-			r = r.WithContext(ctx)
-		}
-
-		handler(w, r)
-	}
-}
-
 func (c *FileApiHandler) GetRoutes() []common.Route {
 	return []common.Route{
 		{
@@ -99,17 +84,17 @@ func (c *FileApiHandler) GetRoutes() []common.Route {
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/files/{file_id}",
-			HandlerFunc: c.FileInterceptor(c.RetrieveFile),
+			HandlerFunc: c.RetrieveFile,
 		},
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/files/{file_id}/content",
-			HandlerFunc: c.FileInterceptor(c.DownloadFile),
+			HandlerFunc: c.DownloadFile,
 		},
 		{
 			Method:      http.MethodDelete,
 			Pattern:     "/v1/files/{file_id}",
-			HandlerFunc: c.FileInterceptor(c.DeleteFile),
+			HandlerFunc: c.DeleteFile,
 		},
 	}
 }
@@ -143,10 +128,11 @@ func (c *FileApiHandler) dbItemToFileObject(item *dbapi.BatchItem) (*openai.File
 
 // getFileItemFromDB retrieves and deserializes a file item by ID.
 // Returns the file item if found, or writes an error response and returns nil.
+// Also validates tenant isolation if a tenant ID is present in the request header.
 func (c *FileApiHandler) getFileItemFromDB(w http.ResponseWriter, r *http.Request, operation string) (*dbapi.BatchItem, *openai.APIError) {
 
 	ctx := r.Context()
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	fileID := r.PathValue(pathParamFileID)
 	if fileID == "" {
@@ -161,9 +147,14 @@ func (c *FileApiHandler) getFileItemFromDB(w http.ResponseWriter, r *http.Reques
 
 	logger.V(logging.DEBUG).Info(operation + " file request")
 
+	// Get tenant ID from context
+	tenantID := common.GetTenantIDFromContext(ctx)
+
+	// TODO: query with tenant id
 	// Retrieve file metadata from database
 	query := &dbapi.BatchDBQuery{
-		IDs: []string{fileID},
+		IDs:      []string{fileID},
+		TenantID: tenantID,
 	}
 	items, _, _, err := c.dbClient.DBGet(ctx, query, true, 0, 1)
 	if err != nil {
@@ -183,12 +174,26 @@ func (c *FileApiHandler) getFileItemFromDB(w http.ResponseWriter, r *http.Reques
 		return nil, &apiErr
 	}
 
-	return items[0], nil
+	item := items[0]
+
+	// Validate tenant isolation if tenant ID is present in request
+	if item.TenantID != tenantID {
+		logger.Info("file not found - tenant mismatch", "request_tenant", tenantID, "file_tenant", item.TenantID)
+		apiErr := openai.NewAPIError(
+			http.StatusNotFound,
+			"",
+			fmt.Sprintf("File with ID %s not found", item.ID),
+			nil,
+		)
+		return nil, &apiErr
+	}
+
+	return item, nil
 }
 
 func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	// Input file must be formatted as a JSONL file, and must be uploaded with the purpose batch.
 	// The file can contain up to 50,000 requests, and can be up to 200 MB in size.
@@ -307,9 +312,9 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		fileName = fileID + ".jsonl"
 	}
 
-	// Save file content to storage
-	// TODO: use tenant id as folder name
-	folderName := ""
+	// Get tenant ID from context to use as folder name
+	tenantID := common.GetTenantIDFromContext(ctx)
+	folderName := tenantID
 	fileMeta, err := c.filesClient.Store(ctx, fileName, folderName, c.config.GetMaxFileSizeBytes(), c.config.GetMaxFileLineCount(), fileReader)
 	if err != nil {
 		logger.Error(err, "failed to store file content")
@@ -359,16 +364,16 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save file metadata to database
-	// TODO: add the tenant id in tags
 	tags := map[string]string{
 		dbapi.TagKeyPurpose: string(purpose),
 	}
 	dbItem := &dbapi.BatchItem{
-		ID:     fileID,
-		Expiry: expiresAt,
-		Tags:   tags,
-		Spec:   fileSpecData,
-		Status: fileStatusData,
+		ID:       fileID,
+		TenantID: tenantID,
+		Expiry:   expiresAt,
+		Tags:     tags,
+		Spec:     fileSpecData,
+		Status:   fileStatusData,
 	}
 	_, err = c.dbClient.DBStore(ctx, dbItem)
 	if err != nil {
@@ -387,7 +392,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 
 func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	// Parse query parameters
 	after := r.URL.Query().Get("after")
@@ -484,11 +489,16 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 		tagSelectors[dbapi.TagKeyPurpose] = purposeStr
 	}
 
+	// Get tenant ID from context
+	tenantID := common.GetTenantIDFromContext(ctx)
+
+	// TODO: query with tenantID
 	query := &dbapi.BatchDBQuery{
 		IDs:          nil,
+		TenantID:     tenantID,
 		TagSelectors: tagSelectors,
 	}
-	items, _, expectedMore, err := c.dbClient.DBGet(ctx, query, true, start, limit)
+	items, _, hasMore, err := c.dbClient.DBGet(ctx, query, true, start, limit)
 	if err != nil {
 		logger.Error(err, "failed to list files")
 		common.WriteInternalServerError(w, r)
@@ -529,14 +539,14 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 		Data:    fileObjects,
 		FirstID: firstID,
 		LastID:  lastID,
-		HasMore: expectedMore,
+		HasMore: hasMore,
 	}
 
 	common.WriteJSONResponse(w, r, http.StatusOK, response)
 }
 
 func (c *FileApiHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getFileItemFromDB(w, r, "retrieve")
 	if apiErr != nil {
@@ -557,7 +567,7 @@ func (c *FileApiHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
 
 func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getFileItemFromDB(w, r, "download")
 	if apiErr != nil {
@@ -600,7 +610,7 @@ func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 
 func (c *FileApiHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getFileItemFromDB(w, r, "delete")
 	if apiErr != nil {

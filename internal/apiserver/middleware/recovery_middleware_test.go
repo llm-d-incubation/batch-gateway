@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
@@ -92,7 +93,7 @@ func doTestRecoveryMiddlewareWithPanic(t *testing.T) {
 			middleware := RecoveryMiddleware(handler)
 
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
-			ctx := context.WithValue(req.Context(), requestIDKey, "test-request-id-123")
+			ctx := context.WithValue(req.Context(), common.RequestIDKey, "test-request-id-123")
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()

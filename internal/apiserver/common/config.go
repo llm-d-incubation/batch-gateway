@@ -35,6 +35,8 @@ const (
 	DefaultBatchTTLSeconds = 30 * 24 * 60 * 60 // 2592000 seconds
 	// DefaultMaxFileLineCount is the default maximum number of lines per file
 	DefaultMaxFileLineCount = 50000
+	// DefaultTenantHeader is the default HTTP header name for tenant ID
+	DefaultTenantHeader = "X-MaaS-User"
 )
 
 type FilesAPIConfig struct {
@@ -49,6 +51,7 @@ type ServerConfig struct {
 	SSLCertFile     string         `yaml:"ssl_cert_file"`
 	SSLKeyFile      string         `yaml:"ssl_key_file"`
 	BatchTTLSeconds int            `yaml:"batch_ttl_seconds"`
+	TenantHeader    string         `yaml:"tenant_header"`
 	FilesAPI        FilesAPIConfig `yaml:"files_api"`
 }
 
@@ -151,4 +154,11 @@ func (c *ServerConfig) GetMaxFileLineCount() int64 {
 	}
 	// Default to 50,000 lines if not configured
 	return DefaultMaxFileLineCount
+}
+
+func (c *ServerConfig) GetTenantHeader() string {
+	if c.TenantHeader != "" {
+		return c.TenantHeader
+	}
+	return DefaultTenantHeader
 }

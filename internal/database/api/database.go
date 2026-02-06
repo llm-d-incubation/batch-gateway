@@ -29,11 +29,12 @@ import (
 // -- Batch jobs metadata store --
 
 type BatchItem struct {
-	ID     string // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
-	Expiry int64  // [optional, immutable, returned by get, parsed by DB] The unix timestamp in seconds when the item is considered expired.
-	Tags   Tags   // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the internal separator used.
-	Spec   []byte // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
-	Status []byte // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
+	ID       string // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
+	TenantID string // Tenant is the identifier for multi-tenancy support.
+	Expiry   int64  // [optional, immutable, returned by get, parsed by DB] The unix timestamp in seconds when the item is considered expired.
+	Tags     Tags   // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the internal separator used.
+	Spec     []byte // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
+	Status   []byte // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
 	//SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the item should be prioritized relative to other items. TBR
 }
 
@@ -97,6 +98,7 @@ const (
 
 type BatchDBQuery struct {
 	IDs             []string
+	TenantID        string
 	TagSelectors    Tags
 	TagsLogicalCond GenLogicalCond
 	Expired         bool

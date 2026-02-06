@@ -18,12 +18,20 @@ limitations under the License.
 package common
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+)
+
+type ContextKey string
+
+const (
+	RequestIDKey ContextKey = "requestID"
+	TenantIDKey  ContextKey = "tenantID"
 )
 
 type Route struct {
@@ -45,7 +53,7 @@ func RegisterHandler(mux *http.ServeMux, h ApiHandler) {
 }
 
 func WriteJSONResponse(w http.ResponseWriter, r *http.Request, status int, obj interface{}) {
-	logger := logging.GetRequestLogger(r)
+	logger := logging.FromRequest(r)
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -75,4 +83,18 @@ func WriteAPIError(w http.ResponseWriter, r *http.Request, oaiErr openai.APIErro
 func WriteInternalServerError(w http.ResponseWriter, r *http.Request) {
 	apiErr := openai.NewAPIError(http.StatusInternalServerError, "", "Internal Server Error", nil)
 	WriteAPIError(w, r, apiErr)
+}
+
+func GetRequestIDFromContext(ctx context.Context) string {
+	if requestID, ok := ctx.Value(RequestIDKey).(string); ok {
+		return requestID
+	}
+	return "unknown"
+}
+
+func GetTenantIDFromContext(ctx context.Context) string {
+	if tenantID, ok := ctx.Value(TenantIDKey).(string); ok {
+		return tenantID
+	}
+	return "unknown"
 }

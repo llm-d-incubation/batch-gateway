@@ -31,6 +31,6 @@ const (
 	TRACE   = 5
 )
 
-func GetRequestLogger(r *http.Request) klog.Logger {
+func FromRequest(r *http.Request) klog.Logger {
 	return klog.FromContext(r.Context())
 }

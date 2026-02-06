@@ -20,63 +20,104 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"k8s.io/klog/v2"
 )
 
-type contextKey string
-
 const (
-	requestIDHeader            = "X-Request-ID"
-	requestIDKey    contextKey = "requestID"
+	RequestIdHeaderKey = "x-request-id"
 )
 
-func RequestMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip /metrics and /health endpoints to avoid noise in logs and metrics
-		if r.URL.Path == metrics.MetricsPath || r.URL.Path == health.HealthPath {
-			next.ServeHTTP(w, r)
-			return
-		}
+var (
+	fileIDRegex  = regexp.MustCompile(`^/v1/files/([^/]+)`)
+	batchIDRegex = regexp.MustCompile(`^/v1/batches/([^/]+)`)
+)
 
-		start := time.Now()
-		metrics.RecordRequestStart()
+func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			// Skip /metrics and /health endpoints to avoid noise in logs and metrics
+			if path == metrics.MetricsPath || path == health.HealthPath {
+				next.ServeHTTP(w, r)
+				return
+			}
 
-		requestID := r.Header.Get(requestIDHeader)
-		if requestID == "" {
-			requestID = uuid.NewString()
-		}
-		w.Header().Set(requestIDHeader, requestID)
+			start := time.Now()
+			metrics.RecordRequestStart()
 
-		// Create request logger with request ID
-		logger := klog.FromContext(r.Context()).WithValues("requestID", requestID)
-		ctx := klog.NewContext(r.Context(), logger)
-		ctx = context.WithValue(ctx, requestIDKey, requestID)
+			// Extract request ID from header
+			requestID := r.Header.Get(RequestIdHeaderKey)
+			if requestID == "" {
+				requestID = uuid.NewString()
+			}
+			w.Header().Set(RequestIdHeaderKey, requestID)
 
-		// Wrap response writer to capture status code
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			// Extract tenant ID from header
+			tenantHeader := config.GetTenantHeader()
+			tenantID := r.Header.Get(tenantHeader)
+			if tenantID == "" {
+				tenantID = "unknown"
+			}
 
-		// Log incoming request
-		logger.V(logging.TRACE).Info("incoming request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"remoteAddr", r.RemoteAddr,
-		)
+			// Extract file ID
+			fileID := ""
+			fileIDMatches := fileIDRegex.FindStringSubmatch(path)
+			if len(fileIDMatches) > 1 {
+				fileID = fileIDMatches[1]
+			}
 
-		defer func() {
-			duration := time.Since(start).Seconds()
-			status := strconv.Itoa(rw.statusCode)
-			metrics.RecordRequestFinish(r.Method, r.URL.Path, status, duration)
-		}()
+			// Extract batch ID
+			batchID := ""
+			batchIDMatches := batchIDRegex.FindStringSubmatch(path)
+			if len(batchIDMatches) > 1 {
+				batchID = batchIDMatches[1]
+			}
 
-		next.ServeHTTP(rw, r.WithContext(ctx))
-	})
+			// Create request logger with request ID and tenant ID
+			logger := klog.FromContext(r.Context())
+			logger = logger.WithValues("requestID", requestID)
+			logger = logger.WithValues("tenantID", tenantID)
+			if fileID != "" {
+				logger = logger.WithValues("fileID", fileID)
+			}
+			if batchID != "" {
+				logger = logger.WithValues("batchID", batchID)
+			}
+
+			ctx := klog.NewContext(r.Context(), logger)
+			ctx = context.WithValue(ctx, common.RequestIDKey, requestID)
+			if tenantID != "" {
+				ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
+			}
+
+			// Wrap response writer to capture status code
+			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+			// Log incoming request
+			logger.V(logging.TRACE).Info("incoming request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remoteAddr", r.RemoteAddr,
+			)
+
+			defer func() {
+				duration := time.Since(start).Seconds()
+				status := strconv.Itoa(rw.statusCode)
+				metrics.RecordRequestFinish(r.Method, r.URL.Path, status, duration)
+			}()
+
+			next.ServeHTTP(rw, r.WithContext(ctx))
+		})
+	}
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code
@@ -88,12 +129,4 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
-}
-
-// GetRequestID retrieves the request ID from the context.
-func GetRequestIDFromContext(ctx context.Context) string {
-	if requestID, ok := ctx.Value(requestIDKey).(string); ok {
-		return requestID
-	}
-	return "unknown"
 }

@@ -15,6 +15,9 @@ port: "8000"
 # Batch TTL in seconds (default: 30 days)
 batch_ttl_seconds: 2592000
 
+# HTTP header name for tenant ID (default: X-MaaS-User)
+tenant_header: "X-MaaS-User"
+
 # File API configuration
 files_api:
   # Default expiration in seconds (default: 90 days)

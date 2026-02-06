@@ -11,6 +11,9 @@ data:
     host: {{ .Values.apiserver.config.host | quote }}
     port: {{ .Values.apiserver.config.port | quote }}
     batch_ttl_seconds: {{ .Values.apiserver.config.batchTTLSeconds }}
+    {{- if .Values.apiserver.config.tenantHeader }}
+    tenant_header: {{ .Values.apiserver.config.tenantHeader | quote }}
+    {{- end }}
     files_api:
       default_expiration_seconds: {{ .Values.apiserver.config.fileAPI.defaultExpirationSeconds }}
       max_size_bytes: {{ .Values.apiserver.config.fileAPI.maxSizeBytes }}
