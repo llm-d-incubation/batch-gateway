@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-short test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all
 
 SHELL := /usr/bin/env bash
 
@@ -20,6 +20,7 @@ GO=go
 GOFLAGS=
 LDFLAGS=-ldflags "-s -w"
 BENCHTIME ?= 1s
+TEST_FLAGS ?= -race
 
 CONTAINER_TOOL := $(shell (command -v docker >/dev/null 2>&1 && echo docker) || (command -v podman >/dev/null 2>&1 && echo podman) || echo "")
 BUILDER := $(shell command -v buildah >/dev/null 2>&1 && echo buildah || echo $(CONTAINER_TOOL))
@@ -71,16 +72,8 @@ run-processor-dev: build-processor
 	@echo "Starting $(PROCESSOR_BINARY) in development mode..."
 	$(PROCESSOR_PATH) --v=5
 
-## test: Run tests with -race flag
+## test: Run tests with summary
 test:
-	@$(MAKE) --no-print-directory run-test TEST_FLAGS="-race"
-
-## test-short: Run tests with -short flag
-test-short:
-	@$(MAKE) --no-print-directory run-test TEST_FLAGS="-short"
-
-# Internal helper target for running tests with summary
-run-test:
 	@echo "Running tests..."
 	@$(GO) test $(TEST_FLAGS) -v ./... 2>&1 | tee /tmp/test-output.txt; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \

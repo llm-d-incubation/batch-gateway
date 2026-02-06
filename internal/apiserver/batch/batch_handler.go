@@ -108,7 +108,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&batchReq); err != nil {
 		logger.Error(err, "failed to decode request")
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid request body", nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	if err := batchReq.Validate(); err != nil {
 		logger.Error(err, "failed to validate request")
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", err.Error(), nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -134,7 +134,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	batchSpecData, err := json.Marshal(batchSpec)
 	if err != nil {
 		logger.Error(err, "failed to marshal batch spec")
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	batchStatusData, err := json.Marshal(batchStatus)
 	if err != nil {
 		logger.Error(err, "failed to marshal batch status")
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
@@ -153,7 +153,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	completionDuration, err := time.ParseDuration(batchReq.CompletionWindow)
 	if err != nil {
 		logger.Error(err, "failed to parse completion window duration")
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 	slo := time.Now().UTC().Add(completionDuration)
@@ -179,7 +179,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	_, err = c.dbClient.DBStore(ctx, job)
 	if err != nil {
 		logger.Error(err, "failed to store batch job")
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
@@ -193,7 +193,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after marshal failure", "batch_id", batchID)
 		}
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 	bjp := &api.BatchJobPriority{
@@ -206,7 +206,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after enqueue failure", "batch_id", batchID)
 		}
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
@@ -217,7 +217,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		BatchStatusInfo: batchStatus,
 	}
 
-	common.WriteJSONResponse(ctx, w, http.StatusOK, batch)
+	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
 
 func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
@@ -231,13 +231,13 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 		var parsedLimit int
 		if _, err := fmt.Sscanf(limitStr, "%d", &parsedLimit); err != nil {
 			apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid limit parameter: must be an integer", nil)
-			common.WriteAPIError(ctx, w, apiErr)
+			common.WriteAPIError(w, r, apiErr)
 			return
 		}
 
 		if parsedLimit < 1 || parsedLimit > 100 {
 			apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid limit parameter: must be between 1 and 100", nil)
-			common.WriteAPIError(ctx, w, apiErr)
+			common.WriteAPIError(w, r, apiErr)
 			return
 		}
 		limit = parsedLimit
@@ -248,13 +248,13 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 		var parsedAfter int
 		if _, err := fmt.Sscanf(afterStr, "%d", &parsedAfter); err != nil {
 			apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid after parameter: must be an integer", nil)
-			common.WriteAPIError(ctx, w, apiErr)
+			common.WriteAPIError(w, r, apiErr)
 			return
 		}
 
 		if parsedAfter < 0 {
 			apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid after parameter: must be equal to or greater than 0", nil)
-			common.WriteAPIError(ctx, w, apiErr)
+			common.WriteAPIError(w, r, apiErr)
 			return
 		}
 		after = parsedAfter
@@ -267,7 +267,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 		true, after, limit+1)
 	if err != nil {
 		logger.Error(err, "failed to list batches from database")
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
@@ -299,7 +299,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 		resp.LastID = batches[len(batches)-1].ID
 	}
 
-	common.WriteJSONResponse(ctx, w, http.StatusOK, resp)
+	common.WriteJSONResponse(w, r, http.StatusOK, resp)
 }
 
 func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) {
@@ -312,7 +312,7 @@ func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 	batchID := r.PathValue(pathParamBatchID)
 	if batchID == "" {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", pathParamBatchID+" is required", nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -324,13 +324,13 @@ func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 		true, 0, 1)
 	if err != nil {
 		logger.Error(err, "failed to get batch from database", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
 	if len(jobs) == 0 {
 		apiErr := openai.NewAPIError(http.StatusNotFound, "", fmt.Sprintf("Batch with ID %s not found", batchID), nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -339,11 +339,11 @@ func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 	batch, err := jobToBatch(job)
 	if err != nil {
 		logger.Error(err, "failed to convert job to batch", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
-	common.WriteJSONResponse(ctx, w, http.StatusOK, batch)
+	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
 
 func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
@@ -354,7 +354,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	batchID := r.PathValue(pathParamBatchID)
 	if batchID == "" {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", pathParamBatchID+" is required", nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -366,13 +366,13 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		true, 0, 1)
 	if err != nil {
 		logger.Error(err, "failed to get batch from database", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
 	if len(jobs) == 0 {
 		apiErr := openai.NewAPIError(http.StatusNotFound, "", fmt.Sprintf("Batch with ID %s not found", batchID), nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -381,14 +381,14 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	batch, err := jobToBatch(job)
 	if err != nil {
 		logger.Error(err, "failed to convert job to batch", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
 	// Check if batch can be cancelled
 	if batch.Status.IsFinal() {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
-		common.WriteAPIError(ctx, w, apiErr)
+		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
@@ -399,7 +399,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	removed, err := c.queueClient.PQDelete(ctx, jobPriority)
 	if err != nil {
 		logger.Error(err, "failed to remove batch from queue", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
@@ -418,13 +418,13 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 			{
 				ID:   batchID,
 				Type: api.BatchEventCancel,
-				TTL:  c.config.BatchTTLSeconds,
+				TTL:  c.config.GetBatchTTLSeconds(),
 			},
 		}
 		_, err = c.eventClient.ECProducerSendEvents(ctx, event)
 		if err != nil {
 			logger.Error(err, "failed to send cancel event", "batch_id", batchID)
-			common.WriteInternalServerError(ctx, w)
+			common.WriteInternalServerError(w, r)
 			return
 		}
 	}
@@ -433,15 +433,15 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	updatedStatusData, err := json.Marshal(batch.BatchStatusInfo)
 	if err != nil {
 		logger.Error(err, "failed to marshal updated status", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 	job.Status = updatedStatusData
 	if err := c.dbClient.DBUpdate(ctx, job); err != nil {
 		logger.Error(err, "failed to update batch in database", "batch_id", batchID)
-		common.WriteInternalServerError(ctx, w)
+		common.WriteInternalServerError(w, r)
 		return
 	}
 
-	common.WriteJSONResponse(ctx, w, http.StatusOK, batch)
+	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }

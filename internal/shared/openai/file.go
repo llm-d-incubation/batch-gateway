@@ -35,6 +35,23 @@ const (
 	FileObjectPurposeUserData         FileObjectPurpose = "user_data"
 )
 
+// IsValid checks if the FileObjectPurpose is one of the valid values.
+func (p FileObjectPurpose) IsValid() bool {
+	switch p {
+	case FileObjectPurposeAssistants,
+		FileObjectPurposeAssistantsOutput,
+		FileObjectPurposeBatch,
+		FileObjectPurposeBatchOutput,
+		FileObjectPurposeFineTune,
+		FileObjectPurposeFineTuneResults,
+		FileObjectPurposeVision,
+		FileObjectPurposeUserData:
+		return true
+	default:
+		return false
+	}
+}
+
 // Deprecated. The current status of the file, which can be either `uploaded`,
 // `processed`, or `error`.
 type FileObjectStatus string
@@ -52,13 +69,13 @@ type FileObject struct {
 	ID string `json:"id"`
 
 	// required. The size of the file, in bytes.
-	Bytes int32 `json:"bytes"`
+	Bytes int64 `json:"bytes"`
 
 	// required. The Unix timestamp (in seconds) for when the file was created.
-	CreatedAt int32 `json:"created_at"`
+	CreatedAt int64 `json:"created_at"`
 
 	// The Unix timestamp (in seconds) for when the file will expire.
-	ExpiresAt int32 `json:"expires_at"`
+	ExpiresAt int64 `json:"expires_at"`
 
 	// required. The name of the file.
 	Filename string `json:"filename"`
@@ -74,4 +91,34 @@ type FileObject struct {
 
 	// Deprecated. For details on why a fine-tuning training file failed validation, see the `error` field on `fine_tuning.job`.
 	StatusDetails string `json:"status_details,omitempty"`
+}
+
+// ListFilesResponse represents the response for listing files.
+type ListFilesResponse struct {
+	// required. The type of object returned, must be `list`.
+	Object string `json:"object"`
+
+	// required. A list of items used to generate this response.
+	Data []FileObject `json:"data"`
+
+	// required. The ID of the first item in the list.
+	FirstID string `json:"first_id"`
+
+	// required. The ID of the last item in the list.
+	LastID string `json:"last_id"`
+
+	// required. Whether there are more items available.
+	HasMore bool `json:"has_more"`
+}
+
+// FileDeleteResponse represents the response when deleting a file.
+type FileDeleteResponse struct {
+	// required. The ID of the deleted file.
+	ID string `json:"id"`
+
+	// required. The object type, which is always `file`.
+	Object string `json:"object"`
+
+	// required. Whether the file was successfully deleted.
+	Deleted bool `json:"deleted"`
 }
