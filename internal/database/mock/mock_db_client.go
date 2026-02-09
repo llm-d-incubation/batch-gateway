@@ -67,7 +67,7 @@ func (m *MockDBClient[T]) DBGet(
 		m.items.Range(func(key, value any) bool {
 			if item, ok := value.(*api.BaseItem[T]); ok {
 				// Filter by tenant if specified
-				if query.Tenant != "" && item.Tenant != query.Tenant {
+				if query.TenantID != "" && item.TenantID != query.TenantID {
 					return true
 				}
 				// Filter by tag selectors if specified

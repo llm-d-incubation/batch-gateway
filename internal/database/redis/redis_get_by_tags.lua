@@ -16,7 +16,7 @@
 
 -- Parse inputs.
 local tags = KEYS
-local getStatic = ARGV[1]
+local includeStatic = ARGV[1]
 local pattern = ARGV[2]
 local tagsCond = ARGV[3]
 local cursor = ARGV[4]
@@ -30,7 +30,7 @@ local result = {}
 for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
-	if getStatic == 'true' then
+	if includeStatic == 'true' then
 		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status", "spec")
 	else
 		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status")
