@@ -46,8 +46,8 @@ func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, 
 	}
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	res := c.redisClient.SetEx(cctx, getKeyForStatus(ID), data, time.Duration(int64(TTL)*int64(time.Second)))
-	ccancel()
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
 		logger.Error(err, "StatusSet:")
@@ -77,8 +77,8 @@ func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []b
 	logger = logger.WithValues("ID", ID)
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	res := c.redisClient.Get(cctx, getKeyForStatus(ID))
-	ccancel()
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
 		logger.Error(err, "StatusGet:")
@@ -109,8 +109,8 @@ func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDele
 	logger = logger.WithValues("ID", ID)
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	res := c.redisClient.Del(cctx, getKeyForStatus(ID))
-	ccancel()
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
 		logger.Error(err, "StatusDelete:")
@@ -122,7 +122,7 @@ func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDele
 	}
 	nDeleted = int(res.Val())
 
-	logger.Info("StatusDelete: succeded", "nDeleted", nDeleted)
+	logger.Info("StatusDelete: succeeded", "nDeleted", nDeleted)
 
 	return
 }

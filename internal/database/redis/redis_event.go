@@ -76,7 +76,7 @@ func (c *BatchDSClientRedis) ECConsumerGetChannel(ctx context.Context, ID string
 				if err != nil {
 					if unrecognizedBlockingError(err) {
 						logger.Error(err, "Listener: BLMPop failed")
-						cerr := c.redisClientChecker.Check(ctx)
+						cerr := c.redisClientChecker.Check(lctx)
 						if cerr != nil {
 							logger.Error(err, "Listener: ClientCheck failed")
 						}
@@ -89,13 +89,14 @@ func (c *BatchDSClientRedis) ECConsumerGetChannel(ctx context.Context, ID string
 						logger.Error(err, "Listener: strconv failed")
 						continue
 					}
+					afterTimer := time.After(eventChanTimeout)
 					select {
 					case eventChan <- db_api.BatchEvent{
 						ID:   ID,
 						Type: db_api.BatchEventType(eventi),
 					}:
 						logger.Info("Listener: dispatched event", "type", event)
-					case <-time.After(eventChanTimeout):
+					case <-afterTimer:
 						logger.Error(fmt.Errorf("couldn't send event"), "Listener:", "type", event)
 					}
 				}
@@ -133,6 +134,7 @@ func (c *BatchDSClientRedis) ECProducerSendEvents(ctx context.Context, events []
 
 	resMap := make(map[string]*goredis.IntCmd)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	_, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, event := range events {
 			eventTypeStr := strconv.Itoa(int(event.Type))
@@ -143,7 +145,6 @@ func (c *BatchDSClientRedis) ECProducerSendEvents(ctx context.Context, events []
 		}
 		return nil
 	})
-	ccancel()
 	if err != nil {
 		logger.Error(err, "ECProducerSendEvents: Pipelined failed")
 		return

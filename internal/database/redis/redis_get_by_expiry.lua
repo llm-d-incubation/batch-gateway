@@ -35,7 +35,7 @@ for _, key in ipairs(scan_out[2]) do
 		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status")
 	end
 	-- Check for expiry condition.
-	if tonumber(contents[2]) >= expTime then
+	if tonumber(contents[2]) <= expTime then
 		table.insert(result, contents)
 	end
 end

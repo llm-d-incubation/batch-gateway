@@ -44,7 +44,7 @@ import (
 // Helper to start mock server on a specific port with custom args
 func startMockServer(port int, args ...string) error {
 	baseArgs := []string{
-		"compose", "-f", "../../docker-compose.test.yml",
+		"compose", "-f", "./docker-compose.test.yml",
 		"run", "-d", "--rm",
 		"--publish", fmt.Sprintf("%d:8000", port),
 		"--name", fmt.Sprintf("mock-server-test-%d", port),

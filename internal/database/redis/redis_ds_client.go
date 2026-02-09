@@ -38,7 +38,7 @@ const (
 	fieldNameStatus      = "status"
 	fieldNameTags        = "tags"
 	eventReadCount       = 4
-	keysPrefix           = "wx_batch:"
+	keysPrefix           = "llmd_batch:"
 	storeKeysPrefix      = keysPrefix + "store:"
 	queueKeysPrefix      = keysPrefix + "queue:"
 	eventKeysPrefix      = keysPrefix + "event:"
@@ -47,8 +47,7 @@ const (
 	routineStopTimeout   = 20 * time.Second
 	eventChanTimeout     = 10 * time.Second
 	cmdTimeout           = 20 * time.Second
-	ttlSecDefault        = 60 * 60 * 24 * 30
-	tagsSep              = ";;"
+	ttlSecDefault        = 60 * 60 * 24 * 60
 	eventChanSize        = 100
 	logFreqDefault       = 10 * time.Minute
 	versionV1            = "1"

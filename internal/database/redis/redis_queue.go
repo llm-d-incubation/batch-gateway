@@ -60,8 +60,8 @@ func (c *BatchDSClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJo
 		Member: data,
 	}
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	res := c.redisClient.ZAddNX(cctx, priorityQueueKeyName, zitem)
-	ccancel()
 	if res == nil {
 		err = fmt.Errorf("redis command result is nil")
 		logger.Error(err, "PQEnqueue:")
@@ -96,8 +96,8 @@ func (c *BatchDSClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJob
 
 	score := strconv.FormatInt(item.SLO.UnixMicro(), 10)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	res := c.redisClient.ZRemRangeByScore(cctx, priorityQueueKeyName, score, score)
-	ccancel()
 	if res == nil {
 		err = fmt.Errorf("redis command result is nil")
 		logger.Error(err, "PQDelete:")
@@ -124,9 +124,9 @@ func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duratio
 
 	// Get items from the queue.
 	cctx, ccancel := context.WithTimeout(ctx, timeout+2*time.Second)
+	defer ccancel()
 	_, vals, err := c.redisClient.BZMPop(
 		cctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
-	ccancel()
 	if err != nil {
 		if unrecognizedBlockingError(err) {
 			logger.Error(err, "PQDequeue: BZMPop failed")
@@ -155,7 +155,7 @@ func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duratio
 		item := &db_api.BatchJobPriority{}
 		err = json.Unmarshal([]byte(val.Member.(string)), item)
 		if err != nil {
-			logger.Error(err, "PQDelete: Unmarshal failed")
+			logger.Error(err, "PQDequeue: Unmarshal failed")
 			return
 		}
 		jobPriorities = append(jobPriorities, item)

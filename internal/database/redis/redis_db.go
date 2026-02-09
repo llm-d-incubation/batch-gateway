@@ -53,15 +53,15 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 	ptags, err := packTags(item.Tags)
 	if err != nil {
 		logger.Error(err, "DBStore: tags packing failed")
-		return item.ID, err
+		return "", err
 	}
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
 		[]string{getKeyForStore(item.ID, c.tableName)},
 		versionV1, item.ID, item.Expiry,
 		ptags, item.Status, item.Spec,
 		ttlSecDefault).Text()
-	ccancel()
 	if err != nil {
 		logger.Error(err, "DBStore: script failed")
 		return "", err
@@ -103,6 +103,7 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 	key := getKeyForStore(item.ID, c.tableName)
 	updatedStatus, updatedTags := false, false
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	switch {
 	case len(item.Status) > 0 && len(item.Tags) > 0:
 		err = c.redisClient.HSet(cctx, key, fieldNameStatus, item.Status, fieldNameTags, ptags).Err()
@@ -114,7 +115,6 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 		err = c.redisClient.HSet(cctx, key, fieldNameTags, ptags).Err()
 		updatedTags = true
 	}
-	ccancel()
 	if err != nil {
 		logger.Error(err, "DBUpdate: redis HSet failed")
 		return err
@@ -136,6 +136,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	// Delete the items.
 	resMap := make(map[string]*goredis.IntCmd)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
 	cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
 			res := pipe.HDel(cctx, getKeyForStore(id, c.tableName),
@@ -144,7 +145,6 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 		}
 		return nil
 	})
-	ccancel()
 	if err != nil {
 		logger.Error(err, "DBDelete: Pipelined failed")
 		return nil, err
@@ -178,7 +178,7 @@ func (c *BatchDSClientRedis) DBGet(
 	}
 	logger := klog.FromContext(ctx)
 	if query == nil {
-		logger.Info("DBUpdate: empty query")
+		logger.Info("DBGet: empty query")
 		return
 	}
 
@@ -186,6 +186,7 @@ func (c *BatchDSClientRedis) DBGet(
 
 		// Get the item records.
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
 		cmds, err := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 			for _, id := range query.IDs {
 				if includeStatic {
@@ -198,7 +199,6 @@ func (c *BatchDSClientRedis) DBGet(
 			}
 			return nil
 		})
-		ccancel()
 		if err != nil {
 			logger.Error(err, "DBGet: Pipelined failed")
 			return nil, 0, false, err
@@ -241,42 +241,18 @@ func (c *BatchDSClientRedis) DBGet(
 		var res []interface{}
 		ctags := convertTags(query.TagSelectors)
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
 			ctags, strconv.FormatBool(includeStatic), getKeyPatternForStore(c.tableName), cond, start, limit).Slice()
-		ccancel()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
 		}
-		if len(res) != 2 {
-			err = fmt.Errorf("unexpected result from script")
+		cursor, expectMore, items, err = processGetScriptResult(res, includeStatic, logger)
+		if err != nil {
 			logger.Error(err, "DBGet:")
 			return
 		}
-		resItems, ok := res[1].([]interface{})
-		if !ok {
-			err = fmt.Errorf("unexpected result type from script: %T", res[1])
-			logger.Error(err, "DBGet:")
-			return
-		}
-		resCursor, ok := res[0].(int64)
-		if !ok {
-			err = fmt.Errorf("unexpected result type from script: %T", res[0])
-			logger.Error(err, "DBGet:")
-			return
-		}
-		items = make([]*db_api.BatchItem, 0, len(resItems))
-		for _, resItem := range resItems {
-			item, err := dbItemFromHget(resItem.([]interface{}), includeStatic, logger)
-			if err != nil {
-				return nil, 0, false, err
-			}
-			if item != nil {
-				items = append(items, item)
-			}
-		}
-		cursor = int(resCursor)
-		expectMore = (cursor != 0)
 
 	} else if query.Expired {
 
@@ -286,44 +262,53 @@ func (c *BatchDSClientRedis) DBGet(
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
 			[]string{}, curTimestamp, getKeyPatternForStore(c.tableName),
 			strconv.FormatBool(includeStatic), start, limit).Slice()
-		ccancel()
+		defer ccancel()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
 		}
-		if len(res) != 2 {
-			err = fmt.Errorf("unexpected result from script")
+		cursor, expectMore, items, err = processGetScriptResult(res, includeStatic, logger)
+		if err != nil {
 			logger.Error(err, "DBGet:")
 			return
 		}
-		resItems, ok := res[1].([]interface{})
-		if !ok {
-			err = fmt.Errorf("unexpected result type from script: %T", res[1])
-			logger.Error(err, "DBGet:")
-			return
-		}
-		resCursor, ok := res[0].(int64)
-		if !ok {
-			err = fmt.Errorf("unexpected result type from script: %T", res[0])
-			logger.Error(err, "DBGet:")
-			return
-		}
-		items = make([]*db_api.BatchItem, 0, len(resItems))
-		for _, resItem := range resItems {
-			item, err := dbItemFromHget(resItem.([]interface{}), includeStatic, logger)
-			if err != nil {
-				return nil, 0, false, err
-			}
-			if item != nil {
-				items = append(items, item)
-			}
-		}
-		cursor = int(resCursor)
-		expectMore = (cursor != 0)
 
 	}
 
 	logger.Info("DBGet: succeeded", "nItems", len(items))
+
+	return
+}
+
+func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.Logger) (
+	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
+
+	if len(res) != 2 {
+		err = fmt.Errorf("unexpected result from script")
+		return
+	}
+	resItems, ok := res[1].([]interface{})
+	if !ok {
+		err = fmt.Errorf("unexpected result type from script: %T", res[1])
+		return
+	}
+	resCursor, ok := res[0].(int64)
+	if !ok {
+		err = fmt.Errorf("unexpected result type from script: %T", res[0])
+		return
+	}
+	items = make([]*db_api.BatchItem, 0, len(resItems))
+	for _, resItem := range resItems {
+		item, err := dbItemFromHget(resItem.([]interface{}), includeStatic, logger)
+		if err != nil {
+			return 0, false, nil, err
+		}
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	cursor = int(resCursor)
+	expectMore = (cursor != 0)
 
 	return
 }
@@ -345,7 +330,6 @@ func packTags(tags map[string]string) (string, error) {
 		return "", err
 	}
 	return string(json), nil
-	// return fmt.Sprintf("%s%s%s", tagsSep, strings.Join(tags, tagsSep), tagsSep) TBR
 }
 
 func unpackTags(tagsPacked string) (map[string]string, error) {
@@ -358,12 +342,6 @@ func unpackTags(tagsPacked string) (map[string]string, error) {
 		return nil, err
 	}
 	return tags, nil
-	// rTags := strings.Split(tags, tagsSep) TBR
-	// if len(rTags) > 2 {
-	// 	return rTags[1 : len(rTags)-1]
-	// } else {
-	// 	return rTags
-	// }
 }
 
 func convertTags(tags map[string]string) (ctags []string) {
@@ -371,7 +349,6 @@ func convertTags(tags map[string]string) (ctags []string) {
 		ctags = make([]string, 0, len(tags))
 		for key, val := range tags {
 			ctags = append(ctags, fmt.Sprintf("\"%s\":\"%s\"", key, val))
-			// ctags[i] = fmt.Sprintf("%s%s%s", tagsSep, tag, tagsSep) TBR
 		}
 	}
 	return
