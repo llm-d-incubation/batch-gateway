@@ -23,6 +23,7 @@ import (
 	_ "embed"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -43,14 +44,17 @@ func (c *BatchDSClientRedis) ECConsumerGetChannel(ctx context.Context, ID string
 	lctx, lcancel := context.WithCancel(context.Background()) // Use a background context as this should be independent of the context of this call.
 	eventChan := make(chan db_api.BatchEvent, eventChanSize)
 	stopChan := make(chan any, 1)
+	var once sync.Once
 	closeFn := func() {
-		logger.Info("Listener: close start")
-		lcancel() // Signal for listener termination.
-		select {
-		case <-stopChan: // Wait for listener termination, with a timeout.
-		case <-time.After(routineStopTimeout):
-		}
-		logger.Info("Listener: close end")
+		once.Do(func() {
+			logger.Info("Listener: close start")
+			lcancel() // Signal for listener termination.
+			select {
+			case <-stopChan: // Wait for listener termination, with a timeout.
+			case <-time.After(routineStopTimeout):
+			}
+			logger.Info("Listener: close end")
+		})
 	}
 	batchEventsChan = &db_api.BatchEventsChan{
 		ID:      ID,
