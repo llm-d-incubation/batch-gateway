@@ -25,8 +25,8 @@ local fieldSpec = ARGV[6]
 local ttl = tonumber(ARGV[7])
 
 -- Add the hash key.
-redis.call('HSET', hashKey, "ver", fieldVer, 
-    "id", fieldId, "expiry", fieldExpiry, "tags", fieldTags, 
+redis.call('HSET', hashKey, "ver", fieldVer,
+    "id", fieldId, "expiry", fieldExpiry, "tags", fieldTags,
     "status", fieldStatus, "spec", fieldSpec)
 
 -- Set expiration.
