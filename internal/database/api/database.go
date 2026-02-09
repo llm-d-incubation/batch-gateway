@@ -26,97 +26,73 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/store"
 )
 
-// -- Batch jobs metadata store --
-
-type BatchItem struct {
-	ID       string // [mandatory, immutable, returned by get, parsed by DB, must be unique] User provided unique ID of the item. This ID must be unique.
-	TenantID string // Tenant is the identifier for multi-tenancy support.
-	Expiry   int64  // [optional, immutable, returned by get, parsed by DB] The unix timestamp in seconds when the item is considered expired.
-	Tags     Tags   // [optional, updatable, returned by get, parsed by DB] A list of tags that enable to select items based on the tags' contents. The tags must not contain ';;', which is the internal separator used.
-	Spec     []byte // [optional, immutable, returned optionally by get, opaque to DB] The static part of the batch item (serialized), including the item's specification.
-	Status   []byte // [optional, updatable, returned by get, opaque to DB] The dynamic part of the batch item (serialized), including its status.
-	//SLO    time.Time // [mandatory, immutable, returned by get, parsed by DB] The time based on which the item should be prioritized relative to other items. TBR
-}
-
-func (bj *BatchItem) IsValid() error {
-	if len(bj.ID) == 0 {
-		return fmt.Errorf("ID is empty")
-	}
-	// if bj.SLO.IsZero() { TBR
-	// 	return fmt.Errorf("SLO is zero for ID %s", bj.ID)
-	// }
-	// if bj.TTL <= 0 {
-	// 	return fmt.Errorf("TTL is invalid for ID %s", bj.ID)
-	// }
-	return nil
-}
-
-// BatchDBClient enables to manage batch item metadata objects in persistent storage.
-type BatchDBClient interface {
+// DBClient is a generic interface for managing Item[T] in persistent storage.
+//
+// Each domain type (e.g., openai.Batch, openai.FileObject) gets its own
+// typed DBClient implementation. The implementation handles serialization
+// of Item[T].Data internally.
+//
+// Example usage:
+//
+//	type BatchDBClient = api.DBClient[openai.Batch]
+//	type FileDBClient = api.DBClient[openai.FileObject]
+type DBClient[T any] interface {
 	store.BatchClientAdmin
 
-	// DBStore stores a batch item metadata object.
-	// Returns the ID of the item in the database.
-	DBStore(ctx context.Context, item *BatchItem) (ID string, err error)
+	// DBStore persists an item.
+	DBStore(ctx context.Context, item *BaseItem[T]) error
 
-	// DBGet gets the information (static and dynamic) of batch items.
-	// If IDs are specified, this function will get items by the specified IDs.
+	// DBGet gets the information (static and dynamic) of items.
+	// If IDs are specified, this function will get items by the specified item IDs.
 	// If tags are specified, this function will get items by the specified tags.
 	// If expired is set to true, this function will get expired items.
-	// If no IDs nor tags nor expired are specified, the function will return an empty list of items.
-	// tagsLogicalCond specifies the logical condition to use for when searching for the tags per item.
-	// includeStatic specifies if to include the static part of a item in the returned output.
-	// start and limit specify the pagination details. This is relevant only for search by tags.
+	// If TenantID is specified, only items belonging to that tenant are returned.
+	// If no query conditions are specified, the function will return an empty list of items.
+	// tagsLogicalCond specifies the logical condition to use when searching for the tags per item.
+	// includeStatic specifies if to include the static part of an item in the returned output.
+	// start and limit specify the pagination details. This is relevant for any query condition except IDs.
 	// In the first iteration with pagination specify 0 for 'start', and in any subsequent iteration specify in 'start'
 	// the value that was returned by 'cursor' in the previous iteration. The value returned by 'cursor' is an opaque integer.
 	// The value specified in 'limit' can be different between iterations, and is a recommendation only.
 	// items is a slice of returned items.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
 	// expectMore indicates if there are more items to get.
-	DBGet(ctx context.Context, query *BatchDBQuery,
-		includeStatic bool, start, limit int) (
-		items []*BatchItem, cursor int, expectMore bool, err error)
+	DBGet(ctx context.Context, query *Query, includeStatic bool, start, limit int) (
+		items []*BaseItem[T], cursor int, expectMore bool, err error)
 
-	// DBUpdate updates the dynamic parts of a batch item.
+	// DBUpdate updates the dynamic parts of an item.
 	// The function will update in the item's record in the database - all the dynamic fields of the item which are not empty
 	// in the given item object.
 	// Any dynamic field that is empty in the given item object - will not be updated in the item's record in the database.
-	DBUpdate(ctx context.Context, item *BatchItem) (err error)
+	DBUpdate(ctx context.Context, item *BaseItem[T]) error
 
-	// DBDelete deletes batch items.
+	// DBDelete removes items by their IDs.
 	DBDelete(ctx context.Context, IDs []string) (deletedIDs []string, err error)
 }
 
+// Tags are key-value pairs for filtering items.
 type Tags map[string]string
 
-// Standard tag keys and values used across batch items
-const (
-	TagKeyPurpose = "purpose"
-
-	TagValueFile  = "file"
-	TagValueBatch = "batch"
-)
-
-type BatchDBQuery struct {
+// Query specifies parameters for retrieving items from the database.
+type Query struct {
 	IDs             []string
 	TenantID        string
 	TagSelectors    Tags
-	TagsLogicalCond GenLogicalCond
+	TagsLogicalCond LogicalCond
 	Expired         bool
 }
 
-type GenLogicalCond int
+type LogicalCond int
 
 const (
-	GenLogicalCondNa GenLogicalCond = iota
-	GenLogicalCondAnd
-	GenLogicalCondOr
-	GenLogicalCondMaxVal // [Internal] Indicates the max value for the enum. Don't use this value.
+	LogicalCondNone LogicalCond = iota
+	LogicalCondAnd
+	LogicalCondOr
 )
 
-var GenLogicalCondNames = map[GenLogicalCond]string{
-	GenLogicalCondAnd: "and",
-	GenLogicalCondOr:  "or",
+var LogicalCondNames = map[LogicalCond]string{
+	LogicalCondAnd: "and",
+	LogicalCondOr:  "or",
 }
 
 // -- Batch jobs priority queue --
@@ -218,13 +194,13 @@ type BatchEventChannelClient interface {
 type BatchStatusClient interface {
 	store.BatchClientAdmin
 
-	// STSet stores or updates status data for a job.
+	// StatusSet stores or updates status data for a job.
 	StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error)
 
-	// STGet retrieves the status data of a job.
+	// StatusGet retrieves the status data of a job.
 	// If no data exists (nil, nil) is returned.
 	StatusGet(ctx context.Context, ID string) (data []byte, err error)
 
-	// STDelete deletes the status data for a job.
+	// StatusDelete deletes the status data for a job.
 	StatusDelete(ctx context.Context, ID string) (nDeleted int, err error)
 }
