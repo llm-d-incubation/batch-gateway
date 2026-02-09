@@ -42,14 +42,14 @@ type ProcessorClients struct {
 }
 
 func NewProcessorClients(
-	db db.BatchDBClient,
+	database db.BatchDBClient,
 	pq db.BatchPriorityQueueClient,
 	status db.BatchStatusClient,
 	event db.BatchEventChannelClient,
 	inference inference.Client,
 ) ProcessorClients {
 	return ProcessorClients{
-		database:      db,
+		database:      database,
 		priorityQueue: pq,
 		status:        status,
 		event:         event,
@@ -154,7 +154,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 			continue
 		}
 
-		// TODO:: get tenant id from job.Spec
+		// TODO:: get tenant id from job.Item
 		// tenantID := "unknown"
 		// TODO:: job queue object should have enqueued at field (maybe updated at too)
 		// TODO:: metrics.RecordQueueWait(time.Since(task.EnqueuedAt), tenantID)
@@ -201,12 +201,7 @@ func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (
 	logger := klog.FromContext(ctx)
 
 	// get only one job data
-	ids := []string{task.ID}
-	jobs, _, _, err := p.clients.database.DBGet(ctx,
-		&db.BatchDBQuery{
-			IDs: ids,
-		},
-		true, 0, 1)
+	jobs, _, _, err := p.clients.database.DBGet(ctx, &db.Query{IDs: []string{task.ID}}, true, 0, 1)
 
 	// job db data does not exist or failed to fetch the data
 	if err != nil || len(jobs) == 0 {
@@ -246,10 +241,13 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchI
 	startTime := time.Now()
 	metadata := batch.JobResultMetadata{}
 	defer func() {
-		// TODO:: get tenant id from job.Spec (should be included in the job object)
+		// TODO:: get tenant id from job.Tenant
 		// job result / failure reason for metric
 		// TODO:: how to check if the failure is on user or system
-		tenantID := "unknown"
+		tenantID := job.TenantID
+		if tenantID == "" {
+			tenantID = "unknown"
+		}
 		jobFailureReason := metrics.ReasonUnknown
 		jobResult := metrics.ResultSuccess
 
@@ -355,7 +353,7 @@ func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchI
 	// status update
 	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing))
 
-	// db update (job.Status should be updated before this line)
+	// db update
 	if err := p.clients.database.DBUpdate(jobctx, job); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update final job status in DB", "jobID", job.ID)
 	}
