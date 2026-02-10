@@ -32,6 +32,8 @@ type ContextKey string
 const (
 	RequestIDKey ContextKey = "requestID"
 	TenantIDKey  ContextKey = "tenantID"
+
+	DefaultTenantID = "unknown"
 )
 
 type Route struct {
@@ -96,5 +98,5 @@ func GetTenantIDFromContext(ctx context.Context) string {
 	if tenantID, ok := ctx.Value(TenantIDKey).(string); ok {
 		return tenantID
 	}
-	return "unknown"
+	return DefaultTenantID
 }

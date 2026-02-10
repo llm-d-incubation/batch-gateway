@@ -119,7 +119,8 @@ func TestBatchHandler(t *testing.T) {
 			},
 		})
 		dbClient.DBStore(context.Background(), &api.BatchItem{
-			ID: batchID,
+			ID:       batchID,
+			TenantID: common.DefaultTenantID,
 			// SLO:    time.Now().UTC().Add(24 * time.Hour),
 			// TTL:    86400,
 			Tags:   map[string]string{},
@@ -174,7 +175,8 @@ func TestBatchHandler(t *testing.T) {
 				},
 			})
 			dbClient.DBStore(context.Background(), &api.BatchItem{
-				ID: batchID,
+				ID:       batchID,
+				TenantID: common.DefaultTenantID,
 				// SLO:    time.Now().UTC().Add(24 * time.Hour),
 				// TTL:    86400,
 				Tags:   map[string]string{},
@@ -242,7 +244,8 @@ func TestBatchHandler(t *testing.T) {
 			},
 		})
 		dbClient.DBStore(context.Background(), &api.BatchItem{
-			ID: batchID,
+			ID:       batchID,
+			TenantID: common.DefaultTenantID,
 			// SLO:    time.Now().UTC().Add(24 * time.Hour),
 			// TTL:    86400,
 			Tags:   map[string]string{},
@@ -319,7 +322,8 @@ func BenchmarkBatchHandler(b *testing.B) {
 			},
 		})
 		dbClient.DBStore(context.Background(), &api.BatchItem{
-			ID: batchID,
+			ID:       batchID,
+			TenantID: common.DefaultTenantID,
 			// SLO:    time.Now().UTC().Add(24 * time.Hour),
 			// TTL:    86400,
 			Tags:   map[string]string{},
@@ -356,7 +360,8 @@ func BenchmarkBatchHandler(b *testing.B) {
 				},
 			})
 			dbClient.DBStore(context.Background(), &api.BatchItem{
-				ID: batchID,
+				ID:       batchID,
+				TenantID: common.DefaultTenantID,
 				// SLO:    time.Now().UTC().Add(24 * time.Hour),
 				// TTL:    86400,
 				Tags:   map[string]string{},
@@ -396,7 +401,8 @@ func BenchmarkBatchHandler(b *testing.B) {
 				},
 			})
 			dbClient.DBStore(context.Background(), &api.BatchItem{
-				ID: batchID,
+				ID:       batchID,
+				TenantID: common.DefaultTenantID,
 				// SLO:    time.Now().UTC().Add(24 * time.Hour),
 				// TTL:    86400,
 				Tags:   map[string]string{},

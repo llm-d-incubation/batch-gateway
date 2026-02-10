@@ -151,9 +151,9 @@ func (s *Server) buildHandler() http.Handler {
 	//h = middleware.AuthorizationMiddleware(h) //  Check permissions
 	//h = middleware.AuthenticationMiddleware(h) // Verify API key/JWT
 	//h = middleware.RateLimitMiddleware(h)      // Early Rejection
-	h = middleware.SecurityHeadersMiddleware(h)  // Add security headers
+	h = middleware.SecurityHeadersMiddleware(h)   // Add security headers
 	h = middleware.RequestMiddleware(s.config)(h) // 2nd Outermost, request monitoring with tenant support
-	h = middleware.RecoveryMiddleware(h)         // Outermost - catches ALL panics
+	h = middleware.RecoveryMiddleware(h)          // Outermost - catches ALL panics
 
 	return h
 }
