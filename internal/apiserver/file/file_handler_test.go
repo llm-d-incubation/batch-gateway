@@ -178,9 +178,8 @@ func doTestCreateFile(t *testing.T) {
 
 	// Verify file was actually uploaded to storage
 	// Mock stores files at /tmp/batch-gateway-files/{folderName}/{fileName}
-	// folderName is empty string, so location is just the filename
 	fileName := fileObj.Filename
-	folderName := ""
+	folderName := common.DefaultTenantID
 	fileReader, fileMeta, err := filesClient.Retrieve(ctx, fileName, folderName)
 	if err != nil {
 		t.Fatalf("failed to retrieve file from storage: %v", err)
