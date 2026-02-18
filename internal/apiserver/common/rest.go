@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -33,7 +34,8 @@ const (
 	RequestIDKey ContextKey = "requestID"
 	TenantIDKey  ContextKey = "tenantID"
 
-	DefaultTenantID = "unknown"
+	DefaultRequestID = "unknown"
+	DefaultTenantID  = "default"
 )
 
 type Route struct {
@@ -52,6 +54,12 @@ func RegisterHandler(mux *http.ServeMux, h ApiHandler) {
 		pattern := route.Method + " " + route.Pattern
 		mux.HandleFunc(pattern, route.HandlerFunc)
 	}
+}
+
+func DecodeJSON(r io.Reader, obj any) error {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(obj)
 }
 
 func WriteJSONResponse(w http.ResponseWriter, r *http.Request, status int, obj interface{}) {
@@ -91,7 +99,7 @@ func GetRequestIDFromContext(ctx context.Context) string {
 	if requestID, ok := ctx.Value(RequestIDKey).(string); ok {
 		return requestID
 	}
-	return "unknown"
+	return DefaultRequestID
 }
 
 func GetTenantIDFromContext(ctx context.Context) string {
