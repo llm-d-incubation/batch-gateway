@@ -105,9 +105,9 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	// parse request
 	batchReq := &openai.CreateBatchRequest{}
-	if err := json.NewDecoder(r.Body).Decode(&batchReq); err != nil {
+	if err := common.DecodeJSON(r.Body, batchReq); err != nil {
 		logger.Error(err, "failed to decode request")
-		apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid request body", nil)
+		apiErr := openai.NewAPIError(http.StatusBadRequest, "", err.Error(), nil)
 		common.WriteAPIError(w, r, apiErr)
 		return
 	}
