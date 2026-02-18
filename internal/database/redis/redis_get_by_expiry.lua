@@ -30,12 +30,12 @@ for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
 	if getStatic == 'true' then
-		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status", "spec")
+		contents = redis.call('HMGET', key, "id", "tenantID", "expiry", "tags", "status", "spec")
 	else
-		contents = redis.call('HMGET', key, "id", "expiry", "tags", "status")
+		contents = redis.call('HMGET', key, "id", "tenantID", "expiry", "tags", "status")
 	end
 	-- Check for expiry condition.
-	if tonumber(contents[2]) <= expTime then
+	if tonumber(contents[3]) <= expTime then
 		table.insert(result, contents)
 	end
 end

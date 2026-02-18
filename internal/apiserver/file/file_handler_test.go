@@ -49,10 +49,10 @@ func TestFileHandler(t *testing.T) {
 }
 
 // setupTestHandler creates a test handler with mocked dependencies
-func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[openai.FileObject], *fsmock.MockBatchFilesClient, context.Context) {
+func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[dbapi.FileItem], *fsmock.MockBatchFilesClient, context.Context) {
 	t.Helper()
 
-	dbClient := dbmock.NewMockDBClient[openai.FileObject]()
+	dbClient := dbmock.NewMockDBClient[dbapi.FileItem](func(f *dbapi.FileItem) string { return f.ID })
 	filesClient := fsmock.NewMockBatchFilesClient()
 
 	config := &common.ServerConfig{
@@ -630,7 +630,7 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Verify physical file is deleted from storage
-		_, _, err = filesClient.Retrieve(ctx, createdFile.Filename, "")
+		_, _, err = filesClient.Retrieve(ctx, createdFile.Filename, common.DefaultTenantID)
 		if err == nil {
 			t.Errorf("expected physical file to be deleted, but still exists")
 		}

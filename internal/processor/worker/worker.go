@@ -154,8 +154,8 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 			continue
 		}
 
-		// TODO:: get tenant id from job.Item
-		// tenantID := "unknown"
+		// TODO:: get tenant id from job
+		// tenantID := job.TenantID
 		// TODO:: job queue object should have enqueued at field (maybe updated at too)
 		// TODO:: metrics.RecordQueueWait(time.Since(task.EnqueuedAt), tenantID)
 

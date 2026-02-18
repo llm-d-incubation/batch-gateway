@@ -20,6 +20,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -28,62 +29,54 @@ import (
 
 // MockDBClient is a generic in-memory implementation of api.DBClient[T] for testing.
 type MockDBClient[T any] struct {
-	items sync.Map
+	items    sync.Map
+	idGetter func(*T) string
 }
 
 // NewMockDBClient creates a new mock DB client.
-func NewMockDBClient[T any]() *MockDBClient[T] {
-	return &MockDBClient[T]{}
+// idGetter is a function that extracts the ID from the item pointer.
+func NewMockDBClient[T any](idGetter func(*T) string) *MockDBClient[T] {
+	return &MockDBClient[T]{
+		idGetter: idGetter,
+	}
 }
 
-func (m *MockDBClient[T]) DBStore(ctx context.Context, item *api.BaseItem[T]) error {
+func (m *MockDBClient[T]) DBStore(ctx context.Context, item *T) error {
 	if item == nil {
 		return fmt.Errorf("item is nil")
 	}
-	if item.ID == "" {
+	id := m.idGetter(item)
+	if id == "" {
 		return fmt.Errorf("item has empty ID")
 	}
-	m.items.Store(item.ID, item)
+	m.items.Store(id, item)
 	return nil
 }
 
 func (m *MockDBClient[T]) DBGet(
 	ctx context.Context, query *api.Query,
 	includeStatic bool, start, limit int) (
-	[]*api.BaseItem[T], int, bool, error) {
-	var allMatches []*api.BaseItem[T]
+	[]*T, int, bool, error) {
+	var allMatches []*T
 
 	// If IDs are specified, get by IDs
 	if len(query.IDs) > 0 {
 		for _, id := range query.IDs {
 			if value, ok := m.items.Load(id); ok {
-				if item, ok := value.(*api.BaseItem[T]); ok {
-					allMatches = append(allMatches, item)
+				if item, ok := value.(*T); ok {
+					if m.matchesFilters(*item, query) {
+						allMatches = append(allMatches, item)
+					}
 				}
 			}
 		}
 	} else {
 		// Collect all items, applying filters
 		m.items.Range(func(key, value any) bool {
-			if item, ok := value.(*api.BaseItem[T]); ok {
-				// Filter by tenant if specified
-				if query.TenantID != "" && item.TenantID != query.TenantID {
-					return true
+			if item, ok := value.(*T); ok {
+				if m.matchesFilters(*item, query) {
+					allMatches = append(allMatches, item)
 				}
-				// Filter by tag selectors if specified
-				if len(query.TagSelectors) > 0 {
-					matches := true
-					for tagKey, tagValue := range query.TagSelectors {
-						if itemTagValue, ok := item.Tags[tagKey]; !ok || itemTagValue != tagValue {
-							matches = false
-							break
-						}
-					}
-					if !matches {
-						return true
-					}
-				}
-				allMatches = append(allMatches, item)
 			}
 			return true
 		})
@@ -93,12 +86,12 @@ func (m *MockDBClient[T]) DBGet(
 	totalMatches := len(allMatches)
 
 	if start >= totalMatches {
-		return []*api.BaseItem[T]{}, start, false, nil
+		return []*T{}, start, false, nil
 	}
 
 	allMatches = allMatches[start:]
 
-	var results []*api.BaseItem[T]
+	var results []*T
 	expectedMore := false
 	if limit > 0 && len(allMatches) > limit {
 		results = allMatches[:limit]
@@ -112,23 +105,24 @@ func (m *MockDBClient[T]) DBGet(
 	return results, nextCursor, expectedMore, nil
 }
 
-func (m *MockDBClient[T]) DBUpdate(ctx context.Context, item *api.BaseItem[T]) error {
+func (m *MockDBClient[T]) DBUpdate(ctx context.Context, item *T) error {
 	if item == nil {
 		return fmt.Errorf("item is nil")
 	}
-	if item.ID == "" {
+	id := m.idGetter(item)
+	if id == "" {
 		return fmt.Errorf("item has empty ID")
 	}
-	if _, ok := m.items.Load(item.ID); !ok {
-		return fmt.Errorf("cannot update item with ID '%s': item doesn't exist", item.ID)
+	if _, ok := m.items.Load(id); !ok {
+		return fmt.Errorf("cannot update item with ID '%s': item doesn't exist", id)
 	}
-	m.items.Store(item.ID, item)
+	m.items.Store(id, item)
 	return nil
 }
 
-func (m *MockDBClient[T]) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
+func (m *MockDBClient[T]) DBDelete(ctx context.Context, ids []string) ([]string, error) {
 	var deleted []string
-	for _, id := range IDs {
+	for _, id := range ids {
 		if _, ok := m.items.LoadAndDelete(id); ok {
 			deleted = append(deleted, id)
 		}
@@ -143,4 +137,39 @@ func (m *MockDBClient[T]) GetContext(parentCtx context.Context, timeLimit time.D
 func (m *MockDBClient[T]) Close() error {
 	m.items.Clear()
 	return nil
+}
+
+// matchesFilters checks if an item matches the query filters.
+func (m *MockDBClient[T]) matchesFilters(item T, query *api.Query) bool {
+	val := reflect.ValueOf(item)
+
+	// Filter by tenant if specified
+	if query.TenantID != "" {
+		tenantIDField := val.FieldByName("TenantID")
+		if tenantIDField.IsValid() && tenantIDField.Kind() == reflect.String {
+			if tenantIDField.String() != query.TenantID {
+				return false
+			}
+		}
+	}
+
+	// Filter by tag selectors if specified
+	if len(query.TagSelectors) > 0 {
+		tagsField := val.FieldByName("Tags")
+		if tagsField.IsValid() && tagsField.Kind() == reflect.Map {
+			itemTags, ok := tagsField.Interface().(api.Tags)
+			if !ok {
+				return false
+			}
+			for tagKey, tagValue := range query.TagSelectors {
+				if itemTagValue, ok := itemTags[tagKey]; !ok || itemTagValue != tagValue {
+					return false
+				}
+			}
+		} else {
+			return false
+		}
+	}
+
+	return true
 }

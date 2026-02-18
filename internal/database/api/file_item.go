@@ -16,25 +16,13 @@ limitations under the License.
 
 package api
 
-import (
-	"fmt"
-
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-)
-
-// FileItem is the database item type for openai.FileObject.
-type FileItem = BaseItem[openai.FileObject]
+// FileItem is the database item type
+type FileItem struct {
+	BaseIndexes
+	// Purpose is the intended purpose of the file (e.g., "batch", "batch_output").
+	Purpose string
+	BaseContents
+}
 
 // FileDBClient is the typed database client for file objects.
-type FileDBClient = DBClient[openai.FileObject]
-
-// IsFileItemValid validates a FileItem for required fields.
-func IsFileItemValid(item *FileItem) error {
-	if item == nil {
-		return fmt.Errorf("item is nil")
-	}
-	if len(item.ID) == 0 {
-		return fmt.Errorf("ID is empty")
-	}
-	return nil
-}
+type FileDBClient = DBClient[FileItem]

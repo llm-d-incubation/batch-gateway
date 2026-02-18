@@ -33,6 +33,7 @@ import (
 const (
 	fieldNameVersion     = "ver"
 	fieldNameId          = "id"
+	fieldNameTenantID    = "tenantID"
 	fieldNameExpiry      = "expiry"
 	fieldNameSpec        = "spec"
 	fieldNameStatus      = "status"

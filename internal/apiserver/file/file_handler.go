@@ -30,6 +30,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
@@ -135,7 +136,7 @@ func (c *FileApiHandler) getFileItemFromDB(r *http.Request, operation string) (*
 		apiErr := openai.NewAPIError(
 			http.StatusNotFound,
 			"",
-			fmt.Sprintf("File with ID %s not found", item.ID),
+			fmt.Sprintf("File with ID %s not found", fileID),
 			nil,
 		)
 		return nil, &apiErr
@@ -299,13 +300,13 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save file metadata to database
-	item := &dbapi.FileItem{
-		ID:       fileID,
-		TenantID: tenantID,
-		Expiry:   expiresAt,
-		Item:     fileObj,
+	dbItem, err := converter.FileToDBItem(&fileObj, tenantID, dbapi.Tags{})
+	if err != nil {
+		logger.Error(err, "failed to convert file to database item", "file_id", fileID)
+		common.WriteInternalServerError(w, r)
+		return
 	}
-	if err := c.dbClient.DBStore(ctx, item); err != nil {
+	if err := c.dbClient.DBStore(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to store file metadata", "file_id", fileID)
 		common.WriteInternalServerError(w, r)
 		return
@@ -433,7 +434,13 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	// Extract FileObjects from items
 	fileObjects := make([]openai.FileObject, 0, len(items))
 	for _, item := range items {
-		fileObjects = append(fileObjects, item.Item)
+		fileObj, err := converter.DBItemToFile(item)
+		if err != nil {
+			logger.Error(err, "failed to convert database item to file")
+			common.WriteInternalServerError(w, r)
+			return
+		}
+		fileObjects = append(fileObjects, *fileObj)
 	}
 
 	// TODO: can Get support sorting directly?
@@ -466,7 +473,7 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *FileApiHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
-	_ = logging.FromRequest(r)
+	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getFileItemFromDB(r, "retrieve")
 	if apiErr != nil {
@@ -474,7 +481,14 @@ func (c *FileApiHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	common.WriteJSONResponse(w, r, http.StatusOK, &item.Item)
+	fileObj, err := converter.DBItemToFile(item)
+	if err != nil {
+		logger.Error(err, "failed to convert database item to file")
+		common.WriteInternalServerError(w, r)
+		return
+	}
+
+	common.WriteJSONResponse(w, r, http.StatusOK, fileObj)
 }
 
 func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +501,12 @@ func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileObj := &item.Item
+	fileObj, err := converter.DBItemToFile(item)
+	if err != nil {
+		logger.Error(err, "failed to convert database item to file")
+		common.WriteInternalServerError(w, r)
+		return
+	}
 	folderName := item.TenantID
 
 	// Retrieve file content from storage
@@ -526,11 +545,16 @@ func (c *FileApiHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileObj := &item.Item
+	fileObj, err := converter.DBItemToFile(item)
+	if err != nil {
+		logger.Error(err, "failed to convert database item to file")
+		common.WriteInternalServerError(w, r)
+		return
+	}
 	folderName := item.TenantID
 
 	// Delete physical file from storage
-	err := c.filesClient.Delete(ctx, fileObj.Filename, folderName)
+	err = c.filesClient.Delete(ctx, fileObj.Filename, folderName)
 	if err != nil {
 		logger.Error(err, "failed to delete physical file", "fileName", fileObj.Filename, "folderName", folderName)
 		// Continue to delete metadata even if physical file deletion fails

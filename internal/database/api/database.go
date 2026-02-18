@@ -26,21 +26,20 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/store"
 )
 
-// DBClient is a generic interface for managing Item[T] in persistent storage.
+// DBClient is a generic interface for managing database items in persistent storage.
 //
-// Each domain type (e.g., openai.Batch, openai.FileObject) gets its own
-// typed DBClient implementation. The implementation handles serialization
-// of Item[T].Data internally.
+// Each domain type (e.g., BatchItem, FileItem) gets its own typed DBClient implementation.
+// The implementation handles serialization of item contents internally.
 //
 // Example usage:
 //
-//	type BatchDBClient = api.DBClient[openai.Batch]
-//	type FileDBClient = api.DBClient[openai.FileObject]
+//	type BatchDBClient = api.DBClient[BatchItem]
+//	type FileDBClient = api.DBClient[FileItem]
 type DBClient[T any] interface {
 	store.BatchClientAdmin
 
 	// DBStore persists an item.
-	DBStore(ctx context.Context, item *BaseItem[T]) error
+	DBStore(ctx context.Context, item *T) (err error)
 
 	// DBGet gets the information (static and dynamic) of items.
 	// If IDs are specified, this function will get items by the specified item IDs.
@@ -58,13 +57,13 @@ type DBClient[T any] interface {
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
 	// expectMore indicates if there are more items to get.
 	DBGet(ctx context.Context, query *Query, includeStatic bool, start, limit int) (
-		items []*BaseItem[T], cursor int, expectMore bool, err error)
+		items []*T, cursor int, expectMore bool, err error)
 
 	// DBUpdate updates the dynamic parts of an item.
 	// The function will update in the item's record in the database - all the dynamic fields of the item which are not empty
 	// in the given item object.
 	// Any dynamic field that is empty in the given item object - will not be updated in the item's record in the database.
-	DBUpdate(ctx context.Context, item *BaseItem[T]) error
+	DBUpdate(ctx context.Context, item *T) (err error)
 
 	// DBDelete removes items by their IDs.
 	DBDelete(ctx context.Context, IDs []string) (deletedIDs []string, err error)

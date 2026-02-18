@@ -28,6 +28,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
@@ -118,27 +119,31 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	// Get tenant ID from context
 	tenantID := common.GetTenantIDFromContext(ctx)
 
-	job := &api.BatchItem{
-		ID:       batchID,
-		TenantID: tenantID,
-		Tags:     api.Tags{},
-		Item: openai.Batch{
-			ID: batchID,
-			BatchSpec: openai.BatchSpec{
-				Object:           "batch",
-				Endpoint:         batchReq.Endpoint,
-				InputFileID:      batchReq.InputFileID,
-				CompletionWindow: batchReq.CompletionWindow,
-				Metadata:         batchReq.Metadata,
-				CreatedAt:        createdAt,
-			},
-			BatchStatusInfo: openai.BatchStatusInfo{
-				Status: openai.BatchStatusValidating,
-			},
+	// Create openai.Batch object
+	batch := &openai.Batch{
+		ID: batchID,
+		BatchSpec: openai.BatchSpec{
+			Object:           "batch",
+			Endpoint:         batchReq.Endpoint,
+			InputFileID:      batchReq.InputFileID,
+			CompletionWindow: batchReq.CompletionWindow,
+			Metadata:         batchReq.Metadata,
+			CreatedAt:        createdAt,
+		},
+		BatchStatusInfo: openai.BatchStatusInfo{
+			Status: openai.BatchStatusValidating,
 		},
 	}
 
-	if err := c.dbClient.DBStore(ctx, job); err != nil {
+	// Convert to database item
+	dbItem, err := converter.BatchToDBItem(batch, tenantID, api.Tags{})
+	if err != nil {
+		logger.Error(err, "failed to convert batch to database item")
+		common.WriteInternalServerError(w, r)
+		return
+	}
+
+	if err := c.dbClient.DBStore(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to store batch job")
 		common.WriteInternalServerError(w, r)
 		return
@@ -171,7 +176,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	common.WriteJSONResponse(w, r, http.StatusOK, &job.Item)
+	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
 
 func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +237,13 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	// Convert to batch responses
 	batches := make([]openai.Batch, 0, len(items))
 	for _, item := range items {
-		batches = append(batches, item.Item)
+		batch, err := converter.DBItemToBatch(item)
+		if err != nil {
+			logger.Error(err, "failed to convert database item to batch")
+			common.WriteInternalServerError(w, r)
+			return
+		}
+		batches = append(batches, *batch)
 	}
 
 	resp := openai.ListBatchResponse{
@@ -248,8 +259,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSONResponse(w, r, http.StatusOK, resp)
 }
 
-// getBatchItemFromDB retrieves and validates a batch item by ID.
-func (c *BatchApiHandler) getBatchItemFromDB(w http.ResponseWriter, r *http.Request, operation string) (*api.BatchItem, *openai.APIError) {
+func (c *BatchApiHandler) getBatchItemFromDB(r *http.Request, operation string) (*api.BatchItem, *openai.APIError) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -266,10 +276,8 @@ func (c *BatchApiHandler) getBatchItemFromDB(w http.ResponseWriter, r *http.Requ
 
 	logger.V(logging.DEBUG).Info(operation + " batch request")
 
-	// Get tenant ID from context
 	tenantID := common.GetTenantIDFromContext(ctx)
 
-	// Get batch from database
 	items, _, _, err := c.dbClient.DBGet(ctx,
 		&api.Query{
 			IDs:      []string{batchID},
@@ -295,13 +303,12 @@ func (c *BatchApiHandler) getBatchItemFromDB(w http.ResponseWriter, r *http.Requ
 
 	item := items[0]
 
-	// Validate tenant isolation if tenant ID is present in request
 	if item.TenantID != tenantID {
 		logger.Info("batch not found - tenant mismatch", "request_tenant", tenantID, "batch_tenant", item.TenantID)
 		apiErr := openai.NewAPIError(
 			http.StatusNotFound,
 			"",
-			fmt.Sprintf("Batch with ID %s not found", item.ID),
+			fmt.Sprintf("Batch with ID %s not found", batchID),
 			nil,
 		)
 		return nil, &apiErr
@@ -311,37 +318,51 @@ func (c *BatchApiHandler) getBatchItemFromDB(w http.ResponseWriter, r *http.Requ
 }
 
 func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) {
-	_ = logging.FromRequest(r)
+	logger := logging.FromRequest(r)
 
-	item, apiErr := c.getBatchItemFromDB(w, r, "retrieve")
+	item, apiErr := c.getBatchItemFromDB(r, "retrieve")
 	if apiErr != nil {
 		common.WriteAPIError(w, r, *apiErr)
 		return
 	}
 
-	common.WriteJSONResponse(w, r, http.StatusOK, &item.Item)
+	batch, err := converter.DBItemToBatch(item)
+	if err != nil {
+		logger.Error(err, "failed to convert database item to batch")
+		common.WriteInternalServerError(w, r)
+		return
+	}
+
+	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
 
 func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
-	item, apiErr := c.getBatchItemFromDB(w, r, "cancel")
+	item, apiErr := c.getBatchItemFromDB(r, "cancel")
 	if apiErr != nil {
 		common.WriteAPIError(w, r, *apiErr)
 		return
 	}
 
+	batch, err := converter.DBItemToBatch(item)
+	if err != nil {
+		logger.Error(err, "failed to convert database item to batch")
+		common.WriteInternalServerError(w, r)
+		return
+	}
+
 	// Check if batch can be cancelled
-	if item.Item.Status.IsFinal() {
-		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", item.Item.Status), nil)
+	if batch.Status.IsFinal() {
+		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
 		common.WriteAPIError(w, r, apiErr)
 		return
 	}
 
 	// Try to remove from the priority queue first
 	jobPriority := &api.BatchJobPriority{
-		ID: item.ID,
+		ID: batch.ID,
 	}
 	removed, err := c.queueClient.PQDelete(ctx, jobPriority)
 	if err != nil {
@@ -352,18 +373,18 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 
 	if removed > 0 {
 		// Job was in queue (not yet being processed) - directly cancel it
-		item.Item.Status = openai.BatchStatusCancelled
+		batch.Status = openai.BatchStatusCancelled
 		cancelledAt := time.Now().UTC().Unix()
-		item.Item.CancelledAt = &cancelledAt
+		batch.CancelledAt = &cancelledAt
 	} else {
 		// Job is being processed - mark as cancelling and send cancel event
-		item.Item.Status = openai.BatchStatusCancelling
+		batch.Status = openai.BatchStatusCancelling
 		cancellingAt := time.Now().UTC().Unix()
-		item.Item.CancellingAt = &cancellingAt
+		batch.CancellingAt = &cancellingAt
 
 		event := []api.BatchEvent{
 			{
-				ID:   item.ID,
+				ID:   batch.ID,
 				Type: api.BatchEventCancel,
 				TTL:  c.config.GetBatchTTLSeconds(),
 			},
@@ -376,11 +397,20 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := c.dbClient.DBUpdate(ctx, item); err != nil {
+	tenantID := common.GetTenantIDFromContext(ctx)
+
+	dbItem, err := converter.BatchToDBItem(batch, tenantID, item.Tags)
+	if err != nil {
+		logger.Error(err, "failed to convert batch to database item")
+		common.WriteInternalServerError(w, r)
+		return
+	}
+
+	if err := c.dbClient.DBUpdate(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to update batch in database")
 		common.WriteInternalServerError(w, r)
 		return
 	}
 
-	common.WriteJSONResponse(w, r, http.StatusOK, &item.Item)
+	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
