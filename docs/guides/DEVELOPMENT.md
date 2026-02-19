@@ -6,14 +6,12 @@ This guide walks through deploying both the **batch-gateway-apiserver** and **ba
 
 - [Make]
 - [Golang]
-- [Python]
 - [Docker] (or [Podman])
 - [Kind]
 - [Helm]
 
 [Make]:https://www.gnu.org/software/make/
 [Golang]:https://go.dev/
-[Python]:https://www.python.org/
 [Docker]:https://www.docker.com/
 [Podman]:https://podman.io/
 [Kind]:https://github.com/kubernetes-sigs/kind
@@ -36,10 +34,15 @@ $ kubectl get nodes
 
 ## 2. Build Container Images
 
-From the repository root, build both images (uses Docker or Podman automatically via the Makefile):
+From the repository root, build both images. The Makefile auto-detects Docker or Podman.
 
 ```bash
-make image-build
+$ make image-build
+```
+To force Podman:
+
+```bash
+$ CONTAINER_TOOL=podman make image-build
 ```
 
 This produces:
@@ -55,7 +58,9 @@ DEV_VERSION=dev make image-build
 
 ## 3. Load Images to Kind
 
-Kind runs in Docker/Podman, so load the local images into the cluster:
+Kind runs in Docker/Podman, so load the local images into the cluster.
+
+### Docker
 
 ```bash
 # load apiserver image
@@ -65,7 +70,21 @@ $ kind load docker-image ghcr.io/llm-d/batch-gateway-apiserver:0.0.1 --name batc
 $ kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway-dev
 ```
 
-If you built with a custom tag (e.g. `dev`), use that tag in both `make image-build` and the `kind load docker-image` commands.
+### Podman
+
+If `kind load docker-image` does not work with your Podman setup (e.g. no Docker API socket), save images to a tar and load the archive:
+
+```bash
+# save images to tar
+$ podman save -o /tmp/apiserver.tar ghcr.io/llm-d/batch-gateway-apiserver:0.0.1
+$ podman save -o /tmp/processor.tar ghcr.io/llm-d/batch-gateway-processor:0.0.1
+
+# load into Kind
+$ kind load image-archive /tmp/apiserver.tar --name batch-gateway-dev
+$ kind load image-archive /tmp/processor.tar --name batch-gateway-dev
+```
+
+If you built with a custom tag (e.g. `dev`), use that tag in both `make image-build` and the load commands above.
 
 ## 4. Deploy with Helm
 
@@ -86,7 +105,6 @@ $ helm install batch-gateway ./charts/batch-gateway \
 ```bash
 # Pods
 $ kubectl get pods -l app.kubernetes.io/name=batch-gateway-apiserver
-
 $ kubectl get pods -l app.kubernetes.io/name=batch-gateway-processor
 
 # Services
@@ -107,15 +125,21 @@ $ curl -s http://localhost:8000/health
 
 After code changes:
 
+**Docker:**
+
 ```bash
 # rebuild images
 $ make image-build
 
-# load apiserver image
+# load images with docker
 $ kind load docker-image ghcr.io/llm-d/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway-dev
 
-# load processor image
-$ kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway
+# load images with podman
+$ podman save -o /tmp/apiserver.tar ghcr.io/llm-d/batch-gateway-apiserver:0.0.1
+$ podman save -o /tmp/processor.tar ghcr.io/llm-d/batch-gateway-processor:0.0.1
+$ kind load image-archive /tmp/apiserver.tar --name batch-gateway-dev
+$ kind load image-archive /tmp/processor.tar --name batch-gateway-dev
 
 # reload deployment
 $ kubectl rollout restart deployment -l app.kubernetes.io/instance=batch-gateway
