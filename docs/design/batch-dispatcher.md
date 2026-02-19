@@ -1,5 +1,4 @@
-Batch Dispatcher
-================
+# Batch Dispatcher
 
 Related:
 
@@ -34,7 +33,7 @@ The current IGW provides flow control, but a naive approach to batch processing 
 
 ## Proposal
 
-![](imgs/batch-dispatcher.png)
+![](diagrams/batch-dispatcher.png)
 
 The Batch Dispatcher sits between the message queue and the L7 Proxy. It may be thought of as an extension to the Batch Processing Agent in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)
 
@@ -43,7 +42,7 @@ Because there is one InferencePool and one EPP per (base) model (see [InferenceP
 #### **Key Components**
 
 * **Batch Processing Agent:** The component described in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)  
-* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway (it could be realized as a a standalone container, possibly an EPP pod sidecar; or it can be thought of as part of the **Batch Processing Agent**)  
+* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway (it could be realized as a standalone container, possibly an EPP pod sidecar; or it can be thought of as part of the **Batch Processing Agent**)  
 * **Message Queue:** A persistent store (e.g., Redis, Pub/Sub, Kafka) that holds asynchronous requests. The queue is a priority queue, sorted according to some policy (e.g. an SLO, tenancy, etc: out of scope here)  
 * **Metrics Store:** Provides real-time data on **Inference Pool usage**.  
 * **Inference Gateway (IGW):** L7 Proxy \+ Endpoint Picker (EPP) \+ any other accessory service, it handles the final routing to model servers.
@@ -108,7 +107,7 @@ The **Batch Dispatcher** monitors the metrics and computes a **Dispatch Budget**
 * **Queue Consumer Failures:** If the Batch Dispatcher pod crashes, the messages remain in the persistent Message Queue (Redis/PubSub), ensuring no data loss.  
 * **IGW Backpressure:** If the IGW returns an HTTP error indicating overload (e.g. HTTP 429\) despite the computed budget, then the **saturation is assumed to be close to 1**, and therefore a **dispatch budget close to 0\.** The Batch Dispatcher will not retry until a subsequent update from the metrics store will bring it back within the acceptable limits.   
   * This might happen if a sudden spike of traffic enters the gateway and the metrics did not update on-time.  
-* **Unreadable Metrics:** In case of unreadable metrics, the Batch Processor cannot take informed decisions, and therefore will assume a **dispatch budget of 0\.** 
+* **Unreadable Metrics:** In case of unreadable metrics, the Batch Dispatcher cannot take informed decisions, and therefore will assume a **dispatch budget of 0\.** 
 
 ### Deployment Model
 
@@ -119,7 +118,7 @@ We propose two alternative strategies for deployment
 
 For the first iteration, we propose to implement **1**.
 
-# Open Questions & Thinking Points
+## Open Questions & Thinking Points
 
 * **Queue Granularity:** Should there be one queue per **InferencePool** or per model to avoid bottlenecks?
 
