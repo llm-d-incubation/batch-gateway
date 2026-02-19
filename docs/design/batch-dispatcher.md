@@ -57,24 +57,24 @@ In addition to forwarding the requests, we also propose a simple aggregated metr
 
 Using the following definitions:
 
-* *curSYS*: a measure of currently used system resources   
+* $\mathrm{cur}_\mathrm{SYS}$: a measure of currently used system resources   
   * at the time of writing: number of requests  
   * in the future: number of bytes, number of tokens etc
 
-* *maxSYS:* a measure of available resources   
+* *$\mathrm{max}_\mathrm{SYS}$:* a measure of available resources   
   * at the time of writing: total number of possible requests  
   * in the future: total number of bytes, total number of tokens etc
 
-* *curEPP*: a measure of currently used EPP resources   
+* *$\mathrm{cur}_\mathrm{EPP}$*: a measure of currently used EPP resources   
   * e.g.: number of requests in the EPP internal queues  
-  * possibly: number of bytes, number of tokens etc; as long as consistent with *curSYS*  and *maxSYS*
+  * possibly: number of bytes, number of tokens etc; as long as consistent with *$\mathrm{cur}_\mathrm{SYS}$*  and *$\mathrm{max}_\mathrm{SYS}$*
 
-  *Note:* given the variability in size of the requests, *maxSYS* is currently meant to be a statically-configured parameter. However this could be turned into readable metrics as well
+  *Note:* given the variability in size of the requests, *$\mathrm{max}_\mathrm{SYS}$* is currently meant to be a statically-configured parameter. However this could be turned into readable metrics as well
 
 We define the following formulas:
 
 * **Saturation**: a measure of "fullness" of the system, slightly reformulated from the metric described in [\[PUBLIC\] Improved Flow Control Request Management](https://docs.google.com/document/d/1JxzJc8gNv2wKK5-a8ohb0btn78ymVKw9XMIb4-S-ncA/edit?tab=t.0)  
-  FSYS \=curSYSmaxSYS   
+  $\mathrm{F}_\mathrm{SYS} \frac{\mathrm{cur}_\mathrm{SYS}}{\mathrm{max}_\mathrm{SYS}}$
 * **Virtual Load** of the EPP: a measure of **fullness** as F, but relative to the internal queues of the EPP  
   FEPP \=curEPPmaxSYS   
 * A configurable **Reserved Baseline** (e.g., *B \= 0.05*) reserved for unexpected bursts in high-priority realtime traffic.
