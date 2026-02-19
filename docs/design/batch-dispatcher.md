@@ -1,4 +1,5 @@
-# Batch Dispatcher
+Batch Dispatcher
+================
 
 Related:
 
@@ -33,7 +34,7 @@ The current IGW provides flow control, but a naive approach to batch processing 
 
 ## Proposal
 
-![](diagrams/batch-dispatcher.png)
+![](imgs/batch-dispatcher.png)
 
 The Batch Dispatcher sits between the message queue and the L7 Proxy. It may be thought of as an extension to the Batch Processing Agent in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)
 
@@ -42,7 +43,7 @@ Because there is one InferencePool and one EPP per (base) model (see [InferenceP
 #### **Key Components**
 
 * **Batch Processing Agent:** The component described in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)  
-* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway (it could be realized as a standalone container, possibly an EPP pod sidecar; or it can be thought of as part of the **Batch Processing Agent**)  
+* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway (it could be realized as a a standalone container, possibly an EPP pod sidecar; or it can be thought of as part of the **Batch Processing Agent**)  
 * **Message Queue:** A persistent store (e.g., Redis, Pub/Sub, Kafka) that holds asynchronous requests. The queue is a priority queue, sorted according to some policy (e.g. an SLO, tenancy, etc: out of scope here)  
 * **Metrics Store:** Provides real-time data on **Inference Pool usage**.  
 * **Inference Gateway (IGW):** L7 Proxy \+ Endpoint Picker (EPP) \+ any other accessory service, it handles the final routing to model servers.
@@ -74,40 +75,43 @@ Using the following definitions:
 We define the following formulas:
 
 * **Saturation**: a measure of "fullness" of the system, slightly reformulated from the metric described in [\[PUBLIC\] Improved Flow Control Request Management](https://docs.google.com/document/d/1JxzJc8gNv2wKK5-a8ohb0btn78ymVKw9XMIb4-S-ncA/edit?tab=t.0)  
-  $\mathrm{F}_\mathrm{SYS} \frac{\mathrm{cur}_\mathrm{SYS}}{\mathrm{max}_\mathrm{SYS}}$
+  $\mathrm{F}_\mathrm{SYS} = \frac{\mathrm{cur}_\mathrm{SYS}}{\mathrm{max}_\mathrm{SYS}}$
 * **Virtual Load** of the EPP: a measure of **fullness** as F, but relative to the internal queues of the EPP  
-  FEPP \=curEPPmaxSYS   
+  $\mathrm{F}_\mathrm{EPP} = \frac{\mathrm{cur}_\mathrm{EPP}}{\mathrm{max}_\mathrm{SYS}}$
 * A configurable **Reserved Baseline** (e.g., *B \= 0.05*) reserved for unexpected bursts in high-priority realtime traffic.
 
-Then, **Dispatch Budget** is a combined view of pool **Saturation,** **EPP Virtual Load**, and the **Reserved Baseline**. Because the denominator for FSYS and FEPP is always *maxSYS,* then we can write: 
+Then, **Dispatch Budget** is a combined view of pool **Saturation,** **EPP Virtual Load**, and the **Reserved Baseline**. Because the denominator for   $\mathrm{F}_\mathrm{SYS}$ and $\mathrm{F}_\mathrm{EPP}$ is always *$\mathrm{max}_\mathrm{SYS}$,* then we can write: 
 
-D \= 1 \-(FSYS+FEPP \+B)
+$D = 1 -(\mathrm{F}_\mathrm{SYS}$+$\mathrm{F}_\mathrm{EPP}+B)$
+
+
+  $\mathrm{F}_\mathrm{SYS} = \frac{\mathrm{cur}_\mathrm{SYS}}{\mathrm{max}_\mathrm{SYS}}$
+
 
 For a given Dispatch Budget, the expected remaining capacity of the system is just 
 
-maxSYS D
-
+$\mathrm{max}_\mathrm{SYS}\times D$
 #### Example
 
-FSYS= 0.5,       FEPP \= 0.1,      B=0.05
+$\mathrm{F}_\mathrm{SYS} = 0.5,   \quad    \mathrm{F}_\mathrm{EPP} = 0.1, \quad     B=0.05$
 
 - Dispatch Budget \= *1 \- (0.5 \+ 0.1 \+ 0.05) \= 0.35*   
-- maxSYS *\= 50 requests*   
+- $\mathrm{F}_\mathrm{SYS} = 50$ requests
 - Dispatchable Requests \= *floor(50 \* 0.35) \= 17* requests in parallel
 
 ### Request Lifecycle and Flow Control
 
 The **Batch Dispatcher** monitors the metrics and computes a **Dispatch Budget**. 
 
-* When the Dispatch Budget *D* is **within a given range** \[0,u\], where **1** indicates **100%** of maxSYS, and u**\<1,** then the Batch Dispatcher may forward (maxSYS D) requests at once.  
-* When *D\>*u, then the Batch Dispatcher should stop forwarding requests until again *D*u 
+* When the Dispatch Budget *D* is **within a given range** \[0,u\], where **1** indicates **100%** of $\mathrm{F}_\mathrm{SYS}$, and u**\<1,** then the Batch Dispatcher may forward ($\mathrm{F}_\mathrm{SYS} \times D$) requests at once.  
+* When $D>u$, then the Batch Dispatcher should stop forwarding requests until again $D<=u$
 
 #### Failure Modes
 
 * **Queue Consumer Failures:** If the Batch Dispatcher pod crashes, the messages remain in the persistent Message Queue (Redis/PubSub), ensuring no data loss.  
 * **IGW Backpressure:** If the IGW returns an HTTP error indicating overload (e.g. HTTP 429\) despite the computed budget, then the **saturation is assumed to be close to 1**, and therefore a **dispatch budget close to 0\.** The Batch Dispatcher will not retry until a subsequent update from the metrics store will bring it back within the acceptable limits.   
   * This might happen if a sudden spike of traffic enters the gateway and the metrics did not update on-time.  
-* **Unreadable Metrics:** In case of unreadable metrics, the Batch Dispatcher cannot take informed decisions, and therefore will assume a **dispatch budget of 0\.** 
+* **Unreadable Metrics:** In case of unreadable metrics, the Batch Processor cannot take informed decisions, and therefore will assume a **dispatch budget of 0\.** 
 
 ### Deployment Model
 
@@ -118,7 +122,7 @@ We propose two alternative strategies for deployment
 
 For the first iteration, we propose to implement **1**.
 
-## Open Questions & Thinking Points
+# Open Questions & Thinking Points
 
 * **Queue Granularity:** Should there be one queue per **InferencePool** or per model to avoid bottlenecks?
 
