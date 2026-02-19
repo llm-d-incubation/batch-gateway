@@ -59,10 +59,10 @@ Kind runs in Docker/Podman, so load the local images into the cluster:
 
 ```bash
 # load apiserver image
-$kind load docker-image ghcr.io/llm-d/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
 
 # load processor image
-$kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway-dev
 ```
 
 If you built with a custom tag (e.g. `dev`), use that tag in both `make image-build` and the `kind load docker-image` commands.
@@ -101,7 +101,6 @@ $ kubectl port-forward svc/batch-gateway-batch-gateway-apiserver 8000:8000
 
 # In another terminal:
 $ curl -s http://localhost:8000/health
-$ curl -s http://localhost:8000/ready
 ```
 
 ## 6. Rebuild and Reloading images
@@ -126,7 +125,7 @@ $ kubectl rollout restart deployment -l app.kubernetes.io/instance=batch-gateway
 
 ```bash
 # removes all resouces 
-$ helm uninstall batch-gateway-dev
+$ helm uninstall batch-gateway
 
 # deletes the Kind cluster
 $ kind delete cluster --name batch-gateway-dev
