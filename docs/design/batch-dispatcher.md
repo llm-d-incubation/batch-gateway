@@ -1,8 +1,6 @@
-Batch Dispatcher
-================
+# Batch Dispatcher
 
 Related:
-
 - [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)  
 - [\[PUBLIC\] EPP Flow Controller for Priority, Fairness, and Queuing](https://docs.google.com/document/d/1VZL7opFWuwgWquvgiOzLlXAJ633qZ9U-A0ZixGjBgaI/edit?tab=t.0#heading=h.hfyow92z2d0t)  
 - [\[PUBLIC\] Improved Flow Control Request Management](https://docs.google.com/document/d/1JxzJc8gNv2wKK5-a8ohb0btn78ymVKw9XMIb4-S-ncA/edit?tab=t.0#heading=h.rutawybt03nl)  
@@ -85,9 +83,6 @@ Then, **Dispatch Budget** is a combined view of pool **Saturation,** **EPP Virtu
 $D = 1 -(\mathrm{F}_\mathrm{SYS}$+$\mathrm{F}_\mathrm{EPP}+B)$
 
 
-  $\mathrm{F}_\mathrm{SYS} = \frac{\mathrm{cur}_\mathrm{SYS}}{\mathrm{max}_\mathrm{SYS}}$
-
-
 For a given Dispatch Budget, the expected remaining capacity of the system is just 
 
 $\mathrm{max}_\mathrm{SYS}\times D$
@@ -96,14 +91,14 @@ $\mathrm{max}_\mathrm{SYS}\times D$
 $\mathrm{F}_\mathrm{SYS} = 0.5,   \quad    \mathrm{F}_\mathrm{EPP} = 0.1, \quad     B=0.05$
 
 - Dispatch Budget \= *1 \- (0.5 \+ 0.1 \+ 0.05) \= 0.35*   
-- $\mathrm{F}_\mathrm{SYS} = 50$ requests
+- $\mathrm{max}_\mathrm{SYS} = 50$ requests
 - Dispatchable Requests \= *floor(50 \* 0.35) \= 17* requests in parallel
 
 ### Request Lifecycle and Flow Control
 
 The **Batch Dispatcher** monitors the metrics and computes a **Dispatch Budget**. 
 
-* When the Dispatch Budget *D* is **within a given range** \[0,u\], where **1** indicates **100%** of $\mathrm{F}_\mathrm{SYS}$, and u**\<1,** then the Batch Dispatcher may forward ($\mathrm{F}_\mathrm{SYS} \times D$) requests at once.  
+* When the Dispatch Budget *D* is **within a given range** \[0,u\], where **1** indicates **100%** of system capacity, and u**\<1,** then the Batch Dispatcher may forward ($\mathrm{max}_\mathrm{SYS} \times D$) requests at once.  
 * When $D>u$, then the Batch Dispatcher should stop forwarding requests until again $D<=u$
 
 #### Failure Modes
@@ -122,7 +117,7 @@ We propose two alternative strategies for deployment
 
 For the first iteration, we propose to implement **1**.
 
-# Open Questions & Thinking Points
+## Open Questions & Thinking Points
 
 * **Queue Granularity:** Should there be one queue per **InferencePool** or per model to avoid bottlenecks?
 
