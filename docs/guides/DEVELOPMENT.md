@@ -148,7 +148,7 @@ $ kubectl rollout restart deployment -l app.kubernetes.io/instance=batch-gateway
 ## 7. Cleanup
 
 ```bash
-# removes all resources 
+# removes all resources
 $ helm uninstall batch-gateway
 
 # deletes the Kind cluster
