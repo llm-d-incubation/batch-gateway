@@ -201,7 +201,7 @@ func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (
 	logger := klog.FromContext(ctx)
 
 	// get only one job data
-	jobs, _, _, err := p.clients.database.DBGet(ctx, &db.Query{IDs: []string{task.ID}}, true, 0, 1)
+	jobs, _, _, err := p.clients.database.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{task.ID}}}, true, 0, 1)
 
 	// job db data does not exist or failed to fetch the data
 	if err != nil || len(jobs) == 0 {

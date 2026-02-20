@@ -176,8 +176,14 @@ func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// TODO: change to actual implementation
-	batchDBClient := mockdb.NewMockDBClient[api.BatchItem](func(b *api.BatchItem) string { return b.ID })
-	fileDBClient := mockdb.NewMockDBClient[api.FileItem](func(f *api.FileItem) string { return f.ID })
+	batchDBClient := mockdb.NewMockDBClient[api.BatchItem, api.BatchQuery](
+		func(b *api.BatchItem) string { return b.ID },
+		func(q *api.BatchQuery) *api.BaseQuery { return &q.BaseQuery },
+	)
+	fileDBClient := mockdb.NewMockDBClient[api.FileItem, api.FileQuery](
+		func(f *api.FileItem) string { return f.ID },
+		func(q *api.FileQuery) *api.BaseQuery { return &q.BaseQuery },
+	)
 	eventClient := mockdb.NewMockBatchEventChannelClient()
 	queueClient := mockdb.NewMockBatchPriorityQueueClient()
 	statusClient := mockdb.NewMockBatchStatusClient()

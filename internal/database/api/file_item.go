@@ -24,5 +24,11 @@ type FileItem struct {
 	BaseContents
 }
 
+// FileQuery is the queryItem used to query the DB
+type FileQuery struct {
+	BaseQuery
+	Purpose string
+}
+
 // FileDBClient is the typed database client for file objects.
-type FileDBClient = DBClient[FileItem]
+type FileDBClient = DBClient[FileItem, FileQuery]

@@ -27,21 +27,24 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
 )
 
-// MockDBClient is a generic in-memory implementation of api.DBClient[T] for testing.
-type MockDBClient[T any] struct {
-	items    sync.Map
-	idGetter func(*T) string
+// MockDBClient is a generic in-memory implementation of api.DBClient[T, Q] for testing.
+type MockDBClient[T any, Q any] struct {
+	items           sync.Map
+	idGetter        func(*T) string
+	baseQueryGetter func(*Q) *api.BaseQuery
 }
 
 // NewMockDBClient creates a new mock DB client.
-// idGetter is a function that extracts the ID from the item pointer.
-func NewMockDBClient[T any](idGetter func(*T) string) *MockDBClient[T] {
-	return &MockDBClient[T]{
-		idGetter: idGetter,
+// idGetter extracts the ID from the item pointer.
+// baseQueryGetter extracts the BaseQuery from the query pointer.
+func NewMockDBClient[T any, Q any](idGetter func(*T) string, baseQueryGetter func(*Q) *api.BaseQuery) *MockDBClient[T, Q] {
+	return &MockDBClient[T, Q]{
+		idGetter:        idGetter,
+		baseQueryGetter: baseQueryGetter,
 	}
 }
 
-func (m *MockDBClient[T]) DBStore(ctx context.Context, item *T) error {
+func (m *MockDBClient[T, Q]) DBStore(ctx context.Context, item *T) (err error) {
 	if item == nil {
 		return fmt.Errorf("item is nil")
 	}
@@ -53,18 +56,20 @@ func (m *MockDBClient[T]) DBStore(ctx context.Context, item *T) error {
 	return nil
 }
 
-func (m *MockDBClient[T]) DBGet(
-	ctx context.Context, query *api.Query,
+func (m *MockDBClient[T, Q]) DBGet(
+	ctx context.Context, query *Q,
 	includeStatic bool, start, limit int) (
-	[]*T, int, bool, error) {
+	items []*T, cursor int, expectMore bool, err error) {
+
+	bq := m.baseQueryGetter(query)
 	var allMatches []*T
 
 	// If IDs are specified, get by IDs
-	if len(query.IDs) > 0 {
-		for _, id := range query.IDs {
+	if len(bq.IDs) > 0 {
+		for _, id := range bq.IDs {
 			if value, ok := m.items.Load(id); ok {
 				if item, ok := value.(*T); ok {
-					if m.matchesFilters(*item, query) {
+					if m.matchesFilters(*item, bq) {
 						allMatches = append(allMatches, item)
 					}
 				}
@@ -74,7 +79,7 @@ func (m *MockDBClient[T]) DBGet(
 		// Collect all items, applying filters
 		m.items.Range(func(key, value any) bool {
 			if item, ok := value.(*T); ok {
-				if m.matchesFilters(*item, query) {
+				if m.matchesFilters(*item, bq) {
 					allMatches = append(allMatches, item)
 				}
 			}
@@ -83,29 +88,25 @@ func (m *MockDBClient[T]) DBGet(
 	}
 
 	// Handle pagination
-	totalMatches := len(allMatches)
-
-	if start >= totalMatches {
-		return []*T{}, start, false, nil
+	if start >= len(allMatches) {
+		return
 	}
 
 	allMatches = allMatches[start:]
 
-	var results []*T
-	expectedMore := false
 	if limit > 0 && len(allMatches) > limit {
-		results = allMatches[:limit]
-		expectedMore = true
+		items = allMatches[:limit]
+		expectMore = true
 	} else {
-		results = allMatches
+		items = allMatches
 	}
 
-	nextCursor := start + len(results)
+	cursor = start + len(items)
 
-	return results, nextCursor, expectedMore, nil
+	return
 }
 
-func (m *MockDBClient[T]) DBUpdate(ctx context.Context, item *T) error {
+func (m *MockDBClient[T, Q]) DBUpdate(ctx context.Context, item *T) (err error) {
 	if item == nil {
 		return fmt.Errorf("item is nil")
 	}
@@ -120,27 +121,26 @@ func (m *MockDBClient[T]) DBUpdate(ctx context.Context, item *T) error {
 	return nil
 }
 
-func (m *MockDBClient[T]) DBDelete(ctx context.Context, ids []string) ([]string, error) {
-	var deleted []string
+func (m *MockDBClient[T, Q]) DBDelete(ctx context.Context, ids []string) (deletedIDs []string, err error) {
 	for _, id := range ids {
 		if _, ok := m.items.LoadAndDelete(id); ok {
-			deleted = append(deleted, id)
+			deletedIDs = append(deletedIDs, id)
 		}
 	}
-	return deleted, nil
+	return
 }
 
-func (m *MockDBClient[T]) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
+func (m *MockDBClient[T, Q]) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parentCtx, timeLimit)
 }
 
-func (m *MockDBClient[T]) Close() error {
+func (m *MockDBClient[T, Q]) Close() error {
 	m.items.Clear()
 	return nil
 }
 
 // matchesFilters checks if an item matches the query filters.
-func (m *MockDBClient[T]) matchesFilters(item T, query *api.Query) bool {
+func (m *MockDBClient[T, Q]) matchesFilters(item T, query *api.BaseQuery) bool {
 	val := reflect.ValueOf(item)
 
 	// Filter by tenant if specified

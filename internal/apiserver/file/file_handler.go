@@ -106,9 +106,11 @@ func (c *FileApiHandler) getFileItemFromDB(r *http.Request, operation string) (*
 	tenantID := common.GetTenantIDFromContext(ctx)
 
 	// Retrieve file metadata from database
-	query := &dbapi.Query{
-		IDs:      []string{fileID},
-		TenantID: tenantID,
+	query := &dbapi.FileQuery{
+		BaseQuery: dbapi.BaseQuery{
+			IDs:      []string{fileID},
+			TenantID: tenantID,
+		},
 	}
 	items, _, _, err := c.dbClient.DBGet(ctx, query, true, 0, 1)
 	if err != nil {
@@ -420,9 +422,11 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	// Get tenant ID from context
 	tenantID := common.GetTenantIDFromContext(ctx)
 
-	query := &dbapi.Query{
-		TenantID:     tenantID,
-		TagSelectors: tagSelectors,
+	query := &dbapi.FileQuery{
+		BaseQuery: dbapi.BaseQuery{
+			TenantID:     tenantID,
+			TagSelectors: tagSelectors,
+		},
 	}
 	items, _, expectMore, err := c.dbClient.DBGet(ctx, query, true, start, limit)
 	if err != nil {

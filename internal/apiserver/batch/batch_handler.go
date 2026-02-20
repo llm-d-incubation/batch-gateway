@@ -224,8 +224,8 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 
 	// Request items
 	items, _, expectMore, err := c.dbClient.DBGet(ctx,
-		&api.Query{
-			TenantID: tenantID,
+		&api.BatchQuery{
+			BaseQuery: api.BaseQuery{TenantID: tenantID},
 		},
 		true, after, limit)
 	if err != nil {
@@ -279,9 +279,11 @@ func (c *BatchApiHandler) getBatchItemFromDB(r *http.Request, operation string) 
 	tenantID := common.GetTenantIDFromContext(ctx)
 
 	items, _, _, err := c.dbClient.DBGet(ctx,
-		&api.Query{
-			IDs:      []string{batchID},
-			TenantID: tenantID,
+		&api.BatchQuery{
+			BaseQuery: api.BaseQuery{
+				IDs:      []string{batchID},
+				TenantID: tenantID,
+			},
 		},
 		true, 0, 1)
 	if err != nil {

@@ -29,13 +29,14 @@ import (
 // DBClient is a generic interface for managing database items in persistent storage.
 //
 // Each domain type (e.g., BatchItem, FileItem) gets its own typed DBClient implementation.
-// The implementation handles serialization of item contents internally.
+// Callers are responsible for serializing item contents (Spec, Status) before storing,
+// and deserializing them after retrieval.
 //
 // Example usage:
 //
-//	type BatchDBClient = api.DBClient[BatchItem]
-//	type FileDBClient = api.DBClient[FileItem]
-type DBClient[T any] interface {
+//	type BatchDBClient = api.DBClient[BatchItem, BatchQuery]
+//	type FileDBClient = api.DBClient[FileItem, FileQuery]
+type DBClient[T any, Q any] interface {
 	store.BatchClientAdmin
 
 	// DBStore persists an item.
@@ -56,7 +57,7 @@ type DBClient[T any] interface {
 	// items is a slice of returned items.
 	// cursor is an opaque integer that should be given in the next paginated call via the 'start' parameter.
 	// expectMore indicates if there are more items to get.
-	DBGet(ctx context.Context, query *Query, includeStatic bool, start, limit int) (
+	DBGet(ctx context.Context, query *Q, includeStatic bool, start, limit int) (
 		items []*T, cursor int, expectMore bool, err error)
 
 	// DBUpdate updates the dynamic parts of an item.
@@ -71,15 +72,6 @@ type DBClient[T any] interface {
 
 // Tags are key-value pairs for filtering items.
 type Tags map[string]string
-
-// Query specifies parameters for retrieving items from the database.
-type Query struct {
-	IDs             []string
-	TenantID        string
-	TagSelectors    Tags
-	TagsLogicalCond LogicalCond
-	Expired         bool
-}
 
 type LogicalCond int
 

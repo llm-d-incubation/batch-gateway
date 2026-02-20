@@ -160,7 +160,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 }
 
 func (c *BatchDSClientRedis) DBGet(
-	ctx context.Context, query *db_api.Query,
+	ctx context.Context, query *db_api.BatchQuery,
 	includeStatic bool, start, limit int) (
 	items []*db_api.BatchItem, cursor int, expectMore bool, err error,
 ) {
@@ -218,14 +218,11 @@ func (c *BatchDSClientRedis) DBGet(
 			if err != nil {
 				return nil, 0, false, err
 			}
-			if item == nil {
-				continue
-			}
+
 			// Filter by tenant if specified.
-			if query.TenantID != "" && item.TenantID != query.TenantID {
-				continue
+			if item != nil && len(query.TenantID) > 0 && item.TenantID != query.TenantID {
+				items = append(items, item)
 			}
-			items = append(items, item)
 		}
 		cursor = len(items)
 		expectMore = false

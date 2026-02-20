@@ -22,5 +22,10 @@ type BatchItem struct {
 	BaseContents
 }
 
+// BatchQuery specifies parameters for retrieving batches from the database.
+type BatchQuery struct {
+	BaseQuery
+}
+
 // BatchDBClient is the typed database client for batch objects.
-type BatchDBClient = DBClient[BatchItem]
+type BatchDBClient = DBClient[BatchItem, BatchQuery]

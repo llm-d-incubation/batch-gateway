@@ -36,7 +36,10 @@ import (
 
 func setupBatchApiHandlerForTest() *BatchApiHandler {
 	config := &common.ServerConfig{}
-	dbClient := mockapi.NewMockDBClient[dbapi.BatchItem](func(b *dbapi.BatchItem) string { return b.ID })
+	dbClient := mockapi.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
+		func(b *dbapi.BatchItem) string { return b.ID },
+		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	)
 	eventClient := mockapi.NewMockBatchEventChannelClient()
 	queueClient := mockapi.NewMockBatchPriorityQueueClient()
 	statusClient := mockapi.NewMockBatchStatusClient()

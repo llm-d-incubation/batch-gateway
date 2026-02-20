@@ -49,10 +49,13 @@ func TestFileHandler(t *testing.T) {
 }
 
 // setupTestHandler creates a test handler with mocked dependencies
-func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[dbapi.FileItem], *fsmock.MockBatchFilesClient, context.Context) {
+func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[dbapi.FileItem, dbapi.FileQuery], *fsmock.MockBatchFilesClient, context.Context) {
 	t.Helper()
 
-	dbClient := dbmock.NewMockDBClient[dbapi.FileItem](func(f *dbapi.FileItem) string { return f.ID })
+	dbClient := dbmock.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
+		func(f *dbapi.FileItem) string { return f.ID },
+		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	)
 	filesClient := fsmock.NewMockBatchFilesClient()
 
 	config := &common.ServerConfig{
@@ -160,8 +163,8 @@ func doTestCreateFile(t *testing.T) {
 	}
 
 	// Verify file was stored in DB
-	items, _, _, err := dbClient.DBGet(ctx, &dbapi.Query{
-		IDs: []string{fileObj.ID},
+	items, _, _, err := dbClient.DBGet(ctx, &dbapi.FileQuery{
+		BaseQuery: dbapi.BaseQuery{IDs: []string{fileObj.ID}},
 	}, true, 0, 10)
 	if err != nil {
 		t.Fatalf("failed to get file from DB: %v", err)
@@ -618,8 +621,8 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Verify file is actually deleted from database
-		items, _, _, err := dbClient.DBGet(ctx, &dbapi.Query{
-			IDs: []string{createdFile.ID},
+		items, _, _, err := dbClient.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
 		}, true, 0, 1)
 		if err != nil {
 			t.Fatalf("failed to query database: %v", err)

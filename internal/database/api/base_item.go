@@ -18,6 +18,15 @@ package api
 
 import "fmt"
 
+// BaseQuery contains the common query parameters used to retrieve items from the database.
+type BaseQuery struct {
+	IDs             []string
+	TenantID        string
+	TagSelectors    Tags
+	TagsLogicalCond LogicalCond
+	Expired         bool
+}
+
 // BaseIndexes contains common indexed fields for all database items.
 // These fields are used for querying and filtering.
 type BaseIndexes struct {
