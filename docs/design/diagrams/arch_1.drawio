@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e">
     <diagram id="6TwaKu2-0G1QMyJsUSiJ" name="Page-1">
-        <mxGraphModel dx="611" dy="314" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1112" dy="659" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -31,7 +31,7 @@
                     <mxGeometry x="644" y="350" width="190" height="130" as="geometry"/>
                 </mxCell>
                 <mxCell id="30" value="" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;strokeColor=#36393d;strokeWidth=1;fillColor=#E9F3FF;shadow=1;" parent="1" vertex="1">
-                    <mxGeometry x="369" y="100" width="170" height="270" as="geometry"/>
+                    <mxGeometry x="369" y="80" width="170" height="290" as="geometry"/>
                 </mxCell>
                 <mxCell id="iL3eWxlQ-Qjn--A9Vy6M-1" value="" style="whiteSpace=wrap;html=1;shadow=1;fillColor=#FFFBFE;" parent="1" vertex="1">
                     <mxGeometry x="672" y="224.48999999999998" width="150" height="74.55" as="geometry"/>
@@ -263,8 +263,8 @@
                         <mxPoint x="-2" y="38" as="offset"/>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="22" value="Batch jobs data structures" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;" parent="1" vertex="1">
-                    <mxGeometry x="378.87" y="101" width="152.13" height="53" as="geometry"/>
+                <mxCell id="22" value="Batch Jobs and Files Data Structures" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;" parent="1" vertex="1">
+                    <mxGeometry x="378.87" y="93" width="152.13" height="53" as="geometry"/>
                 </mxCell>
                 <mxCell id="31" value="" style="rounded=0;whiteSpace=wrap;html=1;textOpacity=0;labelBorderColor=none;fillColor=none;textShadow=1;" parent="1" vertex="1">
                     <mxGeometry x="379.87" y="305.01" width="150" height="50.41" as="geometry"/>
@@ -327,7 +327,7 @@
                 <mxCell id="48" value="&lt;div&gt;&lt;font&gt;Auto-scaler&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" style="whiteSpace=wrap;html=1;fillColor=#FDFFF0;strokeColor=default;fontSize=20;shadow=1;" parent="1" vertex="1">
                     <mxGeometry x="668" y="757" width="160" height="103" as="geometry"/>
                 </mxCell>
-                <mxCell id="58" value="&lt;div&gt;&lt;span style=&quot;background-color: initial;&quot;&gt;&lt;font&gt;Batch Jobs API Handler&lt;/font&gt;&lt;/span&gt;&lt;/div&gt;" style="text;strokeColor=none;align=center;fillColor=none;html=1;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;" parent="1" vertex="1">
+                <mxCell id="58" value="&lt;div&gt;&lt;span style=&quot;background-color: initial;&quot;&gt;&lt;font&gt;Batch Jobs and Files API Handler&lt;/font&gt;&lt;/span&gt;&lt;/div&gt;" style="text;strokeColor=none;align=center;fillColor=none;html=1;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;" parent="1" vertex="1">
                     <mxGeometry x="74" y="378.43" width="180" height="44.57" as="geometry"/>
                 </mxCell>
                 <mxCell id="64" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E9F3FF;" parent="1" vertex="1">

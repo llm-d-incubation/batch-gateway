@@ -1,7 +1,7 @@
 # Batch inference architecture
 
-Jan 2026
-Revision 4
+Feb 2026
+Revision 5
 
 ## Customer use cases
 
@@ -65,26 +65,26 @@ The API should be compatible with [Batch API - OpenAI API](https://platform.open
 
 ### Components to support batch inference
 
-1. Batch jobs API handler:
-    1. A service that receives and processes API requests for batch inference jobs – submission, retrieval, and control of batch inference jobs.
+1. Batch jobs and files API handler:
+    1. A service that receives and processes API requests for batch inference jobs (submission, retrieval, and control of batch inference jobs), and for files (upload, retrieval).
     1. Routes in K8S GW will route these paths to the batch jobs API service.
     1. It will mainly interact with the data structures layer.
     1. It will expose API metrics.
-1. Batch jobs data structures:
+1. Batch jobs and files data structures:
     1. Priority queue:
         1. Stores references to batch jobs ordered by priority.
         1. The ordering logic of the queue should be pluggable. The ordering can be based on a single numeric value that is calculated on each job via a plugin, or can be based on a given comparator. This logic can take into account various aspects, like SLO, size, etc.
             1. Specifically, calculate the priority value as a function of an SLO value of the job, for example the absolute time bound for starting or for completing the job.
         1. It is also possible to have multiple queues if required, with a logic to pop jobs from these queues based on a pluggable inter-queue criteria.
     1. Metadata storage:
-        1. Stores the metadata of batch jobs.
+        1. Stores the metadata of batch jobs and of files.
         1. Enables to efficiently:
             1. Update the status of a job.
             1. Retrieve the status of one or more jobs, selected with customizable criteria.
             1. Retain the metadata of batch jobs for a duration scale of months for a large number of jobs.
     1. Event channels:
-        1. An event channel is opened dynamically for every jobs which processing is starting, and it closes when the job processing is complete.
-        1. The channel enables any api call to control the job (cancel, pause) by sending an appropriate event to the batch processor instance that is processing the job.
+        1. An event channel is opened dynamically for every job for which processing is starting, and it closes when the job processing is complete.
+        1. The channel enables api calls for controlling the job (cancel, pause), by sending an appropriate event to the batch processor instance that is processing the job.
     1. File storage:
         1. Stores and enables to access a batch job’s input file, that specifies the batch inference requests.
         1. Enables to write a results file for a batch job, that includes the inference results.
@@ -101,6 +101,9 @@ The API should be compatible with [Batch API - OpenAI API](https://platform.open
     1. Each batch processor may process multiple jobs concurrency via concurrent workers.
     1. Handles recovery from crashed processors. Possibly uses a checkpointing mechanism to resume from the last checkpoint.
     1. Generate metrics, also for usage by the auto-scaler.
+1. Batch requests dispatcher:
+    1. Manages queues that store individual batch requests.
+    1. Monitors metrics and dispatches individual batch requests from the queues based on the metrics.
 1. Flow control:
     1. Should provide an inter flow policy to support batch inference. The policy would be generic, and supporting batch / interactive can be a private case of using the policy.
     1. Enables to set different flow identifiers (and priorities) for batch and for interactive workloads, and process these using an appropriate inter flow policy that satisfies the aforementioned requirements. This is assuming a single inference pool is used for both interactive and batch.
@@ -109,6 +112,10 @@ The API should be compatible with [Batch API - OpenAI API](https://platform.open
     1. May be aware of metadata information (hints) sent by the batch processor with inference request. For example hints related to kv-cache optimization.
 1. Auto-scaler:
     1. Consumes metrics related to batch inference, in addition to all other metrics, and scales model servers and possibly batch processors accordingly. For example, first priority can be to scale model servers, and second priority can be to scale batch processors.
+
+### Proposed architecture for batch dispatcher
+
+![](diagrams/dispatch_1.png)
 
 ## References
 
