@@ -32,7 +32,7 @@ The current IGW provides flow control, but a naive approach to batch processing 
 
 ## Proposal
 
-![](imgs/batch-dispatcher.png)
+![](diagrams/batch-dispatcher.png)
 
 The Batch Dispatcher sits between the message queue and the L7 Proxy. It may be thought of as an extension to the Batch Processing Agent in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)
 
