@@ -41,7 +41,7 @@ Because there is one InferencePool and one EPP per (base) model (see [InferenceP
 #### **Key Components**
 
 * **Batch Processing Agent:** The component described in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)
-* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway (it could be realized as a a standalone container, possibly an EPP pod sidecar; or it can be thought of as part of the **Batch Processing Agent**)
+* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway (it could be realized as a standalone container, possibly an EPP pod sidecar; or it can be thought of as part of the **Batch Processing Agent**)
 * **Message Queue:** A persistent store (e.g., Redis, Pub/Sub, Kafka) that holds asynchronous requests. The queue is a priority queue, sorted according to some policy (e.g. an SLO, tenancy, etc: out of scope here)
 * **Metrics Store:** Provides real-time data on **Inference Pool usage**.
 * **Inference Gateway (IGW):** L7 Proxy \+ Endpoint Picker (EPP) \+ any other accessory service, it handles the final routing to model servers.
