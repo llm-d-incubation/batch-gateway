@@ -16,7 +16,7 @@ The current IGW provides flow control, but a naive approach to batch processing 
 
 ## Guiding Principles and Objectives
 
-* **Reactive Flow Control:** Implement a best-effort, partially pro-active mechanism to protect the system from unexpected overloads.
+* **Reactive Flow Control:** Implement a best-effort, partially proactive mechanism to protect the system from unexpected overloads.
 * **Decoupled Architecture:** Keep the IGW as an independent, shared service while the Batch Dispatcher manages the "push" rate of sheddable workloads.
 
 #### **Goals**
