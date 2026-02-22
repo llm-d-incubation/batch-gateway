@@ -265,10 +265,10 @@ echo "Gateway endpoint: $HOST"
 Log in as test user and test the following:
 
 ```bash
-# Login as test user
+# Login openshift as test user
 oc login <server> -u testuser -p testpass
 
-# Get openshift token
+# Get openshift token for test user
 oc_token=$(oc whoami -t)
 
 # Get authenticated token from MaaS
@@ -285,7 +285,7 @@ echo "Token: ${TOKEN:0:20}..."
 
 ### 3.4 Test Batch Gateway Endpoint
 
-Request with token should succeed:
+Batch request with token should succeed:
 ```bash
 curl -sSk \
   -H "Authorization: Bearer $TOKEN" \
@@ -295,7 +295,7 @@ curl -sSk \
 
 ### 3.5 Test Authorization Enforcement
 
-Request without token (should return 401 Unauthorized):
+Batch request without token should fail with 401 Unauthorized:
 ```bash
 curl -i -sSk \
   -H "Content-Type: application/json" \
@@ -306,7 +306,7 @@ curl -i -sSk \
 
 For premium tier users, the rate limit is **15 requests per minute**.
 
-Send 20 requests to trigger rate limiting, should see HTTP 429 (Too Many Requests) after 15 requests:
+Send requests to trigger rate limiting, should see HTTP 429 (Too Many Requests) after 15 requests:
 ```bash
 for i in {1..20}; do
   http_code=$(curl -sSk -o /dev/null -w "%{http_code}" \
