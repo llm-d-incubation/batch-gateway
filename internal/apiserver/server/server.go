@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/batch"
@@ -31,14 +32,16 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/middleware"
+	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/readiness"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"k8s.io/klog/v2"
 )
 
 type Server struct {
-	logger klog.Logger
-	config *common.ServerConfig
+	logger      klog.Logger
+	config      *common.ServerConfig
+	serverReady *atomic.Bool
 }
 
 func New(config *common.ServerConfig) (*Server, error) {
@@ -46,7 +49,13 @@ func New(config *common.ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 	logger := klog.Background().WithName("api_server")
-	return &Server{config: config, logger: logger}, nil
+	serverReady := &atomic.Bool{}
+	serverReady.Store(false)
+	return &Server{
+		config:      config,
+		logger:      logger,
+		serverReady: serverReady,
+	}, nil
 }
 
 // Start the HTTP server.
@@ -58,11 +67,17 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Error(err, "failed to start")
 		return err
 	}
+	defer ln.Close()
 
 	handler := s.buildHandler()
 
 	httpserver := &http.Server{
-		Handler: handler,
+		Handler:           handler,
+		ReadHeaderTimeout: time.Duration(s.config.GetReadHeaderTimeoutSeconds()) * time.Second,
+		ReadTimeout:       time.Duration(s.config.GetReadTimeoutSeconds()) * time.Second,
+		WriteTimeout:      time.Duration(s.config.GetWriteTimeoutSeconds()) * time.Second,
+		IdleTimeout:       time.Duration(s.config.GetIdleTimeoutSeconds()) * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
 	// Enable TLS if cert and key are provided
@@ -74,44 +89,81 @@ func (s *Server) Start(ctx context.Context) error {
 		httpserver.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
-			CipherSuites: []uint16{
-				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-			},
+			// CipherSuites omitted - use Go's secure defaults
+			// This allows TLS 1.3 to use its own cipher suites
 		}
-		s.logger.Info("server TLS configured")
+		s.logger.Info("server TLS configured", "minVersion", "TLS 1.2")
 	} else if s.config.SSLCertFile != "" || s.config.SSLKeyFile != "" {
 		err := fmt.Errorf("both tls-cert-file and tls-private-key-file must be provided to enable TLS")
 		return err
 	}
 
-	// graceful termination
-	go func() {
-		<-ctx.Done()
-		logger.Info("shutting down")
+	logger.Info("starting", "addr", ln.Addr().String())
 
+	// Start serving in a goroutine
+	serveDone := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error(nil, "server goroutine panicked", "panic", r)
+				serveDone <- fmt.Errorf("server panicked: %v", r)
+			}
+		}()
+		var err error
+		if s.config.SSLEnabled() {
+			err = httpserver.ServeTLS(ln, "", "")
+		} else {
+			err = httpserver.Serve(ln)
+		}
+		serveDone <- err
+	}()
+
+	// Wait for immediate startup failure or mark ready after 100ms
+	select {
+	case <-time.After(100 * time.Millisecond):
+		logger.Info("server is ready")
+		s.serverReady.Store(true)
+	case err := <-serveDone:
+		logger.Error(err, "server failed to start")
+		return err
+	case <-ctx.Done():
+		logger.Info("shutdown requested before server ready", "reason", ctx.Err())
+		return ctx.Err()
+	}
+
+	// Continue waiting for shutdown or failure after marking ready
+	select {
+	case <-ctx.Done():
+		// Normal shutdown path
+		s.serverReady.Store(false)
+		logger.Info("shutting down", "reason", ctx.Err())
+
+		// Gracefully shutdown the server
 		shutdownCtx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelFn()
 		if err := httpserver.Shutdown(shutdownCtx); err != nil {
 			logger.Error(err, "failed to gracefully shutdown")
-		} else {
-			logger.Info("shutdown complete")
 		}
-	}()
 
-	logger.Info("starting", "addr", ln.Addr().String())
-	if s.config.SSLEnabled() {
-		if err := httpserver.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
-			logger.Error(err, "failed to start")
-			return err
+		// Wait for server goroutine to finish with timeout
+		select {
+		case err = <-serveDone:
+			if err != nil && err != http.ErrServerClosed {
+				logger.Error(err, "server exited with error after shutdown")
+				return err
+			}
+		case <-time.After(5 * time.Second):
+			logger.Error(nil, "timeout waiting for server goroutine to exit")
+			return fmt.Errorf("server goroutine did not exit after shutdown")
 		}
-	} else {
-		if err := httpserver.Serve(ln); err != nil && err != http.ErrServerClosed {
-			logger.Error(err, "failed to start")
+
+		logger.Info("shutdown complete")
+
+	case err := <-serveDone:
+		// Server failed after becoming ready
+		s.serverReady.Store(false)
+		if err != nil && err != http.ErrServerClosed {
+			logger.Error(err, "server exited unexpectedly")
 			return err
 		}
 	}
@@ -131,12 +183,14 @@ func (s *Server) buildHandler() http.Handler {
 
 	// register handlers
 	healthHandler := health.NewHealthApiHandler()
+	readinessHandler := readiness.NewReadinessApiHandler(s.serverReady)
 	metricsHandler := metrics.NewMetricsApiHandler()
 	fileHandler := file.NewFileApiHandler(s.config, dbClient, filesClient)
 	batchHandler := batch.NewBatchApiHandler(s.config, dbClient, queueClient, eventClient, statusClient)
 
 	handlers := []common.ApiHandler{
 		healthHandler,
+		readinessHandler,
 		metricsHandler,
 		fileHandler,
 		batchHandler,

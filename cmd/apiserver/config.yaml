@@ -18,6 +18,29 @@ batch_ttl_seconds: 2592000
 # HTTP header name for tenant ID (default: X-MaaS-User)
 tenant_header: "X-MaaS-User"
 
+# HTTP server timeout configurations (in seconds)
+# These values should accommodate large file uploads and batch operations
+# Set to 0 or omit to use defaults
+
+# Time allowed to read request headers (prevents Slowloris attacks)
+# Default: 10 seconds
+read_header_timeout_seconds: 10
+
+# Time allowed to read the entire request (headers + body)
+# Must be large enough for 200MB file uploads on slow networks
+# Supports upload speeds as low as ~2.8 Mbps
+# Default: 900 seconds (15 minutes)
+read_timeout_seconds: 900
+
+# Time allowed to write the response
+# Must accommodate large batch query results
+# Default: 120 seconds (2 minutes)
+write_timeout_seconds: 120
+
+# Time to wait for the next request on keep-alive connections
+# Default: 90 seconds
+idle_timeout_seconds: 90
+
 # File API configuration
 files_api:
   # Default expiration in seconds (default: 90 days)

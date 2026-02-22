@@ -199,7 +199,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	// The file can contain up to 50,000 requests, and can be up to 200 MB in size.
 
 	// Check Content-Length header before reading the body
-	maxFileSize := c.config.GetMaxFileSizeBytes()
+	maxFileSize := c.config.FilesAPI.GetMaxSizeBytes()
 	if r.ContentLength > maxFileSize {
 		logger.V(logging.DEBUG).Info("file size exceeds limit",
 			"contentLength", r.ContentLength, "limit", maxFileSize)
@@ -299,7 +299,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		logger.V(logging.DEBUG).Info("file expiration set from request", "anchor", expiresAfterAnchor, "seconds", expiresAfterSeconds, "expiresAt", expiresAt)
 	} else {
 		// Use default expire seconds from config if expires_after not provided
-		expiresAfterSeconds := c.config.GetFileDefaultExpirationSeconds()
+		expiresAfterSeconds := c.config.FilesAPI.GetDefaultExpirationSeconds()
 		expiresAt = createdAt + expiresAfterSeconds
 		logger.V(logging.DEBUG).Info("file expiration set from config default", "seconds", expiresAfterSeconds, "expiresAt", expiresAt)
 	}
@@ -315,7 +315,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	// Get tenant ID from context to use as folder name
 	tenantID := common.GetTenantIDFromContext(ctx)
 	folderName := tenantID
-	fileMeta, err := c.filesClient.Store(ctx, fileName, folderName, c.config.GetMaxFileSizeBytes(), c.config.GetMaxFileLineCount(), fileReader)
+	fileMeta, err := c.filesClient.Store(ctx, fileName, folderName, c.config.FilesAPI.GetMaxSizeBytes(), c.config.FilesAPI.GetMaxLineCount(), fileReader)
 	if err != nil {
 		logger.Error(err, "failed to store file content")
 		common.WriteInternalServerError(w, r)
