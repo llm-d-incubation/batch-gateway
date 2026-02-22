@@ -266,7 +266,7 @@ Log in as test user and test the following:
 
 ```bash
 # Login as test user
-oc login $HOST -u testuser -p testpass
+oc login <server> -u testuser -p testpass
 
 # Get openshift token
 oc_token=$(oc whoami -t)
