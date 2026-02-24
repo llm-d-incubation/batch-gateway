@@ -369,7 +369,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	jobRootDir := p.jobRootDir(jobID)
 
 	// job directory creation
-	if err := os.MkdirAll(jobRootDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobRootDir, 0o700); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to create job root directory", "jobRootDir", jobRootDir)
 		return err
 	}
@@ -413,7 +413,6 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	// model intern tables
 	used := make(map[string]int)           // to prevent duplicate model IDs
 	modelToSafe := make(map[string]string) // to map the model ID to a safe file name
-	seenSafe := make(map[string]struct{})  // to prevent duplicate safe file names
 
 	// streaming loop
 	var offset int64 = 0
@@ -478,7 +477,6 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 			safeModelID = internModelID(modelID, used)
 			modelToSafe[modelID] = safeModelID
 		}
-		seenSafe[safeModelID] = struct{}{}
 
 		// plan entry append
 		length := uint32(len(line))
@@ -500,9 +498,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	}
 
 	// finalize the plan files
-	modelIDs := make([]string, 0, len(seenSafe))
-	for id := range seenSafe {
-		modelIDs = append(modelIDs, id)
+	modelIDs := make([]string, 0, len(modelToSafe))
+	for _, safeID := range modelToSafe {
+		modelIDs = append(modelIDs, safeID)
 	}
 
 	sort.Strings(modelIDs) // to see predictable order of model ids (for debugging)

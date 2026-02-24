@@ -79,7 +79,7 @@ func writeModelMapFile(jobRootDir string, modelMapFile modelMapFile) error {
 	finalPath := filepath.Join(jobRootDir, "model_map.json")
 	tempPath := finalPath + ".tmp"
 
-	if err := os.MkdirAll(jobRootDir, 0o755); err != nil {
+	if err := os.MkdirAll(jobRootDir, 0o700); err != nil {
 		return fmt.Errorf("failed to create job root directory: %w", err)
 	}
 
@@ -89,7 +89,7 @@ func writeModelMapFile(jobRootDir string, modelMapFile modelMapFile) error {
 	}
 
 	// temp file creation
-	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write model map file: %w", err)
 	}
 
@@ -182,12 +182,12 @@ func (w *planWriter) openFile(modelID string) (*os.File, error) {
 		return file, nil
 	}
 
-	if err := os.MkdirAll(w.plansDir(), 0o755); err != nil { //rwxr-xr-x
+	if err := os.MkdirAll(w.plansDir(), 0o700); err != nil { //rwx------
 		return nil, err
 	}
 
 	// important: append-only, truncate is forbidden
-	file, err := os.OpenFile(w.tempPlanPath(modelID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) // -rw-r--r--
+	file, err := os.OpenFile(w.tempPlanPath(modelID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // -rw-------
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +245,7 @@ func (w *planWriter) Finalize(modelIDs []string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(w.plansDir(), 0o755); err != nil {
+	if err := os.MkdirAll(w.plansDir(), 0o700); err != nil {
 		return err
 	}
 
