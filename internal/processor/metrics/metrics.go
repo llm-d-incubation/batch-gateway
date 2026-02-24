@@ -25,14 +25,32 @@ import (
 
 // labels definition
 const (
-	// result labels
-	ResultSuccess = "success"
-	ResultFailed  = "failed"
+	// -- Result --
+	// ResultSuccess: Job reached a terminal state treated as success by policy (completed; cancelled is treated as success because it is user-initiated).
+	// ResultFailed: Job is failed and updated to failed status in the db
+	// ResultSkipped: Job was not processed by this worker (e.g. already terminal, not runnable, expired, data inconsistency)
+	// ResultReEnqueued: Job was re-enqueued for retry due to transient backend/system issues
 
-	// reason lables
-	ReasonUnknown     = "unknown"
-	ReasonUserError   = "user_error"   // method, request validation failed.. etc.,
-	ReasonSystemError = "system_error" // SLO failed, system error.. etc.,
+	// Result labels
+	ResultSuccess    = "success"
+	ResultFailed     = "failed"
+	ResultSkipped    = "skipped"
+	ResultReEnqueued = "re_enqueued"
+
+	// -- Reason --
+	// - If expired, reason is expired
+	// - If data inconsistency, use db_inconsistency
+	// - If retryable backend error, use db_transient
+	// - If not runnable, reason is not runnable state
+	// - Otherwise, fall back to system_error
+
+	// Reason labels
+	ReasonSystemError      = "system_error"       // unexpected internal errors (panic, serialization failure, invariant violation)
+	ReasonDBTransient      = "db_transient"       // temporary backend/storage error; safe to retry
+	ReasonDBInconsistency  = "db_inconsistency"   // PQ item exists but DB item missing or corrupted
+	ReasonNotRunnableState = "not_runnable_state" // job status is not runnable by processor policy
+	ReasonExpired          = "expired"            // job exceeded SLO deadline
+	ReasonNone             = "none"               // job completed successfully
 
 	// size bucket labels
 	Bucket100   = "100"   // less than 100 lines
@@ -58,16 +76,20 @@ func GetSizeBucket(totalLines int) string {
 }
 
 var (
-	jobsProcessed         *prometheus.CounterVec
-	jobProcessingDuration *prometheus.HistogramVec
-	jobQueueWaitDuration  *prometheus.HistogramVec
-	totalWorkers          prometheus.Gauge
-	activeWorkers         prometheus.Gauge
-	jobErrorsModelTotal   *prometheus.CounterVec
+	jobsProcessed                 *prometheus.CounterVec
+	jobProcessingDuration         *prometheus.HistogramVec
+	jobQueueWaitDuration          *prometheus.HistogramVec
+	totalWorkers                  prometheus.Gauge
+	activeWorkers                 prometheus.Gauge
+	jobErrorsModelTotal           *prometheus.CounterVec
+	processorInflightRequests     prometheus.Gauge
+	planBuildDuration             *prometheus.HistogramVec
+	modelInflightRequests         *prometheus.GaugeVec
+	modelRequestExecutionDuration *prometheus.HistogramVec
 )
 
 func InitMetrics(cfg config.ProcessorConfig) error {
-	// number of jobs processed : TODO:: add tenantID?
+	// number of jobs processed
 	jobsProcessed = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "jobs_processed_total",
@@ -100,6 +122,49 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 			Help: "Total number of job processing errors by model",
 		},
 		[]string{"model"},
+	)
+
+	// global in-flight request count during phase 2 execution
+	processorInflightRequests = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "processor_inflight_requests",
+			Help: "Current number of in-flight inference requests for the processor",
+		},
+	)
+
+	// phase 1 plan build duration
+	planBuildDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "plan_build_duration_seconds",
+			Help: "Duration of phase 1 ingestion and plan build in seconds",
+			Buckets: prometheus.ExponentialBuckets(
+				cfg.ProcessTimeBucket.BucketStart,
+				cfg.ProcessTimeBucket.BucketFactor,
+				cfg.ProcessTimeBucket.BucketCount,
+			),
+		}, []string{"tenantID", "size_bucket"},
+	)
+
+	// per-model in-flight requests during phase 2 execution
+	modelInflightRequests = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "model_inflight_requests",
+			Help: "Current number of in-flight inference requests per model",
+		},
+		[]string{"model"},
+	)
+
+	// per-request execution duration by model
+	modelRequestExecutionDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "model_request_execution_duration_seconds",
+			Help: "Per-request phase 2 execution duration in seconds by model",
+			Buckets: prometheus.ExponentialBuckets(
+				cfg.ProcessTimeBucket.BucketStart,
+				cfg.ProcessTimeBucket.BucketFactor,
+				cfg.ProcessTimeBucket.BucketCount,
+			),
+		}, []string{"model"},
 	)
 
 	// job processing duratino
@@ -136,6 +201,10 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		activeWorkers,
 		jobsProcessed,
 		jobErrorsModelTotal,
+		processorInflightRequests,
+		planBuildDuration,
+		modelInflightRequests,
+		modelRequestExecutionDuration,
 	}
 
 	for _, metric := range metricsToRegister {
@@ -180,4 +249,34 @@ func DecActiveWorkers() {
 // RecordJobError increments the error count for a specific model.
 func RecordJobError(model string) {
 	jobErrorsModelTotal.WithLabelValues(model).Inc()
+}
+
+// IncProcessorInflightRequests increments the processor global in-flight request gauge.
+func IncProcessorInflightRequests() {
+	processorInflightRequests.Inc()
+}
+
+// DecProcessorInflightRequests decrements the processor global in-flight request gauge.
+func DecProcessorInflightRequests() {
+	processorInflightRequests.Dec()
+}
+
+// RecordPlanBuildDuration observes phase 1 plan build duration.
+func RecordPlanBuildDuration(duration time.Duration, tenantID string, sizeBucket string) {
+	planBuildDuration.WithLabelValues(tenantID, sizeBucket).Observe(duration.Seconds())
+}
+
+// IncModelInflightRequests increments the in-flight request gauge for a model.
+func IncModelInflightRequests(model string) {
+	modelInflightRequests.WithLabelValues(model).Inc()
+}
+
+// DecModelInflightRequests decrements the in-flight request gauge for a model.
+func DecModelInflightRequests(model string) {
+	modelInflightRequests.WithLabelValues(model).Dec()
+}
+
+// RecordModelRequestExecutionDuration observes phase 2 per-request execution duration by model.
+func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
+	modelRequestExecutionDuration.WithLabelValues(model).Observe(duration.Seconds())
 }
