@@ -12,7 +12,7 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
--- Get by expiry lua script.
+-- Get by tenant lua script.
 
 -- Parse inputs.
 local tenantId = ARGV[1]

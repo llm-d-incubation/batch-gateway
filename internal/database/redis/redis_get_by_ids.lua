@@ -12,7 +12,7 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
--- Get by expiry lua script.
+-- Get by IDs lua script.
 
 -- Parse inputs.
 local IDs = KEYS
