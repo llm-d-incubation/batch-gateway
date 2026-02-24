@@ -61,13 +61,10 @@ spec:
         {{- with .Values.processor.volumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        {{- if .Values.processor.database.existingSecret }}
-        env:
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.processor.database.existingSecret }}
-              key: {{ .Values.processor.database.secretKey }}
+        {{- if .Values.processor.existingSecret }}
+        - name: secrets
+          mountPath: /etc/.secrets
+          readOnly: true
         {{- end }}
       volumes:
       - name: config
@@ -81,6 +78,13 @@ spec:
           {{- else }}
           secretName: {{ include "batch-gateway.processor.fullname" . }}-tls
           {{- end }}
+      {{- end }}
+      {{- if .Values.processor.existingSecret }}
+      - name: secrets
+        projected:
+          sources:
+          - secret:
+              name: {{ .Values.processor.existingSecret }}
       {{- end }}
       {{- with .Values.processor.volumes }}
       {{- toYaml . | nindent 6 }}

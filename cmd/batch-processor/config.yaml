@@ -1,6 +1,3 @@
-# Database Connection
-database_url: ""
-
 # Worker Settings - task wait time needs to be shorter than poll interval
 task_wait_time: "1s"
 worker_poll_interval: "5s"
@@ -23,10 +20,6 @@ inference_gateway_url: "http://localhost:8000"
 
 # Request timeout for individual inference requests
 inference_request_timeout: "5m"
-
-# Optional API key for authenticating with the inference gateway
-# Leave empty if no authentication is required
-inference_api_key: ""
 
 # Retry configuration for failed requests
 inference_max_retries: 3

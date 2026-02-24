@@ -71,7 +71,6 @@ func run() error {
 		logger.V(logging.ERROR).Error(err, "Failed to load config file. Processor cannot start", "path", *cfgFilePath, "err", err)
 		return err
 	}
-
 	// metrics setup
 	if err := metrics.InitMetrics(*cfg); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to initialize metrics")
@@ -140,10 +139,15 @@ func run() error {
 	var eventClient db.BatchEventChannelClient
 
 	// Initialize inference client with configuration
+	inferenceAPIKey, err := cfg.GetInferenceAPIKey()
+	if err != nil {
+		logger.Error(err, "Failed to read inference API key")
+		return err
+	}
 	inferenceClient, err := inference.NewHTTPClient(inference.HTTPClientConfig{
 		BaseURL:               cfg.InferenceGatewayURL,
 		Timeout:               cfg.InferenceRequestTimeout,
-		APIKey:                cfg.InferenceAPIKey,
+		APIKey:                inferenceAPIKey,
 		MaxRetries:            cfg.InferenceMaxRetries,
 		InitialBackoff:        cfg.InferenceInitialBackoff,
 		MaxBackoff:            cfg.InferenceMaxBackoff,
