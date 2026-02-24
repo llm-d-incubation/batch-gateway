@@ -209,8 +209,15 @@ processor:
   logging:
     verbosity: 2
 
+  # Name of an existing Secret containing sensitive values.
+  # The secret keys are configured per field below.
+  existingSecret: ""
+
   # Database connection
   database:
-    url: ""
-    existingSecret: ""
     secretKey: "database-url"
+
+  # Inference gateway credentials
+  inference:
+    apiKey:
+      secretKey: "inference-api-key"

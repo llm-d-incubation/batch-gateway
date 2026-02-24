@@ -19,11 +19,15 @@ limitations under the License.
 package config
 
 import (
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+const secretsMountPath = "/etc/.secrets"
 
 type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
@@ -45,6 +49,9 @@ type ProcessorConfig struct {
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
 
+	// DatabaseURLFile is the filename within secretsMountPath containing the database connection URL.
+	DatabaseURLFile string `yaml:"database_url_file"`
+
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`
 	SSLKeyFile  string `yaml:"ssl_key_file"`
@@ -55,8 +62,8 @@ type ProcessorConfig struct {
 	// InferenceRequestTimeout is the timeout for individual inference requests
 	InferenceRequestTimeout time.Duration `yaml:"inference_request_timeout"`
 
-	// InferenceAPIKey is the optional API key for authenticating with the inference gateway
-	InferenceAPIKey string `yaml:"inference_api_key"`
+	// InferenceAPIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
+	InferenceAPIKeyFile string `yaml:"inference_api_key_file"`
 
 	// InferenceMaxRetries is the maximum number of retry attempts for failed requests
 	InferenceMaxRetries int `yaml:"inference_max_retries"`
@@ -128,11 +135,37 @@ func NewConfig() *ProcessorConfig {
 
 		InferenceGatewayURL:     "http://localhost:8000",
 		InferenceRequestTimeout: 5 * time.Minute,
-		InferenceAPIKey:         "",
 		InferenceMaxRetries:     3,
 		InferenceInitialBackoff: 1 * time.Second,
 		InferenceMaxBackoff:     60 * time.Second,
 	}
+}
+
+func (pc *ProcessorConfig) GetDatabaseURL() (string, error) {
+	return readSecretFile(pc.DatabaseURLFile)
+}
+
+func (pc *ProcessorConfig) GetInferenceAPIKey() (string, error) {
+	return readSecretFile(pc.InferenceAPIKeyFile)
+}
+
+func readSecretFile(filename string) (string, error) {
+	if filename == "" {
+		return "", nil
+	}
+	f, err := os.OpenInRoot(secretsMountPath, filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func (c *ProcessorConfig) Validate() error {

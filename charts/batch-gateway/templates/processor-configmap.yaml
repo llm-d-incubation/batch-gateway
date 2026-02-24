@@ -31,7 +31,6 @@ data:
     ssl_key_file: "/etc/tls/tls.key"
     {{- end }}
 
-    {{- if .Values.processor.database.url }}
-    database_url: {{ .Values.processor.database.url | quote }}
-    {{- end }}
+    database_url_file: {{ .Values.processor.database.secretKey | quote }}
+    inference_api_key_file: {{ .Values.processor.inference.apiKey.secretKey | quote }}
 {{- end }}
