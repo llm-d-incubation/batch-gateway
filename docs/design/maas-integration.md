@@ -1,6 +1,6 @@
-# Batch Gateway Integration with MaaS Platform
+# Batch Inference Integration with MaaS Platform
 
-This doc demonstrates how to integrate batch gateway with MaaS.
+This doc demonstrates how to integrate batch inference with MaaS.
 
 ## 1. Architecture
 
@@ -13,9 +13,9 @@ MaaS Gateway (openshift-ingress)
     ↓
 [RateLimitPolicy] → Enforce request limits per tier
     ↓
-[HTTPRoute] → Route to batch gateway service
+[HTTPRoute] → Route to batch inference service
     ↓
-Batch Gateway
+Batch Inference
 ```
 
 ## 2. Setup Instructions
@@ -32,25 +32,25 @@ Batch Gateway
    oc get gateway maas-default-gateway -n openshift-ingress
    ```
 
-2. **Install Batch Gateway**
+2. **Install Batch Inference**
 
    Follow steps: https://github.com/llm-d-incubation/batch-gateway
 
-   Batch gateway:
+   Batch Inference:
    - provides [OpenAI compatible batch API](https://developers.openai.com/api/docs/guides/batch)
    - available endpoints: [/v1/files](https://developers.openai.com/api/reference/resources/files) and [/v1/batches](https://developers.openai.com/api/reference/resources/batches)
-   - batch gateway **can't** be deployed as `LLMInferenceService` resource using `kserve`
+   - batch inference **CAN'T** be deployed as `LLMInferenceService` resource using `kserve`
 
 3. **Create HTTP Route**
 
-   Create HTTP route, which refers to MaaS gateway and redirects requests to batch gateway:
+   Create HTTP route, which refers to MaaS gateway and redirects requests to batch inference:
    ```yaml
    apiVersion: gateway.networking.k8s.io/v1
    kind: HTTPRoute
    metadata:
-     name: batch-gateway-route
+     name: batch-inference-route
      labels:
-       app: batch-gateway
+       app: batch-inference
    spec:
      parentRefs:
      - group: gateway.networking.k8s.io
@@ -61,7 +61,7 @@ Batch Gateway
      - backendRefs:
        - group: ""
          kind: Service
-         name: batch-gateway
+         name: batch-inference
          # TODO: change to https and actual port
          port: 80
          weight: 1
@@ -72,7 +72,7 @@ Batch Gateway
      - backendRefs:
        - group: ""
          kind: Service
-         name: batch-gateway
+         name: batch-inference
          # TODO: change to https and actual port
          port: 80
          weight: 1
@@ -84,24 +84,24 @@ Batch Gateway
 
 4. **Create Auth Policy**
 
-   With auth policy, the batch gateway will be protected by MaaS authentication and tier-based controls.
+   With auth policy, the batch inference will be protected by MaaS authentication and tier-based controls.
 
    The Authentication Policy will:
-   - **Validate user tokens** to ensure only authenticated users can access the batch gateway API
+   - **Validate user tokens** to ensure only authenticated users can access the batch inference API
    - **Extract user name and groups** from the validated token
    - **Lookup user tier** by calling the MaaS API with user groups to determine rate limit tier (enterprise, premium, or free)
-   - **Enrich original requests** with custom headers (`X-MaaS-Username`, `X-MaaS-Group`) and send to batch gateway
+   - **Enrich original requests** with custom headers (`X-MaaS-Username`, `X-MaaS-Group`) and send to batch inference
 
    ```yaml
    apiVersion: kuadrant.io/v1
    kind: AuthPolicy
    metadata:
-     name: batch-gateway-auth
+     name: batch-inference-auth
    spec:
      targetRef:
        group: gateway.networking.k8s.io
        kind: HTTPRoute
-       name: batch-gateway-route
+       name: batch-inference-route
 
      rules:
        # Authentication configuration
@@ -283,7 +283,7 @@ TOKEN=$(echo $TOKEN_RESPONSE | jq -r .token)
 echo "Token: ${TOKEN:0:20}..."
 ```
 
-### 3.4 Test Batch Gateway Endpoint
+### 3.4 Test Batch Inference Endpoint
 
 Batch request with token should succeed:
 ```bash
