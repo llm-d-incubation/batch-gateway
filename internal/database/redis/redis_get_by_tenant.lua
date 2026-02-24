@@ -15,16 +15,15 @@
 -- Get by expiry lua script.
 
 -- Parse inputs.
-local expTime = tonumber(ARGV[1])
+local tenantId = ARGV[1]
 local includeStatic = ARGV[2]
 local pattern = ARGV[3]
 local cursor = ARGV[4]
 local count = ARGV[5]
-local tenantId = ARGV[6]
 
 -- Check inputs.
 local result = {}
-if expTime <= 0 then
+if tenantId == '' then
 	return {0, result}
 end
 
@@ -40,8 +39,8 @@ for _, key in ipairs(scan_out[2]) do
 	else
 		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status")
 	end
-	-- Check inclusion condition.
-	if (contents ~= nil) and (tonumber(contents[3]) <= expTime) and (tenantId == '' or tenantId == contents[2]) then
+	-- Check for expiry condition.
+	if (contents ~= nil) and (tenantId == contents[2]) then
 		table.insert(result, contents)
 	end
 end

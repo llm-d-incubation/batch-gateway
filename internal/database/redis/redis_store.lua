@@ -27,13 +27,13 @@ local ttl = tonumber(ARGV[8])
 
 -- Add the hash key.
 redis.call('HSET', hashKey, "ver", fieldVer,
-    "id", fieldId, "tenantID", fieldTenantId, "expiry", fieldExpiry, "tags", fieldTags,
+    "id", fieldId, "tenantId", fieldTenantId, "expiry", fieldExpiry, "tags", fieldTags,
     "status", fieldStatus, "spec", fieldSpec)
 
 -- Set expiration.
 local result = redis.pcall('EXPIRE', hashKey, ttl)
 if type(result) == 'table' and result.err then
-    redis.pcall('HDEL', hashKey, "ver", "id", "tenantID", "expiry", "tags", "status", "spec")
+    redis.pcall('HDEL', hashKey, "ver", "id", "tenantId", "expiry", "tags", "status", "spec")
     return result.err
 end
 
