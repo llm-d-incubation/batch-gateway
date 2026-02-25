@@ -253,7 +253,7 @@ work_dir: "` + dir + `/work"
 addr: ":1234"
 inference_config:
   gateway_url: "http://example:8000"
-  inference_api_key_file: "inference-api-key"
+  api_key_file: "inference-api-key"
   request_timeout: 30s
   max_retries: 9
   initial_backoff: 250ms

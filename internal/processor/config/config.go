@@ -81,7 +81,7 @@ type InferenceConfig struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 
 	// APIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
-	APIKeyFile string `yaml:"inference_api_key_file"`
+	APIKeyFile string `yaml:"api_key_file"`
 
 	// MaxRetries is the maximum number of retry attempts for failed requests
 	MaxRetries int `yaml:"max_retries"`
