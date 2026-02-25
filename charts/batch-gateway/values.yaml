@@ -8,9 +8,9 @@ apiserver:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/llm-d/batch-gateway-apiserver
-    pullPolicy: IfNotPresent
-    tag: ""
+    repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
+    pullPolicy: Always
+    tag: "latest"
 
   nameOverride: ""
   fullnameOverride: ""
@@ -116,9 +116,9 @@ processor:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/llm-d/batch-gateway-processor
-    pullPolicy: IfNotPresent
-    tag: ""
+    repository: ghcr.io/llm-d-incubation/batch-gateway-processor
+    pullPolicy: Always
+    tag: "latest"
 
   nameOverride: ""
   fullnameOverride: ""
