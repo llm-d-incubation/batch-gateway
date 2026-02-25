@@ -242,7 +242,7 @@ func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 	path := filepath.Join(dir, "cfg.yaml")
 
 	// time.Duration check yaml
-yamlData := []byte(`
+	yamlData := []byte(`
 database_url_file: "database-url"
 poll_interval: 2s
 task_wait_time: 500ms
