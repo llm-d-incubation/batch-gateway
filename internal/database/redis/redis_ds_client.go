@@ -38,8 +38,9 @@ const (
 	fieldNameTags        = "tags"
 	fieldNameSpec        = "spec"
 	fieldNameStatus      = "status"
-	tableNameBatch       = "batch"
-	tableNameFiles       = "files"
+	fieldNamePurpose     = "purpose"
+	itemTypeBatch        = "batch"
+	itemTypeFile         = "file"
 	eventReadCount       = 4
 	keysPrefix           = "llmd_batch:"
 	storeKeysPrefix      = keysPrefix + "store:"
@@ -96,7 +97,7 @@ type BatchDBClientRedis struct {
 	DSClientRedis
 }
 
-type FilesDBClientRedis struct {
+type FileDBClientRedis struct {
 	DSClientRedis
 }
 
@@ -114,12 +115,12 @@ func NewBatchDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, 
 }
 
 func NewFilesDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
-	*FilesDBClientRedis, error) {
+	*FileDBClientRedis, error) {
 	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
 	if err != nil {
 		return nil, err
 	}
-	return &FilesDBClientRedis{DSClientRedis: *dsClient}, nil
+	return &FileDBClientRedis{DSClientRedis: *dsClient}, nil
 }
 
 func NewExchangeDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (

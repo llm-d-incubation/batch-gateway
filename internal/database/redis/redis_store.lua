@@ -16,25 +16,41 @@
 
 -- Parse inputs.
 local hashKey = KEYS[1]
-local fieldVer = ARGV[1]
-local fieldID = ARGV[2]
-local fieldTenantID = ARGV[3]
-local fieldExpiry = tonumber(ARGV[4])
-local fieldTags = ARGV[5]
-local fieldStatus = ARGV[6]
-local fieldSpec = ARGV[7]
-local ttl = tonumber(ARGV[8])
+local filedItemType = ARGV[1]
+local fieldVer = ARGV[2]
+local fieldID = ARGV[3]
+local fieldTenantID = ARGV[4]
+local fieldExpiry = tonumber(ARGV[5])
+local fieldTags = ARGV[6]
+local fieldStatus = ARGV[7]
+local fieldSpec = ARGV[8]
+local ttl = tonumber(ARGV[9])
+local fieldPurpose = ARGV[10]
 
--- Add the hash key.
-redis.call('HSET', hashKey, "ver", fieldVer,
-    "ID", fieldID, "tenantID", fieldTenantID, "expiry", fieldExpiry, "tags", fieldTags,
-    "status", fieldStatus, "spec", fieldSpec)
+if filedItemType == 'batch' then
+    -- Add the hash key.
+    redis.call('HSET', hashKey, "ver", fieldVer,
+        "ID", fieldID, "tenantID", fieldTenantID, "expiry", fieldExpiry, "tags", fieldTags,
+        "status", fieldStatus, "spec", fieldSpec)
 
--- Set expiration.
-local result = redis.pcall('EXPIRE', hashKey, ttl)
-if type(result) == 'table' and result.err then
-    redis.pcall('HDEL', hashKey, "ver", "ID", "tenantID", "expiry", "tags", "status", "spec")
-    return result.err
+    -- Set expiration.
+    local result = redis.pcall('EXPIRE', hashKey, ttl)
+    if type(result) == 'table' and result.err then
+        redis.pcall('HDEL', hashKey, "ver", "ID", "tenantID", "expiry", "tags", "status", "spec")
+        return result.err
+    end
+else
+    -- Add the hash key.
+    redis.call('HSET', hashKey, "ver", fieldVer,
+        "ID", fieldID, "tenantID", fieldTenantID, "expiry", fieldExpiry, "tags", fieldTags, 
+        "status", fieldStatus, "spec", fieldSpec, "purpose", fieldPurpose)
+
+    -- Set expiration.
+    local result = redis.pcall('EXPIRE', hashKey, ttl)
+    if type(result) == 'table' and result.err then
+        redis.pcall('HDEL', hashKey, "ver", "ID", "tenantID", "expiry", "tags", "status", "spec", "purpose")
+        return result.err
+    end
 end
 
 return ''

@@ -38,33 +38,89 @@ func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 	}
 	logger := klog.FromContext(ctx)
 	if err = item.Validate(); err != nil {
-		logger.Error(err, "DBStore: item validation failed")
+		logger.Error(err, "DBStore[Batch]: item validation failed")
 		return
 	}
 	logger = logger.WithValues("ID", item.ID)
 
 	ptags, err := packTags(item.Tags)
 	if err != nil {
-		logger.Error(err, "DBStore: tags packing failed")
+		logger.Error(err, "DBStore[Batch]: tags packing failed")
 		return err
 	}
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
-		[]string{getKeyForStore(item.ID, tableNameBatch)},
-		versionV1, item.ID, item.TenantID, item.Expiry, ptags, item.Status, item.Spec, ttlSecDefault).Text()
+		[]string{getKeyForStore(item.ID, itemTypeBatch)},
+		itemTypeBatch, versionV1, item.ID, item.TenantID, item.Expiry, ptags, item.Status, item.Spec, ttlSecDefault).Text()
 	if err != nil {
-		logger.Error(err, "DBStore: script failed")
+		logger.Error(err, "DBStore[Batch]: script failed")
 		return err
 	}
 	if len(res) > 0 {
 		err = fmt.Errorf("%s", res)
-		logger.Error(err, "DBStore: script failed")
+		logger.Error(err, "DBStore[Batch]: script failed")
 		return
 	}
 
-	logger.Info("DBStore: succeeded")
+	logger.Info("DBStore[Batch]: succeeded")
 	return nil
+}
+
+func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) (err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if err = item.Validate(); err != nil {
+		logger.Error(err, "DBStore[File]: item validation failed")
+		return
+	}
+	logger = logger.WithValues("ID", item.ID)
+
+	ptags, err := packTags(item.Tags)
+	if err != nil {
+		logger.Error(err, "DBStore[File]: tags packing failed")
+		return err
+	}
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
+	res, err := redisScriptStore.Run(cctx, c.redisClient,
+		[]string{getKeyForStore(item.ID, itemTypeFile)},
+		itemTypeFile, versionV1, item.ID, item.TenantID, item.Expiry, ptags, item.Status, item.Spec, ttlSecDefault, item.Purpose).Text()
+	if err != nil {
+		logger.Error(err, "DBStore[File]: script failed")
+		return err
+	}
+	if len(res) > 0 {
+		err = fmt.Errorf("%s", res)
+		logger.Error(err, "DBStore[File]: script failed")
+		return
+	}
+
+	logger.Info("DBStore[File]: succeeded")
+	return nil
+}
+
+func getUpdateFields(status []byte, tags db_api.Tags) (
+	fields []interface{}, updateStatus, updateTags bool, err error) {
+
+	fields = make([]interface{}, 0, 2)
+	if len(status) > 0 {
+		fields = append(fields, fieldNameStatus, status)
+		updateStatus = true
+	}
+	if len(tags) > 0 {
+		var ptags string
+		ptags, err = packTags(tags)
+		if err != nil {
+			return
+		}
+		fields = append(fields, fieldNameTags, ptags)
+		updateTags = true
+	}
+	return
 }
 
 func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem) (err error) {
@@ -74,47 +130,78 @@ func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 	}
 	logger := klog.FromContext(ctx)
 	if err = item.Validate(); err != nil {
-		logger.Error(err, "DBUpdate:")
+		logger.Error(err, "DBUpdate[Batch]:")
 		return
 	}
 	logger = logger.WithValues("ID", item.ID)
 
-	// Only update non-empty dynamic fields.
-	var fields []interface{}
-
-	if len(item.Status) > 0 {
-		fields = append(fields, fieldNameStatus, item.Status)
+	fields, updatedStatus, updatedTags, err := getUpdateFields(item.Status, item.Tags)
+	if err != nil {
+		logger.Error(err, "DBUpdate[Batch]: getUpdateFields failed")
+		return err
 	}
-
-	if len(item.Tags) > 0 {
-		var ptags string
-		ptags, err = packTags(item.Tags)
-		if err != nil {
-			logger.Error(err, "DBUpdate: tags packing failed")
-			return
-		}
-		fields = append(fields, fieldNameTags, ptags)
-	}
-
 	if len(fields) == 0 {
-		logger.Info("DBUpdate: nothing to update")
+		logger.Info("DBUpdate[Batch]: nothing to update")
 		return nil
 	}
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	err = c.redisClient.HSet(cctx, getKeyForStore(item.ID, tableNameBatch), fields...).Err()
+	err = c.redisClient.HSet(cctx, getKeyForStore(item.ID, itemTypeBatch), fields...).Err()
 	if err != nil {
-		logger.Error(err, "DBUpdate: HSet failed")
+		logger.Error(err, "DBUpdate[Batch]: HSet failed")
 		return
 	}
 
-	updatedStatus, updatedTags := len(item.Status) > 0, len(item.Tags) > 0
-	logger.Info("DBUpdate: succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)
+	logger.Info("DBUpdate[Batch]: succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)
+	return nil
+}
+
+func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem) (err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+	if err = item.Validate(); err != nil {
+		logger.Error(err, "DBUpdate[File]:")
+		return
+	}
+	logger = logger.WithValues("ID", item.ID)
+
+	fields, updatedStatus, updatedTags, err := getUpdateFields(item.Status, item.Tags)
+	if err != nil {
+		logger.Error(err, "DBUpdate[File]: getUpdateFields failed")
+		return err
+	}
+	if len(fields) == 0 {
+		logger.Info("DBUpdate[File]: nothing to update")
+		return nil
+	}
+
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
+	err = c.redisClient.HSet(cctx, getKeyForStore(item.ID, itemTypeFile), fields...).Err()
+	if err != nil {
+		logger.Error(err, "DBUpdate[File]: HSet failed")
+		return
+	}
+
+	logger.Info("DBUpdate[File]: succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)
 	return nil
 }
 
 func (c *BatchDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
+	deletedIDs []string, err error) {
+	return c.DSClientRedis.DBDelete(ctx, IDs, itemTypeBatch, "DBDelete[Batch]")
+}
+
+func (c *FileDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
+	deletedIDs []string, err error) {
+	return c.DSClientRedis.DBDelete(ctx, IDs, itemTypeFile, "DBDelete[File]")
+}
+
+func (c *DSClientRedis) DBDelete(ctx context.Context, IDs []string, itemType, logPref string) (
 	deletedIDs []string, err error) {
 
 	if ctx == nil {
@@ -124,25 +211,26 @@ func (c *BatchDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
 
 	// Delete the items.
 	resMap := make(map[string]*goredis.IntCmd)
+	var cmds []goredis.Cmder
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	var cmds []goredis.Cmder
 	cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
-			res := pipe.HDel(cctx, getKeyForStore(id, tableNameBatch),
-				fieldNameVersion, fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
+			res := pipe.HDel(cctx, getKeyForStore(id, itemType),
+				fieldNameVersion, fieldNameID, fieldNameTenantID, fieldNameExpiry,
+				fieldNameTags, fieldNameStatus, fieldNameSpec, fieldNamePurpose)
 			resMap[id] = res
 		}
 		return nil
 	})
 	if err != nil {
-		logger.Error(err, "DBDelete: Pipelined failed")
+		logger.Error(err, logPref+": Pipelined failed")
 		return
 	}
 	for _, cmd := range cmds {
 		if cmd.Err() != nil && cmd.Err() != goredis.Nil {
 			err = cmd.Err()
-			logger.Error(err, "DBDelete: Command inside pipeline failed")
+			logger.Error(err, logPref+": Command inside pipeline failed")
 			break
 		}
 	}
@@ -153,7 +241,7 @@ func (c *BatchDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
 		}
 	}
 
-	logger.Info("DBDelete: succeeded", "nItems", len(deletedIDs), "IDs", deletedIDs)
+	logger.Info(logPref+": succeeded", "nItems", len(deletedIDs), "IDs", deletedIDs)
 
 	return
 }
@@ -181,10 +269,10 @@ func (c *BatchDBClientRedis) DBGet(
 		cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 			for _, id := range query.IDs {
 				if includeStatic {
-					pipe.HMGet(cctx, getKeyForStore(id, tableNameBatch),
+					pipe.HMGet(cctx, getKeyForStore(id, itemTypeBatch),
 						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 				} else {
-					pipe.HMGet(cctx, getKeyForStore(id, tableNameBatch),
+					pipe.HMGet(cctx, getKeyForStore(id, itemTypeBatch),
 						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus)
 				}
 			}
@@ -239,7 +327,7 @@ func (c *BatchDBClientRedis) DBGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(tableNameBatch), start, limit, query.TenantID).Slice()
+			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(itemTypeBatch), start, limit, query.TenantID).Slice()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
@@ -258,7 +346,7 @@ func (c *BatchDBClientRedis) DBGet(
 		defer ccancel()
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
 			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(tableNameBatch), start, limit, query.TenantID).Slice()
+			getKeyPatternForStore(itemTypeBatch), start, limit, query.TenantID).Slice()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
@@ -311,12 +399,12 @@ func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.L
 	return
 }
 
-func getKeyForStore(key, tableName string) string {
-	return storeKeysPrefix + tableName + ":" + key
+func getKeyForStore(key, itemType string) string {
+	return storeKeysPrefix + itemType + ":" + key
 }
 
-func getKeyPatternForStore(tableName string) string {
-	return storeKeysPrefix + tableName + ":*"
+func getKeyPatternForStore(itemType string) string {
+	return storeKeysPrefix + itemType + ":*"
 }
 
 func packTags(tags map[string]string) (string, error) {
