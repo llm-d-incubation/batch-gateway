@@ -131,7 +131,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
 			res := pipe.HDel(cctx, getKeyForStore(id, c.tableName),
-				fieldNameVersion, fieldNameId, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
+				fieldNameVersion, fieldNameId, fieldNameTenantId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 			resMap[id] = res
 		}
 		return nil
@@ -183,10 +183,10 @@ func (c *BatchDSClientRedis) DBGet(
 			for _, id := range query.IDs {
 				if includeStatic {
 					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
-						fieldNameId, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
+						fieldNameId, fieldNameTenantId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 				} else {
 					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
-						fieldNameId, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus)
+						fieldNameId, fieldNameTenantId, fieldNameExpiry, fieldNameTags, fieldNameStatus)
 				}
 			}
 			return nil
