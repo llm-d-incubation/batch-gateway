@@ -1,6 +1,3 @@
-# Database Connection
-database_url: ""
-
 # Worker Settings - task wait time needs to be shorter than poll interval
 task_wait_time: "1s"
 poll_interval: "5s"

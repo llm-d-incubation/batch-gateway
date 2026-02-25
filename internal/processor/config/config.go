@@ -20,16 +20,17 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-type ProcessorConfig struct {
-	// DatabaseURL is the database connection string for processor data access.
-	DatabaseURL string `yaml:"database_url"`
+const secretsMountPath = "/etc/.secrets"
 
+type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
 	// This should be shorter than PollInterval
 	TaskWaitTime time.Duration `yaml:"task_wait_time"`
@@ -51,6 +52,9 @@ type ProcessorConfig struct {
 
 	// MaxOpenFiles is the maximum number of open files for the plan writer
 	MaxOpenFiles int `yaml:"max_open_files"`
+
+	// DatabaseURLFile is the filename within secretsMountPath containing the database connection URL.
+	DatabaseURLFile string `yaml:"database_url_file"`
 
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`
@@ -76,8 +80,8 @@ type InferenceConfig struct {
 	// RequestTimeout is the timeout for individual inference requests
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 
-	// APIKey is the optional API key for authenticating with the inference gateway
-	APIKey string `yaml:"api_key"`
+	// APIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
+	APIKeyFile string `yaml:"inference_api_key_file"`
 
 	// MaxRetries is the maximum number of retry attempts for failed requests
 	MaxRetries int `yaml:"max_retries"`
@@ -130,7 +134,6 @@ func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 // TaskWaitTime has to be shorter than poll interval
 func NewConfig() *ProcessorConfig {
 	return &ProcessorConfig{
-		DatabaseURL:  "",
 		PollInterval: 5 * time.Second,
 		TaskWaitTime: 1 * time.Second,
 		ProcessTimeBucket: BucketConfig{
@@ -155,13 +158,39 @@ func NewConfig() *ProcessorConfig {
 		InferenceConfig: InferenceConfig{
 			GatewayURL:            "http://localhost:8000",
 			RequestTimeout:        5 * time.Minute,
-			APIKey:                "",
 			MaxRetries:            3,
 			InitialBackoff:        1 * time.Second,
 			MaxBackoff:            60 * time.Second,
 			TLSInsecureSkipVerify: false,
 		},
 	}
+}
+
+func (pc *ProcessorConfig) GetDatabaseURL() (string, error) {
+	return readSecretFile(pc.DatabaseURLFile)
+}
+
+func (pc *ProcessorConfig) GetInferenceAPIKey() (string, error) {
+	return readSecretFile(pc.InferenceConfig.APIKeyFile)
+}
+
+func readSecretFile(filename string) (string, error) {
+	if filename == "" {
+		return "", nil
+	}
+	f, err := os.OpenInRoot(secretsMountPath, filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func (c *ProcessorConfig) Validate() error {

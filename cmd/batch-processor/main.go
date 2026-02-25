@@ -270,17 +270,19 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (wo
 	logger := klog.FromContext(ctx)
 
 	// TODO: remove mock clients and replace with actual clients + logging update
-	redactedInferenceConfig := cfg.InferenceConfig
-	if redactedInferenceConfig.APIKey != "" {
-		redactedInferenceConfig.APIKey = "--redacted--"
-	}
-	logger.V(logging.INFO).Info("Building processor clients with mock clients for now", "inferenceConfig", redactedInferenceConfig)
+
+	logger.V(logging.INFO).Info("Building processor clients with mock clients for now", "inferenceConfig", cfg)
 
 	// Initialize inference client with configuration
+	inferenceAPIKey, err := cfg.GetInferenceAPIKey()
+	if err != nil {
+		logger.Error(err, "Failed to read inference API key")
+		return worker.ProcessorClients{}, err
+	}
 	inferenceClient, err := inference.NewHTTPClient(inference.HTTPClientConfig{
 		BaseURL:               cfg.InferenceConfig.GatewayURL,
 		Timeout:               cfg.InferenceConfig.RequestTimeout,
-		APIKey:                cfg.InferenceConfig.APIKey,
+		APIKey:                inferenceAPIKey,
 		MaxRetries:            cfg.InferenceConfig.MaxRetries,
 		InitialBackoff:        cfg.InferenceConfig.InitialBackoff,
 		MaxBackoff:            cfg.InferenceConfig.MaxBackoff,
@@ -298,7 +300,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (wo
 		"timeout", cfg.InferenceConfig.RequestTimeout,
 		"maxRetries", cfg.InferenceConfig.MaxRetries)
 
-	batchDBClient := mockdb.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
+	batchDBClient := mockdb.NewMockDBClient(
 		func(b *dbapi.BatchItem) string { return b.ID },
 		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
 	)
