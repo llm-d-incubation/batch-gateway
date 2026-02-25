@@ -21,7 +21,7 @@ local includeStatic = ARGV[2]
 local pattern = ARGV[3]
 local cursor = ARGV[4]
 local count = ARGV[5]
-local tenantId = ARGV[6]
+local tenantID = ARGV[6]
 
 -- Check inputs.
 local result = {}
@@ -37,9 +37,9 @@ for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
 	if includeStatic == 'true' then
-		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status", "spec")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status", "spec")
 	else
-		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status")
 	end
 	-- Search for the tags.
 	local ofound = 0
@@ -52,7 +52,7 @@ for _, key in ipairs(scan_out[2]) do
 		end
 	end
 	-- Check inclusion condition.
-	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantId == nil or tenantId == '' or tenantId == contents[2]) then
+	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
 		table.insert(result, contents)
 	end
 end

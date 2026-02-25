@@ -15,7 +15,7 @@
 -- Get by tenant lua script.
 
 -- Parse inputs.
-local tenantId = ARGV[1]
+local tenantID = ARGV[1]
 local includeStatic = ARGV[2]
 local pattern = ARGV[3]
 local cursor = ARGV[4]
@@ -23,7 +23,7 @@ local count = ARGV[5]
 
 -- Check inputs.
 local result = {}
-if tenantId == nil or tenantId == '' then
+if tenantID == nil or tenantID == '' then
 	return {0, result}
 end
 
@@ -35,12 +35,12 @@ for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
 	if includeStatic == 'true' then
-		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status", "spec")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status", "spec")
 	else
-		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status")
 	end
 	-- Check for expiry condition.
-	if (contents ~= nil) and (tenantId == contents[2]) then
+	if (contents ~= nil) and (tenantID == contents[2]) then
 		table.insert(result, contents)
 	end
 end

@@ -130,7 +130,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
 			res := pipe.HDel(cctx, getKeyForStore(id, c.tableName),
-				fieldNameVersion, fieldNameId, fieldNameTenantId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
+				fieldNameVersion, fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 			resMap[id] = res
 		}
 		return nil
@@ -182,10 +182,10 @@ func (c *BatchDSClientRedis) DBGet(
 			for _, id := range query.IDs {
 				if includeStatic {
 					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
-						fieldNameId, fieldNameTenantId, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
+						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 				} else {
 					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
-						fieldNameId, fieldNameTenantId, fieldNameExpiry, fieldNameTags, fieldNameStatus)
+						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus)
 				}
 			}
 			return nil
@@ -239,7 +239,7 @@ func (c *BatchDSClientRedis) DBGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, strconv.FormatBool(includeStatic), getKeyPatternForStore(c.tableName), cond, start, limit).Slice()
+			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(c.tableName), start, limit, query.TenantID).Slice()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
@@ -257,8 +257,8 @@ func (c *BatchDSClientRedis) DBGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
-			[]string{}, curTimestamp, getKeyPatternForStore(c.tableName),
-			strconv.FormatBool(includeStatic), start, limit).Slice()
+			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
+			getKeyPatternForStore(c.tableName), start, limit, query.TenantID).Slice()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
@@ -361,8 +361,8 @@ func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logge
 		return
 	}
 
-	id, ok := vals[0].(string)
-	if !ok || len(id) == 0 {
+	ID, ok := vals[0].(string)
+	if !ok || len(ID) == 0 {
 		err = fmt.Errorf("missing or invalid id field: %v", vals[0])
 		return
 	}
@@ -385,12 +385,10 @@ func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logge
 	if !ok {
 		tags = ""
 	}
-
-	var nTags map[string]string
-	nTags, err = unpackTags(tags)
+	nTags, err := unpackTags(tags)
 	if err != nil {
 		logger.Error(err, "batchItemFromHget:")
-		return
+		return item, err
 	}
 
 	// Store the serialized status part (already in []byte form).
@@ -409,7 +407,7 @@ func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logge
 
 	item = &db_api.BatchItem{
 		BaseIndexes: db_api.BaseIndexes{
-			ID:       id,
+			ID:       ID,
 			TenantID: tenantID,
 			Expiry:   expiry,
 			Tags:     nTags,

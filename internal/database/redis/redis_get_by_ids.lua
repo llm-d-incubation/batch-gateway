@@ -17,7 +17,7 @@
 -- Parse inputs.
 local IDs = KEYS
 local includeStatic = ARGV[1]
-local tenantId = ARGV[2]
+local tenantID = ARGV[2]
 
 -- Check inputs.
 local result = {}
@@ -30,12 +30,12 @@ for _, key in ipairs(IDs) do
 	-- Get the key's contents.
 	local contents
 	if includeStatic == 'true' then
-		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status", "spec")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status", "spec")
 	else
-		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status")
 	end
 	-- Check inclusion condition.
-	if (contents ~= nil) and (tenantId == nil or tenantId == '' or tenantId == contents[2]) then
+	if (contents ~= nil) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
 		table.insert(result, contents)
 	end
 end

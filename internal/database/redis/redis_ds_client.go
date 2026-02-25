@@ -32,8 +32,8 @@ import (
 
 const (
 	fieldNameVersion     = "ver"
-	fieldNameId          = "id"
-	fieldNameTenantId    = "tenantId"
+	fieldNameID          = "ID"
+	fieldNameTenantID    = "tenantID"
 	fieldNameExpiry      = "expiry"
 	fieldNameTags        = "tags"
 	fieldNameSpec        = "spec"
@@ -68,8 +68,8 @@ var (
 	redisScriptGetByExpiry = goredis.NewScript(getByExpiryLua)
 
 	//go:embed redis_get_by_ids.lua
-	getByIdsLua         string
-	redisScriptGetByIds = goredis.NewScript(getByIdsLua)
+	getByIDsLua         string
+	redisScriptGetByIDs = goredis.NewScript(getByIDsLua)
 
 	//go:embed redis_get_by_tenant.lua
 	getByTenantLua         string
