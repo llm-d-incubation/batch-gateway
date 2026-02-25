@@ -18,40 +18,11 @@ limitations under the License.
 package batch_utils
 
 import (
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 )
-
-// FromDBItemToJobInfoObject: convert db item to Processor's JobInfo object
-func FromDBItemToJobInfoObject(job *db.BatchItem) (*batch_types.JobInfo, error) {
-	jobInfo := &batch_types.JobInfo{
-		JobID:    job.ID,
-		BatchJob: &openai.Batch{},
-	}
-
-	batchJob, err := converter.DBItemToBatch(job)
-	if err != nil {
-		return nil, err
-	}
-
-	jobInfo.BatchJob = batchJob
-
-	for _, tag := range job.Tags {
-		if strings.HasPrefix(tag, "tenant:") {
-			jobInfo.TenantID = strings.TrimPrefix(tag, "tenant:")
-			break
-		}
-	}
-
-	return jobInfo, nil
-}
 
 // IsJobRunnable checks if the job is in runnable status
 func IsJobRunnable(job *openai.Batch) bool {
@@ -104,12 +75,4 @@ func BuildUpdatedStatusInfo(
 		}
 	}
 	return &updated, nil
-}
-
-func GetJobPriorityDataFromQueueItem(item *db.BatchJobPriority) (*batch_types.BatchJobPriorityData, error) {
-	data := &batch_types.BatchJobPriorityData{}
-	if err := json.Unmarshal(item.Data, data); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal job priority data: %w", err)
-	}
-	return data, nil
 }
