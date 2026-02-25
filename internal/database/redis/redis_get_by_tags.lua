@@ -16,16 +16,16 @@
 
 -- Parse inputs.
 local tags = KEYS
-local includeStatic = ARGV[1]
-local pattern = ARGV[2]
-local cursor = ARGV[3]
-local count = ARGV[4]
-local tagsCond = ARGV[5]
+local tagsCond = ARGV[1]
+local includeStatic = ARGV[2]
+local pattern = ARGV[3]
+local cursor = ARGV[4]
+local count = ARGV[5]
 local tenantId = ARGV[6]
 
 -- Check inputs.
 local result = {}
-if (#tags == 0) or (tagsCond ~= 'and' and tagsCond ~= 'or') then
+if (tags == nil) or (#tags == 0) or (tagsCond ~= 'and' and tagsCond ~= 'or') then
 	return {0, result}
 end
 
@@ -52,7 +52,7 @@ for _, key in ipairs(scan_out[2]) do
 		end
 	end
 	-- Check inclusion condition.
-	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantId == '' or tenantId == contents[2]) then
+	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantId == nil or tenantId == '' or tenantId == contents[2]) then
 		table.insert(result, contents)
 	end
 end

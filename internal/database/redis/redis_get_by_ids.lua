@@ -35,7 +35,7 @@ for _, key in ipairs(IDs) do
 		contents = redis.call('HMGET', key, "id", "tenantId", "expiry", "tags", "status")
 	end
 	-- Check inclusion condition.
-	if (contents ~= nil) and (tenantId == '' or tenantId == contents[2]) then
+	if (contents ~= nil) and (tenantId == nil or tenantId == '' or tenantId == contents[2]) then
 		table.insert(result, contents)
 	end
 end

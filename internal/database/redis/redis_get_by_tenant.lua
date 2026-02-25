@@ -23,7 +23,7 @@ local count = ARGV[5]
 
 -- Check inputs.
 local result = {}
-if tenantId == '' then
+if tenantId == nil or tenantId == '' then
 	return {0, result}
 end
 
