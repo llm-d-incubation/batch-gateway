@@ -42,7 +42,7 @@ if filedItemType == 'batch' then
 else
     -- Add the hash key.
     redis.call('HSET', hashKey, "ver", fieldVer,
-        "ID", fieldID, "tenantID", fieldTenantID, "expiry", fieldExpiry, "tags", fieldTags, 
+        "ID", fieldID, "tenantID", fieldTenantID, "expiry", fieldExpiry, "tags", fieldTags,
         "status", fieldStatus, "spec", fieldSpec, "purpose", fieldPurpose)
 
     -- Set expiration.
