@@ -31,7 +31,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem) (err error) {
+func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -51,7 +51,7 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
-		[]string{getKeyForStore(item.ID, c.tableName)},
+		[]string{getKeyForStore(item.ID, tableNameBatch)},
 		versionV1, item.ID, item.TenantID, item.Expiry, ptags, item.Status, item.Spec, ttlSecDefault).Text()
 	if err != nil {
 		logger.Error(err, "DBStore: script failed")
@@ -67,7 +67,7 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 	return nil
 }
 
-func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem) (err error) {
+func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -103,7 +103,7 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	err = c.redisClient.HSet(cctx, getKeyForStore(item.ID, c.tableName), fields...).Err()
+	err = c.redisClient.HSet(cctx, getKeyForStore(item.ID, tableNameBatch), fields...).Err()
 	if err != nil {
 		logger.Error(err, "DBUpdate: HSet failed")
 		return
@@ -114,7 +114,7 @@ func (c *BatchDSClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 	return nil
 }
 
-func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
+func (c *BatchDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	deletedIDs []string, err error) {
 
 	if ctx == nil {
@@ -129,7 +129,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	var cmds []goredis.Cmder
 	cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
-			res := pipe.HDel(cctx, getKeyForStore(id, c.tableName),
+			res := pipe.HDel(cctx, getKeyForStore(id, tableNameBatch),
 				fieldNameVersion, fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 			resMap[id] = res
 		}
@@ -158,7 +158,7 @@ func (c *BatchDSClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	return
 }
 
-func (c *BatchDSClientRedis) DBGet(
+func (c *BatchDBClientRedis) DBGet(
 	ctx context.Context, query *db_api.BatchQuery,
 	includeStatic bool, start, limit int) (
 	items []*db_api.BatchItem, cursor int, expectMore bool, err error) {
@@ -181,10 +181,10 @@ func (c *BatchDSClientRedis) DBGet(
 		cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 			for _, id := range query.IDs {
 				if includeStatic {
-					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
+					pipe.HMGet(cctx, getKeyForStore(id, tableNameBatch),
 						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus, fieldNameSpec)
 				} else {
-					pipe.HMGet(cctx, getKeyForStore(id, c.tableName),
+					pipe.HMGet(cctx, getKeyForStore(id, tableNameBatch),
 						fieldNameID, fieldNameTenantID, fieldNameExpiry, fieldNameTags, fieldNameStatus)
 				}
 			}
@@ -239,7 +239,7 @@ func (c *BatchDSClientRedis) DBGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(c.tableName), start, limit, query.TenantID).Slice()
+			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(tableNameBatch), start, limit, query.TenantID).Slice()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return
@@ -258,7 +258,7 @@ func (c *BatchDSClientRedis) DBGet(
 		defer ccancel()
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
 			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(c.tableName), start, limit, query.TenantID).Slice()
+			getKeyPatternForStore(tableNameBatch), start, limit, query.TenantID).Slice()
 		if err != nil {
 			logger.Error(err, "DBGet: script failed")
 			return

@@ -27,7 +27,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
+func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -63,7 +63,7 @@ func (c *BatchDSClientRedis) StatusSet(ctx context.Context, ID string, TTL int, 
 	return
 }
 
-func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []byte, err error) {
+func (c *ExchangeDBClientRedis) StatusGet(ctx context.Context, ID string) (data []byte, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -95,7 +95,7 @@ func (c *BatchDSClientRedis) StatusGet(ctx context.Context, ID string) (data []b
 	return
 }
 
-func (c *BatchDSClientRedis) StatusDelete(ctx context.Context, ID string) (nDeleted int, err error) {
+func (c *ExchangeDBClientRedis) StatusDelete(ctx context.Context, ID string) (nDeleted int, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()

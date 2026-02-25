@@ -32,7 +32,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func (c *BatchDSClientRedis) ECConsumerGetChannel(ctx context.Context, ID string) (
+func (c *ExchangeDBClientRedis) ECConsumerGetChannel(ctx context.Context, ID string) (
 	batchEventsChan *db_api.BatchEventsChan, err error) {
 
 	if ctx == nil {
@@ -117,7 +117,7 @@ func getKeyForEvent(key string) string {
 	return eventKeysPrefix + key
 }
 
-func (c *BatchDSClientRedis) ECProducerSendEvents(ctx context.Context, events []db_api.BatchEvent) (
+func (c *ExchangeDBClientRedis) ECProducerSendEvents(ctx context.Context, events []db_api.BatchEvent) (
 	sentIDs []string, err error) {
 
 	if ctx == nil {

@@ -32,7 +32,7 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func (c *BatchDSClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJobPriority) (err error) {
+func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJobPriority) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -77,7 +77,7 @@ func (c *BatchDSClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJo
 	return
 }
 
-func (c *BatchDSClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJobPriority) (nDeleted int, err error) {
+func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJobPriority) (nDeleted int, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -114,7 +114,7 @@ func (c *BatchDSClientRedis) PQDelete(ctx context.Context, item *db_api.BatchJob
 	return
 }
 
-func (c *BatchDSClientRedis) PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
+func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
 	jobPriorities []*db_api.BatchJobPriority, err error) {
 
 	if ctx == nil {

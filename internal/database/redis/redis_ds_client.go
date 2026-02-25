@@ -38,6 +38,8 @@ const (
 	fieldNameTags        = "tags"
 	fieldNameSpec        = "spec"
 	fieldNameStatus      = "status"
+	tableNameBatch       = "batch"
+	tableNameFiles       = "files"
 	eventReadCount       = 4
 	keysPrefix           = "llmd_batch:"
 	storeKeysPrefix      = keysPrefix + "store:"
@@ -75,23 +77,62 @@ var (
 	getByTenantLua         string
 	redisScriptGetByTenant = goredis.NewScript(getByTenantLua)
 
-	_ db_api.BatchDBClient            = (*BatchDSClientRedis)(nil)
-	_ db_api.BatchPriorityQueueClient = (*BatchDSClientRedis)(nil)
-	_ db_api.BatchEventChannelClient  = (*BatchDSClientRedis)(nil)
-	_ db_api.BatchStatusClient        = (*BatchDSClientRedis)(nil)
+	// TBD
+	_ db_api.BatchDBClient            = (*BatchDBClientRedis)(nil)
+	_ db_api.BatchPriorityQueueClient = (*ExchangeDBClientRedis)(nil)
+	_ db_api.BatchEventChannelClient  = (*ExchangeDBClientRedis)(nil)
+	_ db_api.BatchStatusClient        = (*ExchangeDBClientRedis)(nil)
 )
 
-type BatchDSClientRedis struct {
+type DSClientRedis struct {
 	redisClient        *goredis.Client
 	redisClientChecker *uredis.RedisClientChecker
-	tableName          string
 	timeout            time.Duration
 	idleLogFreq        time.Duration
 	idleLogLast        time.Time
 }
 
-func NewBatchDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration, tableName string) (
-	*BatchDSClientRedis, error) {
+type BatchDBClientRedis struct {
+	DSClientRedis
+}
+
+type FilesDBClientRedis struct {
+	DSClientRedis
+}
+
+type ExchangeDBClientRedis struct {
+	DSClientRedis
+}
+
+func NewBatchDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	*BatchDBClientRedis, error) {
+	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return &BatchDBClientRedis{DSClientRedis: *dsClient}, nil
+}
+
+func NewFilesDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	*FilesDBClientRedis, error) {
+	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return &FilesDBClientRedis{DSClientRedis: *dsClient}, nil
+}
+
+func NewExchangeDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	*ExchangeDBClientRedis, error) {
+	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return &ExchangeDBClientRedis{DSClientRedis: *dsClient}, nil
+}
+
+func newDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	*DSClientRedis, error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -110,25 +151,24 @@ func NewBatchDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, 
 		return nil, err
 	}
 	redisClientChecker := uredis.NewRedisClientChecker(redisClient, keysPrefix, conf.ServiceName, opTimeout)
-	logger.Info("NewBatchDSClientRedis: succeeded", "serviceName", conf.ServiceName)
-	return &BatchDSClientRedis{
+	logger.Info("NewDSClientRedis: succeeded", "serviceName", conf.ServiceName)
+	return &DSClientRedis{
 		redisClient:        redisClient,
 		redisClientChecker: redisClientChecker,
-		tableName:          tableName,
 		timeout:            opTimeout,
 		idleLogFreq:        logFreqDefault,
 		idleLogLast:        time.Now(),
 	}, nil
 }
 
-func (c *BatchDSClientRedis) Close() (err error) {
+func (c *DSClientRedis) Close() (err error) {
 	if c.redisClient != nil {
 		err = c.redisClient.Close()
 	}
-	return err
+	return
 }
 
-func (c *BatchDSClientRedis) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
+func (c *DSClientRedis) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
