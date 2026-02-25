@@ -48,7 +48,6 @@ func (c *BatchDSClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		logger.Error(err, "DBStore: tags packing failed")
 		return
 	}
-
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
 	var res string
