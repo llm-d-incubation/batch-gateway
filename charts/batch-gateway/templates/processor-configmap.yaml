@@ -23,6 +23,7 @@ data:
 
     inference_config:
       gateway_url: {{ .Values.processor.config.inferenceConfig.gatewayUrl | quote }}
+      inference_api_key_file: {{ .Values.processor.inference.apiKey.secretKey | quote }}
       request_timeout: {{ .Values.processor.config.inferenceConfig.requestTimeout | quote }}
       max_retries: {{ .Values.processor.config.inferenceConfig.maxRetries }}
       initial_backoff: {{ .Values.processor.config.inferenceConfig.initialBackoff | quote }}
@@ -48,5 +49,4 @@ data:
     {{- end }}
 
     database_url_file: {{ .Values.processor.database.secretKey | quote }}
-    inference_api_key_file: {{ .Values.processor.inference.apiKey.secretKey | quote }}
 {{- end }}

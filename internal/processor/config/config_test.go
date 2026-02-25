@@ -48,8 +48,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.MaxOpenFiles != 50 {
 		t.Fatalf("MaxOpenFiles = %d, want %d", c.MaxOpenFiles, 50)
 	}
-	if c.DatabaseURL != "" {
-		t.Fatalf("DatabaseURL = %q, want empty default", c.DatabaseURL)
+	if c.DatabaseURLFile != "" {
+		t.Fatalf("DatabaseURLFile = %q, want empty default", c.DatabaseURLFile)
 	}
 
 	// inference config spot-check
@@ -242,8 +242,8 @@ func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 	path := filepath.Join(dir, "cfg.yaml")
 
 	// time.Duration check yaml
-	yamlData := []byte(`
-database_url: "postgres://db.example.local:5432/batch"
+yamlData := []byte(`
+database_url_file: "database-url"
 poll_interval: 2s
 task_wait_time: 500ms
 num_workers: 3
@@ -253,6 +253,7 @@ work_dir: "` + dir + `/work"
 addr: ":1234"
 inference_config:
   gateway_url: "http://example:8000"
+  inference_api_key_file: "inference-api-key"
   request_timeout: 30s
   max_retries: 9
   initial_backoff: 250ms
@@ -272,8 +273,8 @@ inference_config:
 	if c.PollInterval != 2*time.Second {
 		t.Fatalf("PollInterval = %v, want %v", c.PollInterval, 2*time.Second)
 	}
-	if c.DatabaseURL != "postgres://db.example.local:5432/batch" {
-		t.Fatalf("DatabaseURL = %q, want %q", c.DatabaseURL, "postgres://db.example.local:5432/batch")
+	if c.DatabaseURLFile != "database-url" {
+		t.Fatalf("DatabaseURLFile = %q, want %q", c.DatabaseURLFile, "database-url")
 	}
 	if c.TaskWaitTime != 500*time.Millisecond {
 		t.Fatalf("TaskWaitTime = %v, want %v", c.TaskWaitTime, 500*time.Millisecond)
@@ -296,6 +297,9 @@ inference_config:
 
 	if c.InferenceConfig.GatewayURL != "http://example:8000" {
 		t.Fatalf("GatewayURL = %q, want %q", c.InferenceConfig.GatewayURL, "http://example:8000")
+	}
+	if c.InferenceConfig.APIKeyFile != "inference-api-key" {
+		t.Fatalf("APIKeyFile = %q, want %q", c.InferenceConfig.APIKeyFile, "inference-api-key")
 	}
 	if c.InferenceConfig.RequestTimeout != 30*time.Second {
 		t.Fatalf("RequestTimeout = %v, want %v", c.InferenceConfig.RequestTimeout, 30*time.Second)
