@@ -46,6 +46,7 @@ import (
 
 type ProcessorClients struct {
 	database      db.BatchDBClient
+	fileDatabase  db.FileDBClient
 	files         files.BatchFilesClient
 	priorityQueue db.BatchPriorityQueueClient
 	status        db.BatchStatusClient
@@ -55,6 +56,7 @@ type ProcessorClients struct {
 
 func NewProcessorClients(
 	database db.BatchDBClient,
+	fileDatabase db.FileDBClient,
 	files files.BatchFilesClient,
 	pq db.BatchPriorityQueueClient,
 	status db.BatchStatusClient,
@@ -63,6 +65,7 @@ func NewProcessorClients(
 ) ProcessorClients {
 	return ProcessorClients{
 		database:      database,
+		fileDatabase:  fileDatabase,
 		files:         files,
 		priorityQueue: pq,
 		status:        status,
@@ -114,10 +117,27 @@ func (p *Processor) release() {
 	}
 }
 
+func (p *Processor) releaseAndWaitPollInterval(ctx context.Context) bool {
+	p.release()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(p.cfg.PollInterval):
+		return true
+	}
+}
+
+func (p *Processor) releaseForNextPoll() {
+	p.release()
+}
+
 // TODO: need to add detailed validation here for each client.
 func (pc *ProcessorClients) Validate() error {
 	if pc.database == nil {
 		return fmt.Errorf("database client is missing")
+	}
+	if pc.fileDatabase == nil {
+		return fmt.Errorf("file database client is missing")
 	}
 	if pc.files == nil {
 		return fmt.Errorf("files client is missing")
@@ -179,22 +199,13 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 		// check queue for available tasks
 		task, err := poller.DequeueOne(ctx)
 
-		// polling error
-		if err != nil {
-			p.release()
-			continue
-		}
-
-		// when there's no waiting tasks in the queue
-		if task == nil {
-			p.release()
+		// when there's no waiting tasks in the queue or poller returned an error
+		if task == nil || err != nil {
 			// wait for poll interval to protect db from frequent queueing
-			select {
-			case <-ctx.Done():
+			if !p.releaseAndWaitPollInterval(ctx) {
 				return nil
-			case <-time.After(p.cfg.PollInterval):
-				continue
 			}
+			continue
 		}
 
 		// create a new logger for the job
@@ -204,7 +215,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 		// get job item from db
 		jobItem, err := poller.FetchJobItem(jctx, task)
 		if err != nil {
-			p.release()
+			p.releaseForNextPoll()
 			// poller re-enqueued the task if the error is due to temporary issue (db connection, etc.)
 			metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
 			continue
@@ -213,7 +224,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 		// job item is not found in the db.
 		if jobItem == nil {
 			// poller deleted the task from the queue.
-			p.release()
+			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonDBInconsistency)
 			continue
 		}
@@ -233,7 +244,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 
 		if err != nil {
 			jlogger.V(logging.ERROR).Error(err, "Failed to convert job object in DB to job info object")
-			p.release()
+			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			continue
 		}
@@ -251,7 +262,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 				jlogger.V(logging.ERROR).Error(err, "Failed to delete the task from the queue", "slo", task.SLO)
 			}
 
-			p.release()
+			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonExpired)
 			continue
 		}
@@ -266,7 +277,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 				jlogger.V(logging.ERROR).Error(err, "Failed to delete the task from the queue", "slo", task.SLO)
 			}
 
-			p.release()
+			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonNotRunnableState)
 			continue
 		}
@@ -351,10 +362,10 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 }
 
 // preProcessJob performs the pre-processing steps for the job
-// it downloads the input file from the files store in job work folder : jobs/<jobid>/input.jsonl,
+// it downloads the input file from the files store in job work folder : <tenantID>/jobs/<jobid>/input.jsonl,
 // creates the plan per model, while saving the input file in the work folder.
-// temp plan file is saved in the work folder's subfolder while creating the plan (jobs/<jobid>/plans/<modelid>.plan.tmp)
-// then the temp plan file is renamed to the final plan file (jobs/<jobid>/plans/<modelid>.plan)
+// temp plan file is saved in the work folder's subfolder while creating the plan (<tenantID>/jobs/<jobid>/plans/<modelid>.plan.tmp)
+// then the temp plan file is renamed to the final plan file (<tenantID>/jobs/<jobid>/plans/<modelid>.plan)
 func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo, cancelRequested *atomic.Bool) error {
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
@@ -366,7 +377,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		return err
 	}
 
-	jobRootDir := p.jobRootDir(jobID)
+	jobRootDir := p.jobRootDir(jobID, jobInfo.TenantID)
 
 	// job directory creation
 	if err := os.MkdirAll(jobRootDir, 0o700); err != nil {
@@ -387,7 +398,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	}
 
 	// create local input file
-	localInputFilePath := p.jobInputFilePath(jobID)
+	localInputFilePath := p.jobInputFilePath(jobID, jobInfo.TenantID)
 	if localInputFilePath == "" {
 		err := fmt.Errorf("local input file path is empty")
 		logger.V(logging.ERROR).Error(err, "Local input file path is empty")
@@ -585,7 +596,7 @@ func (p *Processor) handleCancelled(
 	logger := klog.FromContext(ctx)
 
 	// 1: cleanup local artifacts (best-effort)
-	jobDir := p.jobRootDir(jobItem.ID)
+	jobDir := p.jobRootDir(jobItem.ID, jobItem.TenantID)
 	if jobDir != "" {
 		if err := os.RemoveAll(jobDir); err != nil {
 			// keep going: status update is more important than cleanup.

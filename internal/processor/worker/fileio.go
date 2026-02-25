@@ -17,28 +17,28 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 )
 
-func (p *Processor) jobRootDir(jobID string) string {
-	return filepath.Join(p.cfg.WorkDir, "jobs", jobID)
+func (p *Processor) jobRootDir(jobID, tenantID string) string {
+	return filepath.Join(p.cfg.WorkDir, tenantID, "jobs", jobID)
 }
 
-func (p *Processor) jobInputFilePath(jobID string) string {
-	return filepath.Join(p.jobRootDir(jobID), "input.jsonl")
+func (p *Processor) jobInputFilePath(jobID, tenantID string) string {
+	return filepath.Join(p.jobRootDir(jobID, tenantID), "input.jsonl")
 }
 
 // openInputFileStream opens the input file stream
 func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string) (io.ReadCloser, *filesapi.BatchFileMetadata, error) {
 	// get file metadata from database
-	items, _, _, err := p.clients.database.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{inputFileID}}}, true, 0, 1)
+	items, _, _, err := p.clients.fileDatabase.DBGet(ctx, &db.FileQuery{BaseQuery: db.BaseQuery{IDs: []string{inputFileID}}}, true, 0, 1)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get input file metadata: %w", err)
 	}
@@ -48,12 +48,17 @@ func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string)
 
 	// unmarshal file object into openai file object to get inputfile filename and tenant id
 	fileItem := items[0]
-	fileObj := &openai.FileObject{}
-	if err := json.Unmarshal(fileItem.Spec, fileObj); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal file object: %w", err)
+	fileObj, err := converter.DBItemToFile(fileItem)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert file db item to file: %w", err)
 	}
 
-	reader, metadata, err := p.clients.files.Retrieve(ctx, fileObj.Filename, fileItem.TenantID)
+	// retrieve input jsonl file from storage
+	folderName, err := ucom.GetFolderNameByTenantID(fileItem.TenantID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get folder name by tenant id: %w", err)
+	}
+	reader, metadata, err := p.clients.files.Retrieve(ctx, fileObj.Filename, folderName)
 	if err != nil {
 		return nil, metadata, fmt.Errorf("failed to open input file stream: %w", err)
 	}

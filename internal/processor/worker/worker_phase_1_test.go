@@ -24,6 +24,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 )
 
 const mockFilesRootDir = "/tmp/batch-gateway-files"
@@ -116,6 +117,13 @@ func newMockBatchDBClient() db.BatchDBClient {
 	return mockdb.NewMockDBClient[db.BatchItem, db.BatchQuery](
 		func(b *db.BatchItem) string { return b.ID },
 		func(q *db.BatchQuery) *db.BaseQuery { return &q.BaseQuery },
+	)
+}
+
+func newMockFileDBClient() db.FileDBClient {
+	return mockdb.NewMockDBClient[db.FileItem, db.FileQuery](
+		func(f *db.FileItem) string { return f.ID },
+		func(q *db.FileQuery) *db.BaseQuery { return &q.BaseQuery },
 	)
 }
 
@@ -224,10 +232,15 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	cfg.MaxOpenFiles = 2
 
 	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
 	filesClient := mockfiles.NewMockBatchFilesClient()
 
 	// Build remote input in mock files store
-	folder := uniqueTestFolder(t, "tenantA/job-inputs")
+	tenantID := uniqueTestFolder(t, "tenantA/job-inputs")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
 	cleanMockFilesFolder(t, folder)
 	filename := "input.jsonl"
 	models := []string{
@@ -251,22 +264,20 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	// Create DB item for "input file metadata"
 	inputFileID := "file-123"
 	fileSpec := &openai.FileObject{Filename: filename}
-	fileItem := &db.BatchItem{
-		BaseIndexes: db.BaseIndexes{
-			ID:       inputFileID,
-			TenantID: folder,
-		},
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
 		BaseContents: db.BaseContents{
 			Spec: mustJSON(t, fileSpec),
 		},
 	}
-	if err := dbClient.DBStore(ctx, fileItem); err != nil {
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
 		t.Fatalf("DBStore file item: %v", err)
 	}
 
 	clients := &ProcessorClients{
-		database: dbClient,
-		files:    filesClient,
+		database:     dbClient,
+		fileDatabase: fileDBClient,
+		files:        filesClient,
 		// not needed for preProcessJob:
 		priorityQueue: nil,
 		status:        nil,
@@ -288,7 +299,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 				Status: openai.BatchStatusInProgress,
 			},
 		},
-		TenantID: "tenantA",
+		TenantID: tenantID,
 	}
 
 	var cancelRequested atomic.Bool
@@ -297,7 +308,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 
 	// 1) local input exists and equals remoteBuf
-	localInput := p.jobInputFilePath(jobID)
+	localInput := p.jobInputFilePath(jobID, tenantID)
 	gotLocal, err := os.ReadFile(localInput)
 	if err != nil {
 		t.Fatalf("read local input: %v", err)
@@ -307,7 +318,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 
 	// 2) model_map.json exists and is consistent
-	mapPath := filepath.Join(p.jobRootDir(jobID), "model_map.json")
+	mapPath := filepath.Join(p.jobRootDir(jobID, tenantID), "model_map.json")
 	mapBytes, err := os.ReadFile(mapPath)
 	if err != nil {
 		t.Fatalf("read model_map.json: %v", err)
@@ -335,7 +346,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 	defer f.Close()
 
-	plansDir := filepath.Join(p.jobRootDir(jobID), "plans")
+	plansDir := filepath.Join(p.jobRootDir(jobID, tenantID), "plans")
 	for safeID := range mm.SafeToModel {
 		planPath := filepath.Join(plansDir, safeID+".plan")
 		if _, err := os.Stat(planPath); err != nil {
@@ -442,10 +453,12 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	cfg.MaxOpenFiles = 3
 
 	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
 	filesClient := mockfiles.NewMockBatchFilesClient()
 
 	clients := &ProcessorClients{
 		database:      dbClient,
+		fileDatabase:  fileDBClient,
 		files:         filesClient,
 		priorityQueue: nil,
 		status:        nil,
@@ -456,7 +469,11 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 
 	jobID := "job-preprocess-cancel"
 	inputFileID := "file-preprocess-cancel"
-	folder := uniqueTestFolder(t, "tenantA/preprocess-cancel")
+	tenantID := uniqueTestFolder(t, "tenantA/preprocess-cancel")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
 	cleanMockFilesFolder(t, folder)
 
 	models := make([]string, 0, 2000)
@@ -480,11 +497,8 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 		t.Fatalf("files.Store: %v", err)
 	}
 	fileSpec := &openai.FileObject{Filename: "input.jsonl"}
-	if err := dbClient.DBStore(ctx, &db.BatchItem{
-		BaseIndexes: db.BaseIndexes{
-			ID:       inputFileID,
-			TenantID: folder,
-		},
+	if err := fileDBClient.DBStore(ctx, &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
 		BaseContents: db.BaseContents{
 			Spec: mustJSON(t, fileSpec),
 		},
@@ -503,12 +517,12 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 				Status: openai.BatchStatusInProgress,
 			},
 		},
-		TenantID: "tenantA",
+		TenantID: tenantID,
 	}
 
 	var cancelRequested atomic.Bool
 	cancelRequested.Store(true)
-	err := p.preProcessJob(ctx, jobInfo, &cancelRequested)
+	err = p.preProcessJob(ctx, jobInfo, &cancelRequested)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -553,7 +567,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
 		t.Fatalf("DBStore job item: %v", err)
 	}
 
-	jobDir := p.jobRootDir(jobID)
+	jobDir := p.jobRootDir(jobID, jobItem.TenantID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll jobDir: %v", err)
 	}

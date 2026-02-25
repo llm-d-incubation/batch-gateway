@@ -305,8 +305,14 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (wo
 		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
 	)
 
+	fileDBClient := mockdb.NewMockDBClient(
+		func(f *dbapi.FileItem) string { return f.ID },
+		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	)
+
 	return worker.NewProcessorClients(
 		batchDBClient,
+		fileDBClient,
 		mockfiles.NewMockBatchFilesClient(),
 		mockdb.NewMockBatchPriorityQueueClient(),
 		mockdb.NewMockBatchStatusClient(),
