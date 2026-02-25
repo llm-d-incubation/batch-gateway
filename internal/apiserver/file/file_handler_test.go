@@ -50,7 +50,7 @@ func TestFileHandler(t *testing.T) {
 }
 
 // setupTestHandler creates a test handler with mocked dependencies
-func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[dbapi.FileItem, dbapi.FileQuery], *fsmock.MockBatchFilesClient, context.Context) {
+func setupTestHandler(t *testing.T) (*FileAPIHandler, *dbmock.MockDBClient[dbapi.FileItem, dbapi.FileQuery], *fsmock.MockBatchFilesClient, context.Context) {
 	t.Helper()
 
 	dbClient := dbmock.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
@@ -60,14 +60,14 @@ func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[dbapi
 	filesClient := fsmock.NewMockBatchFilesClient()
 
 	config := &common.ServerConfig{
-		FilesAPI: common.FilesAPIConfig{
+		FileAPI: common.FileAPIConfig{
 			MaxSizeBytes:             common.DefaultMaxFileSizeBytes,
 			MaxLineCount:             common.DefaultMaxFileLineCount,
 			DefaultExpirationSeconds: 30 * 24 * 60 * 60, // 30 days (test value)
 		},
 	}
 
-	handler := NewFileApiHandler(config, dbClient, filesClient)
+	handler := NewFileAPIHandler(config, dbClient, filesClient)
 
 	ctx := context.Background()
 	logger := klog.FromContext(ctx)
@@ -77,7 +77,7 @@ func setupTestHandler(t *testing.T) (*FileApiHandler, *dbmock.MockDBClient[dbapi
 }
 
 // createTestFile is a helper function that creates a test file and returns the created FileObject.
-func createTestFile(t *testing.T, handler *FileApiHandler, ctx context.Context, filename, purpose, content string) openai.FileObject {
+func createTestFile(t *testing.T, handler *FileAPIHandler, ctx context.Context, filename, purpose, content string) openai.FileObject {
 	t.Helper()
 
 	body := &bytes.Buffer{}

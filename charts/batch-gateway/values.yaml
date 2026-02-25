@@ -84,13 +84,14 @@ apiserver:
   config:
     host: ""
     port: "8000"
-    batchTTLSeconds: 2592000
     tenantHeader: "X-MaaS-User"
     readHeaderTimeoutSeconds: 10
     readTimeoutSeconds: 900
     writeTimeoutSeconds: 120
     idleTimeoutSeconds: 90
-    filesAPI:
+    batchAPI:
+      batchEventTTLSeconds: 2592000
+    fileAPI:
       defaultExpirationSeconds: 7776000
       maxSizeBytes: 209715200
       maxLineCount: 50000

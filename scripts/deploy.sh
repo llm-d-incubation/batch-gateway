@@ -140,8 +140,8 @@ get_target_arch() {
 build_and_load_images() {
     local target_arch
     target_arch="$(get_target_arch)"
-    local apiserver_img="ghcr.io/llm-d/batch-gateway-apiserver:${DEV_VERSION}"
-    local processor_img="ghcr.io/llm-d/batch-gateway-processor:${DEV_VERSION}"
+    local apiserver_img="ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}"
+    local processor_img="ghcr.io/llm-d-incubation/batch-gateway-processor:${DEV_VERSION}"
 
     step "Building container images (TARGETARCH=${target_arch}, version=${DEV_VERSION})..."
     cd "${REPO_ROOT}"
@@ -156,8 +156,9 @@ build_and_load_images() {
         else
             # Podman: save to tar archives then load into kind
             local tmp_apiserver tmp_processor
-            tmp_apiserver="$(mktemp /tmp/apiserver-XXXX.tar)"
-            tmp_processor="$(mktemp /tmp/processor-XXXX.tar)"
+            tmp_apiserver="/tmp/apiserver.tar"
+            tmp_processor="/tmp/processor.tar"
+            rm -f "${tmp_apiserver}" "${tmp_processor}"
 
             log "Saving Podman images to tar archives..."
             podman save -o "${tmp_apiserver}" "${apiserver_img}"
