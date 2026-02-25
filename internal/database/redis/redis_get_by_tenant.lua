@@ -12,20 +12,18 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
--- Get by tags lua script.
+-- Get by tenant lua script.
 
 -- Parse inputs.
-local tags = KEYS
-local tagsCond = ARGV[1]
+local tenantID = ARGV[1]
 local includeStatic = ARGV[2]
 local pattern = ARGV[3]
 local cursor = ARGV[4]
 local count = ARGV[5]
-local tenantID = ARGV[6]
 
 -- Check inputs.
 local result = {}
-if (tags == nil) or (#tags == 0) or (tagsCond ~= 'and' and tagsCond ~= 'or') then
+if tenantID == nil or tenantID == '' then
 	return {0, result}
 end
 
@@ -41,18 +39,8 @@ for _, key in ipairs(scan_out[2]) do
 	else
 		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status")
 	end
-	-- Search for the tags.
-	local ofound = 0
-	if (#tags > 0) and (tagsCond == 'and' or tagsCond == 'or') then
-		for _, tag in ipairs(tags) do
-			local found = string.find(contents[4], tag, 0, true)
-			if found ~= nil then
-				ofound = ofound + 1
-			end
-		end
-	end
-	-- Check inclusion condition.
-	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
+	-- Check for expiry condition.
+	if (contents ~= nil) and (tenantID == contents[2]) then
 		table.insert(result, contents)
 	end
 end
