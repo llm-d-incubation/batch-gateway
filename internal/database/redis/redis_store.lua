@@ -16,7 +16,7 @@
 
 -- Parse inputs.
 local hashKey = KEYS[1]
-local filedItemType = ARGV[1]
+local fieldItemType = ARGV[1]
 local fieldVer = ARGV[2]
 local fieldID = ARGV[3]
 local fieldTenantID = ARGV[4]
@@ -27,7 +27,7 @@ local fieldSpec = ARGV[8]
 local ttl = tonumber(ARGV[9])
 local fieldPurpose = ARGV[10]
 
-if filedItemType == 'batch' then
+if fieldItemType == 'batch' then
     -- Add the hash key.
     redis.call('HSET', hashKey, "ver", fieldVer,
         "ID", fieldID, "tenantID", fieldTenantID, "expiry", fieldExpiry, "tags", fieldTags,
