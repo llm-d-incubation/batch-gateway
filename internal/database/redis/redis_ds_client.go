@@ -32,12 +32,12 @@ import (
 
 const (
 	fieldNameVersion     = "ver"
-	fieldNameId          = "id"
+	fieldNameID          = "ID"
 	fieldNameTenantID    = "tenantID"
 	fieldNameExpiry      = "expiry"
+	fieldNameTags        = "tags"
 	fieldNameSpec        = "spec"
 	fieldNameStatus      = "status"
-	fieldNameTags        = "tags"
 	eventReadCount       = 4
 	keysPrefix           = "llmd_batch:"
 	storeKeysPrefix      = keysPrefix + "store:"
@@ -66,6 +66,14 @@ var (
 	//go:embed redis_get_by_expiry.lua
 	getByExpiryLua         string
 	redisScriptGetByExpiry = goredis.NewScript(getByExpiryLua)
+
+	//go:embed redis_get_by_ids.lua
+	getByIDsLua         string
+	redisScriptGetByIDs = goredis.NewScript(getByIDsLua)
+
+	//go:embed redis_get_by_tenant.lua
+	getByTenantLua         string
+	redisScriptGetByTenant = goredis.NewScript(getByTenantLua)
 
 	_ db_api.BatchDBClient            = (*BatchDSClientRedis)(nil)
 	_ db_api.BatchPriorityQueueClient = (*BatchDSClientRedis)(nil)

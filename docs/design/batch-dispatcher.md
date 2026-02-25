@@ -60,27 +60,28 @@ Using the following definitions:
   * at the time of writing: number of requests
   * in the future: number of bytes, number of tokens etc
 
-* *$\mathrm{max}_\mathrm{SYS}$:* a measure of available resources
+* $\mathrm{max}_\mathrm{SYS}$: a measure of available resources
   * at the time of writing: total number of possible requests
   * in the future: total number of bytes, total number of tokens etc
 
-* *$\mathrm{cur}_\mathrm{EPP}$*: a measure of currently used EPP resources
+* $\mathrm{cur}_\mathrm{EPP}$: a measure of currently used EPP resources
   * e.g.: number of requests in the EPP internal queues
-  * possibly: number of bytes, number of tokens etc; as long as consistent with *$\mathrm{cur}_\mathrm{SYS}$*  and *$\mathrm{max}_\mathrm{SYS}$*
+  * possibly: number of bytes, number of tokens etc; as long as consistent with
+    $\mathrm{cur}\_\mathrm{SYS}$ and $\mathrm{max}_\mathrm{SYS}$
 
-  *Note:* given the variability in size of the requests, *$\mathrm{max}_\mathrm{SYS}$* is currently meant to be a statically-configured parameter. However this could be turned into readable metrics as well
+  *Note:* given the variability in size of the requests, $\mathrm{max}_\mathrm{SYS}$ is currently meant to be a statically-configured parameter. However this could be turned into readable metrics as well
 
 We define the following formulas:
 
 * **Saturation**: a measure of "fullness" of the system, slightly reformulated from the metric described in [\[PUBLIC\] Improved Flow Control Request Management](https://docs.google.com/document/d/1JxzJc8gNv2wKK5-a8ohb0btn78ymVKw9XMIb4-S-ncA/edit?tab=t.0)
-  $\mathrm{F}_\mathrm{SYS} = \frac{\mathrm{cur}_\mathrm{SYS}}{\mathrm{max}_\mathrm{SYS}}$
+  $\mathrm{F}\_\mathrm{SYS} = \frac{\mathrm{cur}\_\mathrm{SYS}}{\mathrm{max}\_\mathrm{SYS}}$
 * **Virtual Load** of the EPP: a measure of **fullness** as F, but relative to the internal queues of the EPP
-  $\mathrm{F}_\mathrm{EPP} = \frac{\mathrm{cur}_\mathrm{EPP}}{\mathrm{max}_\mathrm{SYS}}$
+  $\mathrm{F}\_\mathrm{EPP} = \frac{\mathrm{cur}\_\mathrm{EPP}}{\mathrm{max}\_\mathrm{SYS}}$
 * A configurable **Reserved Baseline** (e.g., *B \= 0.05*) reserved for unexpected bursts in high-priority realtime traffic.
 
-Then, **Dispatch Budget** is a combined view of pool **Saturation,** **EPP Virtual Load**, and the **Reserved Baseline**. Because the denominator for   $\mathrm{F}_\mathrm{SYS}$ and $\mathrm{F}_\mathrm{EPP}$ is always *$\mathrm{max}_\mathrm{SYS}$,* then we can write:
+Then, **Dispatch Budget** is a combined view of pool **Saturation,** **EPP Virtual Load**, and the **Reserved Baseline**. Because the denominator for   $\mathrm{F}\_\mathrm{SYS}$ and $\mathrm{F}\_\mathrm{EPP}$ is always $\mathrm{max}\_\mathrm{SYS}$, then we can write:
 
-$D = 1 -(\mathrm{F}_\mathrm{SYS}$+$\mathrm{F}_\mathrm{EPP}+B)$
+$D = 1 -(\mathrm{F}\_\mathrm{SYS}+\mathrm{F}\_\mathrm{EPP}+B)$
 
 
 For a given Dispatch Budget, the expected remaining capacity of the system is just
@@ -88,18 +89,18 @@ For a given Dispatch Budget, the expected remaining capacity of the system is ju
 $\mathrm{max}_\mathrm{SYS}\times D$
 #### Example
 
-$\mathrm{F}_\mathrm{SYS} = 0.5,   \quad    \mathrm{F}_\mathrm{EPP} = 0.1, \quad     B=0.05$
+$\mathrm{F}\_\mathrm{SYS} = 0.5,   \quad    \mathrm{F}\_\mathrm{EPP} = 0.1, \quad     B=0.05$
 
 - Dispatch Budget \= *1 \- (0.5 \+ 0.1 \+ 0.05) \= 0.35*
-- $\mathrm{max}_\mathrm{SYS} = 50$ requests
+- $\mathrm{max}\_\mathrm{SYS} = 50$ requests
 - Dispatchable Requests \= *floor(50 \* 0.35) \= 17* requests in parallel
 
 ### Request Lifecycle and Flow Control
 
 The **Batch Dispatcher** monitors the metrics and computes a **Dispatch Budget**.
 
-* When the Dispatch Budget *D* is **within a given range** \[0,u\], where **1** indicates **100%** of system capacity, and u**\<1,** then the Batch Dispatcher may forward ($\mathrm{max}_\mathrm{SYS} \times D$) requests at once.
-* When $D>u$, then the Batch Dispatcher should stop forwarding requests until again $D<=u$
+* When the Dispatch Budget *D* is **within a given range** \[0,u\], where **1** indicates **100%** of system capacity, and u**\<1,** then the Batch Dispatcher may forward ($\mathrm{max}\_\mathrm{SYS} \times D$) requests at once.
+* When $D>u$, then the Batch Dispatcher should stop forwarding requests until again $D\leq u$
 
 #### Failure Modes
 

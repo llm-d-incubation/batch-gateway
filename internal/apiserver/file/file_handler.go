@@ -32,6 +32,7 @@ import (
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
@@ -270,7 +271,12 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 
 	// Get tenant ID from context to use as folder name
 	tenantID := common.GetTenantIDFromContext(ctx)
-	folderName := tenantID
+	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		logger.Error(err, "failed to get folder name from tenant ID", "tenantID", tenantID)
+		common.WriteInternalServerError(w, r)
+		return
+	}
 	fileMeta, err := c.filesClient.Store(ctx, fileName, folderName, c.config.FilesAPI.GetMaxSizeBytes(), c.config.FilesAPI.GetMaxLineCount(), fileReader)
 	if err != nil {
 		logger.Error(err, "failed to store file content")
@@ -511,7 +517,12 @@ func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 		common.WriteInternalServerError(w, r)
 		return
 	}
-	folderName := item.TenantID
+	folderName, err := ucom.GetFolderNameByTenantID(item.TenantID)
+	if err != nil {
+		logger.Error(err, "failed to get folder name from tenant ID", "tenantID", item.TenantID)
+		common.WriteInternalServerError(w, r)
+		return
+	}
 
 	// Retrieve file content from storage
 	fileReader, fileMeta, err := c.filesClient.Retrieve(ctx, fileObj.Filename, folderName)
@@ -555,7 +566,12 @@ func (c *FileApiHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		common.WriteInternalServerError(w, r)
 		return
 	}
-	folderName := item.TenantID
+	folderName, err := ucom.GetFolderNameByTenantID(item.TenantID)
+	if err != nil {
+		logger.Error(err, "failed to get folder name from tenant ID", "tenantID", item.TenantID)
+		common.WriteInternalServerError(w, r)
+		return
+	}
 
 	// Delete physical file from storage
 	err = c.filesClient.Delete(ctx, fileObj.Filename, folderName)

@@ -16,26 +16,32 @@
 
 -- Parse inputs.
 local expTime = tonumber(ARGV[1])
-local pattern = ARGV[2]
-local getStatic = ARGV[3]
+local includeStatic = ARGV[2]
+local pattern = ARGV[3]
 local cursor = ARGV[4]
 local count = ARGV[5]
+local tenantID = ARGV[6]
+
+-- Check inputs.
+local result = {}
+if expTime <= 0 then
+	return {0, result}
+end
 
 -- Get the keys for the current iteration.
 local scan_out = redis.call('SCAN', cursor, 'TYPE', 'hash', 'MATCH', pattern, 'COUNT', count)
 
 -- Iterate over the keys.
-local result = {}
 for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents
-	if getStatic == 'true' then
-		contents = redis.call('HMGET', key, "id", "tenantID", "expiry", "tags", "status", "spec")
+	if includeStatic == 'true' then
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status", "spec")
 	else
-		contents = redis.call('HMGET', key, "id", "tenantID", "expiry", "tags", "status")
+		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "status")
 	end
-	-- Check for expiry condition.
-	if tonumber(contents[3]) <= expTime then
+	-- Check inclusion condition.
+	if (contents ~= nil) and (tonumber(contents[3]) <= expTime) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
 		table.insert(result, contents)
 	end
 end
