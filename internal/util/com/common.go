@@ -18,7 +18,12 @@ limitations under the License.
 
 package com
 
-import "math/rand"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"math/rand"
+)
 
 var (
 	letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -30,4 +35,21 @@ func RandString(n int) string {
 		b[i] = letterRunes[rand.Intn(len(letterRunes))]
 	}
 	return string(b)
+}
+
+// GetFolderNameByTenantID converts a tenant ID into a filesystem and S3-safe folder name.
+// It generates a deterministic SHA256-based name that is guaranteed to be valid for both
+// filesystem paths and S3 bucket naming requirements (63 characters max).
+func GetFolderNameByTenantID(tenantID string) (string, error) {
+	if tenantID == "" {
+		return "", fmt.Errorf("tenantID cannot be empty")
+	}
+
+	// Generate SHA256 hash of the tenant ID for a deterministic, filesystem-safe name
+	hash := sha256.Sum256([]byte(tenantID))
+	hashStr := hex.EncodeToString(hash[:])
+
+	// Use "t-" prefix + 61 hex chars = 63 chars total (S3 maximum)
+	// This provides virtually collision-free tenant ID mapping while staying under S3's 63-char limit
+	return "t-" + hashStr[:61], nil
 }

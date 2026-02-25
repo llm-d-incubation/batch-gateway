@@ -34,6 +34,7 @@ import (
 	dbmock "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	fsmock "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"k8s.io/klog/v2"
 )
 
@@ -179,7 +180,10 @@ func doTestCreateFile(t *testing.T) {
 	// Verify file was actually uploaded to storage
 	// Mock stores files at /tmp/batch-gateway-files/{folderName}/{fileName}
 	fileName := fileObj.Filename
-	folderName := common.DefaultTenantID
+	folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
+	if err != nil {
+		t.Fatalf("failed to get folder name from tenant ID: %v", err)
+	}
 	fileReader, fileMeta, err := filesClient.Retrieve(ctx, fileName, folderName)
 	if err != nil {
 		t.Fatalf("failed to retrieve file from storage: %v", err)
@@ -633,7 +637,11 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Verify physical file is deleted from storage
-		_, _, err = filesClient.Retrieve(ctx, createdFile.Filename, common.DefaultTenantID)
+		folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
+		if err != nil {
+			t.Fatalf("failed to get folder name from tenant ID: %v", err)
+		}
+		_, _, err = filesClient.Retrieve(ctx, createdFile.Filename, folderName)
 		if err == nil {
 			t.Errorf("expected physical file to be deleted, but still exists")
 		}
