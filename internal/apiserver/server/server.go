@@ -193,8 +193,8 @@ func (s *Server) buildHandler() http.Handler {
 	healthHandler := health.NewHealthApiHandler()
 	readinessHandler := readiness.NewReadinessApiHandler(s.serverReady)
 	metricsHandler := metrics.NewMetricsApiHandler()
-	fileHandler := file.NewFileApiHandler(s.config, fileDBClient, filesClient)
-	batchHandler := batch.NewBatchApiHandler(s.config, batchDBClient, queueClient, eventClient, statusClient)
+	fileHandler := file.NewFileAPIHandler(s.config, fileDBClient, filesClient)
+	batchHandler := batch.NewBatchAPIHandler(s.config, batchDBClient, fileDBClient, queueClient, eventClient, statusClient)
 
 	handlers := []common.ApiHandler{
 		healthHandler,

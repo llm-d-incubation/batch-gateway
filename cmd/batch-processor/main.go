@@ -23,11 +23,14 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/klog/v2"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -38,8 +41,6 @@ import (
 )
 
 func main() {
-	// initialize klog
-	klog.InitFlags(nil)
 	defer klog.Flush()
 
 	if err := run(); err != nil {
@@ -51,14 +52,9 @@ func main() {
 
 func run() error {
 	// load configuration & logging setup
-	rootLogger := klog.Background()
-	ctx := klog.NewContext(context.Background(), rootLogger)
-
 	hostname, _ := os.Hostname()
-	rootLogger = rootLogger.WithValues("hostname", hostname, "service", "batch-processor")
-	ctx = klog.NewContext(ctx, rootLogger)
-
-	logger := klog.FromContext(ctx)
+	logger := klog.Background().WithValues("hostname", hostname, "service", "batch-processor")
+	ctx := klog.NewContext(context.Background(), logger)
 
 	cfg := config.NewConfig()
 	fs := flag.NewFlagSet("batch-gateway-processor", flag.ExitOnError)
@@ -68,12 +64,18 @@ func run() error {
 	fs.Parse(os.Args[1:])
 
 	if err := cfg.LoadFromYAML(*cfgFilePath); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to load config file. Processor cannot start", "path", *cfgFilePath, "err", err)
+		logger.Error(err, "Failed to load config file. Processor cannot start", "path", *cfgFilePath, "err", err)
 		return err
 	}
+
+	if err := cfg.Validate(); err != nil {
+		logger.Error(err, "Invalid config. Processor cannot start", "err", err)
+		return err
+	}
+
 	// metrics setup
 	if err := metrics.InitMetrics(*cfg); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to initialize metrics")
+		logger.Error(err, "Failed to initialize metrics")
 		return err
 	}
 	logger.V(logging.INFO).Info("Metrics initialized", "numWorkers", cfg.NumWorkers)
@@ -82,10 +84,108 @@ func run() error {
 	ctx, cancel := interrupt.ContextWithSignal(ctx)
 	defer cancel()
 
+	// readiness starts as false and flips right before entering polling loop execution.
+	var ready atomic.Bool
+	// read only channel for observability server's fatal error
+	obsFatalCh := startObservabilityServer(
+		ctx,
+		logger,
+		cfg,
+		&ready,
+		cancel,
+		cfg.TerminateOnObservabilityFailure,
+	)
+
+	procClients, err := buildProcessorClients(ctx, cfg)
+	if err != nil {
+		logger.Error(err, "Failed to build processor clients")
+		return err
+	}
+
+	if err := procClients.Validate(); err != nil {
+		logger.Error(err, "Processor client validation failed")
+		return err
+	}
+
+	// init processor
+	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
+	proc := worker.NewProcessor(cfg, &procClients)
+	defer func() {
+		// stop with a fresh timeout ctx (avoid already-cancelled ctx)
+		// timeout should be less than k8s terminationGracePeriodSeconds
+		stopCtx, stopCtxCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer stopCtxCancel()
+		logger.V(logging.INFO).Info("Processor exited, shutting down")
+		proc.Stop(stopCtx) // wait for all workers to finish
+		logger.V(logging.INFO).Info("Processor exited gracefully")
+	}()
+
+	// start the main polling loop
+	// ready indicates the processor can actively run the polling loop.
+	ready.Store(true)
 	go func() {
+		<-ctx.Done()
+		ready.Store(false)
+	}()
+	logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
+	err = proc.Run(ctx)
+	if cfg.TerminateOnObservabilityFailure {
+		// Give the observability goroutine a brief chance to publish the fatal cause,
+		// so we can prefer it over a derived context-cancel error from the polling loop.
+		if obsErr := waitObservabilityFatalError(ctx, obsFatalCh, 100*time.Millisecond); obsErr != nil {
+			logger.Error(obsErr, "Processor stopped due to observability server failure")
+			return obsErr
+		}
+	}
+	if err != nil {
+		logger.Error(err, "Processor polling loop exited with error")
+		return err
+	}
+	return nil
+}
+
+func startObservabilityServer(
+	ctx context.Context,
+	logger klog.Logger,
+	cfg *config.ProcessorConfig,
+	ready *atomic.Bool,
+	cancel context.CancelFunc,
+	terminateOnObservabilityFailure bool,
+) <-chan error {
+	errCh := make(chan error, 1)
+
+	go func() {
+		// event channel - no need to close (1 buffer, max 1 event sent)
+		reportFatal := func(err error) {
+			if err == nil {
+				return
+			}
+			if !terminateOnObservabilityFailure {
+				logger.Error(err, "Observability server failed in best-effort mode; processor will continue")
+				return
+			}
+
+			// Keep observability failure as primary shutdown cause.
+			select {
+			case errCh <- err:
+			default:
+			}
+			cancel()
+		}
+
 		m := http.NewServeMux()
 		m.Handle("/metrics", metrics.NewMetricsHandler())
 		m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		})
+		// ready endpoint - indicates the processor is ready to process requests
+		m.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+			if !ready.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte("not ready"))
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
 		})
@@ -95,96 +195,128 @@ func run() error {
 			Handler: m,
 		}
 
-		// tls setup
 		if cfg.SSLEnabled() {
 			tlsConfig, err := tls.GetTlsConfig(tls.LOAD_TYPE_SERVER, false, cfg.SSLCertFile, cfg.SSLKeyFile, "")
 			if err != nil {
-				logger.V(logging.ERROR).Error(err, "Failed to configure TLS for observability server")
+				reportFatal(err)
 				return
 			}
 			server.TLSConfig = tlsConfig
 			logger.V(logging.INFO).Info("Observability server TLS configured")
 		}
 
-		// http server shutdown when context cancels
+		// http server shutdown when context cancels or server is closed
 		go func() {
 			<-ctx.Done()
 			logger.V(logging.INFO).Info("Shutting down observability server")
+			// fresh ctx for http server shutdown
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := server.Shutdown(shutdownCtx); err != nil {
-				logger.V(logging.ERROR).Error(err, "Observability server shutdown failed")
+				logger.Error(err, "Observability server shutdown failed")
 			}
 		}()
 
-		logger.V(logging.INFO).Info("Start observability server", "port", cfg.Addr, "tls", cfg.SSLEnabled())
+		logger.V(logging.INFO).Info("Start observability server", "addr", cfg.Addr, "tls", cfg.SSLEnabled())
 
 		var err error
 		if cfg.SSLEnabled() {
+			// Cert/key are loaded into server.TLSConfig above.
 			err = server.ListenAndServeTLS("", "")
 		} else {
 			err = server.ListenAndServe()
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			logger.V(logging.ERROR).Error(err, "Observability server failed")
+			logger.Error(err, "Observability server failed")
+			reportFatal(err)
 		}
-
 	}()
 
-	// Todo:: db/llmd client setup
-	var dbClient db.BatchDBClient
-	var pqClient db.BatchPriorityQueueClient
-	var statusClient db.BatchStatusClient
-	var eventClient db.BatchEventChannelClient
+	return errCh
+}
+
+func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case err, ok := <-obsFatalCh:
+		if ok {
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		// graceful shutdown can race with publishing observability fatal causes.
+		// wait a short additional window and prefer the explicit fatal error when present.
+		fallback := time.NewTimer(wait)
+		defer fallback.Stop()
+		select {
+		case err, ok := <-obsFatalCh:
+			if ok {
+				return err
+			}
+			return nil
+		case <-fallback.C:
+			return nil
+		}
+	case <-timer.C:
+		return nil
+	}
+}
+
+// build clients for processor (mock now, later replace with actual clients)
+func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (worker.ProcessorClients, error) {
+	logger := klog.FromContext(ctx)
+
+	// TODO: remove mock clients and replace with actual clients + logging update
+
+	logger.V(logging.INFO).Info("Building processor clients with mock clients for now", "inferenceConfig", cfg)
 
 	// Initialize inference client with configuration
 	inferenceAPIKey, err := cfg.GetInferenceAPIKey()
 	if err != nil {
 		logger.Error(err, "Failed to read inference API key")
-		return err
+		return worker.ProcessorClients{}, err
 	}
 	inferenceClient, err := inference.NewHTTPClient(inference.HTTPClientConfig{
-		BaseURL:               cfg.InferenceGatewayURL,
-		Timeout:               cfg.InferenceRequestTimeout,
+		BaseURL:               cfg.InferenceConfig.GatewayURL,
+		Timeout:               cfg.InferenceConfig.RequestTimeout,
 		APIKey:                inferenceAPIKey,
-		MaxRetries:            cfg.InferenceMaxRetries,
-		InitialBackoff:        cfg.InferenceInitialBackoff,
-		MaxBackoff:            cfg.InferenceMaxBackoff,
-		TLSInsecureSkipVerify: cfg.InferenceTLSInsecureSkipVerify,
-		TLSCACertFile:         cfg.InferenceTLSCACertFile,
-		TLSClientCertFile:     cfg.InferenceTLSClientCertFile,
-		TLSClientKeyFile:      cfg.InferenceTLSClientKeyFile,
+		MaxRetries:            cfg.InferenceConfig.MaxRetries,
+		InitialBackoff:        cfg.InferenceConfig.InitialBackoff,
+		MaxBackoff:            cfg.InferenceConfig.MaxBackoff,
+		TLSInsecureSkipVerify: cfg.InferenceConfig.TLSInsecureSkipVerify,
+		TLSCACertFile:         cfg.InferenceConfig.TLSCACertFile,
+		TLSClientCertFile:     cfg.InferenceConfig.TLSClientCertFile,
+		TLSClientKeyFile:      cfg.InferenceConfig.TLSClientKeyFile,
 	})
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to initialize inference client")
-		return err
+		logger.Error(err, "Failed to initialize inference client")
+		return worker.ProcessorClients{}, err
 	}
 	logger.V(logging.INFO).Info("Initialized inference client",
-		"baseURL", cfg.InferenceGatewayURL,
-		"timeout", cfg.InferenceRequestTimeout,
-		"maxRetries", cfg.InferenceMaxRetries)
+		"baseURL", cfg.InferenceConfig.GatewayURL,
+		"timeout", cfg.InferenceConfig.RequestTimeout,
+		"maxRetries", cfg.InferenceConfig.MaxRetries)
 
-	processorClients := worker.NewProcessorClients(
-		dbClient, pqClient, statusClient, eventClient, inferenceClient,
+	batchDBClient := mockdb.NewMockDBClient(
+		func(b *dbapi.BatchItem) string { return b.ID },
+		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
 	)
 
-	// initialize processor (worker pool manager)
-	// get max worker from cfg then decide the worker pool size
-	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc := worker.NewProcessor(cfg, &processorClients)
+	fileDBClient := mockdb.NewMockDBClient(
+		func(f *dbapi.FileItem) string { return f.ID },
+		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	)
 
-	// start the main polling loop
-	// this polls for new tasks, check for empty worker slots, and assign tasks to workers
-	logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
-	if err := proc.RunPollingLoop(ctx); err != nil {
-		logger.V(logging.ERROR).Error(err, "Processor polling loop exited with error")
-		return err
-	}
-
-	// cleanup and shutdown
-	logger.V(logging.INFO).Info("Processor exited, shutting down")
-	proc.Stop(ctx) // wait for all workers to finish
-	logger.V(logging.INFO).Info("Processor exited gracefully")
-	return nil
+	return worker.NewProcessorClients(
+		batchDBClient,
+		fileDBClient,
+		mockfiles.NewMockBatchFilesClient(),
+		mockdb.NewMockBatchPriorityQueueClient(),
+		mockdb.NewMockBatchStatusClient(),
+		mockdb.NewMockBatchEventChannelClient(),
+		inferenceClient,
+	), nil
 }

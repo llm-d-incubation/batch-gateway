@@ -34,23 +34,39 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
-func setupBatchApiHandlerForTest() *BatchApiHandler {
+func setupBatchAPIHandlerForTest() (*BatchAPIHandler, dbapi.FileDBClient) {
 	config := &common.ServerConfig{}
 	dbClient := mockapi.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
 		func(b *dbapi.BatchItem) string { return b.ID },
 		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
 	)
+	fileDBClient := mockapi.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
+		func(f *dbapi.FileItem) string { return f.ID },
+		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	)
 	eventClient := mockapi.NewMockBatchEventChannelClient()
 	queueClient := mockapi.NewMockBatchPriorityQueueClient()
 	statusClient := mockapi.NewMockBatchStatusClient()
-	handler := NewBatchApiHandler(config, dbClient, queueClient, eventClient, statusClient)
-	return handler
+	handler := NewBatchAPIHandler(config, dbClient, fileDBClient, queueClient, eventClient, statusClient)
+	return handler, fileDBClient
 }
 
 func TestBatchHandler(t *testing.T) {
 	t.Run("CreateBatch", func(t *testing.T) {
 		t.Run("Basic", func(t *testing.T) {
-			handler := setupBatchApiHandlerForTest()
+			handler, fileDBClient := setupBatchAPIHandlerForTest()
+
+			// First, create a file in the database
+			fileItem := &dbapi.FileItem{
+				BaseIndexes: dbapi.BaseIndexes{
+					ID:       "file-abc123",
+					TenantID: common.DefaultTenantID,
+				},
+			}
+			ctx := context.Background()
+			if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+				t.Fatalf("Failed to store file: %v", err)
+			}
 
 			// create batch
 			reqBody := openai.CreateBatchRequest{
@@ -102,9 +118,86 @@ func TestBatchHandler(t *testing.T) {
 			}
 		})
 
+		t.Run("WithOutputExpiresAfter", func(t *testing.T) {
+			handler, fileDBClient := setupBatchAPIHandlerForTest()
+
+			// First, create a file in the database
+			fileItem := &dbapi.FileItem{
+				BaseIndexes: dbapi.BaseIndexes{
+					ID:       "file-with-expiry",
+					TenantID: common.DefaultTenantID,
+				},
+			}
+			ctx := context.Background()
+			if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+				t.Fatalf("Failed to store file: %v", err)
+			}
+
+			// Create batch with OutputExpiresAfter
+			reqBody := openai.CreateBatchRequest{
+				InputFileID:      "file-with-expiry",
+				Endpoint:         openai.EndpointChatCompletions,
+				CompletionWindow: "24h",
+				OutputExpiresAfter: &openai.OutputExpiresAfter{
+					Seconds: 86400, // 1 day
+					Anchor:  "created_at",
+				},
+			}
+
+			body, err := json.Marshal(reqBody)
+			if err != nil {
+				t.Fatalf("Failed to marshal request body: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			handler.CreateBatch(rr, req)
+
+			// Verify response
+			if status := rr.Code; status != http.StatusOK {
+				t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+			}
+
+			var batch openai.Batch
+			if err := json.NewDecoder(rr.Body).Decode(&batch); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+
+			// Verify batch was created
+			if batch.ID == "" {
+				t.Error("Expected batch ID to be generated")
+			}
+
+			// Verify tags were stored in database
+			dbClient := handler.batchDBClient
+			query := &dbapi.BatchQuery{
+				BaseQuery: dbapi.BaseQuery{
+					IDs:      []string{batch.ID},
+					TenantID: common.DefaultTenantID,
+				},
+			}
+			items, _, _, err := dbClient.DBGet(ctx, query, true, 0, 1)
+			if err != nil {
+				t.Fatalf("Failed to retrieve batch from database: %v", err)
+			}
+			if len(items) == 0 {
+				t.Fatal("Batch not found in database")
+			}
+
+			dbItem := items[0]
+			if dbItem.Tags["output_expires_after_seconds"] != "86400" {
+				t.Errorf("Expected output_expires_after_seconds tag to be '86400', got %q",
+					dbItem.Tags["output_expires_after_seconds"])
+			}
+			if dbItem.Tags["output_expires_after_anchor"] != "created_at" {
+				t.Errorf("Expected output_expires_after_anchor tag to be 'created_at', got %q",
+					dbItem.Tags["output_expires_after_anchor"])
+			}
+		})
+
 		t.Run("Negative", func(t *testing.T) {
 			t.Run("UnknownField", func(t *testing.T) {
-				handler := setupBatchApiHandlerForTest()
+				handler, _ := setupBatchAPIHandlerForTest()
 
 				// Send request with unknown field
 				reqBodyJSON := `{
@@ -140,12 +233,52 @@ func TestBatchHandler(t *testing.T) {
 					t.Errorf("Expected error message to be %q, got %q", expectedMsg, errResp.Error.Message)
 				}
 			})
+
+			t.Run("FileNotFound", func(t *testing.T) {
+				handler, _ := setupBatchAPIHandlerForTest()
+
+				// Create batch with non-existent file
+				reqBody := openai.CreateBatchRequest{
+					InputFileID:      "file-nonexistent",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+				}
+
+				body, err := json.Marshal(reqBody)
+				if err != nil {
+					t.Fatalf("Failed to marshal request body: %v", err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rr := httptest.NewRecorder()
+				handler.CreateBatch(rr, req)
+
+				// verify response
+				if status := rr.Code; status != http.StatusBadRequest {
+					t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusBadRequest)
+				}
+				t.Logf("Response Body: %s", rr.Body.String())
+
+				var errResp openai.ErrorResponse
+				if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+					t.Fatalf("Failed to decode error response body: %v", err)
+				}
+
+				// Verify error message mentions file not found
+				expectedMsg := "Input file with ID 'file-nonexistent' not found"
+				if errResp.Error.Message != expectedMsg {
+					t.Errorf("Expected error message to be %q, got %q", expectedMsg, errResp.Error.Message)
+				}
+				if errResp.Error.Type != "invalid_request_error" {
+					t.Errorf("Expected error type to be 'invalid_request_error', got %q", errResp.Error.Type)
+				}
+			})
 		})
 	})
 
 	t.Run("RetrieveBatch", func(t *testing.T) {
-		handler := setupBatchApiHandlerForTest()
-		dbClient := handler.dbClient
+		handler, _ := setupBatchAPIHandlerForTest()
+		dbClient := handler.batchDBClient
 
 		// create a batch first
 		batchID := "batch-test-123"
@@ -201,8 +334,8 @@ func TestBatchHandler(t *testing.T) {
 	})
 
 	t.Run("ListBatches", func(t *testing.T) {
-		handler := setupBatchApiHandlerForTest()
-		dbClient := handler.dbClient
+		handler, _ := setupBatchAPIHandlerForTest()
+		dbClient := handler.batchDBClient
 
 		// create two batches
 		for i := range 2 {
@@ -273,8 +406,8 @@ func TestBatchHandler(t *testing.T) {
 	})
 
 	t.Run("CancelBatch", func(t *testing.T) {
-		handler := setupBatchApiHandlerForTest()
-		dbClient := handler.dbClient
+		handler, _ := setupBatchAPIHandlerForTest()
+		dbClient := handler.batchDBClient
 
 		// create a batch first
 		batchID := "batch-test-cancel"
@@ -334,8 +467,8 @@ func TestBatchHandler(t *testing.T) {
 
 // Benchmark tests for batch handler
 func BenchmarkBatchHandler(b *testing.B) {
-	handler := setupBatchApiHandlerForTest()
-	dbClient := handler.dbClient
+	handler, _ := setupBatchAPIHandlerForTest()
+	dbClient := handler.batchDBClient
 
 	b.Run("CreateBatch", func(b *testing.B) {
 		reqBody := openai.CreateBatchRequest{

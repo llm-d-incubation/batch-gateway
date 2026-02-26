@@ -16,6 +16,23 @@ data:
     num_workers: {{ .Values.processor.config.numWorkers }}
     max_job_concurrency: {{ .Values.processor.config.maxJobConcurrency }}
 
+    terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
+    shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}
+    work_dir: {{ .Values.processor.config.workDir | quote }}
+    max_open_files: {{ .Values.processor.config.maxOpenFiles }}
+
+    inference_config:
+      gateway_url: {{ .Values.processor.config.inferenceConfig.gatewayUrl | quote }}
+      api_key_file: {{ .Values.processor.inference.apiKey.secretKey | quote }}
+      request_timeout: {{ .Values.processor.config.inferenceConfig.requestTimeout | quote }}
+      max_retries: {{ .Values.processor.config.inferenceConfig.maxRetries }}
+      initial_backoff: {{ .Values.processor.config.inferenceConfig.initialBackoff | quote }}
+      max_backoff: {{ .Values.processor.config.inferenceConfig.maxBackoff | quote }}
+      tls_insecure_skip_verify: {{ .Values.processor.config.inferenceConfig.tlsInsecureSkipVerify }}
+      tls_ca_cert_file: {{ .Values.processor.config.inferenceConfig.tlsCaCertFile | default "" | quote }}
+      tls_client_cert_file: {{ .Values.processor.config.inferenceConfig.tlsClientCertFile | default "" | quote }}
+      tls_client_key_file: {{ .Values.processor.config.inferenceConfig.tlsClientKeyFile | default "" | quote }}
+
     queue_time_bucket:
       bucket_start: {{ .Values.processor.config.queueTimeBucket.bucketStart }}
       bucket_factor: {{ .Values.processor.config.queueTimeBucket.bucketFactor }}
@@ -32,5 +49,4 @@ data:
     {{- end }}
 
     database_url_file: {{ .Values.processor.database.secretKey | quote }}
-    inference_api_key_file: {{ .Values.processor.inference.apiKey.secretKey | quote }}
 {{- end }}

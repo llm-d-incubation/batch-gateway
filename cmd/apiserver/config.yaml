@@ -12,9 +12,6 @@ port: "8000"
 # ssl_cert_file: "path/to/cert.pem"
 # ssl_key_file: "path/to/key.pem"
 
-# Batch TTL in seconds (default: 30 days)
-batch_ttl_seconds: 2592000
-
 # HTTP header name for tenant ID (default: X-MaaS-User)
 tenant_header: "X-MaaS-User"
 
@@ -41,8 +38,13 @@ write_timeout_seconds: 120
 # Default: 90 seconds
 idle_timeout_seconds: 90
 
+# Batch API configuration
+batch_api:
+  # Batch event TTL in seconds (default: 30 days)
+  batch_event_ttl_seconds: 2592000
+
 # File API configuration
-files_api:
+file_api:
   # Default expiration in seconds (default: 90 days)
   default_expiration_seconds: 7776000
   # Maximum file size in bytes (default: 200 MB)

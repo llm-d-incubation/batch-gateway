@@ -277,8 +277,8 @@ func (r *CreateBatchRequest) Validate() error {
 	}
 
 	if r.OutputExpiresAfter != nil {
-		if r.OutputExpiresAfter.Anchor == "" {
-			return errors.New("output_expires_after.anchor is required")
+		if r.OutputExpiresAfter.Anchor != "created_at" {
+			return errors.New("output_expires_after.anchor must be 'created_at'")
 		}
 
 		if r.OutputExpiresAfter.Seconds < 3600 || r.OutputExpiresAfter.Seconds > 2592000 {

@@ -23,6 +23,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.processor.terminationGracePeriodSeconds | default 60 }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -41,7 +42,7 @@ spec:
         - --v={{ .Values.processor.logging.verbosity }}
         ports:
         - name: metrics
-          containerPort: {{ .Values.processor.config.addr | trimPrefix ":" }}
+          containerPort: {{ (splitList ":" .Values.processor.config.addr | last) | int }}
           protocol: TCP
         livenessProbe:
           {{- toYaml .Values.processor.livenessProbe | nindent 12 }}
@@ -53,6 +54,8 @@ spec:
         - name: config
           mountPath: /etc/config
           readOnly: true
+        - name: workdir
+          mountPath: {{ .Values.processor.config.workDir }}
         {{- if .Values.processor.tls.enabled }}
         - name: tls
           mountPath: /etc/tls
@@ -70,6 +73,14 @@ spec:
       - name: config
         configMap:
           name: {{ include "batch-gateway.processor.fullname" . }}-config
+      - name: workdir
+        emptyDir:
+          {{- if .Values.processor.workDirVolume.medium }}
+          medium: {{ .Values.processor.workDirVolume.medium | quote }}
+          {{- end }}
+          {{- if .Values.processor.workDirVolume.sizeLimit }}
+          sizeLimit: {{ .Values.processor.workDirVolume.sizeLimit | quote }}
+          {{- end }}
       {{- if .Values.processor.tls.enabled }}
       - name: tls
         secret:

@@ -10,7 +10,6 @@ data:
     # API Server configuration
     host: {{ .Values.apiserver.config.host | quote }}
     port: {{ .Values.apiserver.config.port | quote }}
-    batch_ttl_seconds: {{ .Values.apiserver.config.batchTTLSeconds }}
     {{- if .Values.apiserver.config.tenantHeader }}
     tenant_header: {{ .Values.apiserver.config.tenantHeader | quote }}
     {{- end }}
@@ -18,10 +17,12 @@ data:
     read_timeout_seconds: {{ .Values.apiserver.config.readTimeoutSeconds }}
     write_timeout_seconds: {{ .Values.apiserver.config.writeTimeoutSeconds }}
     idle_timeout_seconds: {{ .Values.apiserver.config.idleTimeoutSeconds }}
-    files_api:
-      default_expiration_seconds: {{ .Values.apiserver.config.filesAPI.defaultExpirationSeconds }}
-      max_size_bytes: {{ .Values.apiserver.config.filesAPI.maxSizeBytes }}
-      max_line_count: {{ .Values.apiserver.config.filesAPI.maxLineCount }}
+    batch_api:
+      batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.batchEventTTLSeconds }}
+    file_api:
+      default_expiration_seconds: {{ .Values.apiserver.config.fileAPI.defaultExpirationSeconds }}
+      max_size_bytes: {{ .Values.apiserver.config.fileAPI.maxSizeBytes }}
+      max_line_count: {{ .Values.apiserver.config.fileAPI.maxLineCount }}
     {{- if .Values.apiserver.tls.enabled }}
     ssl_cert_file: "/etc/tls/tls.crt"
     ssl_key_file: "/etc/tls/tls.key"

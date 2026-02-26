@@ -14,8 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// this file contains the utility functions for the batch object
 package batch_utils
 
-type BatchJobPriorityData struct {
-	CreatedAt int64 `json:"created_at"`
+import (
+	"encoding/json"
+	"fmt"
+
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+)
+
+func GetJobPriorityDataFromQueueItem(item *db.BatchJobPriority) (*batch_types.BatchJobPriorityData, error) {
+	data := &batch_types.BatchJobPriorityData{}
+	if err := json.Unmarshal(item.Data, data); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal job priority data: %w", err)
+	}
+	return data, nil
 }

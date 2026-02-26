@@ -19,6 +19,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -26,15 +27,19 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	files "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 type ProcessorClients struct {
 	database      db.BatchDBClient
+	fileDatabase  db.FileDBClient
+	files         files.BatchFilesClient
 	priorityQueue db.BatchPriorityQueueClient
 	status        db.BatchStatusClient
 	event         db.BatchEventChannelClient
@@ -43,6 +48,8 @@ type ProcessorClients struct {
 
 func NewProcessorClients(
 	database db.BatchDBClient,
+	fileDatabase db.FileDBClient,
+	files files.BatchFilesClient,
 	pq db.BatchPriorityQueueClient,
 	status db.BatchStatusClient,
 	event db.BatchEventChannelClient,
@@ -50,6 +57,8 @@ func NewProcessorClients(
 ) ProcessorClients {
 	return ProcessorClients{
 		database:      database,
+		fileDatabase:  fileDatabase,
+		files:         files,
 		priorityQueue: pq,
 		status:        status,
 		event:         event,
@@ -58,26 +67,232 @@ func NewProcessorClients(
 }
 
 type Processor struct {
-	cfg        *config.ProcessorConfig
-	workerPool *WorkerPool
+	cfg    *config.ProcessorConfig
+	tokens chan struct{}
+	wg     sync.WaitGroup
 
 	clients *ProcessorClients
+	poller  *Poller
+	updater *StatusUpdater
 }
+
+var ErrCancelled = errors.New("batch job cancelled")
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *ProcessorClients,
 ) *Processor {
+	sem := make(chan struct{}, cfg.NumWorkers)
+	for i := 0; i < cfg.NumWorkers; i++ {
+		sem <- struct{}{}
+	}
+	// TODO: need to group clients by usecase (poller, updater, etc.)
+	poller := NewPoller(clients.priorityQueue, clients.database)
+	updater := NewStatusUpdater(clients.database, clients.status)
 	return &Processor{
-		cfg:        cfg,
-		workerPool: NewWorkerPool(cfg.NumWorkers),
-		clients:    clients,
+		cfg:     cfg,
+		tokens:  sem,
+		clients: clients,
+		poller:  poller,
+		updater: updater,
 	}
 }
 
+// Run starts processor orchestration and enters the polling loop.
+func (p *Processor) Run(ctx context.Context) error {
+	if err := p.prepare(ctx); err != nil {
+		return err
+	}
+
+	logger := klog.FromContext(ctx)
+	logger.V(logging.INFO).Info(
+		"Processor run started",
+		"loopInterval", p.cfg.PollInterval,
+		"maxWorkers", p.cfg.NumWorkers,
+	)
+
+	return p.runPollingLoop(ctx)
+}
+
+// Stop gracefully stops the processor, waiting for all workers to finish.
+func (p *Processor) Stop(ctx context.Context) {
+	logger := klog.FromContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done(): // context cancelled
+		logger.V(logging.INFO).Info("Processor stopped due to context cancellation")
+
+	case <-done: // all workers have finished
+		logger.V(logging.INFO).Info("All workers have finished")
+	}
+}
+
+// runPollingLoop runs the job polling loop and dispatches jobs to workers.
+func (p *Processor) runPollingLoop(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+	logger.V(logging.INFO).Info("Polling loop started")
+	// worker driven non-busy wait
+	for {
+		if !p.acquire(ctx) {
+			return nil
+		}
+
+		// check queue for available tasks
+		logger.V(logging.DEBUG).Info("Checking queue for available tasks")
+		task, err := p.poller.dequeueOne(ctx)
+
+		// when there's no waiting tasks in the queue or poller returned an error
+		if task == nil || err != nil {
+			// wait for poll interval to protect db from frequent queueing
+			if !p.releaseAndWaitPollInterval(ctx) {
+				return nil
+			}
+			continue
+		}
+
+		// create a new logger for the job with job ID
+		jlogger := klog.FromContext(ctx).WithValues("jobId", task.ID)
+		jctx := klog.NewContext(ctx, jlogger)
+
+		// get job item from db
+		jobItem, err := p.poller.fetchJobItem(jctx, task)
+		if err != nil {
+			jlogger.Error(err, "Failed to fetch job item from DB")
+			p.releaseForNextPoll()
+			// error is due to system issue (db connection, etc.)
+			// re-enqueue the job to the queue so this job can be picked up later by another worker
+			// best-effort
+			jlogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
+			reEnqueueErr := p.poller.enqueueOne(jctx, task)
+			if reEnqueueErr != nil {
+				jlogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
+				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+			} else {
+				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
+			}
+			continue
+		}
+
+		// job item is not found in the db.
+		if jobItem == nil {
+			jlogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
+			// ignore the job (data inconsistency) and continue polling
+			p.releaseForNextPoll()
+			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonDBInconsistency)
+			continue
+		}
+
+		jlogger.V(logging.TRACE).Info("Job item found in the DB")
+
+		// queue wait metrics recording
+		if jobPriorityData, err := batch_utils.GetJobPriorityDataFromQueueItem(task); err == nil {
+			queueWait := time.Since(time.Unix(jobPriorityData.CreatedAt, 0))
+			metrics.RecordQueueWaitDuration(queueWait, jobItem.TenantID)
+			jlogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
+		} else {
+			// queue createdAt is not available.
+			// log the error and continue processing as createdAt is only for metrics recording.
+			jlogger.Error(err, "Failed to get job priority data from queue item")
+		}
+
+		// db job item to job info object conversion
+		jobInfo, err := batch_utils.FromDBItemToJobInfoObject(jobItem)
+
+		if err != nil {
+			jlogger.Error(err, "Failed to convert job object in DB to job info object")
+			p.releaseForNextPoll()
+			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+			continue
+		}
+
+		// create a new logger including tenant ID (Job ID is already in the logger)
+		jlogger = jlogger.WithValues("tenantId", jobInfo.TenantID)
+		// update the context with the new logger
+		jctx = klog.NewContext(jctx, jlogger)
+
+		jlogger.V(logging.TRACE).Info("Job info object converted")
+
+		if batch_utils.IsJobExpired(task) {
+			jlogger.V(logging.INFO).Info("Job is expired.")
+
+			// persistent status update (to expired status)
+			if err := p.updater.UpdatePersistentStatus(jctx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
+				jlogger.V(logging.ERROR).Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
+			}
+
+			// do not need to delete the task from the queue.
+			// ignore the job and continue polling
+			p.releaseForNextPoll()
+			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonExpired)
+			continue
+		}
+
+		// job is not in runnable state.
+		if !batch_utils.IsJobRunnable(jobInfo.BatchJob) {
+			jlogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.BatchStatusInfo.Status)
+
+			// persistent status update is not needed.
+			// do not need to delete the task from the queue.
+			// ignore the job and continue polling
+			p.releaseForNextPoll()
+			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonNotRunnableState)
+			continue
+		}
+
+		// process job
+		p.wg.Add(1)
+		go p.runJob(jctx, p.updater, jobItem, jobInfo, task)
+	}
+}
+
+func (p *Processor) acquire(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-p.tokens:
+		return true
+	}
+}
+
+func (p *Processor) release() {
+	select {
+	case p.tokens <- struct{}{}:
+		return
+	default:
+		// Should never happen: every release is paired with exactly one acquire.
+		klog.Background().Error(nil, "CRITICAL: token channel is full, skipping release")
+	}
+}
+
+func (p *Processor) releaseAndWaitPollInterval(ctx context.Context) bool {
+	p.release()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(p.cfg.PollInterval):
+		return true
+	}
+}
+
+func (p *Processor) releaseForNextPoll() {
+	p.release()
+}
+
+// TODO: need to add detailed validation here for each client.
 func (pc *ProcessorClients) Validate() error {
 	if pc.database == nil {
 		return fmt.Errorf("database client is missing")
+	}
+	if pc.fileDatabase == nil {
+		return fmt.Errorf("file database client is missing")
+	}
+	if pc.files == nil {
+		return fmt.Errorf("files client is missing")
 	}
 	if pc.priorityQueue == nil {
 		return fmt.Errorf("priority queue client is missing")
@@ -94,7 +309,7 @@ func (pc *ProcessorClients) Validate() error {
 	return nil
 }
 
-// pre-flight check - need to add more checks here
+// pre-flight check
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
@@ -104,279 +319,4 @@ func (p *Processor) prepare(ctx context.Context) error {
 
 	logger.V(logging.DEBUG).Info("Processor pre-flight check done", "max_workers", p.cfg.NumWorkers)
 	return nil
-}
-
-// TODO: events implementation (cancel, pause, resume)
-// RunPollingLoop runs the main job polling loop for the processor, try assign the job to the worker,
-func (p *Processor) RunPollingLoop(ctx context.Context) error {
-	if err := p.prepare(ctx); err != nil {
-		return err
-	}
-	logger := klog.FromContext(ctx)
-	logger.V(logging.INFO).Info(
-		"Polling loop started",
-		"loopInterval", p.cfg.PollInterval,
-		"maxWorkers", p.cfg.NumWorkers,
-	)
-
-	// worker driven non-busy wait
-	for {
-		var workerId int
-		select {
-		case <-ctx.Done():
-			return nil
-		case id, ok := <-p.workerPool.workerIds: // wait until at least one worker is available
-			if !ok {
-				return nil
-			}
-			workerId = id
-		}
-
-		// check queue for available tasks
-		task := p.getTaskFromQueue(ctx)
-
-		// when there's no waiting tasks in the queue
-		if task == nil {
-			p.workerPool.Release(workerId)
-			// wait for poll interval to protect db from frequent queueing
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(p.cfg.PollInterval):
-				continue
-			}
-		}
-
-		// get detailed job info for processor
-		jobDbData, err := p.getJobData(ctx, task)
-		if err != nil {
-			p.workerPool.Release(workerId)
-			continue
-		}
-
-		// TODO:: get tenant id from job
-		// tenantID := job.TenantID
-		// TODO:: job queue object should have enqueued at field (maybe updated at too)
-		// TODO:: metrics.RecordQueueWait(time.Since(task.EnqueuedAt), tenantID)
-
-		// process job
-		go func(wid int, j *db.BatchItem) {
-			defer func() {
-				if r := recover(); r != nil {
-					recoverErr := fmt.Errorf("%v", r)
-					logger.V(logging.ERROR).Error(recoverErr, "Panic recovered", "workerID", wid)
-				}
-				p.workerPool.Release(wid)
-				metrics.DecActiveWorkers()
-			}()
-
-			metrics.IncActiveWorkers()
-			p.processJob(ctx, wid, j)
-		}(workerId, jobDbData)
-	}
-}
-
-// getTask is executed when at least one worker is available
-func (p *Processor) getTaskFromQueue(ctx context.Context) *db.BatchJobPriority {
-	logger := klog.FromContext(ctx)
-
-	tasks, err := p.clients.priorityQueue.PQDequeue(ctx, 0, 1) // get only one job without blocking the queue
-	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to dequeue a batch job")
-		return nil
-	}
-
-	// there's no backlog
-	if len(tasks) == 0 {
-		logger.V(logging.TRACE).Info("No jobs to fetch")
-		return nil
-	}
-
-	logger.V(logging.DEBUG).Info("Successfully fetched a job", "jobID", tasks[0].ID)
-	return tasks[0]
-}
-
-// getJobData gets job's db data
-func (p *Processor) getJobData(ctx context.Context, task *db.BatchJobPriority) (*db.BatchItem, error) {
-	logger := klog.FromContext(ctx)
-
-	// get only one job data
-	jobs, _, _, err := p.clients.database.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{task.ID}}}, true, 0, 1)
-
-	// job db data does not exist or failed to fetch the data
-	if err != nil || len(jobs) == 0 {
-		jobDataErr := err
-		if len(jobs) == 0 {
-			jobDataErr = fmt.Errorf("Job data for %s does not exist", task.ID)
-		}
-		logger.V(logging.ERROR).Error(jobDataErr, "Failed to fetch detailed job info. re-queueing ID", "jobID", task.ID)
-
-		// can't process the job. put the task back to the queue.
-		if enqueueErr := p.clients.priorityQueue.PQEnqueue(ctx, task); enqueueErr != nil {
-			logger.V(logging.ERROR).Error(enqueueErr, "CRITICAL: Failed to re-enqueue job", "jobID", task.ID)
-		}
-		return nil, jobDataErr
-	}
-
-	logger.V(logging.TRACE).Info("Job DB Data retrieved", "jobID", task.ID)
-	return jobs[0], nil
-}
-
-// TODO:: complete job processing logic
-// read input file, streaming, line processing, result writing, etc.
-// TODO:: add event handling (cancel, pause, resume)
-// TODO:: add metrics (job duration, job processed, job result, job failure reason)
-// TODO:: add logging (job started, job finished, job failed)
-// TODO:: add error handling (error handling. inference request failed)
-// TODO:: add response handling (response handling + writing line to the output file ...)
-// TODO:: add output file writing (output file writing)
-// TODO:: add output file reading (output file reading)
-// TODO:: add output file closing (output file closing)
-func (p *Processor) processJob(ctx context.Context, workerId int, job *db.BatchItem) {
-	// logger and ctx
-	logger := klog.FromContext(ctx).WithValues("jobID", job.ID, "workerID", workerId)
-	jobctx := klog.NewContext(ctx, logger)
-
-	// metrics
-	startTime := time.Now()
-	metadata := batch.JobResultMetadata{}
-	defer func() {
-		// TODO:: get tenant id from job.Tenant
-		// job result / failure reason for metric
-		// TODO:: how to check if the failure is on user or system
-		tenantID := job.TenantID
-		if tenantID == "" {
-			tenantID = "unknown"
-		}
-		jobFailureReason := metrics.ReasonUnknown
-		jobResult := metrics.ResultSuccess
-
-		metrics.RecordJobProcessingDuration(time.Since(startTime), tenantID, metrics.GetSizeBucket(metadata.Total))
-		metrics.RecordJobProcessed(jobResult, jobFailureReason)
-	}()
-
-	// status update - inprogress (TTL 24h)
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusInProgress))
-	logger.V(logging.DEBUG).Info("Worker started job", "workerID", workerId, "jobID", job.ID)
-
-	// TODO:: file validating
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusValidating))
-
-	// TODO:: download file, streaming
-	// check if the method in the request is allowed
-	// check if the model in the request is allowed (optional)
-	// set total request num in result obj + init other fields
-	// goroutine per one line reading
-	// limit goroutines using config's max job concurrency
-	sem := make(chan struct{}, p.cfg.MaxJobConcurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex // for metadata update
-
-	// TODO:: mock file lines
-	lines := []string{"req1", "req2", "req3"}
-
-	// result metadata init
-	metadata = batch.JobResultMetadata{
-		Total:     len(lines),
-		Succeeded: 0,
-		Failed:    0,
-	}
-
-	// TODO:: read lines + process (mockup)
-	lineChan := make(chan string)
-	go func() {
-		for _, l := range lines {
-			lineChan <- l
-		}
-		close(lineChan)
-	}()
-
-	for line := range lineChan {
-		// check context termination
-		select {
-		case <-jobctx.Done():
-			logger.V(logging.INFO).Info("Stopping line processing due to shutdown")
-			return
-		case sem <- struct{}{}: // wait here if max concurrency is reached
-		}
-		wg.Add(1)
-		go func(l string) {
-			defer func() {
-				<-sem
-				wg.Done()
-			}()
-
-			// check again for signal in the goroutine
-			select {
-			case <-jobctx.Done():
-				return
-			default:
-			}
-			// TODO:: line parsing
-			// TODO:: check allowed methods
-			// TODO:: request validation
-
-			// mock request
-			mockRequest := &inference.GenerateRequest{}
-			result, err := p.clients.inference.Generate(jobctx, mockRequest)
-
-			// shared resources (metadata / totaljoblines) lock
-			mu.Lock()
-			defer mu.Unlock()
-
-			if err != nil {
-				p.handleError(jobctx, err)
-				metadata.Failed++
-				return
-			}
-
-			if err := p.handleResponse(jobctx, result); err != nil {
-				metadata.Failed++
-			} else {
-				metadata.Succeeded++
-			}
-		}(line)
-
-	}
-	wg.Wait()
-
-	// final status decision
-	// TODO:: final status decision (should be included in the job object)
-	// openai batch set the job as completed even there are some failures - should we do the same?
-	// failed status is used when the file is not valid or the batch request is not started properly
-	finalStatus := batch.StatusCompleted
-	if !metadata.Validate() {
-		logger.V(logging.WARNING).Info("Job finished with partial failures", "jobID", job.ID, "metadata", metadata)
-		// TODO:: finalStatus = batch.Failed
-	}
-
-	// status update
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(batch.StatusFinalizing))
-
-	// db update
-	if err := p.clients.database.DBUpdate(jobctx, job); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update final job status in DB", "jobID", job.ID)
-	}
-	p.clients.status.StatusSet(jobctx, job.ID, 24*60*60, []byte(finalStatus))
-	logger.V(logging.INFO).Info("Job Processed", "jobID", job.ID, "status", finalStatus)
-}
-
-func (p *Processor) handleError(ctx context.Context, err error) {
-	// TODO:: error handling.
-	logger := klog.FromContext(ctx)
-	logger.V(logging.ERROR).Error(err, "Inference request failed")
-}
-
-func (p *Processor) handleResponse(ctx context.Context, inferenceResponse *inference.GenerateResponse) error {
-	// TODO:: response handling + writing line to the output file ...
-	logger := klog.FromContext(ctx)
-	logger.V(logging.DEBUG).Info("Handling response")
-	return nil
-}
-
-// Stop gracefully stops the processor, waiting for all workers to finish.
-func (p *Processor) Stop(ctx context.Context) {
-	logger := klog.FromContext(ctx)
-	p.workerPool.WaitAll()
-	logger.V(logging.INFO).Info("All workers have finished")
 }

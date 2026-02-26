@@ -1,0 +1,97 @@
+/*
+Copyright 2026 The llm-d Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// this file contains the poller logic for the processor
+package worker
+
+import (
+	"context"
+	"fmt"
+
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"k8s.io/klog/v2"
+)
+
+type Poller struct {
+	pq db.BatchPriorityQueueClient
+	db db.BatchDBClient
+}
+
+func NewPoller(pq db.BatchPriorityQueueClient, db db.BatchDBClient) *Poller {
+	return &Poller{
+		pq: pq,
+		db: db,
+	}
+}
+
+func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
+	logger := klog.FromContext(ctx)
+
+	tasks, err := p.pq.PQDequeue(ctx, 0, 1) // get only one job without blocking the queue
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to dequeue a batch job")
+		return nil, err
+	}
+
+	// there's no backlog
+	if len(tasks) == 0 {
+		logger.V(logging.TRACE).Info("No jobs to fetch")
+		return nil, nil
+	}
+
+	logger.V(logging.DEBUG).Info("Successfully fetched a job", "jobID", tasks[0].ID)
+	return tasks[0], nil
+}
+
+func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) error {
+	logger := klog.FromContext(ctx)
+	err := p.pq.PQEnqueue(ctx, task)
+	if err != nil {
+		logger.Error(err, "CRITICAL: Failed to enqueue a job")
+		return err
+	}
+	return nil
+}
+
+func (p *Poller) fetchJobItem(ctx context.Context, task *db.BatchJobPriority) (*db.BatchItem, error) {
+	logger := klog.FromContext(ctx)
+
+	// get only one job data
+	ids := []string{task.ID}
+	jobs, _, _, err := p.db.DBGet(ctx,
+		&db.BatchQuery{
+			BaseQuery: db.BaseQuery{IDs: ids},
+		},
+		true, 0, 1)
+
+	// system error. (db connection, etc. temporary error)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Temporary DB error. Need to Re-enqueue the job.")
+		return nil, err
+	}
+
+	// data inconsistency. job data is not in the db while the task is in the queue.
+	// don't re-enqueue and return nil. job is already deleted from the queue by the dequeue function.
+	if len(jobs) == 0 {
+		jobDataErr := fmt.Errorf("Job data for %s does not exist", task.ID)
+		logger.Error(jobDataErr, "CRITICAL: Job data is not in the DB while the task is in the queue. Returning error.")
+		return nil, nil
+	}
+
+	logger.V(logging.DEBUG).Info("Job DB Data retrieved")
+	return jobs[0], nil
+}

@@ -31,12 +31,12 @@ const (
 	DefaultMaxFileSizeBytes = 200 << 20
 	// DefaultFileExpirationSeconds is the default file expiration time (90 days)
 	DefaultFileExpirationSeconds = 90 * 24 * 60 * 60 // 7776000 seconds
-	// DefaultBatchTTLSeconds is the default batch TTL (30 days)
-	DefaultBatchTTLSeconds = 30 * 24 * 60 * 60 // 2592000 seconds
+	// DefaultBatchEventTTLSeconds is the default batch event TTL (30 days)
+	DefaultBatchEventTTLSeconds = 30 * 24 * 60 * 60 // 2592000 seconds
 	// DefaultMaxFileLineCount is the default maximum number of lines per file
 	DefaultMaxFileLineCount = 50000
 	// DefaultTenantHeader is the default HTTP header name for tenant ID
-	DefaultTenantHeader = "X-MaaS-User"
+	DefaultTenantHeader = "X-MaaS-Username"
 
 	// HTTP server timeout defaults
 	// DefaultReadHeaderTimeoutSeconds prevents slow-client attacks (Slowloris)
@@ -52,50 +52,66 @@ const (
 	DefaultIdleTimeoutSeconds = 90
 )
 
-type FilesAPIConfig struct {
+type BatchAPIConfig struct {
+	BatchEventTTLSeconds int `yaml:"batch_event_ttl_seconds"`
+}
+
+func (b *BatchAPIConfig) applyDefaults() {
+	if b.BatchEventTTLSeconds <= 0 {
+		b.BatchEventTTLSeconds = DefaultBatchEventTTLSeconds
+	}
+}
+
+func (b *BatchAPIConfig) GetBatchEventTTLSeconds() int {
+	return b.BatchEventTTLSeconds
+}
+
+type FileAPIConfig struct {
 	DefaultExpirationSeconds int64 `yaml:"default_expiration_seconds"`
 	MaxSizeBytes             int64 `yaml:"max_size_bytes"`
 	MaxLineCount             int64 `yaml:"max_line_count"`
 }
 
-// GetDefaultExpirationSeconds returns the configured value or default if invalid
-func (f *FilesAPIConfig) GetDefaultExpirationSeconds() int64 {
+func (f *FileAPIConfig) applyDefaults() {
 	if f.DefaultExpirationSeconds <= 0 {
-		return DefaultFileExpirationSeconds
+		f.DefaultExpirationSeconds = DefaultFileExpirationSeconds
 	}
+	if f.MaxSizeBytes <= 0 {
+		f.MaxSizeBytes = DefaultMaxFileSizeBytes
+	}
+	if f.MaxLineCount <= 0 {
+		f.MaxLineCount = DefaultMaxFileLineCount
+	}
+}
+
+func (f *FileAPIConfig) GetDefaultExpirationSeconds() int64 {
 	return f.DefaultExpirationSeconds
 }
 
-// GetMaxSizeBytes returns the configured value or default if invalid
-func (f *FilesAPIConfig) GetMaxSizeBytes() int64 {
-	if f.MaxSizeBytes <= 0 {
-		return DefaultMaxFileSizeBytes
-	}
+func (f *FileAPIConfig) GetMaxSizeBytes() int64 {
 	return f.MaxSizeBytes
 }
 
-// GetMaxLineCount returns the configured value or default if invalid
-func (f *FilesAPIConfig) GetMaxLineCount() int64 {
-	if f.MaxLineCount <= 0 {
-		return DefaultMaxFileLineCount
-	}
+func (f *FileAPIConfig) GetMaxLineCount() int64 {
 	return f.MaxLineCount
 }
 
 type ServerConfig struct {
-	Host            string         `yaml:"host"`
-	Port            string         `yaml:"port"`
-	SSLCertFile     string         `yaml:"ssl_cert_file"`
-	SSLKeyFile      string         `yaml:"ssl_key_file"`
-	BatchTTLSeconds int            `yaml:"batch_ttl_seconds"`
-	TenantHeader    string         `yaml:"tenant_header"`
-	FilesAPI        FilesAPIConfig `yaml:"files_api"`
+	Host         string `yaml:"host"`
+	Port         string `yaml:"port"`
+	SSLCertFile  string `yaml:"ssl_cert_file"`
+	SSLKeyFile   string `yaml:"ssl_key_file"`
+	TenantHeader string `yaml:"tenant_header"`
 
 	// HTTP server timeout configurations (in seconds)
 	ReadHeaderTimeoutSeconds int64 `yaml:"read_header_timeout_seconds"`
 	ReadTimeoutSeconds       int64 `yaml:"read_timeout_seconds"`
 	WriteTimeoutSeconds      int64 `yaml:"write_timeout_seconds"`
 	IdleTimeoutSeconds       int64 `yaml:"idle_timeout_seconds"`
+
+	// API endpoint configurations
+	BatchAPI BatchAPIConfig `yaml:"batch_api"`
+	FileAPI  FileAPIConfig  `yaml:"file_api"`
 }
 
 func NewConfig() *ServerConfig {
@@ -118,6 +134,8 @@ func (c *ServerConfig) Load() error {
 	if err := c.loadFromFile(configFile); err != nil {
 		return err
 	}
+
+	c.applyDefaults()
 
 	return c.Validate()
 }
@@ -162,54 +180,46 @@ func (c *ServerConfig) loadFromFile(path string) error {
 	return nil
 }
 
+func (c *ServerConfig) applyDefaults() {
+	if c.TenantHeader == "" {
+		c.TenantHeader = DefaultTenantHeader
+	}
+	if c.ReadHeaderTimeoutSeconds <= 0 {
+		c.ReadHeaderTimeoutSeconds = DefaultReadHeaderTimeoutSeconds
+	}
+	if c.ReadTimeoutSeconds <= 0 {
+		c.ReadTimeoutSeconds = DefaultReadTimeoutSeconds
+	}
+	if c.WriteTimeoutSeconds <= 0 {
+		c.WriteTimeoutSeconds = DefaultWriteTimeoutSeconds
+	}
+	if c.IdleTimeoutSeconds <= 0 {
+		c.IdleTimeoutSeconds = DefaultIdleTimeoutSeconds
+	}
+	c.BatchAPI.applyDefaults()
+	c.FileAPI.applyDefaults()
+}
+
 func (c *ServerConfig) SSLEnabled() bool {
 	return (c.SSLCertFile != "" && c.SSLKeyFile != "")
 }
 
-// GetReadHeaderTimeoutSeconds returns the configured value or default if invalid
 func (c *ServerConfig) GetReadHeaderTimeoutSeconds() int64 {
-	if c.ReadHeaderTimeoutSeconds <= 0 {
-		return DefaultReadHeaderTimeoutSeconds
-	}
 	return c.ReadHeaderTimeoutSeconds
 }
 
-// GetReadTimeoutSeconds returns the configured value or default if invalid
 func (c *ServerConfig) GetReadTimeoutSeconds() int64 {
-	if c.ReadTimeoutSeconds <= 0 {
-		return DefaultReadTimeoutSeconds
-	}
 	return c.ReadTimeoutSeconds
 }
 
-// GetWriteTimeoutSeconds returns the configured value or default if invalid
 func (c *ServerConfig) GetWriteTimeoutSeconds() int64 {
-	if c.WriteTimeoutSeconds <= 0 {
-		return DefaultWriteTimeoutSeconds
-	}
 	return c.WriteTimeoutSeconds
 }
 
-// GetIdleTimeoutSeconds returns the configured value or default if invalid
 func (c *ServerConfig) GetIdleTimeoutSeconds() int64 {
-	if c.IdleTimeoutSeconds <= 0 {
-		return DefaultIdleTimeoutSeconds
-	}
 	return c.IdleTimeoutSeconds
 }
 
-// GetBatchTTLSeconds returns the configured value or default if invalid
-func (c *ServerConfig) GetBatchTTLSeconds() int {
-	if c.BatchTTLSeconds <= 0 {
-		return DefaultBatchTTLSeconds
-	}
-	return c.BatchTTLSeconds
-}
-
-// GetTenantHeader returns the configured value or default if empty
 func (c *ServerConfig) GetTenantHeader() string {
-	if c.TenantHeader == "" {
-		return DefaultTenantHeader
-	}
 	return c.TenantHeader
 }

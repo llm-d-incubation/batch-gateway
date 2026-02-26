@@ -19,6 +19,7 @@ limitations under the License.
 package config
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -49,42 +50,59 @@ type ProcessorConfig struct {
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
 
+	// MaxOpenFiles is the maximum number of open files for the plan writer
+	MaxOpenFiles int `yaml:"max_open_files"`
+
 	// DatabaseURLFile is the filename within secretsMountPath containing the database connection URL.
 	DatabaseURLFile string `yaml:"database_url_file"`
 
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`
 	SSLKeyFile  string `yaml:"ssl_key_file"`
+	// TerminateOnObservabilityFailure controls whether observability server failures should terminate the processor.
+	// false: best-effort (default), true: fatal.
+	TerminateOnObservabilityFailure bool `yaml:"terminate_on_observability_failure"`
 
-	// InferenceGatewayURL is the base URL of the inference gateway (llm-d or GAIE)
-	InferenceGatewayURL string `yaml:"inference_gateway_url"`
+	// ShutdownTimeout is the timeout for shutting down the processor
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 
-	// InferenceRequestTimeout is the timeout for individual inference requests
-	InferenceRequestTimeout time.Duration `yaml:"inference_request_timeout"`
+	// WorkDir is the work directory for processor
+	WorkDir string `yaml:"work_dir"`
 
-	// InferenceAPIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
-	InferenceAPIKeyFile string `yaml:"inference_api_key_file"`
+	// Inference Config
+	InferenceConfig InferenceConfig `yaml:"inference_config"`
+}
 
-	// InferenceMaxRetries is the maximum number of retry attempts for failed requests
-	InferenceMaxRetries int `yaml:"inference_max_retries"`
+type InferenceConfig struct {
+	// GatewayURL is the base URL of the inference gateway (llm-d or GAIE)
+	GatewayURL string `yaml:"gateway_url"`
 
-	// InferenceInitialBackoff is the initial backoff duration for retries
-	InferenceInitialBackoff time.Duration `yaml:"inference_initial_backoff"`
+	// RequestTimeout is the timeout for individual inference requests
+	RequestTimeout time.Duration `yaml:"request_timeout"`
 
-	// InferenceMaxBackoff is the maximum backoff duration for retries
-	InferenceMaxBackoff time.Duration `yaml:"inference_max_backoff"`
+	// APIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
+	APIKeyFile string `yaml:"api_key_file"`
 
-	// InferenceTLSInsecureSkipVerify skips TLS certificate verification (INSECURE, only for testing)
-	InferenceTLSInsecureSkipVerify bool `yaml:"inference_tls_insecure_skip_verify"`
+	// MaxRetries is the maximum number of retry attempts for failed requests
+	MaxRetries int `yaml:"max_retries"`
 
-	// InferenceTLSCACertFile is the path to custom CA certificate file (for private CAs)
-	InferenceTLSCACertFile string `yaml:"inference_tls_ca_cert_file"`
+	// InitialBackoff is the initial backoff duration for retries
+	InitialBackoff time.Duration `yaml:"initial_backoff"`
 
-	// InferenceTLSClientCertFile is the path to client certificate file (for mTLS)
-	InferenceTLSClientCertFile string `yaml:"inference_tls_client_cert_file"`
+	// MaxBackoff is the maximum backoff duration for retries
+	MaxBackoff time.Duration `yaml:"max_backoff"`
 
-	// InferenceTLSClientKeyFile is the path to client private key file (for mTLS)
-	InferenceTLSClientKeyFile string `yaml:"inference_tls_client_key_file"`
+	// TLSInsecureSkipVerify skips TLS certificate verification (INSECURE, only for testing)
+	TLSInsecureSkipVerify bool `yaml:"tls_insecure_skip_verify"`
+
+	// TLSCACertFile is the path to custom CA certificate file (for private CAs)
+	TLSCACertFile string `yaml:"tls_ca_cert_file"`
+
+	// TLSClientCertFile is the path to client certificate file (for mTLS)
+	TLSClientCertFile string `yaml:"tls_client_cert_file"`
+
+	// TLSClientKeyFile is the path to client private key file (for mTLS)
+	TLSClientKeyFile string `yaml:"tls_client_key_file"`
 }
 
 type BucketConfig struct {
@@ -132,12 +150,19 @@ func NewConfig() *ProcessorConfig {
 		MaxJobConcurrency: 10,
 		NumWorkers:        1,
 		Addr:              ":9090",
-
-		InferenceGatewayURL:     "http://localhost:8000",
-		InferenceRequestTimeout: 5 * time.Minute,
-		InferenceMaxRetries:     3,
-		InferenceInitialBackoff: 1 * time.Second,
-		InferenceMaxBackoff:     60 * time.Second,
+		// Keep observability as best-effort by default.
+		TerminateOnObservabilityFailure: false,
+		ShutdownTimeout:                 30 * time.Second,
+		WorkDir:                         "/var/lib/batch-gateway/processor",
+		MaxOpenFiles:                    50, // default to 50 open files
+		InferenceConfig: InferenceConfig{
+			GatewayURL:            "http://localhost:8000",
+			RequestTimeout:        5 * time.Minute,
+			MaxRetries:            3,
+			InitialBackoff:        1 * time.Second,
+			MaxBackoff:            60 * time.Second,
+			TLSInsecureSkipVerify: false,
+		},
 	}
 }
 
@@ -146,7 +171,7 @@ func (pc *ProcessorConfig) GetDatabaseURL() (string, error) {
 }
 
 func (pc *ProcessorConfig) GetInferenceAPIKey() (string, error) {
-	return readSecretFile(pc.InferenceAPIKeyFile)
+	return readSecretFile(pc.InferenceConfig.APIKeyFile)
 }
 
 func readSecretFile(filename string) (string, error) {
@@ -169,6 +194,60 @@ func readSecretFile(filename string) (string, error) {
 }
 
 func (c *ProcessorConfig) Validate() error {
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("poll_interval must be > 0")
+	}
+	if c.TaskWaitTime <= 0 {
+		return fmt.Errorf("task_wait_time must be > 0")
+	}
+	if c.TaskWaitTime >= c.PollInterval {
+		return fmt.Errorf("task_wait_time must be shorter than poll_interval")
+	}
+	if c.NumWorkers <= 0 {
+		return fmt.Errorf("num_workers must be > 0")
+	}
+	if c.MaxJobConcurrency <= 0 {
+		return fmt.Errorf("max_job_concurrency must be > 0")
+	}
+	if c.ShutdownTimeout <= 0 {
+		return fmt.Errorf("shutdown_timeout must be > 0")
+	}
+	if c.Addr == "" {
+		return fmt.Errorf("addr cannot be empty")
+	}
+	if c.WorkDir == "" {
+		return fmt.Errorf("work_dir cannot be empty")
+	}
+
+	if c.QueueTimeBucket.BucketStart <= 0 || c.QueueTimeBucket.BucketFactor <= 1 || c.QueueTimeBucket.BucketCount <= 0 {
+		return fmt.Errorf("queue_time_bucket must satisfy: bucket_start > 0, bucket_factor > 1, bucket_count > 0")
+	}
+	if c.ProcessTimeBucket.BucketStart <= 0 || c.ProcessTimeBucket.BucketFactor <= 1 || c.ProcessTimeBucket.BucketCount <= 0 {
+		return fmt.Errorf("process_time_bucket must satisfy: bucket_start > 0, bucket_factor > 1, bucket_count > 0")
+	}
+
+	if c.InferenceConfig.GatewayURL == "" {
+		return fmt.Errorf("inference_config.gateway_url cannot be empty")
+	}
+	if c.InferenceConfig.RequestTimeout <= 0 {
+		return fmt.Errorf("inference_config.request_timeout must be > 0")
+	}
+	if c.InferenceConfig.MaxRetries < 0 {
+		return fmt.Errorf("inference_config.max_retries must be >= 0")
+	}
+	if c.InferenceConfig.InitialBackoff <= 0 {
+		return fmt.Errorf("inference_config.initial_backoff must be > 0")
+	}
+	if c.InferenceConfig.MaxBackoff <= 0 {
+		return fmt.Errorf("inference_config.max_backoff must be > 0")
+	}
+	if c.InferenceConfig.MaxBackoff < c.InferenceConfig.InitialBackoff {
+		return fmt.Errorf("inference_config.max_backoff must be >= inference_config.initial_backoff")
+	}
+
+	if (c.SSLCertFile == "") != (c.SSLKeyFile == "") {
+		return fmt.Errorf("ssl_cert_file and ssl_key_file must both be set or both be empty")
+	}
 	if c.SSLEnabled() {
 		if _, err := os.Stat(c.SSLCertFile); err != nil {
 			return err
@@ -177,5 +256,28 @@ func (c *ProcessorConfig) Validate() error {
 			return err
 		}
 	}
+
+	if (c.InferenceConfig.TLSClientCertFile == "") != (c.InferenceConfig.TLSClientKeyFile == "") {
+		return fmt.Errorf("inference_config.tls_client_cert_file and inference_config.tls_client_key_file must both be set or both be empty")
+	}
+	if c.InferenceConfig.TLSCACertFile != "" {
+		if _, err := os.Stat(c.InferenceConfig.TLSCACertFile); err != nil {
+			return err
+		}
+	}
+	if c.InferenceConfig.TLSClientCertFile != "" {
+		if _, err := os.Stat(c.InferenceConfig.TLSClientCertFile); err != nil {
+			return err
+		}
+		if _, err := os.Stat(c.InferenceConfig.TLSClientKeyFile); err != nil {
+			return err
+		}
+	}
+
+	// <= 0 means unlimited.
+	if c.MaxOpenFiles <= 0 {
+		c.MaxOpenFiles = 0
+	}
+
 	return nil
 }

@@ -84,13 +84,14 @@ apiserver:
   config:
     host: ""
     port: "8000"
-    batchTTLSeconds: 2592000
     tenantHeader: "X-MaaS-User"
     readHeaderTimeoutSeconds: 10
     readTimeoutSeconds: 900
     writeTimeoutSeconds: 120
     idleTimeoutSeconds: 90
-    filesAPI:
+    batchAPI:
+      batchEventTTLSeconds: 2592000
+    fileAPI:
       defaultExpirationSeconds: 7776000
       maxSizeBytes: 209715200
       maxLineCount: 50000
@@ -114,6 +115,11 @@ apiserver:
 processor:
   enabled: false
   replicaCount: 1
+  terminationGracePeriodSeconds: 60
+
+  workDirVolume:
+    sizeLimit: "10Gi"
+    medium: "" # node disk
 
   image:
     repository: ghcr.io/llm-d-incubation/batch-gateway-processor
@@ -169,7 +175,7 @@ processor:
 
   readinessProbe:
     httpGet:
-      path: /health
+      path: /ready
       port: metrics
     initialDelaySeconds: 5
     periodSeconds: 10
@@ -197,6 +203,20 @@ processor:
       bucketStart: 0.1
       bucketFactor: 2
       bucketCount: 15
+    terminateOnObservabilityFailure: false
+    shutdownTimeout: "30s"
+    workDir: "/var/lib/batch-gateway/processor"
+    maxOpenFiles: 50
+    inferenceConfig:
+      gatewayUrl: "http://localhost:8000"
+      requestTimeout: "5m"
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "60s"
+      tlsInsecureSkipVerify: false
+      tlsCaCertFile: ""
+      tlsClientCertFile: ""
+      tlsClientKeyFile: ""
 
   # TLS/SSL Configuration
   tls:

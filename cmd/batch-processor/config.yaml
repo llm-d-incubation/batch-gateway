@@ -1,7 +1,7 @@
 # Worker Settings - task wait time needs to be shorter than poll interval
 task_wait_time: "1s"
-worker_poll_interval: "5s"
-max_workers: 20
+poll_interval: "5s"
+num_workers: 20
 queue_time_bucket:
   bucket_start: 0.1
   bucket_factor: 2
@@ -11,28 +11,40 @@ process_time_bucket:
   bucket_factor: 2
   bucket_count: 15
 
-# Metrics & Health Check
-metrics_address: ":9090"
+# Metrics & Health Check Server Address - ":PORT" format (e.g. ":9090")
+addr: ":9090"
+# Observability server failure should not terminate the processor in best-effort mode by default.
+terminate_on_observability_failure: false
+
+# Shutdown timeout for processor (should be less than k8s terminationGracePeriodSeconds)
+shutdown_timeout: "30s"
+
+# Work directory for processor
+work_dir: "/var/lib/batch-gateway/processor"
+
+# Maximum number of open files for the plan writer (unlimited if <= 0)
+max_open_files: 50
 
 # Inference Client Configuration
-# Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
-inference_gateway_url: "http://localhost:8000"
+inference_config:
+  # Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
+  gateway_url: "http://localhost:8000"
 
-# Request timeout for individual inference requests
-inference_request_timeout: "5m"
+  # Request timeout for individual inference requests
+  request_timeout: "5m"
 
-# Retry configuration for failed requests
-inference_max_retries: 3
-inference_initial_backoff: "1s"
-inference_max_backoff: "60s"
+  # Retry configuration for failed requests
+  max_retries: 3
+  initial_backoff: "1s"
+  max_backoff: "60s"
 
-# TLS configuration (optional)
-# Skip TLS certificate verification (INSECURE - only for testing with self-signed certs)
-inference_tls_insecure_skip_verify: false
+  # TLS configuration (optional)
+  # Skip TLS certificate verification (INSECURE - only for testing with self-signed certs)
+  tls_insecure_skip_verify: false
 
-# Custom CA certificate for private/corporate CAs
-# inference_tls_ca_cert_file: "/path/to/ca-cert.pem"
+  # Custom CA certificate for private/corporate CAs
+  # tls_ca_cert_file: "/path/to/ca-cert.pem"
 
-# Client certificate and key for mutual TLS (mTLS)
-# inference_tls_client_cert_file: "/path/to/client-cert.pem"
-# inference_tls_client_key_file: "/path/to/client-key.pem"
+  # Client certificate and key for mutual TLS (mTLS)
+  # tls_client_cert_file: "/path/to/client-cert.pem"
+  # tls_client_key_file: "/path/to/client-key.pem"
