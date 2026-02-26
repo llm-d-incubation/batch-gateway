@@ -64,6 +64,7 @@ func (s *StatusUpdater) UpdateProgressCounts(
 }
 
 // UpdatePersistentStatus: update the persistent status of the job in DB
+// tenant ID(tenantId) and job ID(jobId) should be in the logger in the context
 func (s *StatusUpdater) UpdatePersistentStatus(
 	ctx context.Context,
 	dbJob *db.BatchItem,
@@ -109,6 +110,6 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		logger.V(logging.ERROR).Error(err, "Failed to update batch status in DB")
 		return err
 	}
-	logger.V(logging.INFO).Info("Batch status updated successfully", "jobID", dbJob.ID, "newStatus", newStatus)
+	logger.V(logging.INFO).Info("Batch status updated successfully", "newStatus", newStatus)
 	return nil
 }

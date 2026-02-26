@@ -36,10 +36,14 @@ const mockFilesRootDir = "/tmp/batch-gateway-files"
 type spyPQ struct {
 	inner db.BatchPriorityQueueClient
 	mu    sync.Mutex
+	enqN  int
 	delN  int
 }
 
 func (s *spyPQ) PQEnqueue(ctx context.Context, jobPriority *db.BatchJobPriority) error {
+	s.mu.Lock()
+	s.enqN++
+	s.mu.Unlock()
 	return s.inner.PQEnqueue(ctx, jobPriority)
 }
 func (s *spyPQ) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) ([]*db.BatchJobPriority, error) {
@@ -60,6 +64,12 @@ func (s *spyPQ) DeleteCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.delN
+}
+
+func (s *spyPQ) EnqueueCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enqN
 }
 
 type spyBatchDB struct {
@@ -265,7 +275,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	inputFileID := "file-123"
 	fileSpec := &openai.FileObject{Filename: filename}
 	fileItem := &db.FileItem{
-		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseIndexes: db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
 		BaseContents: db.BaseContents{
 			Spec: mustJSON(t, fileSpec),
 		},
@@ -308,7 +318,10 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 
 	// 1) local input exists and equals remoteBuf
-	localInput := p.jobInputFilePath(jobID, tenantID)
+	localInput, err := p.jobInputFilePath(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobInputFilePath: %v", err)
+	}
 	gotLocal, err := os.ReadFile(localInput)
 	if err != nil {
 		t.Fatalf("read local input: %v", err)
@@ -318,7 +331,11 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 
 	// 2) model_map.json exists and is consistent
-	mapPath := filepath.Join(p.jobRootDir(jobID, tenantID), "model_map.json")
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	mapPath := filepath.Join(jobRootDir, modelMapFileName)
 	mapBytes, err := os.ReadFile(mapPath)
 	if err != nil {
 		t.Fatalf("read model_map.json: %v", err)
@@ -346,7 +363,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 	defer f.Close()
 
-	plansDir := filepath.Join(p.jobRootDir(jobID, tenantID), "plans")
+	plansDir := filepath.Join(jobRootDir, "plans")
 	for safeID := range mm.SafeToModel {
 		planPath := filepath.Join(plansDir, safeID+".plan")
 		if _, err := os.Stat(planPath); err != nil {
@@ -498,7 +515,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	}
 	fileSpec := &openai.FileObject{Filename: "input.jsonl"}
 	if err := fileDBClient.DBStore(ctx, &db.FileItem{
-		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseIndexes: db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
 		BaseContents: db.BaseContents{
 			Spec: mustJSON(t, fileSpec),
 		},
@@ -528,7 +545,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	}
 }
 
-func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
+func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 	ctx := testLoggerCtx()
 
 	workDir := t.TempDir()
@@ -537,12 +554,10 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
 
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
-	pq := &spyPQ{inner: mockdb.NewMockBatchPriorityQueueClient()}
-
 	clients := &ProcessorClients{
 		database:      dbClient,
 		files:         nil,
-		priorityQueue: pq,
+		priorityQueue: nil,
 		status:        statusClient,
 		event:         nil,
 		inference:     nil,
@@ -552,7 +567,8 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
 	jobID := "job-handle-cancelled"
 	jobItem := &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{
-			ID: jobID,
+			ID:       jobID,
+			TenantID: "tenantA",
 			Tags: db.Tags{
 				"tenant": "tenantA",
 			},
@@ -567,7 +583,10 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
 		t.Fatalf("DBStore job item: %v", err)
 	}
 
-	jobDir := p.jobRootDir(jobID, jobItem.TenantID)
+	jobDir, err := p.jobRootDir(jobID, jobItem.TenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll jobDir: %v", err)
 	}
@@ -576,11 +595,8 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
 	}
 
 	updater := NewStatusUpdater(dbClient, statusClient)
-	task := &db.BatchJobPriority{
-		ID:  jobID,
-		SLO: time.Now().Add(1 * time.Minute),
-	}
-	if err := p.handleCancelled(ctx, jobItem, updater, task); err != nil {
+
+	if err := p.handleCancelled(ctx, jobItem, updater); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
 	}
 
@@ -592,9 +608,165 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled_DeletesPQ(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("DBGet job after cancel: err=%v len=%d", err, len(jobs))
 	}
+}
 
-	// PQDelete should have been attempted exactly once by handleCancelled
-	if pq.DeleteCalls() != 1 {
-		t.Fatalf("expected PQDelete called once, got=%d", pq.DeleteCalls())
+func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pq := &spyPQ{inner: mockdb.NewMockBatchPriorityQueueClient()}
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-expired-1"
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: "tenantA",
+			Tags: db.Tags{
+				"tenant": "tenantA",
+			},
+		},
+		BaseContents: db.BaseContents{
+			Spec: mustJSON(t, openai.BatchSpec{
+				InputFileID: "unused",
+			}),
+			Status: mustJSON(t, openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore job item: %v", err)
+	}
+	if err := pq.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(-1 * time.Second),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+
+	clients := &ProcessorClients{
+		database:      dbClient,
+		priorityQueue: pq,
+		status:        statusClient,
+	}
+	p := NewProcessor(cfg, clients)
+
+	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer cancel()
+	if err := p.runPollingLoop(runCtx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	if dbClient.StatusCalls(openai.BatchStatusExpired) < 1 {
+		t.Fatalf("expected expired status update at least once")
+	}
+}
+
+func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pq := &spyPQ{inner: mockdb.NewMockBatchPriorityQueueClient()}
+	innerDB := mockdb.NewMockDBClient(
+		func(b *db.BatchItem) string { return b.ID },
+		func(q *db.BatchQuery) *db.BaseQuery { return &q.BaseQuery },
+	)
+	dbClient := &dbGetErrWrapper{
+		inner: innerDB,
+		err:   errors.New("db transient"),
+	}
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-db-transient-1"
+
+	if err := pq.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+	initialEnqueueCalls := pq.EnqueueCalls()
+
+	clients := &ProcessorClients{
+		database:      dbClient,
+		priorityQueue: pq,
+		status:        statusClient,
+	}
+	p := NewProcessor(cfg, clients)
+
+	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer cancel()
+	if err := p.runPollingLoop(runCtx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	if pq.EnqueueCalls() <= initialEnqueueCalls {
+		t.Fatalf("expected task re-enqueue on transient DB error")
+	}
+}
+
+func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pq := &spyPQ{inner: mockdb.NewMockBatchPriorityQueueClient()}
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-not-runnable-1"
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: "tenantA",
+			Tags: db.Tags{
+				"tenant": "tenantA",
+			},
+		},
+		BaseContents: db.BaseContents{
+			Spec: mustJSON(t, openai.BatchSpec{
+				InputFileID: "unused",
+			}),
+			// completed is terminal and not runnable
+			Status: mustJSON(t, openai.BatchStatusInfo{
+				Status: openai.BatchStatusCompleted,
+			}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore job item: %v", err)
+	}
+	if err := pq.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+
+	clients := &ProcessorClients{
+		database:      dbClient,
+		priorityQueue: pq,
+		status:        statusClient,
+	}
+	p := NewProcessor(cfg, clients)
+
+	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer cancel()
+	if err := p.runPollingLoop(runCtx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	// no persistent status transition should be attempted for not-runnable jobs.
+	if dbClient.StatusCalls(openai.BatchStatusCompleted) > 0 || dbClient.StatusCalls(openai.BatchStatusFailed) > 0 || dbClient.StatusCalls(openai.BatchStatusExpired) > 0 {
+		t.Fatalf("expected no status updates for not-runnable job")
 	}
 }

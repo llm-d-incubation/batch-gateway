@@ -106,7 +106,7 @@ func TestPoller_DequeueOne_EmptyQueue_ReturnsNil(t *testing.T) {
 
 	p := NewPoller(pq, dbClient)
 
-	task, err := p.DequeueOne(ctx)
+	task, err := p.dequeueOne(ctx)
 	if err != nil {
 		t.Fatalf("DequeueOne() err=%v, want nil", err)
 	}
@@ -129,7 +129,7 @@ func TestPoller_DequeueOne_PQError_ReturnsError(t *testing.T) {
 
 	p := NewPoller(pq, dbClient)
 
-	task, err := p.DequeueOne(ctx)
+	task, err := p.dequeueOne(ctx)
 	if err == nil {
 		t.Fatalf("DequeueOne() err=nil, want error")
 	}
@@ -158,7 +158,7 @@ func TestPoller_DequeueOne_ReturnsFirstTask(t *testing.T) {
 
 	p := NewPoller(pq, dbClient)
 
-	task, err := p.DequeueOne(ctx)
+	task, err := p.dequeueOne(ctx)
 	if err != nil {
 		t.Fatalf("DequeueOne() err=%v, want nil", err)
 	}
@@ -170,7 +170,7 @@ func TestPoller_DequeueOne_ReturnsFirstTask(t *testing.T) {
 	}
 }
 
-func TestPoller_FetchJobItem_DBError_ReEnqueuesAndReturnsError(t *testing.T) {
+func TestPoller_FetchJobItem_DBError_ReturnsErrorWithoutEnqueue(t *testing.T) {
 	ctx := context.Background()
 
 	pq := &pqSpy{inner: mockdb.NewMockBatchPriorityQueueClient()}
@@ -192,7 +192,7 @@ func TestPoller_FetchJobItem_DBError_ReEnqueuesAndReturnsError(t *testing.T) {
 		SLO: time.Now().Add(1 * time.Hour),
 	}
 
-	jobItem, err := p.FetchJobItem(ctx, task)
+	jobItem, err := p.fetchJobItem(ctx, task)
 	if err == nil {
 		t.Fatalf("FetchJobItem() err=nil, want error")
 	}
@@ -202,8 +202,8 @@ func TestPoller_FetchJobItem_DBError_ReEnqueuesAndReturnsError(t *testing.T) {
 	if jobItem != nil {
 		t.Fatalf("FetchJobItem() jobItem=%v, want nil", jobItem)
 	}
-	if pq.enqueueCalled != 1 {
-		t.Fatalf("PQEnqueue called=%d, want 1", pq.enqueueCalled)
+	if pq.enqueueCalled != 0 {
+		t.Fatalf("PQEnqueue called=%d, want 0", pq.enqueueCalled)
 	}
 }
 
@@ -224,7 +224,7 @@ func TestPoller_FetchJobItem_DBInconsistency_NoReenqueueNoDelete_ReturnsNilNil(t
 		SLO: time.Now().Add(1 * time.Hour),
 	}
 
-	jobItem, err := p.FetchJobItem(ctx, task)
+	jobItem, err := p.fetchJobItem(ctx, task)
 	if err != nil {
 		t.Fatalf("FetchJobItem() err=%v, want nil", err)
 	}
@@ -261,7 +261,7 @@ func TestPoller_FetchJobItem_Found_ReturnsJobItem(t *testing.T) {
 		t.Fatalf("DBStore() err=%v", err)
 	}
 
-	jobItem, err := p.FetchJobItem(ctx, task)
+	jobItem, err := p.fetchJobItem(ctx, task)
 	if err != nil {
 		t.Fatalf("FetchJobItem() err=%v, want nil", err)
 	}

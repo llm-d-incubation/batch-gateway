@@ -25,8 +25,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"sync"
 )
+
+const modelMapFileName = "model_map.json"
 
 type planRequestLine struct {
 	Body struct {
@@ -76,7 +79,7 @@ type modelMapFile struct {
 }
 
 func writeModelMapFile(jobRootDir string, modelMapFile modelMapFile) error {
-	finalPath := filepath.Join(jobRootDir, "model_map.json")
+	finalPath := filepath.Join(jobRootDir, modelMapFileName)
 	tempPath := finalPath + ".tmp"
 
 	if err := os.MkdirAll(jobRootDir, 0o700); err != nil {
@@ -265,4 +268,35 @@ func (w *planWriter) Finalize(modelIDs []string) error {
 		}
 	}
 	return nil
+}
+
+func appendPlanEntryForModel(
+	planWriter *planWriter,
+	modelID string,
+	modelToSafe map[string]string,
+	used map[string]int,
+	offset int64,
+	line []byte,
+) (int64, string, uint32, error) {
+	safeModelID, ok := modelToSafe[modelID]
+	if !ok {
+		safeModelID = internModelID(modelID, used)
+		modelToSafe[modelID] = safeModelID
+	}
+
+	length := uint32(len(line))
+	if err := planWriter.AppendEntry(safeModelID, planEntry{Offset: offset, Length: length}); err != nil {
+		return offset, safeModelID, length, err
+	}
+	return offset + int64(length), safeModelID, length, nil
+}
+
+func finalizePlanFiles(planWriter *planWriter, modelToSafe map[string]string) error {
+	modelIDs := make([]string, 0, len(modelToSafe))
+	for _, safeID := range modelToSafe {
+		modelIDs = append(modelIDs, safeID)
+	}
+	// predictable order helps reproducibility and debugging.
+	sort.Strings(modelIDs)
+	return planWriter.Finalize(modelIDs)
 }

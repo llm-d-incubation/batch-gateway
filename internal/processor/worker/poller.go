@@ -38,7 +38,7 @@ func NewPoller(pq db.BatchPriorityQueueClient, db db.BatchDBClient) *Poller {
 	}
 }
 
-func (p *Poller) DequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
+func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 	logger := klog.FromContext(ctx)
 
 	tasks, err := p.pq.PQDequeue(ctx, 0, 1) // get only one job without blocking the queue
@@ -57,7 +57,17 @@ func (p *Poller) DequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 	return tasks[0], nil
 }
 
-func (p *Poller) FetchJobItem(ctx context.Context, task *db.BatchJobPriority) (*db.BatchItem, error) {
+func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) error {
+	logger := klog.FromContext(ctx)
+	err := p.pq.PQEnqueue(ctx, task)
+	if err != nil {
+		logger.Error(err, "CRITICAL: Failed to enqueue a job")
+		return err
+	}
+	return nil
+}
+
+func (p *Poller) fetchJobItem(ctx context.Context, task *db.BatchJobPriority) (*db.BatchItem, error) {
 	logger := klog.FromContext(ctx)
 
 	// get only one job data
@@ -70,21 +80,18 @@ func (p *Poller) FetchJobItem(ctx context.Context, task *db.BatchJobPriority) (*
 
 	// system error. (db connection, etc. temporary error)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Temporary DB error. Re-enqueueing the task.")
-		if enqueueErr := p.pq.PQEnqueue(ctx, task); enqueueErr != nil {
-			logger.Error(enqueueErr, "CRITICAL: Failed to re-enqueue job", "jobID", task.ID)
-		}
+		logger.V(logging.ERROR).Error(err, "Temporary DB error. Need to Re-enqueue the job.")
 		return nil, err
 	}
 
 	// data inconsistency. job data is not in the db while the task is in the queue.
-	// don't re-enqueue and return nil. job will be deleted from the queue by the dequeue function.
+	// don't re-enqueue and return nil. job is already deleted from the queue by the dequeue function.
 	if len(jobs) == 0 {
 		jobDataErr := fmt.Errorf("Job data for %s does not exist", task.ID)
 		logger.Error(jobDataErr, "CRITICAL: Job data is not in the DB while the task is in the queue. Returning error.")
 		return nil, nil
 	}
 
-	logger.V(logging.DEBUG).Info("Job DB Data retrieved", "jobID", task.ID)
+	logger.V(logging.DEBUG).Info("Job DB Data retrieved")
 	return jobs[0], nil
 }

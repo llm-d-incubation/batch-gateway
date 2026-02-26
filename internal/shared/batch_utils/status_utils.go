@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
@@ -28,6 +29,14 @@ import (
 func IsJobRunnable(job *openai.Batch) bool {
 	return job.BatchStatusInfo.Status == openai.BatchStatusValidating ||
 		job.BatchStatusInfo.Status == openai.BatchStatusInProgress
+}
+
+// IsJobExpired checks if the job is expired
+func IsJobExpired(task *db.BatchJobPriority) bool {
+	if !task.SLO.IsZero() && time.Now().After(task.SLO) {
+		return true
+	}
+	return false
 }
 
 // BuildUpdatedStatusInfo: build updated BatchStatusInfo object including timestamps

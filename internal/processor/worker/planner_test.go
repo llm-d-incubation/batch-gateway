@@ -148,7 +148,7 @@ func TestWriteModelMapFile_AtomicWrite(t *testing.T) {
 		t.Fatalf("writeModelMapFile: %v", err)
 	}
 
-	finalPath := filepath.Join(root, "model_map.json")
+	finalPath := filepath.Join(root, modelMapFileName)
 	tmpPath := finalPath + ".tmp"
 
 	if _, err := os.Stat(tmpPath); err == nil {

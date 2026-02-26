@@ -19,20 +19,62 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"k8s.io/klog/v2"
 )
 
-func (p *Processor) jobRootDir(jobID, tenantID string) string {
-	return filepath.Join(p.cfg.WorkDir, tenantID, "jobs", jobID)
+func (p *Processor) jobRootDir(jobID, tenantID string) (string, error) {
+	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		return "", fmt.Errorf("failed to sanitize tenant id for job path: %w", err)
+	}
+	return filepath.Join(p.cfg.WorkDir, folderName, "jobs", jobID), nil
 }
 
-func (p *Processor) jobInputFilePath(jobID, tenantID string) string {
-	return filepath.Join(p.jobRootDir(jobID, tenantID), "input.jsonl")
+func (p *Processor) jobInputFilePath(jobID, tenantID string) (string, error) {
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(jobRootDir, "input.jsonl"), nil
+}
+
+// createLocalInputFile creates or truncates the local input file for a job.
+func (p *Processor) createLocalInputFile(jobID, tenantID string) (*os.File, string, error) {
+	localInputFilePath, err := p.jobInputFilePath(jobID, tenantID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	localInputFile, err := os.OpenFile(localInputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, localInputFilePath, fmt.Errorf("failed to create local input file: %w", err)
+	}
+	return localInputFile, localInputFilePath, nil
+}
+
+// cleanupJobArtifacts removes the local job artifacts directory as best-effort.
+func (p *Processor) cleanupJobArtifacts(ctx context.Context, jobID, tenantID string) {
+	logger := klog.FromContext(ctx)
+	jobDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to resolve job directory for cleanup")
+		return
+	}
+
+	if err := os.RemoveAll(jobDir); err != nil {
+		// keep going: cleanup failure should not block status transitions.
+		logger.V(logging.ERROR).Error(err, "Failed to remove job directory", "path", jobDir)
+		return
+	}
+	logger.V(logging.INFO).Info("Removed job directory", "path", jobDir)
 }
 
 // openInputFileStream opens the input file stream
@@ -46,7 +88,7 @@ func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string)
 		return nil, nil, fmt.Errorf("input file %q not found in db", inputFileID)
 	}
 
-	// unmarshal file object into openai file object to get inputfile filename and tenant id
+	// convert file db item to file object
 	fileItem := items[0]
 	fileObj, err := converter.DBItemToFile(fileItem)
 	if err != nil {
