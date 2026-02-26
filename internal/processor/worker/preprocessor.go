@@ -25,9 +25,11 @@ import (
 	"io"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"k8s.io/klog/v2"
 
+	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
@@ -40,6 +42,7 @@ import (
 func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo, cancelRequested *atomic.Bool) error {
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
+	planBuildStart := time.Now()
 	jobID := jobInfo.JobID
 	inputFileID := jobInfo.BatchJob.BatchSpec.InputFileID
 	if inputFileID == "" {
@@ -101,7 +104,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 	for {
 		// cancellation checks
-		if err := checkPreProcessCancellation(ctx, cancelRequested); err != nil {
+		if err := checkCancellation(ctx, cancelRequested); err != nil {
 			if err == ErrCancelled {
 				logger.V(logging.INFO).Info("preProcess: cancel requested")
 			}
@@ -165,13 +168,13 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		return err
 	}
 
-	// log info
+	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), jobInfo.TenantID, metrics.GetSizeBucket(int(lineCount)))
 	logger.V(logging.INFO).Info("Processor Pre-processing job completed", "inputFilePath", localInputFilePath, "planFilePath", planWriter.plansDir(), "lineCount", lineCount)
 
 	return nil
 }
 
-func checkPreProcessCancellation(ctx context.Context, cancelRequested *atomic.Bool) error {
+func checkCancellation(ctx context.Context, cancelRequested *atomic.Bool) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

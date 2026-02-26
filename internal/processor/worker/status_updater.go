@@ -63,7 +63,8 @@ func (s *StatusUpdater) UpdateProgressCounts(
 	return nil
 }
 
-// UpdatePersistentStatus: update the persistent status of the job in DB
+// UpdatePersistentStatus updates the persistent status of the job in DB.
+// Optional modifiers are applied to the status info before marshaling.
 // tenant ID(tenantId) and job ID(jobId) should be in the logger in the context
 func (s *StatusUpdater) UpdatePersistentStatus(
 	ctx context.Context,
@@ -71,6 +72,7 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	newStatus openai.BatchStatus,
 	counts *openai.BatchRequestCounts,
 	slo *time.Time,
+	modifiers ...func(*openai.BatchStatusInfo),
 ) error {
 	if dbJob == nil {
 		return fmt.Errorf("dbJob is nil")
@@ -93,6 +95,10 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		return err
 	}
 
+	for _, fn := range modifiers {
+		fn(updated)
+	}
+
 	statusBytes, err := json.Marshal(updated)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to marshal updated batch status")
@@ -112,4 +118,18 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	}
 	logger.V(logging.INFO).Info("Batch status updated successfully", "newStatus", newStatus)
 	return nil
+}
+
+// UpdateCompletedStatus transitions the job to completed and sets the output file ID.
+func (s *StatusUpdater) UpdateCompletedStatus(
+	ctx context.Context,
+	dbJob *db.BatchItem,
+	counts *openai.BatchRequestCounts,
+	outputFileID string,
+) error {
+	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusCompleted, counts, nil,
+		func(info *openai.BatchStatusInfo) {
+			info.OutputFileID = outputFileID
+		},
+	)
 }
