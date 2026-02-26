@@ -15,18 +15,18 @@
 -- Get by IDs lua script.
 
 -- Parse inputs.
-local IDs = KEYS
+local keys = KEYS
 local includeStatic = ARGV[1]
 local tenantID = ARGV[2]
 
 -- Check inputs.
 local result = {}
-if #IDs == 0 then
+if #keys == 0 then
 	return {tonumber(0), result}
 end
 
 -- Iterate over the IDs.
-for _, key in ipairs(IDs) do
+for _, key in ipairs(keys) do
 	-- Get the key's contents.
 	local contents
 	if includeStatic == 'true' then

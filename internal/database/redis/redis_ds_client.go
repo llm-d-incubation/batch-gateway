@@ -62,6 +62,10 @@ var (
 	storeLua         string
 	redisScriptStore = goredis.NewScript(storeLua)
 
+	//go:embed redis_get_by_ids.lua
+	getByIDsLua         string
+	redisScriptGetByIDs = goredis.NewScript(getByIDsLua)
+
 	//go:embed redis_get_by_tags.lua
 	getByTagsLua         string
 	redisScriptGetByTags = goredis.NewScript(getByTagsLua)
@@ -70,9 +74,9 @@ var (
 	getByExpiryLua         string
 	redisScriptGetByExpiry = goredis.NewScript(getByExpiryLua)
 
-	//go:embed redis_get_by_ids.lua
-	getByIDsLua         string
-	redisScriptGetByIDs = goredis.NewScript(getByIDsLua)
+	//go:embed redis_get_by_purpose.lua
+	getByPurposeLua         string
+	redisScriptGetByPurpose = goredis.NewScript(getByPurposeLua)
 
 	//go:embed redis_get_by_tenant.lua
 	getByTenantLua         string
