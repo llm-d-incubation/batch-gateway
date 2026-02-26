@@ -29,6 +29,7 @@ import (
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
+	inferencemetrics "github.com/llm-d-incubation/batch-gateway/internal/inference/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
@@ -169,10 +170,14 @@ func run() error {
 		dbClient, pqClient, statusClient, eventClient, inferenceClient,
 	)
 
+	// Initialize metrics client for flow control (for now, noop)
+	metricsClient := &inferencemetrics.NoopClient{}
+	logger.V(logging.INFO).Info("Initialized metrics client (mock)")
+
 	// initialize processor (worker pool manager)
 	// get max worker from cfg then decide the worker pool size
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc := worker.NewProcessor(cfg, &processorClients)
+	proc := worker.NewProcessor(cfg, &processorClients, metricsClient)
 
 	// start the main polling loop
 	// this polls for new tasks, check for empty worker slots, and assign tasks to workers

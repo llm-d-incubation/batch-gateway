@@ -27,6 +27,7 @@ import (
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
+	inferencemetrics "github.com/llm-d-incubation/batch-gateway/internal/inference/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch"
@@ -58,20 +59,22 @@ func NewProcessorClients(
 }
 
 type Processor struct {
-	cfg        *config.ProcessorConfig
-	workerPool *WorkerPool
-
-	clients *ProcessorClients
+	cfg           *config.ProcessorConfig
+	workerPool    *WorkerPool
+	clients       *ProcessorClients
+	metricsClient inferencemetrics.Client
 }
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *ProcessorClients,
+	metricsClient inferencemetrics.Client,
 ) *Processor {
 	return &Processor{
-		cfg:        cfg,
-		workerPool: NewWorkerPool(cfg.NumWorkers),
-		clients:    clients,
+		cfg:           cfg,
+		workerPool:    NewWorkerPool(cfg.NumWorkers),
+		clients:       clients,
+		metricsClient: metricsClient,
 	}
 }
 
@@ -132,13 +135,29 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 			workerId = id
 		}
 
-		// check queue for available tasks
-		task := p.getTaskFromQueue(ctx)
+		// Check dispatch budget before pulling work from queue
+		budget, err := p.metricsClient.Budget(ctx)
+		if err != nil {
+			logger.V(logging.WARNING).Info("Failed to get dispatch budget, assuming full capacity", "error", err)
+			budget = 1.0
+		}
 
-		// when there's no waiting tasks in the queue
-		if task == nil {
+		var task *db.BatchJobPriority
+		if budget > 0.0 {
+			// check queue for available tasks
+			task = p.getTaskFromQueue(ctx)
+			logger.V(logging.TRACE).Info("Dispatch budget check passed", "budget", budget)
+		}
+
+		// when there's no capacity or no waiting tasks in the queue
+		if budget <= 0.0 || task == nil {
 			p.workerPool.Release(workerId)
-			// wait for poll interval to protect db from frequent queueing
+			if budget <= 0.0 {
+				logger.V(logging.DEBUG).Info("Dispatch budget at 0, skipping queue pull", "budget", budget)
+			} else {
+				logger.V(logging.TRACE).Info("No jobs to fetch")
+			}
+			// wait for poll interval to protect db from frequent queueing / rate-limit retries
 			select {
 			case <-ctx.Done():
 				return nil
