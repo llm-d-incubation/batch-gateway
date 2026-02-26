@@ -78,8 +78,8 @@ var (
 	getByTenantLua         string
 	redisScriptGetByTenant = goredis.NewScript(getByTenantLua)
 
-	// TBD
 	_ db_api.BatchDBClient            = (*BatchDBClientRedis)(nil)
+	_ db_api.FileDBClient             = (*FileDBClientRedis)(nil)
 	_ db_api.BatchPriorityQueueClient = (*ExchangeDBClientRedis)(nil)
 	_ db_api.BatchEventChannelClient  = (*ExchangeDBClientRedis)(nil)
 	_ db_api.BatchStatusClient        = (*ExchangeDBClientRedis)(nil)

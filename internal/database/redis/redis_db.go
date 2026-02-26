@@ -364,6 +364,13 @@ func (c *BatchDBClientRedis) DBGet(
 	return
 }
 
+func (c *FileDBClientRedis) DBGet(
+	ctx context.Context, query *db_api.FileQuery,
+	includeStatic bool, start, limit int) (
+	items []*db_api.FileItem, cursor int, expectMore bool, err error) {
+	return
+}
+
 func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
 
