@@ -33,7 +33,11 @@ API Server fullname
 {{- .Values.apiserver.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
 {{- $name := default .Chart.Name .Values.apiserver.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- printf "%s-apiserver" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
 {{- printf "%s-%s-apiserver" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -85,7 +89,11 @@ Processor fullname
 {{- .Values.processor.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
 {{- $name := default .Chart.Name .Values.processor.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- printf "%s-processor" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
 {{- printf "%s-%s-processor" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
 {{- end }}
 {{- end }}
 
