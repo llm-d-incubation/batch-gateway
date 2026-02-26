@@ -22,12 +22,12 @@ import (
 
 // NoopClient implements Client interface with a simple constant value
 type NoopClient struct {
-	value float64
+	Value float64
 }
 
 var _ Client = (*NoopClient)(nil)
 
 // Budget returns a mock dispatch budget value
 func (c *NoopClient) Budget(ctx context.Context) (float64, error) {
-	return c.value, nil
+	return c.Value, nil
 }

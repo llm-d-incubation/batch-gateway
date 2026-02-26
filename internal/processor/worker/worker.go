@@ -133,6 +133,7 @@ func (p *Processor) RunPollingLoop(ctx context.Context) error {
 				return nil
 			}
 			workerId = id
+			p.workerPool.wg.Add(1) // +1 the workgroup
 		}
 
 		// Check dispatch budget before pulling work from queue
