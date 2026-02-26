@@ -22,6 +22,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"sync"
 	"time"
 
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -95,6 +96,7 @@ type DSClientRedis struct {
 	timeout            time.Duration
 	idleLogFreq        time.Duration
 	idleLogLast        time.Time
+	onceClose          sync.Once
 }
 
 type BatchDBClientRedis struct {
@@ -109,34 +111,55 @@ type ExchangeDBClientRedis struct {
 	DSClientRedis
 }
 
-func NewBatchDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
-	*BatchDBClientRedis, error) {
-	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
-	if err != nil {
-		return nil, err
+// NewBatchDBClientRedis returns a new redis based batch db client.
+// Provide either an already created baseRedisClient (that can be shared between multiple higher level redis based clients),
+// or a conf and opTimeout for creating a new base redis client dedicated to this higher level client.
+func NewBatchDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	redisClient *BatchDBClientRedis, err error) {
+
+	if baseRedisClient == nil {
+		baseRedisClient, err = NewDSClientRedis(ctx, conf, opTimeout)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return &BatchDBClientRedis{DSClientRedis: *dsClient}, nil
+	redisClient = &BatchDBClientRedis{DSClientRedis: *baseRedisClient}
+	return
 }
 
-func NewFilesDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
-	*FileDBClientRedis, error) {
-	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
-	if err != nil {
-		return nil, err
+// NewFilesDBClientRedis returns a new redis based file db client.
+// Provide either an already created baseRedisClient (that can be shared between multiple higher level redis based clients),
+// or a conf and opTimeout for creating a new base redis client dedicated to this higher level client.
+func NewFileDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	redisClient *FileDBClientRedis, err error) {
+
+	if baseRedisClient == nil {
+		baseRedisClient, err = NewDSClientRedis(ctx, conf, opTimeout)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return &FileDBClientRedis{DSClientRedis: *dsClient}, nil
+	redisClient = &FileDBClientRedis{DSClientRedis: *baseRedisClient}
+	return
 }
 
-func NewExchangeDBClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
-	*ExchangeDBClientRedis, error) {
-	dsClient, err := newDSClientRedis(ctx, conf, opTimeout)
-	if err != nil {
-		return nil, err
+// NewExchangeDBClientRedis returns a new redis based exchange db client.
+// Provide either an already created baseRedisClient (that can be shared between multiple higher level redis based clients),
+// or a conf and opTimeout for creating a new base redis client dedicated to this higher level client.
+func NewExchangeDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+	redisClient *ExchangeDBClientRedis, err error) {
+
+	if baseRedisClient == nil {
+		baseRedisClient, err = NewDSClientRedis(ctx, conf, opTimeout)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return &ExchangeDBClientRedis{DSClientRedis: *dsClient}, nil
+	redisClient = &ExchangeDBClientRedis{DSClientRedis: *baseRedisClient}
+	return
 }
 
-func newDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
+func NewDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
 	*DSClientRedis, error) {
 
 	if ctx == nil {
@@ -167,9 +190,11 @@ func newDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTim
 }
 
 func (c *DSClientRedis) Close() (err error) {
-	if c.redisClient != nil {
-		err = c.redisClient.Close()
-	}
+	c.onceClose.Do(func() {
+		if c.redisClient != nil {
+			err = c.redisClient.Close()
+		}
+	})
 	return
 }
 
