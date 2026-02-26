@@ -332,7 +332,7 @@ func (c *BatchDBClientRedis) DBGet(
 			logger.Error(err, "DBGet: script failed")
 			return
 		}
-		cursor, expectMore, items, err = processGetScriptResult(res, includeStatic, logger)
+		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
 		if err != nil {
 			logger.Error(err, "DBGet:")
 			return
@@ -351,7 +351,7 @@ func (c *BatchDBClientRedis) DBGet(
 			logger.Error(err, "DBGet: script failed")
 			return
 		}
-		cursor, expectMore, items, err = processGetScriptResult(res, includeStatic, logger)
+		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
 		if err != nil {
 			logger.Error(err, "DBGet:")
 			return
@@ -364,7 +364,7 @@ func (c *BatchDBClientRedis) DBGet(
 	return
 }
 
-func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.Logger) (
+func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
 
 	if len(res) != 2 {
@@ -383,9 +383,40 @@ func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.L
 	}
 	items = make([]*db_api.BatchItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		vals := resItem.([]interface{})
-		var item *db_api.BatchItem
-		item, err = batchItemFromHget(vals, includeStatic)
+		item, err := batchItemFromHget(resItem.([]interface{}), includeStatic)
+		if err != nil {
+			return 0, false, nil, err
+		}
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	cursor = int(resCursor)
+	expectMore = (cursor != 0)
+
+	return
+}
+
+func processGetScriptResultFile(res []interface{}, includeStatic bool) (
+	cursor int, expectMore bool, items []*db_api.FileItem, err error) {
+
+	if len(res) != 2 {
+		err = fmt.Errorf("unexpected result from script")
+		return
+	}
+	resItems, ok := res[1].([]interface{})
+	if !ok {
+		err = fmt.Errorf("unexpected result type from script: %T", res[1])
+		return
+	}
+	resCursor, ok := res[0].(int64)
+	if !ok {
+		err = fmt.Errorf("unexpected result type from script: %T", res[0])
+		return
+	}
+	items = make([]*db_api.FileItem, 0, len(resItems))
+	for _, resItem := range resItems {
+		item, err := fileItemFromHget(resItem.([]interface{}), includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
