@@ -47,8 +47,8 @@ $ CONTAINER_TOOL=podman make image-build
 
 This produces:
 
-- `ghcr.io/llm-d/batch-gateway-apiserver:0.0.1`
-- `ghcr.io/llm-d/batch-gateway-processor:0.0.1`
+- `ghcr.io/llm-d-incubation/batch-gateway-apiserver:0.0.1`
+- `ghcr.io/llm-d-incubation/batch-gateway-processor:0.0.1`
 
 To use a different tag:
 
@@ -64,10 +64,10 @@ Kind runs in Docker/Podman, so load the local images into the cluster.
 
 ```bash
 # load apiserver image
-$ kind load docker-image ghcr.io/llm-d/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d-incubation/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
 
 # load processor image
-$ kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d-incubation/batch-gateway-processor:0.0.1 --name batch-gateway-dev
 ```
 
 ### Podman
@@ -76,8 +76,8 @@ If `kind load docker-image` does not work with your Podman setup (e.g. no Docker
 
 ```bash
 # save images to tar
-$ podman save -o /tmp/apiserver.tar ghcr.io/llm-d/batch-gateway-apiserver:0.0.1
-$ podman save -o /tmp/processor.tar ghcr.io/llm-d/batch-gateway-processor:0.0.1
+$ podman save -o /tmp/apiserver.tar ghcr.io/llm-d-incubation/batch-gateway-apiserver:0.0.1
+$ podman save -o /tmp/processor.tar ghcr.io/llm-d-incubation/batch-gateway-processor:0.0.1
 
 # load into Kind
 $ kind load image-archive /tmp/apiserver.tar --name batch-gateway-dev
@@ -132,12 +132,12 @@ After code changes:
 $ make image-build
 
 # load images with docker
-$ kind load docker-image ghcr.io/llm-d/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
-$ kind load docker-image ghcr.io/llm-d/batch-gateway-processor:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d-incubation/batch-gateway-apiserver:0.0.1 --name batch-gateway-dev
+$ kind load docker-image ghcr.io/llm-d-incubation/batch-gateway-processor:0.0.1 --name batch-gateway-dev
 
 # load images with podman
-$ podman save -o /tmp/apiserver.tar ghcr.io/llm-d/batch-gateway-apiserver:0.0.1
-$ podman save -o /tmp/processor.tar ghcr.io/llm-d/batch-gateway-processor:0.0.1
+$ podman save -o /tmp/apiserver.tar ghcr.io/llm-d-incubation/batch-gateway-apiserver:0.0.1
+$ podman save -o /tmp/processor.tar ghcr.io/llm-d-incubation/batch-gateway-processor:0.0.1
 $ kind load image-archive /tmp/apiserver.tar --name batch-gateway-dev
 $ kind load image-archive /tmp/processor.tar --name batch-gateway-dev
 

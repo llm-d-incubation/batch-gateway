@@ -37,24 +37,26 @@ import (
 )
 
 const (
-	pathParamFileID = "file_id"
+	pathParamFileID       = "file_id"
+	defaultListFilesLimit = 10000
+	maxListFilesLimit     = 10000
 )
 
-type FileApiHandler struct {
+type FileAPIHandler struct {
 	config      *common.ServerConfig
 	dbClient    dbapi.FileDBClient
 	filesClient fsapi.BatchFilesClient
 }
 
-func NewFileApiHandler(config *common.ServerConfig, dbClient dbapi.FileDBClient, filesClient fsapi.BatchFilesClient) *FileApiHandler {
-	return &FileApiHandler{
+func NewFileAPIHandler(config *common.ServerConfig, dbClient dbapi.FileDBClient, filesClient fsapi.BatchFilesClient) *FileAPIHandler {
+	return &FileAPIHandler{
 		config:      config,
 		dbClient:    dbClient,
 		filesClient: filesClient,
 	}
 }
 
-func (c *FileApiHandler) GetRoutes() []common.Route {
+func (c *FileAPIHandler) GetRoutes() []common.Route {
 	return []common.Route{
 		{
 			Method:      http.MethodPost,
@@ -86,7 +88,7 @@ func (c *FileApiHandler) GetRoutes() []common.Route {
 
 // getFileItemFromDB retrieves a file item by ID.
 // Returns the file item if found, or an API error.
-func (c *FileApiHandler) getFileItemFromDB(r *http.Request, operation string) (*dbapi.FileItem, *openai.APIError) {
+func (c *FileAPIHandler) getFileItemFromDB(r *http.Request, operation string) (*dbapi.FileItem, *openai.APIError) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -148,7 +150,7 @@ func (c *FileApiHandler) getFileItemFromDB(r *http.Request, operation string) (*
 	return item, nil
 }
 
-func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
+func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -156,7 +158,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	// The file can contain up to 50,000 requests, and can be up to 200 MB in size.
 
 	// Check Content-Length header before reading the body
-	maxFileSize := c.config.FilesAPI.GetMaxSizeBytes()
+	maxFileSize := c.config.FileAPI.GetMaxSizeBytes()
 	if r.ContentLength > maxFileSize {
 		logger.V(logging.DEBUG).Info("file size exceeds limit",
 			"contentLength", r.ContentLength, "limit", maxFileSize)
@@ -256,7 +258,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		logger.V(logging.DEBUG).Info("file expiration set from request", "anchor", expiresAfterAnchor, "seconds", expiresAfterSeconds, "expiresAt", expiresAt)
 	} else {
 		// Use default expire seconds from config if expires_after not provided
-		expiresAfterSeconds := c.config.FilesAPI.GetDefaultExpirationSeconds()
+		expiresAfterSeconds := c.config.FileAPI.GetDefaultExpirationSeconds()
 		expiresAt = createdAt + expiresAfterSeconds
 		logger.V(logging.DEBUG).Info("file expiration set from config default", "seconds", expiresAfterSeconds, "expiresAt", expiresAt)
 	}
@@ -277,7 +279,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		common.WriteInternalServerError(w, r)
 		return
 	}
-	fileMeta, err := c.filesClient.Store(ctx, fileName, folderName, c.config.FilesAPI.GetMaxSizeBytes(), c.config.FilesAPI.GetMaxLineCount(), fileReader)
+	fileMeta, err := c.filesClient.Store(ctx, fileName, folderName, c.config.FileAPI.GetMaxSizeBytes(), c.config.FileAPI.GetMaxLineCount(), fileReader)
 	if err != nil {
 		logger.Error(err, "failed to store file content")
 		common.WriteInternalServerError(w, r)
@@ -327,7 +329,7 @@ func (c *FileApiHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSONResponse(w, r, http.StatusOK, &fileObj)
 }
 
-func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
+func (c *FileAPIHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -358,7 +360,7 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate and parse limit (default: 10000, range: 1-10000)
-	limit := 10000
+	limit := defaultListFilesLimit
 	if limitStr != "" {
 		parsedLimit, err := strconv.Atoi(limitStr)
 		if err != nil {
@@ -372,12 +374,12 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 			common.WriteAPIError(w, r, apiErr)
 			return
 		}
-		if parsedLimit < 1 || parsedLimit > 10000 {
+		if parsedLimit < 1 || parsedLimit > maxListFilesLimit {
 			logger.V(logging.DEBUG).Info("limit out of range", "limit", parsedLimit)
 			apiErr := openai.NewAPIError(
 				http.StatusBadRequest,
 				"",
-				"Invalid limit parameter: must be between 1 and 10000",
+				fmt.Sprintf("Invalid limit parameter: must be between 1 and %d", maxListFilesLimit),
 				nil,
 			)
 			common.WriteAPIError(w, r, apiErr)
@@ -420,19 +422,15 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	logger.V(logging.DEBUG).Info("list files request", "after", after, "limit", limit, "order", order, "purpose", purposeStr)
 
 	// Query files from database with pagination
-	tagSelectors := map[string]string{}
-	if purposeStr != "" {
-		tagSelectors["purpose"] = purposeStr
-	}
-
-	// Get tenant ID from context
 	tenantID := common.GetTenantIDFromContext(ctx)
-
 	query := &dbapi.FileQuery{
 		BaseQuery: dbapi.BaseQuery{
 			TenantID:     tenantID,
-			TagSelectors: tagSelectors,
+			TagSelectors: nil,
 		},
+	}
+	if purposeStr != "" {
+		query.Purpose = purposeStr
 	}
 	items, _, expectMore, err := c.dbClient.DBGet(ctx, query, true, start, limit)
 	if err != nil {
@@ -482,7 +480,7 @@ func (c *FileApiHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSONResponse(w, r, http.StatusOK, response)
 }
 
-func (c *FileApiHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
+func (c *FileAPIHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
 	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getFileItemFromDB(r, "retrieve")
@@ -501,7 +499,7 @@ func (c *FileApiHandler) RetrieveFile(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSONResponse(w, r, http.StatusOK, fileObj)
 }
 
-func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
+func (c *FileAPIHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -550,7 +548,7 @@ func (c *FileApiHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	logger.Info("file download completed", "bytes_written", written)
 }
 
-func (c *FileApiHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
+func (c *FileAPIHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 

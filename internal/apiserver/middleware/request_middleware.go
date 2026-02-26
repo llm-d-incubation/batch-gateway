@@ -65,7 +65,7 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 			tenantHeader := config.GetTenantHeader()
 			tenantID := r.Header.Get(tenantHeader)
 			if tenantID == "" {
-				tenantID = "unknown"
+				tenantID = common.DefaultTenantID
 			}
 
 			// Extract file ID

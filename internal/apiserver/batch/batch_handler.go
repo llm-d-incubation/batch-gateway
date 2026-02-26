@@ -39,25 +39,27 @@ const (
 	pathParamAfter   = "after"
 )
 
-type BatchApiHandler struct {
-	config       *common.ServerConfig
-	dbClient     api.BatchDBClient
-	queueClient  api.BatchPriorityQueueClient
-	eventClient  api.BatchEventChannelClient
-	statusClient api.BatchStatusClient
+type BatchAPIHandler struct {
+	config        *common.ServerConfig
+	batchDBClient api.BatchDBClient
+	fileDBClient  api.FileDBClient
+	queueClient   api.BatchPriorityQueueClient
+	eventClient   api.BatchEventChannelClient
+	statusClient  api.BatchStatusClient
 }
 
-func NewBatchApiHandler(config *common.ServerConfig, dbClient api.BatchDBClient, queueClient api.BatchPriorityQueueClient, eventClient api.BatchEventChannelClient, statusClient api.BatchStatusClient) *BatchApiHandler {
-	return &BatchApiHandler{
-		config:       config,
-		dbClient:     dbClient,
-		queueClient:  queueClient,
-		eventClient:  eventClient,
-		statusClient: statusClient,
+func NewBatchAPIHandler(config *common.ServerConfig, batchDBClient api.BatchDBClient, fileDBClient api.FileDBClient, queueClient api.BatchPriorityQueueClient, eventClient api.BatchEventChannelClient, statusClient api.BatchStatusClient) *BatchAPIHandler {
+	return &BatchAPIHandler{
+		config:        config,
+		batchDBClient: batchDBClient,
+		fileDBClient:  fileDBClient,
+		queueClient:   queueClient,
+		eventClient:   eventClient,
+		statusClient:  statusClient,
 	}
 }
 
-func (c *BatchApiHandler) GetRoutes() []common.Route {
+func (c *BatchAPIHandler) GetRoutes() []common.Route {
 	return []common.Route{
 		{
 			Method:      http.MethodPost,
@@ -82,7 +84,7 @@ func (c *BatchApiHandler) GetRoutes() []common.Route {
 	}
 }
 
-func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
+func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -105,6 +107,34 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get tenant ID from context
+	tenantID := common.GetTenantIDFromContext(ctx)
+
+	// Verify input file exists
+	fileQuery := &api.FileQuery{
+		BaseQuery: api.BaseQuery{
+			IDs:      []string{batchReq.InputFileID},
+			TenantID: tenantID,
+		},
+	}
+	fileItems, _, _, err := c.fileDBClient.DBGet(ctx, fileQuery, true, 0, 1)
+	if err != nil {
+		logger.Error(err, "failed to query input file", "file_id", batchReq.InputFileID)
+		common.WriteInternalServerError(w, r)
+		return
+	}
+	if len(fileItems) == 0 {
+		logger.Info("input file not found", "file_id", batchReq.InputFileID)
+		apiErr := openai.NewAPIError(
+			http.StatusBadRequest,
+			"invalid_request_error",
+			fmt.Sprintf("Input file with ID '%s' not found", batchReq.InputFileID),
+			nil,
+		)
+		common.WriteAPIError(w, r, apiErr)
+		return
+	}
+
 	batchID := fmt.Sprintf("batch_%s", uuid.NewString())
 
 	// store batch job
@@ -115,9 +145,6 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slo := time.Now().UTC().Add(completionDuration)
-
-	// Get tenant ID from context
-	tenantID := common.GetTenantIDFromContext(ctx)
 
 	// Create openai.Batch object
 	batch := &openai.Batch{
@@ -135,15 +162,27 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	// TODO: output_expires_after_anchor and output_expires_after_seconds are saved to database as tag. The cleanup service should delete the output file by this value
+	// Note that the output_expires_after_anchor is the file creation time, not the time the batch is created.
+	tags := api.Tags{}
+	if batchReq.OutputExpiresAfter != nil {
+		tags["output_expires_after_anchor"] = batchReq.OutputExpiresAfter.Anchor
+		tags["output_expires_after_seconds"] = fmt.Sprintf("%d", batchReq.OutputExpiresAfter.Seconds)
+		logger.V(logging.DEBUG).Info("output expiration configured",
+			"anchor", batchReq.OutputExpiresAfter.Anchor,
+			"seconds", batchReq.OutputExpiresAfter.Seconds,
+		)
+	}
+
 	// Convert to database item
-	dbItem, err := converter.BatchToDBItem(batch, tenantID, api.Tags{})
+	dbItem, err := converter.BatchToDBItem(batch, tenantID, tags)
 	if err != nil {
 		logger.Error(err, "failed to convert batch to database item")
 		common.WriteInternalServerError(w, r)
 		return
 	}
 
-	if err := c.dbClient.DBStore(ctx, dbItem); err != nil {
+	if err := c.batchDBClient.DBStore(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to store batch job")
 		common.WriteInternalServerError(w, r)
 		return
@@ -156,7 +195,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	bjpDataBytes, err := json.Marshal(bjpData)
 	if err != nil {
 		logger.Error(err, "failed to marshal batch job priority data")
-		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}); delErr != nil {
+		if _, delErr := c.batchDBClient.DBDelete(ctx, []string{batchID}); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after marshal failure", "batch_id", batchID)
 		}
 		common.WriteInternalServerError(w, r)
@@ -169,7 +208,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := c.queueClient.PQEnqueue(ctx, bjp); err != nil {
 		logger.Error(err, "failed to enqueue batch job priority")
-		if _, delErr := c.dbClient.DBDelete(ctx, []string{batchID}); delErr != nil {
+		if _, delErr := c.batchDBClient.DBDelete(ctx, []string{batchID}); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after enqueue failure", "batch_id", batchID)
 		}
 		common.WriteInternalServerError(w, r)
@@ -179,7 +218,7 @@ func (c *BatchApiHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
 
-func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
+func (c *BatchAPIHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -223,7 +262,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	tenantID := common.GetTenantIDFromContext(ctx)
 
 	// Request items
-	items, _, expectMore, err := c.dbClient.DBGet(ctx,
+	items, _, expectMore, err := c.batchDBClient.DBGet(ctx,
 		&api.BatchQuery{
 			BaseQuery: api.BaseQuery{TenantID: tenantID},
 		},
@@ -259,7 +298,7 @@ func (c *BatchApiHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSONResponse(w, r, http.StatusOK, resp)
 }
 
-func (c *BatchApiHandler) getBatchItemFromDB(r *http.Request, operation string) (*api.BatchItem, *openai.APIError) {
+func (c *BatchAPIHandler) getBatchItemFromDB(r *http.Request, operation string) (*api.BatchItem, *openai.APIError) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -278,7 +317,7 @@ func (c *BatchApiHandler) getBatchItemFromDB(r *http.Request, operation string) 
 
 	tenantID := common.GetTenantIDFromContext(ctx)
 
-	items, _, _, err := c.dbClient.DBGet(ctx,
+	items, _, _, err := c.batchDBClient.DBGet(ctx,
 		&api.BatchQuery{
 			BaseQuery: api.BaseQuery{
 				IDs:      []string{batchID},
@@ -319,7 +358,7 @@ func (c *BatchApiHandler) getBatchItemFromDB(r *http.Request, operation string) 
 	return item, nil
 }
 
-func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) {
+func (c *BatchAPIHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) {
 	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getBatchItemFromDB(r, "retrieve")
@@ -338,7 +377,7 @@ func (c *BatchApiHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
 
-func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
+func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
@@ -388,7 +427,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 			{
 				ID:   batch.ID,
 				Type: api.BatchEventCancel,
-				TTL:  c.config.GetBatchTTLSeconds(),
+				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
 			},
 		}
 		_, err = c.eventClient.ECProducerSendEvents(ctx, event)
@@ -408,7 +447,7 @@ func (c *BatchApiHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := c.dbClient.DBUpdate(ctx, dbItem); err != nil {
+	if err := c.batchDBClient.DBUpdate(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to update batch in database")
 		common.WriteInternalServerError(w, r)
 		return
