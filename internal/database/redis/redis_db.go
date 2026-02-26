@@ -301,7 +301,7 @@ func (c *BatchDBClientRedis) DBGet(
 			}
 
 			var item *db_api.BatchItem
-			item, err = batchItemFromHget(hgetRes.Val(), includeStatic, logger)
+			item, err = batchItemFromHget(hgetRes.Val(), includeStatic)
 			if err != nil {
 				return nil, 0, false, err
 			}
@@ -385,7 +385,7 @@ func processGetScriptResult(res []interface{}, includeStatic bool, logger klog.L
 	for _, resItem := range resItems {
 		vals := resItem.([]interface{})
 		var item *db_api.BatchItem
-		item, err = batchItemFromHget(vals, includeStatic, logger)
+		item, err = batchItemFromHget(vals, includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -440,27 +440,76 @@ func convertTags(tags map[string]string) (ctags []string) {
 	return
 }
 
-// batchItemFromHget reconstructs a BatchItem from Redis HMGET results.
-// Field positions: [0]=id, [1]=tenantID, [2]=expiry, [3]=tags, [4]=status, [5]=spec (if includeStatic).
-func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logger) (item *db_api.BatchItem, err error) {
+func batchItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.BatchItem, err error) {
 
-	if (includeStatic && len(vals) != 6) || (!includeStatic && len(vals) != 5) {
+	ID, tenantID, expiry, tags, _, status, spec, err := itemFromHget(vals, includeStatic)
+	if err != nil {
+		return nil, err
+	}
+
+	item = &db_api.BatchItem{
+		BaseIndexes: db_api.BaseIndexes{
+			ID:       ID,
+			TenantID: tenantID,
+			Expiry:   expiry,
+			Tags:     tags,
+		},
+		BaseContents: db_api.BaseContents{
+			Spec:   spec,
+			Status: status,
+		},
+	}
+
+	return
+}
+
+func fileItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.FileItem, err error) {
+
+	ID, tenantID, expiry, tags, purpose, status, spec, err := itemFromHget(vals, includeStatic)
+	if err != nil {
+		return nil, err
+	}
+
+	item = &db_api.FileItem{
+		BaseIndexes: db_api.BaseIndexes{
+			ID:       ID,
+			TenantID: tenantID,
+			Expiry:   expiry,
+			Tags:     tags,
+		},
+		Purpose: purpose,
+		BaseContents: db_api.BaseContents{
+			Spec:   spec,
+			Status: status,
+		},
+	}
+
+	return
+}
+
+func itemFromHget(vals []interface{}, includeStatic bool) (
+	ID, tenantID string, expiry int64, tags db_api.Tags,
+	purpose string, status, spec []byte, err error) {
+
+	// Field positions: [0]=ID, [1]=tenantID, [2]=expiry, [3]=tags, [4]=purpose, [5]=status, [6]=spec (if includeStatic).
+
+	if (includeStatic && len(vals) != 7) || (!includeStatic && len(vals) != 6) {
 		err = fmt.Errorf("unexpected result contents from HMGet: %v", vals)
 		return
 	}
 
-	ID, ok := vals[0].(string)
+	var ok bool
+	ID, ok = vals[0].(string)
 	if !ok || len(ID) == 0 {
 		err = fmt.Errorf("missing or invalid id field: %v", vals[0])
 		return
 	}
 
-	tenantID, ok := vals[1].(string)
+	tenantID, ok = vals[1].(string)
 	if !ok {
 		tenantID = ""
 	}
 
-	var expiry int64
 	if expiryStr, ok := vals[2].(string); ok && len(expiryStr) > 0 {
 		expiry, err = strconv.ParseInt(expiryStr, 10, 64)
 		if err != nil {
@@ -469,41 +518,28 @@ func batchItemFromHget(vals []interface{}, includeStatic bool, logger klog.Logge
 		}
 	}
 
-	tags, ok := vals[3].(string)
+	tagsStr, ok := vals[3].(string)
 	if !ok {
-		tags = ""
+		tagsStr = ""
 	}
-	nTags, err := unpackTags(tags)
+	tags, err = unpackTags(tagsStr)
 	if err != nil {
-		logger.Error(err, "batchItemFromHget:")
-		return item, err
+		return
 	}
 
-	// Store the serialized status part (already in []byte form).
-	var status []byte
-	if statusStr, ok := vals[4].(string); ok && len(statusStr) > 0 {
+	purpose, ok = vals[4].(string)
+	if !ok {
+		purpose = ""
+	}
+
+	if statusStr, ok := vals[5].(string); ok && len(statusStr) > 0 {
 		status = []byte(statusStr)
 	}
 
-	// Store the serialized spec part only if requested.
-	var spec []byte
 	if includeStatic {
-		if specStr, ok := vals[5].(string); ok && len(specStr) > 0 {
+		if specStr, ok := vals[6].(string); ok && len(specStr) > 0 {
 			spec = []byte(specStr)
 		}
-	}
-
-	item = &db_api.BatchItem{
-		BaseIndexes: db_api.BaseIndexes{
-			ID:       ID,
-			TenantID: tenantID,
-			Expiry:   expiry,
-			Tags:     nTags,
-		},
-		BaseContents: db_api.BaseContents{
-			Spec:   spec,
-			Status: status,
-		},
 	}
 
 	return
