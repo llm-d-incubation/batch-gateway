@@ -264,7 +264,8 @@ func (p *Processor) release() {
 	case p.tokens <- struct{}{}:
 		return
 	default:
-		panic("token channel is full")
+		// Should never happen: every release is paired with exactly one acquire.
+		klog.Background().Error(nil, "CRITICAL: token channel is full, skipping release")
 	}
 }
 
