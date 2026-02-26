@@ -18,22 +18,16 @@ package metrics
 
 import (
 	"context"
-	"math"
-	"time"
 )
 
-// MockClient implements Client interface with a simple sine wave behavior
-type MockClient struct{}
+// NoopClient implements Client interface with a simple constant value
+type NoopClient struct {
+	value float64
+}
 
-var _ Client = (*MockClient)(nil)
+var _ Client = (*NoopClient)(nil)
 
-// Budget returns a mock dispatch budget value following a sine wave pattern.
-// The sine wave oscillates between 0.0 and 1.0 with a 60 second period.
-func (c *MockClient) Budget(ctx context.Context) (float64, error) {
-	now := time.Now().Unix()
-	// Sine wave with 60 second period, amplitude 0.5, midpoint 0.5
-	// Result ranges from 0.0 to 1.0
-	period := 60.0
-	value := 0.5 + 0.5*math.Sin(2*math.Pi*float64(now)/period)
-	return value, nil
+// Budget returns a mock dispatch budget value
+func (c *NoopClient) Budget(ctx context.Context) (float64, error) {
+	return c.value, nil
 }
