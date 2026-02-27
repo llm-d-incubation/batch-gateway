@@ -33,9 +33,8 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/middleware"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/readiness"
-	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"k8s.io/klog/v2"
 )
 
@@ -43,19 +42,82 @@ type Server struct {
 	logger      klog.Logger
 	config      *common.ServerConfig
 	serverReady *atomic.Bool
+	handler     http.Handler
+	clients     *clientset.Clientset
 }
 
-func New(config *common.ServerConfig) (*Server, error) {
+func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.Clientset, error) {
+	logger := klog.FromContext(ctx)
+
+	redisCfg := &uredis.RedisClientConfig{ServiceName: "batch-apiserver"}
+
+	clients, err := clientset.NewClientset(
+		ctx,
+		config.DatabaseType,
+		nil,
+		redisCfg,
+		config.FileClientCfg.Type,
+		&config.FileClientCfg.FSConfig,
+		&config.FileClientCfg.S3Config,
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create clients: %w", err)
+	}
+	logger.Info("clients initialized")
+
+	return clients, nil
+}
+
+func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 	logger := klog.Background().WithName("api_server")
 	serverReady := &atomic.Bool{}
 	serverReady.Store(false)
+
+	// build clients
+	clients, err := buildClients(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+
+	// build HTTP handlers
+	mux := http.NewServeMux()
+	healthHandler := health.NewHealthApiHandler()
+	readinessHandler := readiness.NewReadinessApiHandler(serverReady)
+	metricsHandler := metrics.NewMetricsApiHandler()
+	fileHandler := file.NewFileAPIHandler(config, clients)
+	batchHandler := batch.NewBatchAPIHandler(config, clients)
+
+	handlers := []common.ApiHandler{
+		healthHandler,
+		readinessHandler,
+		metricsHandler,
+		fileHandler,
+		batchHandler,
+	}
+	for _, c := range handlers {
+		common.RegisterHandler(mux, c)
+	}
+
+	// register middlewares
+	var handler http.Handler = mux
+	//handler = middleware.BodySizeLimitMiddleware(handler) //  Limit request body size
+	//handler = middleware.AuthorizationMiddleware(handler) //  Check permissions
+	//handler = middleware.AuthenticationMiddleware(handler) // Verify API key/JWT
+	//handler = middleware.RateLimitMiddleware(handler)      // Early Rejection
+	handler = middleware.SecurityHeadersMiddleware(handler) // Add security headers
+	handler = middleware.RequestMiddleware(config)(handler) // 2nd Outermost, request monitoring with tenant support
+	handler = middleware.RecoveryMiddleware(handler)        // Outermost - catches ALL panics
+
 	return &Server{
 		config:      config,
 		logger:      logger,
 		serverReady: serverReady,
+		handler:     handler,
+		clients:     clients,
 	}, nil
 }
 
@@ -70,10 +132,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	defer ln.Close()
 
-	handler := s.buildHandler()
-
 	httpserver := &http.Server{
-		Handler:           handler,
+		Handler:           s.handler,
 		ReadHeaderTimeout: time.Duration(s.config.GetReadHeaderTimeoutSeconds()) * time.Second,
 		ReadTimeout:       time.Duration(s.config.GetReadTimeoutSeconds()) * time.Second,
 		WriteTimeout:      time.Duration(s.config.GetWriteTimeoutSeconds()) * time.Second,
@@ -158,6 +218,9 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("server goroutine did not exit after shutdown")
 		}
 
+		if err := s.clients.Close(); err != nil {
+			logger.Error(err, "failed to close clients")
+		}
 		logger.Info("shutdown complete")
 
 	case err := <-serveDone:
@@ -170,52 +233,4 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (s *Server) buildHandler() http.Handler {
-	mux := http.NewServeMux()
-
-	// TODO: change to actual implementation
-	batchDBClient := mockdb.NewMockDBClient[api.BatchItem, api.BatchQuery](
-		func(b *api.BatchItem) string { return b.ID },
-		func(q *api.BatchQuery) *api.BaseQuery { return &q.BaseQuery },
-	)
-	fileDBClient := mockdb.NewMockDBClient[api.FileItem, api.FileQuery](
-		func(f *api.FileItem) string { return f.ID },
-		func(q *api.FileQuery) *api.BaseQuery { return &q.BaseQuery },
-	)
-	eventClient := mockdb.NewMockBatchEventChannelClient()
-	queueClient := mockdb.NewMockBatchPriorityQueueClient()
-	statusClient := mockdb.NewMockBatchStatusClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
-
-	// register handlers
-	healthHandler := health.NewHealthApiHandler()
-	readinessHandler := readiness.NewReadinessApiHandler(s.serverReady)
-	metricsHandler := metrics.NewMetricsApiHandler()
-	fileHandler := file.NewFileAPIHandler(s.config, fileDBClient, filesClient)
-	batchHandler := batch.NewBatchAPIHandler(s.config, batchDBClient, fileDBClient, queueClient, eventClient, statusClient)
-
-	handlers := []common.ApiHandler{
-		healthHandler,
-		readinessHandler,
-		metricsHandler,
-		fileHandler,
-		batchHandler,
-	}
-	for _, c := range handlers {
-		common.RegisterHandler(mux, c)
-	}
-
-	// register middlewares
-	var h http.Handler = mux
-	//h = middleware.BodySizeLimitMiddleware(h) //  Limit request body size
-	//h = middleware.AuthorizationMiddleware(h) //  Check permissions
-	//h = middleware.AuthenticationMiddleware(h) // Verify API key/JWT
-	//h = middleware.RateLimitMiddleware(h)      // Early Rejection
-	h = middleware.SecurityHeadersMiddleware(h)   // Add security headers
-	h = middleware.RequestMiddleware(s.config)(h) // 2nd Outermost, request monitoring with tenant support
-	h = middleware.RecoveryMiddleware(h)          // Outermost - catches ALL panics
-
-	return h
 }

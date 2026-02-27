@@ -9,6 +9,7 @@ import (
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
 type fakeInferenceClient struct{}
@@ -17,56 +18,47 @@ func (f *fakeInferenceClient) Generate(ctx context.Context, req *inference.Gener
 	return nil, nil
 }
 
-func validProcessorClients() *ProcessorClients {
-	clients := NewProcessorClients(
-		newMockBatchDBClient(),
-		newMockFileDBClient(),
-		mockfiles.NewMockBatchFilesClient(),
-		mockdb.NewMockBatchPriorityQueueClient(),
-		mockdb.NewMockBatchStatusClient(),
-		mockdb.NewMockBatchEventChannelClient(),
-		&fakeInferenceClient{},
-	)
-	return &clients
-}
-
-func TestNewProcessorClients_AssignsFields(t *testing.T) {
-	clients := NewProcessorClients(
-		newMockBatchDBClient(),
-		newMockFileDBClient(),
-		mockfiles.NewMockBatchFilesClient(),
-		mockdb.NewMockBatchPriorityQueueClient(),
-		mockdb.NewMockBatchStatusClient(),
-		mockdb.NewMockBatchEventChannelClient(),
-		&fakeInferenceClient{},
-	)
-	if clients.database == nil || clients.fileDatabase == nil || clients.files == nil || clients.priorityQueue == nil || clients.status == nil || clients.event == nil {
-		t.Fatalf("expected all non-inference clients to be assigned")
+func validProcessorClients() *clientset.Clientset {
+	return &clientset.Clientset{
+		BatchDB:   newMockBatchDBClient(),
+		FileDB:    newMockFileDBClient(),
+		File:      mockfiles.NewMockBatchFilesClient(),
+		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
+		Status:    mockdb.NewMockBatchStatusClient(),
+		Event:     mockdb.NewMockBatchEventChannelClient(),
+		Inference: &fakeInferenceClient{},
 	}
 }
 
-func TestProcessorClientsValidate_Table(t *testing.T) {
+func TestClientsetFields_Assigned(t *testing.T) {
+	cs := validProcessorClients()
+	if cs.BatchDB == nil || cs.FileDB == nil || cs.File == nil || cs.Queue == nil || cs.Status == nil || cs.Event == nil || cs.Inference == nil {
+		t.Fatalf("expected all clients to be assigned")
+	}
+}
+
+func TestClientsetValidate_Table(t *testing.T) {
 	base := validProcessorClients()
 	tests := []struct {
 		name    string
-		mutate  func(c *ProcessorClients)
+		mutate  func(c *clientset.Clientset)
 		wantErr bool
 	}{
-		{"ok", func(c *ProcessorClients) {}, false},
-		{"missing database", func(c *ProcessorClients) { c.database = nil }, true},
-		{"missing fileDatabase", func(c *ProcessorClients) { c.fileDatabase = nil }, true},
-		{"missing files", func(c *ProcessorClients) { c.files = nil }, true},
-		{"missing priorityQueue", func(c *ProcessorClients) { c.priorityQueue = nil }, true},
-		{"missing status", func(c *ProcessorClients) { c.status = nil }, true},
-		{"missing event", func(c *ProcessorClients) { c.event = nil }, true},
-		{"missing inference", func(c *ProcessorClients) { c.inference = nil }, true},
+		{"ok", func(c *clientset.Clientset) {}, false},
+		{"missing BatchDB", func(c *clientset.Clientset) { c.BatchDB = nil }, true},
+		{"missing FileDB", func(c *clientset.Clientset) { c.FileDB = nil }, true},
+		{"missing File", func(c *clientset.Clientset) { c.File = nil }, true},
+		{"missing Queue", func(c *clientset.Clientset) { c.Queue = nil }, true},
+		{"missing Status", func(c *clientset.Clientset) { c.Status = nil }, true},
+		{"missing Event", func(c *clientset.Clientset) { c.Event = nil }, true},
+		{"missing Inference", func(c *clientset.Clientset) { c.Inference = nil }, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := *base
 			tt.mutate(&c)
-			err := c.Validate()
+			err := ValidateClientset(&c)
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error")
 			}
@@ -79,7 +71,7 @@ func TestProcessorClientsValidate_Table(t *testing.T) {
 
 func TestProcessorPrepare_ReturnsValidationError(t *testing.T) {
 	cfg := config.NewConfig()
-	p := NewProcessor(cfg, &ProcessorClients{})
+	p := NewProcessor(cfg, &clientset.Clientset{})
 
 	if err := p.prepare(context.Background()); err == nil {
 		t.Fatalf("expected validation error")

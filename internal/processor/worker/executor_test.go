@@ -14,6 +14,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
 // --- resolveOutputExpiration ---
@@ -139,8 +140,8 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
 	fileDB := newMockFileDBClient()
-	p := NewProcessor(cfg, &ProcessorClients{
-		fileDatabase: fileDB,
+	p := NewProcessor(cfg, &clientset.Clientset{
+		FileDB: fileDB,
 	})
 
 	ctx := testLoggerCtx()
@@ -203,7 +204,7 @@ func TestUploadOutputFile_RetriesAndSucceeds(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 2}
-	p := NewProcessor(cfg, &ProcessorClients{files: mock})
+	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-retry", "tenant-1")
 	ctx := testLoggerCtx()
@@ -230,7 +231,7 @@ func TestUploadOutputFile_ExhaustsRetries(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 100}
-	p := NewProcessor(cfg, &ProcessorClients{files: mock})
+	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-exhaust", "tenant-1")
 	ctx := testLoggerCtx()
@@ -254,7 +255,7 @@ func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 100}
-	p := NewProcessor(cfg, &ProcessorClients{files: mock})
+	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-cancel", "tenant-1")
 	ctx, cancel := context.WithCancel(testLoggerCtx())

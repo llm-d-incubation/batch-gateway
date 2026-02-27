@@ -300,7 +300,7 @@ func (p *Processor) executeOneRequest(
 	metrics.IncModelInflightRequests(modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
 
-	inferResp, inferErr := p.clients.inference.Generate(ctx, inferReq)
+	inferResp, inferErr := p.clients.Inference.Generate(ctx, inferReq)
 
 	metrics.DecModelInflightRequests(modelID)
 	metrics.DecProcessorInflightRequests()
@@ -420,7 +420,7 @@ func (p *Processor) uploadOutputFile(
 	retryCfg := p.cfg.UploadRetry
 	maxAttempts := retryCfg.MaxRetries + 1
 
-	fileMeta, err := p.clients.files.Store(ctx, outputFileName, folderName, 0, 0, outputFile)
+	fileMeta, err := p.clients.File.Store(ctx, outputFileName, folderName, 0, 0, outputFile)
 	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
 		backoff := min(retryCfg.InitialBackoff*(1<<(attempt-1)), retryCfg.MaxBackoff)
 		logger.V(logging.WARNING).Info("Retrying output file upload",
@@ -435,7 +435,7 @@ func (p *Processor) uploadOutputFile(
 		if _, seekErr := outputFile.Seek(0, io.SeekStart); seekErr != nil {
 			return 0, fmt.Errorf("failed to seek output file for retry: %w", seekErr)
 		}
-		fileMeta, err = p.clients.files.Store(ctx, outputFileName, folderName, 0, 0, outputFile)
+		fileMeta, err = p.clients.File.Store(ctx, outputFileName, folderName, 0, 0, outputFile)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload output file after %d attempts: %w", maxAttempts, err)
@@ -472,7 +472,7 @@ func (p *Processor) storeOutputFileRecord(
 		return fmt.Errorf("failed to convert file to db item: %w", err)
 	}
 
-	if err := p.clients.fileDatabase.DBStore(ctx, fileItem); err != nil {
+	if err := p.clients.FileDB.DBStore(ctx, fileItem); err != nil {
 		return fmt.Errorf("failed to store output file record: %w", err)
 	}
 	return nil

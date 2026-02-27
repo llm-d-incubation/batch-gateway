@@ -24,6 +24,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 )
 
@@ -284,15 +285,10 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		t.Fatalf("DBStore file item: %v", err)
 	}
 
-	clients := &ProcessorClients{
-		database:     dbClient,
-		fileDatabase: fileDBClient,
-		files:        filesClient,
-		// not needed for preProcessJob:
-		priorityQueue: nil,
-		status:        nil,
-		event:         nil,
-		inference:     nil,
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
 	}
 	p := NewProcessor(cfg, clients)
 
@@ -421,7 +417,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 		t.Fatalf("DBStore job item: %v", err)
 	}
 
-	p := NewProcessor(config.NewConfig(), &ProcessorClients{})
+	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
@@ -473,14 +469,10 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	fileDBClient := newMockFileDBClient()
 	filesClient := mockfiles.NewMockBatchFilesClient()
 
-	clients := &ProcessorClients{
-		database:      dbClient,
-		fileDatabase:  fileDBClient,
-		files:         filesClient,
-		priorityQueue: nil,
-		status:        nil,
-		event:         nil,
-		inference:     nil,
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
 	}
 	p := NewProcessor(cfg, clients)
 
@@ -554,13 +546,9 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
-	clients := &ProcessorClients{
-		database:      dbClient,
-		files:         nil,
-		priorityQueue: nil,
-		status:        statusClient,
-		event:         nil,
-		inference:     nil,
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Status:  statusClient,
 	}
 	p := NewProcessor(cfg, clients)
 
@@ -649,10 +637,10 @@ func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
 		t.Fatalf("PQEnqueue task: %v", err)
 	}
 
-	clients := &ProcessorClients{
-		database:      dbClient,
-		priorityQueue: pq,
-		status:        statusClient,
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
 	}
 	p := NewProcessor(cfg, clients)
 
@@ -694,10 +682,10 @@ func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
 	}
 	initialEnqueueCalls := pq.EnqueueCalls()
 
-	clients := &ProcessorClients{
-		database:      dbClient,
-		priorityQueue: pq,
-		status:        statusClient,
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
 	}
 	p := NewProcessor(cfg, clients)
 
@@ -752,10 +740,10 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 		t.Fatalf("PQEnqueue task: %v", err)
 	}
 
-	clients := &ProcessorClients{
-		database:      dbClient,
-		priorityQueue: pq,
-		status:        statusClient,
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
 	}
 	p := NewProcessor(cfg, clients)
 

@@ -96,7 +96,7 @@ func (p *Processor) cleanupJobArtifacts(ctx context.Context, jobID, tenantID str
 // openInputFileStream opens the input file stream
 func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string) (io.ReadCloser, *filesapi.BatchFileMetadata, error) {
 	// get file metadata from database
-	items, _, _, err := p.clients.fileDatabase.DBGet(ctx, &db.FileQuery{BaseQuery: db.BaseQuery{IDs: []string{inputFileID}}}, true, 0, 1)
+	items, _, _, err := p.clients.FileDB.DBGet(ctx, &db.FileQuery{BaseQuery: db.BaseQuery{IDs: []string{inputFileID}}}, true, 0, 1)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get input file metadata: %w", err)
 	}
@@ -116,7 +116,7 @@ func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get folder name by tenant id: %w", err)
 	}
-	reader, metadata, err := p.clients.files.Retrieve(ctx, fileObj.Filename, folderName)
+	reader, metadata, err := p.clients.File.Retrieve(ctx, fileObj.Filename, folderName)
 	if err != nil {
 		return nil, metadata, fmt.Errorf("failed to open input file stream: %w", err)
 	}

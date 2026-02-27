@@ -8,7 +8,6 @@ metadata:
 data:
   config.yaml: |
     # Processor configuration
-    # NOTE: This is a placeholder - processor is not code-ready yet
 
     addr: {{ .Values.processor.config.addr | quote }}
     task_wait_time: {{ .Values.processor.config.taskWaitTime | quote }}
@@ -21,9 +20,10 @@ data:
     work_dir: {{ .Values.processor.config.workDir | quote }}
     max_open_files: {{ .Values.processor.config.maxOpenFiles }}
 
+    database_type: {{ .Values.global.databaseType | quote }}
+
     inference_config:
       gateway_url: {{ .Values.processor.config.inferenceConfig.gatewayUrl | quote }}
-      api_key_file: {{ .Values.processor.inference.apiKey.secretKey | quote }}
       request_timeout: {{ .Values.processor.config.inferenceConfig.requestTimeout | quote }}
       max_retries: {{ .Values.processor.config.inferenceConfig.maxRetries }}
       initial_backoff: {{ .Values.processor.config.inferenceConfig.initialBackoff | quote }}
@@ -41,6 +41,17 @@ data:
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
     progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
 
+    file_client:
+      type: {{ .Values.global.fileClient.type | quote }}
+      fs:
+        base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
+      s3:
+        region: {{ .Values.global.fileClient.s3.region | quote }}
+        endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyID | quote }}
+        prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
+        use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+
     queue_time_bucket:
       bucket_start: {{ .Values.processor.config.queueTimeBucket.bucketStart }}
       bucket_factor: {{ .Values.processor.config.queueTimeBucket.bucketFactor }}
@@ -55,6 +66,4 @@ data:
     ssl_cert_file: "/etc/tls/tls.crt"
     ssl_key_file: "/etc/tls/tls.key"
     {{- end }}
-
-    database_url_file: {{ .Values.processor.database.secretKey | quote }}
 {{- end }}

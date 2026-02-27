@@ -26,52 +26,20 @@ import (
 
 	"k8s.io/klog/v2"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	files "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
-
-type ProcessorClients struct {
-	database      db.BatchDBClient
-	fileDatabase  db.FileDBClient
-	files         files.BatchFilesClient
-	priorityQueue db.BatchPriorityQueueClient
-	status        db.BatchStatusClient
-	event         db.BatchEventChannelClient
-	inference     inference.Client
-}
-
-func NewProcessorClients(
-	database db.BatchDBClient,
-	fileDatabase db.FileDBClient,
-	files files.BatchFilesClient,
-	pq db.BatchPriorityQueueClient,
-	status db.BatchStatusClient,
-	event db.BatchEventChannelClient,
-	inference inference.Client,
-) ProcessorClients {
-	return ProcessorClients{
-		database:      database,
-		fileDatabase:  fileDatabase,
-		files:         files,
-		priorityQueue: pq,
-		status:        status,
-		event:         event,
-		inference:     inference,
-	}
-}
 
 type Processor struct {
 	cfg    *config.ProcessorConfig
 	tokens chan struct{}
 	wg     sync.WaitGroup
 
-	clients *ProcessorClients
+	clients *clientset.Clientset
 	poller  *Poller
 	updater *StatusUpdater
 }
@@ -80,15 +48,15 @@ var ErrCancelled = errors.New("batch job cancelled")
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
-	clients *ProcessorClients,
+	clients *clientset.Clientset,
 ) *Processor {
 	sem := make(chan struct{}, cfg.NumWorkers)
 	for i := 0; i < cfg.NumWorkers; i++ {
 		sem <- struct{}{}
 	}
 	// TODO: need to group clients by usecase (poller, updater, etc.)
-	poller := NewPoller(clients.priorityQueue, clients.database)
-	updater := NewStatusUpdater(clients.database, clients.status, cfg.ProgressTTLSeconds)
+	poller := NewPoller(clients.Queue, clients.BatchDB)
+	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
 		cfg:     cfg,
 		tokens:  sem,
@@ -283,27 +251,27 @@ func (p *Processor) releaseForNextPoll() {
 	p.release()
 }
 
-// TODO: need to add detailed validation here for each client.
-func (pc *ProcessorClients) Validate() error {
-	if pc.database == nil {
+// ValidateClientset checks that all clients required by the processor are non-nil.
+func ValidateClientset(cs *clientset.Clientset) error {
+	if cs.BatchDB == nil {
 		return fmt.Errorf("database client is missing")
 	}
-	if pc.fileDatabase == nil {
+	if cs.FileDB == nil {
 		return fmt.Errorf("file database client is missing")
 	}
-	if pc.files == nil {
+	if cs.File == nil {
 		return fmt.Errorf("files client is missing")
 	}
-	if pc.priorityQueue == nil {
+	if cs.Queue == nil {
 		return fmt.Errorf("priority queue client is missing")
 	}
-	if pc.status == nil {
+	if cs.Status == nil {
 		return fmt.Errorf("status client is missing")
 	}
-	if pc.event == nil {
+	if cs.Event == nil {
 		return fmt.Errorf("event channel client is missing")
 	}
-	if pc.inference == nil {
+	if cs.Inference == nil {
 		return fmt.Errorf("inference client is missing")
 	}
 	return nil
@@ -313,7 +281,7 @@ func (pc *ProcessorClients) Validate() error {
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
-	if err := p.clients.Validate(); err != nil {
+	if err := ValidateClientset(p.clients); err != nil {
 		return fmt.Errorf("critical clients are missing in processor: %w", err)
 	}
 

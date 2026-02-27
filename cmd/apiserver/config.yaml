@@ -38,6 +38,29 @@ write_timeout_seconds: 120
 # Default: 90 seconds
 idle_timeout_seconds: 90
 
+# File client configuration
+file_client:
+  # Implementation type: "fs" (default), "mock", "s3" (AWS S3)
+  type: "fs"
+  fs:
+    base_path: "/tmp/batch-gateway"
+
+  # S3 client configuration (required when type is "s3")
+  # s3:
+  #   region: "us-west-2"
+  #   endpoint: ""             # Optional: custom endpoint for S3-compatible storage
+  #   access_key_id: ""        # Optional: defaults to AWS environment/IAM credentials
+  #   prefix: "batch-gateway"  # Optional: prefix for S3 object keys
+  #   use_path_style: false    # Optional: use path-style addressing
+
+# Database type: "mock", "redis", or "postgresql" (not yet implemented)
+# database_type: "redis"
+
+# Redis configuration (used when database_type is "redis")
+# In Kubernetes, url_secret_key references a key within the mounted secret (/etc/.secrets/).
+# redis:
+#   url_secret_key: "redis-url"  # key name within /etc/.secrets/ (mounted from existingSecret)
+
 # Batch API configuration
 batch_api:
   # Batch event TTL in seconds (default: 30 days)

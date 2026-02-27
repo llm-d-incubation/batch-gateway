@@ -32,8 +32,9 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	dbmock "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	fsmock "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
+	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"k8s.io/klog/v2"
 )
@@ -50,14 +51,28 @@ func TestFileHandler(t *testing.T) {
 }
 
 // setupTestHandler creates a test handler with mocked dependencies
-func setupTestHandler(t *testing.T) (*FileAPIHandler, *dbmock.MockDBClient[dbapi.FileItem, dbapi.FileQuery], *fsmock.MockBatchFilesClient, context.Context) {
+func setupTestHandler(t *testing.T) *FileAPIHandler {
 	t.Helper()
 
+	filesClient, err := fsclient.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create fs client: %v", err)
+	}
 	dbClient := dbmock.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
 		func(f *dbapi.FileItem) string { return f.ID },
 		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
 	)
-	filesClient := fsmock.NewMockBatchFilesClient()
+	clients := &clientset.Clientset{
+		Inference: nil,
+		File:      filesClient,
+		BatchDB:   nil,
+		FileDB:    dbClient,
+		Queue:     nil,
+		Event:     nil,
+		Status:    nil,
+	}
+
+	t.Cleanup(func() { _ = filesClient.Close() })
 
 	config := &common.ServerConfig{
 		FileAPI: common.FileAPIConfig{
@@ -67,13 +82,9 @@ func setupTestHandler(t *testing.T) (*FileAPIHandler, *dbmock.MockDBClient[dbapi
 		},
 	}
 
-	handler := NewFileAPIHandler(config, dbClient, filesClient)
+	handler := NewFileAPIHandler(config, clients)
 
-	ctx := context.Background()
-	logger := klog.FromContext(ctx)
-	ctx = klog.NewContext(ctx, logger)
-
-	return handler, dbClient, filesClient, ctx
+	return handler
 }
 
 // createTestFile is a helper function that creates a test file and returns the created FileObject.
@@ -119,14 +130,15 @@ func createTestFile(t *testing.T, handler *FileAPIHandler, ctx context.Context, 
 }
 
 func doTestCreateFile(t *testing.T) {
-	handler, dbClient, filesClient, ctx := setupTestHandler(t)
+	ctx := context.Background()
+	handler := setupTestHandler(t)
 
 	// Test file content - each line will get a newline appended by scanner during storage
 	testLines := []string{
 		`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
 		`{"custom_id":"request-2","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"World"}]}}`,
 	}
-	fileContent := strings.Join(testLines, "\n")
+	fileContent := strings.Join(testLines, "\n") + "\n"
 
 	// Calculate expected size after scanner processing (each line gets a newline appended)
 	expectedBytes := int64(0)
@@ -164,7 +176,7 @@ func doTestCreateFile(t *testing.T) {
 	}
 
 	// Verify file was stored in DB
-	items, _, _, err := dbClient.DBGet(ctx, &dbapi.FileQuery{
+	items, _, _, err := handler.clients.FileDB.DBGet(ctx, &dbapi.FileQuery{
 		BaseQuery: dbapi.BaseQuery{IDs: []string{fileObj.ID}},
 	}, true, 0, 10)
 	if err != nil {
@@ -178,13 +190,12 @@ func doTestCreateFile(t *testing.T) {
 	}
 
 	// Verify file was actually uploaded to storage
-	// Mock stores files at /tmp/batch-gateway-files/{folderName}/{fileName}
 	fileName := fileObj.Filename
 	folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
 	if err != nil {
 		t.Fatalf("failed to get folder name from tenant ID: %v", err)
 	}
-	fileReader, fileMeta, err := filesClient.Retrieve(ctx, fileName, folderName)
+	fileReader, fileMeta, err := handler.clients.File.Retrieve(ctx, fileName, folderName)
 	if err != nil {
 		t.Fatalf("failed to retrieve file from storage: %v", err)
 	}
@@ -210,7 +221,8 @@ func doTestCreateFile(t *testing.T) {
 }
 
 func doTestListFiles(t *testing.T) {
-	handler, _, _, ctx := setupTestHandler(t)
+	ctx := context.Background()
+	handler := setupTestHandler(t)
 
 	// Create multiple test files with different purposes
 	testFiles := []struct {
@@ -397,7 +409,8 @@ func doTestListFiles(t *testing.T) {
 }
 
 func doTestRetrieveFile(t *testing.T) {
-	handler, _, _, ctx := setupTestHandler(t)
+	ctx := context.Background()
+	handler := setupTestHandler(t)
 
 	// Create a test file using helper
 	testContent := `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{}}`
@@ -495,14 +508,15 @@ func doTestRetrieveFile(t *testing.T) {
 }
 
 func doTestDownloadFile(t *testing.T) {
-	handler, _, _, ctx := setupTestHandler(t)
+	ctx := context.Background()
+	handler := setupTestHandler(t)
 
 	// Create a test file with specific content using helper
 	testLines := []string{
 		`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{}}`,
 		`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{}}`,
 	}
-	testContent := strings.Join(testLines, "\n")
+	testContent := strings.Join(testLines, "\n") + "\n"
 	createdFile := createTestFile(t, handler, ctx, "test-download.jsonl", "batch", testContent)
 
 	// Test 1: Download existing file
@@ -582,7 +596,8 @@ func doTestDownloadFile(t *testing.T) {
 }
 
 func doTestDeleteFile(t *testing.T) {
-	handler, dbClient, filesClient, ctx := setupTestHandler(t)
+	ctx := context.Background()
+	handler := setupTestHandler(t)
 
 	// Create a test file using helper
 	testLines := []string{
@@ -625,7 +640,7 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Verify file is actually deleted from database
-		items, _, _, err := dbClient.DBGet(ctx, &dbapi.FileQuery{
+		items, _, _, err := handler.clients.FileDB.DBGet(ctx, &dbapi.FileQuery{
 			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
 		}, true, 0, 1)
 		if err != nil {
@@ -641,7 +656,7 @@ func doTestDeleteFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to get folder name from tenant ID: %v", err)
 		}
-		_, _, err = filesClient.Retrieve(ctx, createdFile.Filename, folderName)
+		_, _, err = handler.clients.File.Retrieve(ctx, createdFile.Filename, folderName)
 		if err == nil {
 			t.Errorf("expected physical file to be deleted, but still exists")
 		}

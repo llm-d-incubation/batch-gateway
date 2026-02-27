@@ -18,8 +18,6 @@ limitations under the License.
 package batch_utils
 
 import (
-	"strings"
-
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -39,13 +37,7 @@ func FromDBItemToJobInfoObject(job *db.BatchItem) (*batch_types.JobInfo, error) 
 	}
 
 	jobInfo.BatchJob = batchJob
-
-	for _, tag := range job.Tags {
-		if strings.HasPrefix(tag, "tenant:") {
-			jobInfo.TenantID = strings.TrimPrefix(tag, "tenant:")
-			break
-		}
-	}
+	jobInfo.TenantID = job.TenantID
 
 	return jobInfo, nil
 }

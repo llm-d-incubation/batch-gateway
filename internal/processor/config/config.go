@@ -20,15 +20,13 @@ package config
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"strings"
 	"time"
 
+	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
+	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	"gopkg.in/yaml.v3"
 )
-
-const secretsMountPath = "/etc/.secrets"
 
 type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
@@ -53,8 +51,8 @@ type ProcessorConfig struct {
 	// MaxOpenFiles is the maximum number of open files for the plan writer
 	MaxOpenFiles int `yaml:"max_open_files"`
 
-	// DatabaseURLFile is the filename within secretsMountPath containing the database connection URL.
-	DatabaseURLFile string `yaml:"database_url_file"`
+	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
+	DatabaseType string `yaml:"database_type"`
 
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`
@@ -82,6 +80,13 @@ type ProcessorConfig struct {
 
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
+
+	// FileClient holds configuration for the shared file storage client (fs or s3).
+	FileClientCfg struct {
+		Type     string          `yaml:"type"`
+		FSConfig fsclient.Config `yaml:"fs"`
+		S3Config s3client.Config `yaml:"s3"`
+	} `yaml:"file_client"`
 }
 
 type RetryConfig struct {
@@ -96,9 +101,6 @@ type InferenceConfig struct {
 
 	// RequestTimeout is the timeout for individual inference requests
 	RequestTimeout time.Duration `yaml:"request_timeout"`
-
-	// APIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
-	APIKeyFile string `yaml:"api_key_file"`
 
 	// MaxRetries is the maximum number of retry attempts for failed requests
 	MaxRetries int `yaml:"max_retries"`
@@ -172,6 +174,14 @@ func NewConfig() *ProcessorConfig {
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
 		MaxOpenFiles:                    50, // default to 50 open files
+		DatabaseType:                    "redis",
+		FileClientCfg: struct {
+			Type     string          `yaml:"type"`
+			FSConfig fsclient.Config `yaml:"fs"`
+			S3Config s3client.Config `yaml:"s3"`
+		}{
+			Type: "mock",
+		},
 		InferenceConfig: InferenceConfig{
 			GatewayURL:            "http://localhost:8000",
 			RequestTimeout:        5 * time.Minute,
@@ -188,33 +198,6 @@ func NewConfig() *ProcessorConfig {
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 	}
-}
-
-func (pc *ProcessorConfig) GetDatabaseURL() (string, error) {
-	return readSecretFile(pc.DatabaseURLFile)
-}
-
-func (pc *ProcessorConfig) GetInferenceAPIKey() (string, error) {
-	return readSecretFile(pc.InferenceConfig.APIKeyFile)
-}
-
-func readSecretFile(filename string) (string, error) {
-	if filename == "" {
-		return "", nil
-	}
-	f, err := os.OpenInRoot(secretsMountPath, filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
 }
 
 func (c *ProcessorConfig) Validate() error {

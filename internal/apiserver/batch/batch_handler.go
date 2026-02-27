@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
@@ -37,25 +39,19 @@ const (
 	pathParamBatchID = "batch_id"
 	pathParamLimit   = "limit"
 	pathParamAfter   = "after"
+
+	tagSLO = "slo_unix_micro"
 )
 
 type BatchAPIHandler struct {
-	config        *common.ServerConfig
-	batchDBClient api.BatchDBClient
-	fileDBClient  api.FileDBClient
-	queueClient   api.BatchPriorityQueueClient
-	eventClient   api.BatchEventChannelClient
-	statusClient  api.BatchStatusClient
+	config  *common.ServerConfig
+	clients *clientset.Clientset
 }
 
-func NewBatchAPIHandler(config *common.ServerConfig, batchDBClient api.BatchDBClient, fileDBClient api.FileDBClient, queueClient api.BatchPriorityQueueClient, eventClient api.BatchEventChannelClient, statusClient api.BatchStatusClient) *BatchAPIHandler {
+func NewBatchAPIHandler(config *common.ServerConfig, clients *clientset.Clientset) *BatchAPIHandler {
 	return &BatchAPIHandler{
-		config:        config,
-		batchDBClient: batchDBClient,
-		fileDBClient:  fileDBClient,
-		queueClient:   queueClient,
-		eventClient:   eventClient,
-		statusClient:  statusClient,
+		config:  config,
+		clients: clients,
 	}
 }
 
@@ -117,7 +113,7 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 			TenantID: tenantID,
 		},
 	}
-	fileItems, _, _, err := c.fileDBClient.DBGet(ctx, fileQuery, true, 0, 1)
+	fileItems, _, _, err := c.clients.FileDB.DBGet(ctx, fileQuery, true, 0, 1)
 	if err != nil {
 		logger.Error(err, "failed to query input file", "file_id", batchReq.InputFileID)
 		common.WriteInternalServerError(w, r)
@@ -164,7 +160,9 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: output_expires_after_anchor and output_expires_after_seconds are saved to database as tag. The cleanup service should delete the output file by this value
 	// Note that the output_expires_after_anchor is the file creation time, not the time the batch is created.
-	tags := api.Tags{}
+	tags := api.Tags{
+		tagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+	}
 	if batchReq.OutputExpiresAfter != nil {
 		tags["output_expires_after_anchor"] = batchReq.OutputExpiresAfter.Anchor
 		tags["output_expires_after_seconds"] = fmt.Sprintf("%d", batchReq.OutputExpiresAfter.Seconds)
@@ -182,7 +180,7 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := c.batchDBClient.DBStore(ctx, dbItem); err != nil {
+	if err := c.clients.BatchDB.DBStore(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to store batch job")
 		common.WriteInternalServerError(w, r)
 		return
@@ -195,7 +193,7 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	bjpDataBytes, err := json.Marshal(bjpData)
 	if err != nil {
 		logger.Error(err, "failed to marshal batch job priority data")
-		if _, delErr := c.batchDBClient.DBDelete(ctx, []string{batchID}); delErr != nil {
+		if _, delErr := c.clients.BatchDB.DBDelete(ctx, []string{batchID}); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after marshal failure", "batch_id", batchID)
 		}
 		common.WriteInternalServerError(w, r)
@@ -206,9 +204,9 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		SLO:  slo,
 		Data: bjpDataBytes,
 	}
-	if err := c.queueClient.PQEnqueue(ctx, bjp); err != nil {
+	if err := c.clients.Queue.PQEnqueue(ctx, bjp); err != nil {
 		logger.Error(err, "failed to enqueue batch job priority")
-		if _, delErr := c.batchDBClient.DBDelete(ctx, []string{batchID}); delErr != nil {
+		if _, delErr := c.clients.BatchDB.DBDelete(ctx, []string{batchID}); delErr != nil {
 			logger.Error(delErr, "failed to cleanup batch job after enqueue failure", "batch_id", batchID)
 		}
 		common.WriteInternalServerError(w, r)
@@ -262,7 +260,7 @@ func (c *BatchAPIHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	tenantID := common.GetTenantIDFromContext(ctx)
 
 	// Request items
-	items, _, expectMore, err := c.batchDBClient.DBGet(ctx,
+	items, _, expectMore, err := c.clients.BatchDB.DBGet(ctx,
 		&api.BatchQuery{
 			BaseQuery: api.BaseQuery{TenantID: tenantID},
 		},
@@ -317,7 +315,7 @@ func (c *BatchAPIHandler) getBatchItemFromDB(r *http.Request, operation string) 
 
 	tenantID := common.GetTenantIDFromContext(ctx)
 
-	items, _, _, err := c.batchDBClient.DBGet(ctx,
+	items, _, _, err := c.clients.BatchDB.DBGet(ctx,
 		&api.BatchQuery{
 			BaseQuery: api.BaseQuery{
 				IDs:      []string{batchID},
@@ -401,18 +399,29 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to remove from the priority queue first
-	jobPriority := &api.BatchJobPriority{
-		ID: batch.ID,
-	}
-	removed, err := c.queueClient.PQDelete(ctx, jobPriority)
-	if err != nil {
-		logger.Error(err, "failed to remove batch from queue")
-		common.WriteInternalServerError(w, r)
-		return
+	// Try to remove from the priority queue first.
+	// Reconstruct the exact SLO score from the stored tag.
+	removedFromQueue := false
+	sloStr, hasSLO := item.Tags[tagSLO]
+	sloMicro, parseErr := strconv.ParseInt(sloStr, 10, 64)
+	if hasSLO && parseErr == nil {
+		slo := time.UnixMicro(sloMicro).UTC()
+		jobPriority := &api.BatchJobPriority{
+			ID:  batch.ID,
+			SLO: slo,
+		}
+		nDeleted, err := c.clients.Queue.PQDelete(ctx, jobPriority)
+		if err != nil {
+			logger.Error(err, "failed to remove batch from queue")
+			common.WriteInternalServerError(w, r)
+			return
+		}
+		removedFromQueue = nDeleted > 0
+	} else {
+		logger.V(logging.WARNING).Info("SLO tag missing or malformed, skipping queue removal", "key", tagSLO, "hasSLO", hasSLO, "error", parseErr)
 	}
 
-	if removed > 0 {
+	if removedFromQueue {
 		// Job was in queue (not yet being processed) - directly cancel it
 		batch.Status = openai.BatchStatusCancelled
 		cancelledAt := time.Now().UTC().Unix()
@@ -430,7 +439,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
 			},
 		}
-		_, err = c.eventClient.ECProducerSendEvents(ctx, event)
+		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
 		if err != nil {
 			logger.Error(err, "failed to send cancel event")
 			common.WriteInternalServerError(w, r)
@@ -447,7 +456,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := c.batchDBClient.DBUpdate(ctx, dbItem); err != nil {
+	if err := c.clients.BatchDB.DBUpdate(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to update batch in database")
 		common.WriteInternalServerError(w, r)
 		return

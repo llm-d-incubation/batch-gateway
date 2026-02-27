@@ -17,6 +17,17 @@ data:
     read_timeout_seconds: {{ .Values.apiserver.config.readTimeoutSeconds }}
     write_timeout_seconds: {{ .Values.apiserver.config.writeTimeoutSeconds }}
     idle_timeout_seconds: {{ .Values.apiserver.config.idleTimeoutSeconds }}
+    database_type: {{ .Values.global.databaseType | quote }}
+    file_client:
+      type: {{ .Values.global.fileClient.type | quote }}
+      fs:
+        base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
+      s3:
+        region: {{ .Values.global.fileClient.s3.region | quote }}
+        endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyID | quote }}
+        prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
+        use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
     batch_api:
       batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.batchEventTTLSeconds }}
     file_api:

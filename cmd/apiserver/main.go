@@ -47,7 +47,7 @@ func main() {
 
 	logger.Info("starting api server")
 
-	server, err := server.New(config)
+	server, err := server.New(ctx, config)
 	if err != nil {
 		logger.Error(err, "failed to create api server")
 		return

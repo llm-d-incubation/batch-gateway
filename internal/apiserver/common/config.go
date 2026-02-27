@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 
+	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
+	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	"gopkg.in/yaml.v3"
 	"k8s.io/klog/v2"
 )
@@ -112,6 +114,16 @@ type ServerConfig struct {
 	// API endpoint configurations
 	BatchAPI BatchAPIConfig `yaml:"batch_api"`
 	FileAPI  FileAPIConfig  `yaml:"file_api"`
+
+	// Files client configuration
+	FileClientCfg struct {
+		Type     string          `yaml:"type"`
+		FSConfig fsclient.Config `yaml:"fs"`
+		S3Config s3client.Config `yaml:"s3"`
+	} `yaml:"file_client"`
+
+	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
+	DatabaseType string `yaml:"database_type"`
 }
 
 func NewConfig() *ServerConfig {
@@ -181,6 +193,9 @@ func (c *ServerConfig) loadFromFile(path string) error {
 }
 
 func (c *ServerConfig) applyDefaults() {
+	if c.DatabaseType == "" {
+		c.DatabaseType = "redis"
+	}
 	if c.TenantHeader == "" {
 		c.TenantHeader = DefaultTenantHeader
 	}

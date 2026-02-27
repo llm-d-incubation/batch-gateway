@@ -17,3 +17,7 @@ limitations under the License.
 // This file implements batch database interfaces using postgresql.
 
 package postgresql
+
+type PostgreSQLConfig struct {
+	Url string
+}

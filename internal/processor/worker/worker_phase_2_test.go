@@ -21,6 +21,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
 // ---------------------------------------------------------------------------
@@ -128,14 +129,14 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	pqClient := mockdb.NewMockBatchPriorityQueueClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
-	p := NewProcessor(cfg, &ProcessorClients{
-		database:      dbClient,
-		fileDatabase:  newMockFileDBClient(),
-		files:         mockfiles.NewMockBatchFilesClient(),
-		priorityQueue: pqClient,
-		status:        statusClient,
-		event:         mockdb.NewMockBatchEventChannelClient(),
-		inference:     inferClient,
+	p := NewProcessor(cfg, &clientset.Clientset{
+		BatchDB:   dbClient,
+		FileDB:    newMockFileDBClient(),
+		File:      mockfiles.NewMockBatchFilesClient(),
+		Queue:     pqClient,
+		Status:    statusClient,
+		Event:     mockdb.NewMockBatchEventChannelClient(),
+		Inference: inferClient,
 	})
 	p.poller = NewPoller(pqClient, dbClient)
 
@@ -613,7 +614,7 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
-	env.p.clients.files = &failNTimesFilesClient{failCount: 100}
+	env.p.clients.File = &failNTimesFilesClient{failCount: 100}
 
 	jobID := "finalize-fail"
 	tenantID := "tenant-1"
@@ -733,7 +734,7 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	cfg.DefaultOutputExpirationSeconds = 86400
 
 	failDB := &dbStoreErrFileClient{err: errors.New("db write failed")}
-	p := NewProcessor(cfg, &ProcessorClients{fileDatabase: failDB})
+	p := NewProcessor(cfg, &clientset.Clientset{FileDB: failDB})
 
 	ctx := testLoggerCtx()
 	err := p.storeOutputFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})

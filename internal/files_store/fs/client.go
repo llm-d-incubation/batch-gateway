@@ -40,6 +40,19 @@ const (
 	defaultDirPerm = 0o755
 )
 
+// Config holds configuration for the filesystem client.
+type Config struct {
+	BasePath string `yaml:"base_path"`
+}
+
+// Validate checks that all required fields are set.
+func (c *Config) Validate() error {
+	if c.BasePath == "" {
+		return fmt.Errorf("fs.base_path cannot be empty")
+	}
+	return nil
+}
+
 // Client implements api.BatchFilesClient using local filesystem storage.
 type Client struct {
 	root *os.Root

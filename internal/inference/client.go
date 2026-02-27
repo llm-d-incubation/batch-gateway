@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"k8s.io/klog/v2"
 )
 
@@ -217,8 +218,11 @@ func (c *HTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*Gener
 		}
 	}
 
-	klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d",
-		req.RequestID, resp.StatusCode(), len(resp.Body()))
+	if klog.V(logging.DEBUG).Enabled() {
+		promptTokens, completionTokens, totalTokens := extractUsage(rawData)
+		klog.V(logging.DEBUG).Infof("Received successful response for request_id=%s, status=%d, body_size=%d, prompt_tokens=%v, completion_tokens=%v, total_tokens=%v",
+			req.RequestID, resp.StatusCode(), len(resp.Body()), promptTokens, completionTokens, totalTokens)
+	}
 
 	return &GenerateResponse{
 		RequestID: req.RequestID,
@@ -363,4 +367,15 @@ func buildTLSConfig(config HTTPClientConfig) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+// extractUsage pulls prompt/completion/total token counts from a parsed JSON response body.
+// Returns nil for any field not present.
+func extractUsage(rawData interface{}) (promptTokens, completionTokens, totalTokens interface{}) {
+	if m, ok := rawData.(map[string]interface{}); ok {
+		if usage, ok := m["usage"].(map[string]interface{}); ok {
+			return usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"]
+		}
+	}
+	return nil, nil, nil
 }

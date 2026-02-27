@@ -58,7 +58,7 @@ func (p *Processor) runJob(
 	jobStart := time.Now()
 
 	// event watcher for cancel event
-	eventWatcher, err := p.clients.event.ECConsumerGetChannel(ctx, jobInfo.JobID)
+	eventWatcher, err := p.clients.Event.ECConsumerGetChannel(ctx, jobInfo.JobID)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
 		// re-enqueue the job to the queue so this job can be picked up later by another worker
