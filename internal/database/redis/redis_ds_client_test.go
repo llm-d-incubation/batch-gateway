@@ -73,9 +73,8 @@ func setupRedisClients(t *testing.T, redisUrl, redisCaCert string) (
 
 func TestRedisClient(t *testing.T) {
 
-	//redisUrl := os.Getenv("REDIS_URL") TBD
-	redisUrl := "redis://localhost:6379"
-	redisCaCert := os.Getenv("REDIS_CACERT_PATH")
+	redisUrl := os.Getenv("TEST_REDIS_URL")
+	redisCaCert := os.Getenv("TEST_REDIS_CACERT_PATH")
 	var (
 		minirds *miniredis.Miniredis
 		tagKey1 string = "key-tag-1"
