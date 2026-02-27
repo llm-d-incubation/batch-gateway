@@ -81,7 +81,7 @@ var (
 	jobQueueWaitDuration          *prometheus.HistogramVec
 	totalWorkers                  prometheus.Gauge
 	activeWorkers                 prometheus.Gauge
-	jobErrorsModelTotal           *prometheus.CounterVec
+	requestErrorsModelTotal       *prometheus.CounterVec
 	processorInflightRequests     prometheus.Gauge
 	planBuildDuration             *prometheus.HistogramVec
 	modelInflightRequests         *prometheus.GaugeVec
@@ -116,10 +116,10 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 	)
 
 	// errors by model
-	jobErrorsModelTotal = prometheus.NewCounterVec(
+	requestErrorsModelTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "job_errors_by_model_total",
-			Help: "Total number of job processing errors by model",
+			Name: "request_errors_by_model_total",
+			Help: "Total number of request errors by model",
 		},
 		[]string{"model"},
 	)
@@ -200,7 +200,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		totalWorkers,
 		activeWorkers,
 		jobsProcessed,
-		jobErrorsModelTotal,
+		requestErrorsModelTotal,
 		processorInflightRequests,
 		planBuildDuration,
 		modelInflightRequests,
@@ -246,9 +246,9 @@ func DecActiveWorkers() {
 	activeWorkers.Dec()
 }
 
-// RecordJobError increments the error count for a specific model.
-func RecordJobError(model string) {
-	jobErrorsModelTotal.WithLabelValues(model).Inc()
+// RecordRequestError increments the error count for a specific model.
+func RecordRequestError(model string) {
+	requestErrorsModelTotal.WithLabelValues(model).Inc()
 }
 
 // IncProcessorInflightRequests increments the processor global in-flight request gauge.

@@ -210,7 +210,8 @@ func (p *Processor) processModel(
 	cancelRequested *atomic.Bool,
 	progress *executionProgress,
 ) error {
-	logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx).WithValues("model", modelID)
+	ctx = klog.NewContext(ctx, logger)
 
 	planPath := filepath.Join(plansDir, safeModelID+".plan")
 	entries, err := readPlanEntries(planPath)
@@ -218,7 +219,7 @@ func (p *Processor) processModel(
 		return fmt.Errorf("failed to read plan for model %s: %w", modelID, err)
 	}
 
-	logger.V(logging.INFO).Info("Processing model", "model", modelID, "entries", len(entries))
+	logger.V(logging.INFO).Info("Processing requests for a model", "entries", len(entries))
 
 	// process each plan entry sequentially
 	// TODO: use concurrent processing with bounded concurrency (global concurrency and per-model concurrency)
@@ -274,12 +275,19 @@ func (p *Processor) executeOneRequest(
 	// parse the request line into a batch_types.Request object
 	var req batch_types.Request
 	if err := json.Unmarshal(trimmed, &req); err != nil {
-		return nil, fmt.Errorf("failed to parse request line: %w", err)
+		klog.FromContext(ctx).Error(err, "failed to parse request line, recording as error")
+		return &outputLine{
+			ID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			Error: &outputError{
+				Code:    string(inference.ErrCategoryParse),
+				Message: fmt.Sprintf("failed to parse request line: %v", err),
+			},
+		}, nil
 	}
 
 	requestID := uuid.NewString()
-	// job id and tenant id are already set in the context
-	logger := klog.FromContext(ctx).WithValues("customId", req.CustomID, "requestId", requestID, "model", modelID)
+	// model id, job id and tenant id are already set in the context
+	logger := klog.FromContext(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: requestID,
@@ -303,30 +311,47 @@ func (p *Processor) executeOneRequest(
 		CustomID: req.CustomID,
 	}
 
+	// response handling by case
 	if inferErr != nil {
+		// error is returned by the inference client
 		logger.V(logging.TRACE).Info("Inference request failed", "error", inferErr.Message)
 		result.Error = &outputError{
 			Code:    string(inferErr.Category),
 			Message: inferErr.Message,
 		}
-		metrics.RecordJobError(modelID)
+	} else if inferResp == nil {
+		// ok status without error but no response
+		logger.Error(nil, "inference returned no error but response is nil")
+		result.Error = &outputError{
+			Code:    string(inference.ErrCategoryServer),
+			Message: "inference returned no error but response is nil",
+		}
 	} else {
+		// success — unmarshal the response body
 		var body map[string]interface{}
-		if inferResp != nil && len(inferResp.Response) > 0 {
-			_ = json.Unmarshal(inferResp.Response, &body)
+		if len(inferResp.Response) > 0 {
+			if err := json.Unmarshal(inferResp.Response, &body); err != nil {
+				// failed to unmarshal the response body
+				logger.Error(err, "failed to unmarshal inference response body")
+				result.Error = &outputError{
+					Code:    string(inference.ErrCategoryParse),
+					Message: fmt.Sprintf("inference succeeded but response body could not be parsed: %v", err),
+				}
+			}
 		}
-		serverRequestID := ""
-		if inferResp != nil {
-			serverRequestID = inferResp.RequestID
-		}
-		logger.V(logging.TRACE).Info("Inference request completed", "serverRequestId", serverRequestID)
-		result.Response = &batch_types.ResponseData{
-			StatusCode: 200,
-			RequestID:  serverRequestID,
-			Body:       body,
+		if result.Error == nil {
+			logger.V(logging.TRACE).Info("Inference request completed", "serverRequestId", inferResp.RequestID)
+			result.Response = &batch_types.ResponseData{
+				StatusCode: 200,
+				RequestID:  inferResp.RequestID,
+				Body:       body,
+			}
 		}
 	}
 
+	if result.Error != nil {
+		metrics.RecordRequestError(modelID)
+	}
 	return result, nil
 }
 
