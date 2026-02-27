@@ -459,7 +459,7 @@ func (c *FileDBClientRedis) DBGet(
 		}
 		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
 		if err != nil {
-			logger.Error(err, "DBGet[File]: processGetScriptResultBatch failed")
+			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
 			return
 		}
 
