@@ -143,13 +143,17 @@ func (p *Processor) handleJobError(
 		if task != nil {
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
 			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
-				// best-effort
+				// re-enqueue failed, handle as failed
 				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
+				if failErr := p.handleFailed(bgCtx, jobItem, updater); failErr != nil {
+					// best-effort
+					logger.V(logging.ERROR).Error(failErr, "Failed to mark job as failed after re-enqueue failure")
+				}
 			} else {
+				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
 				logger.V(logging.INFO).Info("Re-enqueued the job to the queue")
 			}
 		}
-
 	default:
 		if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")

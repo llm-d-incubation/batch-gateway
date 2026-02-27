@@ -39,6 +39,7 @@ data:
       max_backoff: {{ .Values.processor.config.uploadRetry.maxBackoff | quote }}
 
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
+    progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
 
     queue_time_bucket:
       bucket_start: {{ .Values.processor.config.queueTimeBucket.bucketStart }}

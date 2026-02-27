@@ -422,7 +422,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	}
 
 	p := NewProcessor(config.NewConfig(), &ProcessorClients{})
-	updater := NewStatusUpdater(dbClient, statusClient)
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
 	if err != nil {
@@ -594,7 +594,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 		t.Fatalf("WriteFile dummy: %v", err)
 	}
 
-	updater := NewStatusUpdater(dbClient, statusClient)
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	if err := p.handleCancelled(ctx, jobItem, updater); err != nil {
 		t.Fatalf("handleCancelled: %v", err)

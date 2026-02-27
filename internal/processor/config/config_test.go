@@ -79,6 +79,11 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.DefaultOutputExpirationSeconds != want90Days {
 		t.Fatalf("DefaultOutputExpirationSeconds = %d, want %d", c.DefaultOutputExpirationSeconds, want90Days)
 	}
+
+	// progress TTL default: 24 hours
+	if c.ProgressTTLSeconds != 86400 {
+		t.Fatalf("ProgressTTLSeconds = %d, want %d", c.ProgressTTLSeconds, 86400)
+	}
 }
 
 func TestProcessorConfig_SSLEnabled(t *testing.T) {
@@ -281,6 +286,7 @@ upload_retry:
   initial_backoff: 500ms
   max_backoff: 30s
 default_output_expiration_seconds: 86400
+progress_ttl_seconds: 3600
 `)
 
 	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
@@ -351,5 +357,9 @@ default_output_expiration_seconds: 86400
 
 	if c.DefaultOutputExpirationSeconds != 86400 {
 		t.Fatalf("DefaultOutputExpirationSeconds = %d, want %d", c.DefaultOutputExpirationSeconds, 86400)
+	}
+
+	if c.ProgressTTLSeconds != 3600 {
+		t.Fatalf("ProgressTTLSeconds = %d, want %d", c.ProgressTTLSeconds, 3600)
 	}
 }

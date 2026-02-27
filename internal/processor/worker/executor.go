@@ -124,7 +124,7 @@ func (p *Processor) executeJob(
 	if err != nil {
 		return nil, err
 	}
-	outputFile, err := os.OpenFile(outputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	outputFile, err := os.OpenFile(outputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output file: %w", err)
 	}

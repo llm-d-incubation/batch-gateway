@@ -88,7 +88,7 @@ func NewProcessor(
 	}
 	// TODO: need to group clients by usecase (poller, updater, etc.)
 	poller := NewPoller(clients.priorityQueue, clients.database)
-	updater := NewStatusUpdater(clients.database, clients.status)
+	updater := NewStatusUpdater(clients.database, clients.status, cfg.ProgressTTLSeconds)
 	return &Processor{
 		cfg:     cfg,
 		tokens:  sem,

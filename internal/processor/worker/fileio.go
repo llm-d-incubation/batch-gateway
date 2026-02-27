@@ -69,7 +69,7 @@ func (p *Processor) createLocalInputFile(jobID, tenantID string) (*os.File, stri
 		return nil, "", err
 	}
 
-	localInputFile, err := os.OpenFile(localInputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	localInputFile, err := os.OpenFile(localInputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, localInputFilePath, fmt.Errorf("failed to create local input file: %w", err)
 	}

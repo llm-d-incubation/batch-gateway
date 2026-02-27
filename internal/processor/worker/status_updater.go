@@ -32,14 +32,16 @@ import (
 )
 
 type StatusUpdater struct {
-	db     db.BatchDBClient
-	status db.BatchStatusClient
+	db             db.BatchDBClient
+	status         db.BatchStatusClient
+	progressTTLSec int
 }
 
-func NewStatusUpdater(db db.BatchDBClient, status db.BatchStatusClient) *StatusUpdater {
+func NewStatusUpdater(db db.BatchDBClient, status db.BatchStatusClient, progressTTLSec int) *StatusUpdater {
 	return &StatusUpdater{
-		db:     db,
-		status: status,
+		db:             db,
+		status:         status,
+		progressTTLSec: progressTTLSec,
 	}
 }
 
@@ -56,8 +58,7 @@ func (s *StatusUpdater) UpdateProgressCounts(
 	// light payload for frequent updates
 	payload := []byte(fmt.Sprintf(`{"total": %d, "completed": %d, "failed": %d}`, requestCounts.Total, requestCounts.Completed, requestCounts.Failed))
 
-	// update status client - TTL is set to 24 hours
-	if err := s.status.StatusSet(ctx, jobID, 24*60*60, payload); err != nil {
+	if err := s.status.StatusSet(ctx, jobID, s.progressTTLSec, payload); err != nil {
 		return err
 	}
 	return nil

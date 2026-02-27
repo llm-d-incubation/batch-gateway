@@ -46,7 +46,7 @@ func (d *dbUpdateErrWrapper) Close() error {
 }
 
 func TestUpdateProgressCounts_NilCounts_ReturnsError(t *testing.T) {
-	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient())
+	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400)
 
 	if err := updater.UpdateProgressCounts(context.Background(), "job-1", nil); err == nil {
 		t.Fatalf("expected error for nil requestCounts")
@@ -55,7 +55,7 @@ func TestUpdateProgressCounts_NilCounts_ReturnsError(t *testing.T) {
 
 func TestUpdateProgressCounts_StatusSetError_ReturnsError(t *testing.T) {
 	statusErr := errors.New("status set failed")
-	updater := NewStatusUpdater(newMockBatchDBClient(), &errStatusClient{err: statusErr})
+	updater := NewStatusUpdater(newMockBatchDBClient(), &errStatusClient{err: statusErr}, 86400)
 
 	err := updater.UpdateProgressCounts(context.Background(), "job-1", &openai.BatchRequestCounts{Total: 1})
 	if !errors.Is(err, statusErr) {
@@ -65,7 +65,7 @@ func TestUpdateProgressCounts_StatusSetError_ReturnsError(t *testing.T) {
 
 func TestUpdateProgressCounts_Success_WritesPayload(t *testing.T) {
 	statusClient := mockdb.NewMockBatchStatusClient()
-	updater := NewStatusUpdater(newMockBatchDBClient(), statusClient)
+	updater := NewStatusUpdater(newMockBatchDBClient(), statusClient, 86400)
 
 	if err := updater.UpdateProgressCounts(context.Background(), "job-1", &openai.BatchRequestCounts{
 		Total: 10, Completed: 7, Failed: 3,
@@ -83,7 +83,7 @@ func TestUpdateProgressCounts_Success_WritesPayload(t *testing.T) {
 }
 
 func TestUpdatePersistentStatus_InputValidationErrors(t *testing.T) {
-	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient())
+	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400)
 
 	if err := updater.UpdatePersistentStatus(context.Background(), nil, openai.BatchStatusFailed, nil, nil); err == nil {
 		t.Fatalf("expected error for nil dbJob")
@@ -98,7 +98,7 @@ func TestUpdatePersistentStatus_InputValidationErrors(t *testing.T) {
 }
 
 func TestUpdatePersistentStatus_UnmarshalError(t *testing.T) {
-	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient())
+	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400)
 
 	err := updater.UpdatePersistentStatus(context.Background(), &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1"},
@@ -117,7 +117,7 @@ func TestUpdatePersistentStatus_DBUpdateError(t *testing.T) {
 		inner: newMockBatchDBClient(),
 		err:   updateErr,
 	}
-	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient())
+	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
 	err := updater.UpdatePersistentStatus(context.Background(), &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1"},
@@ -133,7 +133,7 @@ func TestUpdatePersistentStatus_DBUpdateError(t *testing.T) {
 func TestUpdatePersistentStatus_Success(t *testing.T) {
 	ctx := context.Background()
 	dbClient := newMockBatchDBClient()
-	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient())
+	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 	jobID := "job-update-success"
 
 	seed := &db.BatchItem{

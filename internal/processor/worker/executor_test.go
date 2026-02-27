@@ -109,7 +109,7 @@ func TestResolveOutputExpiration_NilTags(t *testing.T) {
 // --- executionProgress ---
 
 func TestExecutionProgress_RecordAndCounts(t *testing.T) {
-	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient())
+	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400)
 	ep := &executionProgress{
 		total:   10,
 		updater: updater,

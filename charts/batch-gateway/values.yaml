@@ -222,6 +222,7 @@ processor:
       initialBackoff: "1s"
       maxBackoff: "10s"
     defaultOutputExpirationSeconds: 7776000  # 90 days
+    progressTTLSeconds: 86400  # 24 hours
 
   # TLS/SSL Configuration
   tls:

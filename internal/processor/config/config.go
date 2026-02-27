@@ -79,6 +79,9 @@ type ProcessorConfig struct {
 	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
 	// 0 means no expiration (keep until explicitly deleted).
 	DefaultOutputExpirationSeconds int64 `yaml:"default_output_expiration_seconds"`
+
+	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
+	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
 }
 
 type RetryConfig struct {
@@ -183,6 +186,7 @@ func NewConfig() *ProcessorConfig {
 			MaxBackoff:     10 * time.Second,
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
+		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 	}
 }
 
@@ -310,6 +314,10 @@ func (c *ProcessorConfig) Validate() error {
 	// <= 0 means unlimited.
 	if c.MaxOpenFiles <= 0 {
 		c.MaxOpenFiles = 0
+	}
+
+	if c.ProgressTTLSeconds <= 0 {
+		return fmt.Errorf("progress_ttl_seconds must be > 0")
 	}
 
 	return nil

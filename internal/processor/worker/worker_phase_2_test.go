@@ -143,7 +143,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		p:        p,
 		dbClient: dbClient,
 		pqClient: pqClient,
-		updater:  NewStatusUpdater(dbClient, statusClient),
+		updater:  NewStatusUpdater(dbClient, statusClient, 86400),
 	}
 }
 
