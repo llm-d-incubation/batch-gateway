@@ -62,11 +62,11 @@ func setupRedisClients(t *testing.T, redisUrl, redisCaCert string) (
 	}
 	fileClient, err := dbredis.NewFileDBClientRedis(ctx, baseClient, nil, 0)
 	if err != nil {
-		t.Fatalf("Failed to create batch redis client: %v", err)
+		t.Fatalf("Failed to create file redis client: %v", err)
 	}
 	exchClient, err := dbredis.NewExchangeDBClientRedis(ctx, baseClient, nil, 0)
 	if err != nil {
-		t.Fatalf("Failed to create batch redis client: %v", err)
+		t.Fatalf("Failed to create exchange redis client: %v", err)
 	}
 	return baseClient, batchClient, fileClient, exchClient
 }
