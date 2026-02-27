@@ -117,6 +117,7 @@ func TestRedisClient(t *testing.T) {
 		nBatchesRmv := 10
 		var wg sync.WaitGroup
 		batches, batchesRmv := make(map[string]*db_api.BatchItem), make(map[string]*db_api.BatchItem)
+		var batchesIDs, batchesAllIDs []string
 		for i := 0; i < nBatchesRmv; i++ {
 			batchID := uuid.New().String()
 			batch := &db_api.BatchItem{
@@ -132,6 +133,7 @@ func TestRedisClient(t *testing.T) {
 				},
 			}
 			batchesRmv[batchID] = batch
+			batchesAllIDs = append(batchesAllIDs, batchID)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -142,7 +144,6 @@ func TestRedisClient(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		var batchIDs []string
 		for i := 0; i < nBatches; i++ {
 			batchID := uuid.New().String()
 			batch := &db_api.BatchItem{
@@ -158,7 +159,8 @@ func TestRedisClient(t *testing.T) {
 				},
 			}
 			batches[batchID] = batch
-			batchIDs = append(batchIDs, batchID)
+			batchesIDs = append(batchesIDs, batchID)
+			batchesAllIDs = append(batchesAllIDs, batchID)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -169,13 +171,13 @@ func TestRedisClient(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry jobs.
+		time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry items.
 
 		// Get expired.
 		expectMore := true
 		nRet, cursor := 0, 0
 		for expectMore {
-			resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
 				&db_api.BatchQuery{
 					BaseQuery: db_api.BaseQuery{
 						Expired: true,
@@ -184,28 +186,8 @@ func TestRedisClient(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to get items: %v", err)
 			}
-			for _, resJob := range resJobs {
-				tJob := batchesRmv[resJob.ID]
-				if resJob.ID != tJob.ID {
-					t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-				}
-				if resJob.TenantID != tJob.TenantID {
-					t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
-				}
-				if resJob.Expiry != tJob.Expiry {
-					t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
-				}
-				if !bytes.Equal(resJob.Spec, tJob.Spec) {
-					t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-				}
-				if !bytes.Equal(resJob.Status, tJob.Status) {
-					t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-				}
-				if !maps.Equal(resJob.Tags, tJob.Tags) {
-					t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
-				}
-				nRet++
-			}
+			sameMembersBatch(t, resItems, batchesRmv)
+			nRet += len(resItems)
 			expectMore = expectM
 			cursor = cur
 		}
@@ -217,49 +199,29 @@ func TestRedisClient(t *testing.T) {
 		expectMore = true
 		nRet, cursor = 0, 0
 		for expectMore {
-			resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
 				&db_api.BatchQuery{
 					BaseQuery: db_api.BaseQuery{
-						IDs: batchIDs,
+						IDs: batchesIDs,
 					},
 				}, true, cursor, nBatches*2)
 			if err != nil {
 				t.Fatalf("Failed to get items: %v", err)
 			}
-			for _, resJob := range resJobs {
-				tJob := batches[resJob.ID]
-				if resJob.ID != tJob.ID {
-					t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-				}
-				if resJob.TenantID != tJob.TenantID {
-					t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
-				}
-				if resJob.Expiry != tJob.Expiry {
-					t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
-				}
-				if !bytes.Equal(resJob.Spec, tJob.Spec) {
-					t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-				}
-				if !bytes.Equal(resJob.Status, tJob.Status) {
-					t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-				}
-				if !maps.Equal(resJob.Tags, tJob.Tags) {
-					t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
-				}
-				nRet++
-			}
+			sameMembersBatch(t, resItems, batches)
+			nRet += len(resItems)
 			expectMore = expectM
 			cursor = cur
 		}
 		if nRet != nBatches {
-			t.Fatalf("Invalid number of items %d != %d", nRet, nBatchesRmv)
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatches)
 		}
 
 		// Get by tenant.
 		expectMore = true
 		nRet, cursor = 0, 0
 		for expectMore {
-			resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
 				&db_api.BatchQuery{
 					BaseQuery: db_api.BaseQuery{
 						TenantID: "Tnt2",
@@ -268,28 +230,8 @@ func TestRedisClient(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to get items: %v", err)
 			}
-			for _, resJob := range resJobs {
-				tJob := batchesRmv[resJob.ID]
-				if resJob.ID != tJob.ID {
-					t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-				}
-				if resJob.TenantID != tJob.TenantID {
-					t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
-				}
-				if resJob.Expiry != tJob.Expiry {
-					t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
-				}
-				if !bytes.Equal(resJob.Spec, tJob.Spec) {
-					t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-				}
-				if !bytes.Equal(resJob.Status, tJob.Status) {
-					t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-				}
-				if !maps.Equal(resJob.Tags, tJob.Tags) {
-					t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
-				}
-				nRet++
-			}
+			sameMembersBatch(t, resItems, batchesRmv)
+			nRet += len(resItems)
 			expectMore = expectM
 			cursor = cur
 		}
@@ -298,48 +240,387 @@ func TestRedisClient(t *testing.T) {
 		}
 
 		// Get by tags.
-		// expectMore = true
-		// nRet, cursor = 0, 0
-		// for expectMore {
-		// 	resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
-		// 		&db_api.BatchQuery{
-		// 			BaseQuery: db_api.BaseQuery{
-		// 				TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
-		// 				TagsLogicalCond: db_api.LogicalCondAnd,
-		// 			},
-		// 		}, true, cursor, nBatches*2)
-		// 	if err != nil {
-		// 		t.Fatalf("Failed to get items: %v", err)
-		// 	}
-		// 	for _, resJob := range resJobs {
-		// 		tJob := batches[resJob.ID]
-		// 		if resJob.ID != tJob.ID {
-		// 			t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-		// 		}
-		// 		if resJob.TenantID != tJob.TenantID {
-		// 			t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
-		// 		}
-		// 		if resJob.Expiry != tJob.Expiry {
-		// 			t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
-		// 		}
-		// 		if !bytes.Equal(resJob.Spec, tJob.Spec) {
-		// 			t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-		// 		}
-		// 		if !bytes.Equal(resJob.Status, tJob.Status) {
-		// 			t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-		// 		}
-		// 		if !maps.Equal(resJob.Tags, tJob.Tags) {
-		// 			t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
-		// 		}
-		// 		nRet++
-		// 	}
-		// 	expectMore = expectM
-		// 	cursor = cur
-		// }
-		// if nRet != nBatches {
-		// 	t.Fatalf("Invalid number of items %d != %d", nRet, nBatchesRmv)
-		// }
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+						TagsLogicalCond: db_api.LogicalCondAnd,
+					},
+				}, true, cursor, nBatches*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersBatch(t, resItems, batches)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nBatches {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatches)
+		}
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+						TagsLogicalCond: db_api.LogicalCondOr,
+					},
+				}, true, cursor, nBatches*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nBatches+nBatchesRmv {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatches+nBatchesRmv)
+		}
+
+		// Get by tags and tenant.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID:        "Tnt1",
+						TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+						TagsLogicalCond: db_api.LogicalCondOr,
+					},
+				}, true, cursor, nBatches*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersBatch(t, resItems, batches)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nBatches {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatches)
+		}
+
+		// Delete.
+		deletedIDs, err := batchClient.DBDelete(context.Background(), batchesAllIDs)
+		if err != nil {
+			t.Fatalf("Failed to delete items: %v", err)
+		}
+		if deletedIDs == nil || len(deletedIDs) != len(batchesAllIDs) {
+			t.Fatalf("Failed to delete items: %d", len(deletedIDs))
+		}
+		if !sameMembersInStrSlice(deletedIDs, batchesAllIDs) {
+			t.Fatalf("Deletion IDs mismatch: %v != %v", deletedIDs, batchesAllIDs)
+		}
 
 	})
 
+	t.Run("file db operations", func(t *testing.T) {
+		baseClient, _, fileClient, _ := setupRedisClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		nFiles := 20
+		nFilesRmv := 10
+		var wg sync.WaitGroup
+		files, filesRmv := make(map[string]*db_api.FileItem), make(map[string]*db_api.FileItem)
+		var filesIDs, filesAllIDs []string
+		for i := 0; i < nFilesRmv; i++ {
+			fileID := uuid.New().String()
+			file := &db_api.FileItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       fileID,
+					TenantID: "Tnt2",
+					Expiry:   time.Now().Add(time.Second).Unix(),
+					Tags:     map[string]string{tagKey1: tagVal1, tagKey2: tagVal2},
+				},
+				Purpose: "file",
+				BaseContents: db_api.BaseContents{
+					Spec:   []byte("spec"),
+					Status: []byte("status"),
+				},
+			}
+			filesRmv[fileID] = file
+			filesAllIDs = append(filesAllIDs, fileID)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := fileClient.DBStore(context.Background(), file)
+				if err != nil {
+					t.Fatalf("Failed to store item: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+		for i := 0; i < nFiles; i++ {
+			fileID := uuid.New().String()
+			file := &db_api.FileItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       fileID,
+					TenantID: "Tnt1",
+					Expiry:   time.Now().Add(time.Hour).Unix(),
+					Tags:     map[string]string{tagKey1: tagVal1, tagKey3: tagVal3},
+				},
+				BaseContents: db_api.BaseContents{
+					Spec:   []byte("spec"),
+					Status: []byte("status"),
+				},
+			}
+			files[fileID] = file
+			filesIDs = append(filesIDs, fileID)
+			filesAllIDs = append(filesAllIDs, fileID)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := fileClient.DBStore(context.Background(), file)
+				if err != nil {
+					t.Fatalf("Failed to store item: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+		time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry items.
+
+		// Get expired.
+		expectMore := true
+		nRet, cursor := 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						Expired: true,
+					},
+				}, true, cursor, nFilesRmv*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersFile(t, resItems, filesRmv)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nFilesRmv {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nFilesRmv)
+		}
+
+		// Get by IDs.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						IDs: filesIDs,
+					},
+				}, true, cursor, nFiles*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersFile(t, resItems, files)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nFiles {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nFiles)
+		}
+
+		// Get by tenant.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID: "Tnt2",
+					},
+				}, true, cursor, nFilesRmv*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersFile(t, resItems, filesRmv)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nFilesRmv {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nFilesRmv)
+		}
+
+		// Get by tags.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+						TagsLogicalCond: db_api.LogicalCondAnd,
+					},
+				}, true, cursor, nFiles*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersFile(t, resItems, files)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nFiles {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nFiles)
+		}
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+						TagsLogicalCond: db_api.LogicalCondOr,
+					},
+				}, true, cursor, nFiles*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nFiles+nFilesRmv {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nFiles+nFilesRmv)
+		}
+
+		// Get by tags and tenant.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID:        "Tnt1",
+						TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+						TagsLogicalCond: db_api.LogicalCondOr,
+					},
+				}, true, cursor, nFiles*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			sameMembersFile(t, resItems, files)
+			nRet += len(resItems)
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nFiles {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nFiles)
+		}
+
+		// Delete.
+		deletedIDs, err := fileClient.DBDelete(context.Background(), filesAllIDs)
+		if err != nil {
+			t.Fatalf("Failed to delete items: %v", err)
+		}
+		if deletedIDs == nil || len(deletedIDs) != len(filesAllIDs) {
+			t.Fatalf("Failed to delete items: %d", len(deletedIDs))
+		}
+		if !sameMembersInStrSlice(deletedIDs, filesAllIDs) {
+			t.Fatalf("Deletion IDs mismatch: %v != %v", deletedIDs, filesAllIDs)
+		}
+
+	})
+
+}
+
+func sameMembersBatch(t *testing.T, sl []*db_api.BatchItem, mp map[string]*db_api.BatchItem) bool {
+	for _, item := range sl {
+		isEqualBatchItem(t, item, mp[item.ID])
+	}
+	return true
+}
+
+func isEqualBatchItem(t *testing.T, a, b *db_api.BatchItem) bool {
+	if a == nil || b == nil {
+		t.Fatal("Invalid items to compare")
+	}
+	if a.ID != b.ID {
+		t.Fatalf("Mismatch id %s != %s", a.ID, b.ID)
+	}
+	if a.TenantID != b.TenantID {
+		t.Fatalf("Mismatch TenantID %s != %s", a.TenantID, b.TenantID)
+	}
+	if a.Expiry != b.Expiry {
+		t.Fatalf("Mismatch expiry %d != %d", a.Expiry, b.Expiry)
+	}
+	if !maps.Equal(a.Tags, b.Tags) {
+		t.Fatalf("Mismatch tags %v != %v", a.Tags, b.Tags)
+	}
+	if !bytes.Equal(a.Spec, b.Spec) {
+		t.Fatalf("Mismatch spec %s != %s", a.Spec, b.Spec)
+	}
+	if !bytes.Equal(a.Status, b.Status) {
+		t.Fatalf("Mismatch status %s != %s", a.Spec, b.Spec)
+	}
+	return true
+}
+
+func sameMembersFile(t *testing.T, sl []*db_api.FileItem, mp map[string]*db_api.FileItem) bool {
+	for _, item := range sl {
+		isEqualFileItem(t, item, mp[item.ID])
+	}
+	return true
+}
+
+func isEqualFileItem(t *testing.T, a, b *db_api.FileItem) bool {
+	if a == nil || b == nil {
+		t.Fatal("Invalid items to compare")
+	}
+	if a.ID != b.ID {
+		t.Fatalf("Mismatch id %s != %s", a.ID, b.ID)
+	}
+	if a.TenantID != b.TenantID {
+		t.Fatalf("Mismatch TenantID %s != %s", a.TenantID, b.TenantID)
+	}
+	if a.Expiry != b.Expiry {
+		t.Fatalf("Mismatch expiry %d != %d", a.Expiry, b.Expiry)
+	}
+	if !maps.Equal(a.Tags, b.Tags) {
+		t.Fatalf("Mismatch tags %v != %v", a.Tags, b.Tags)
+	}
+	if a.Purpose != b.Purpose {
+		t.Fatalf("Mismatch purpose %s != %s", a.Purpose, b.Purpose)
+	}
+	if !bytes.Equal(a.Spec, b.Spec) {
+		t.Fatalf("Mismatch spec %s != %s", a.Spec, b.Spec)
+	}
+	if !bytes.Equal(a.Status, b.Status) {
+		t.Fatalf("Mismatch status %s != %s", a.Spec, b.Spec)
+	}
+	return true
+}
+
+func sameMembersInStrSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int)
+	for _, x := range a {
+		counts[x]++
+	}
+	for _, x := range b {
+		counts[x]--
+		if counts[x] < 0 {
+			return false
+		}
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }
