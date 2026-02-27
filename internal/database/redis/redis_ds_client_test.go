@@ -19,11 +19,9 @@ limitations under the License.
 package redis_test
 
 import (
-	// "bytes"
+	"bytes"
 	"context"
-	// "maps"
-
-	// "maps"
+	"maps"
 	"os"
 	"sync"
 	"testing"
@@ -79,10 +77,10 @@ func TestRedisClient(t *testing.T) {
 		minirds *miniredis.Miniredis
 		tagKey1 string = "key-tag-1"
 		tagKey2 string = "key-tag-2"
-		// tagKey3 string = "key-tag-3"
+		tagKey3 string = "key-tag-3"
 		tagVal1 string = "val-tag-1"
 		tagVal2 string = "val-tag-2"
-		// tagVal3 string = "val-tag-3"
+		tagVal3 string = "val-tag-3"
 	)
 
 	// Start miniredis if no external redis URL is provided.
@@ -109,22 +107,22 @@ func TestRedisClient(t *testing.T) {
 		}
 	})
 
-	t.Run("db operations", func(t *testing.T) {
+	t.Run("batch db operations", func(t *testing.T) {
 		baseClient, batchClient, _, _ := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
 
-		// nBatches := 20
+		nBatches := 20
 		nBatchesRmv := 10
 		var wg sync.WaitGroup
-		_, batchesRmv := make(map[string]*db_api.BatchItem), make(map[string]*db_api.BatchItem)
+		batches, batchesRmv := make(map[string]*db_api.BatchItem), make(map[string]*db_api.BatchItem)
 		for i := 0; i < nBatchesRmv; i++ {
 			batchID := uuid.New().String()
 			batch := &db_api.BatchItem{
 				BaseIndexes: db_api.BaseIndexes{
 					ID:       batchID,
-					TenantID: "T1",
+					TenantID: "Tnt2",
 					Expiry:   time.Now().Add(time.Second).Unix(),
 					Tags:     map[string]string{tagKey1: tagVal1, tagKey2: tagVal2},
 				},
@@ -144,90 +142,204 @@ func TestRedisClient(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		// var jobIDs []string
-		// for i := 0; i < nJobs; i++ {
-		// 	jobID := uuid.New().String()
-		// 	job := &db_api.BatchItem{
-		// 		ID:     jobID,
-		// 		Expiry: time.Now().Add(time.Hour).Unix(),
-		// 		Tags:   map[string]string{tagKey1: tagVal1, tagKey2: tagVal2},
-		// 		Spec:   []byte("spec"),
-		// 		Status: []byte("status"),
-		// 	}
-		// 	jobs[jobID] = job
-		// 	jobIDs = append(jobIDs, jobID)
-		// 	wg.Add(1)
-		// 	go func() {
-		// 		defer wg.Done()
-		// 		ID, err := dbClient.DBStore(context.Background(), job)
-		// 		if err != nil {
-		// 			t.Fatalf("Failed to store item: %v", err)
-		// 		}
-		// 		if ID != job.ID {
-		// 			t.Fatalf("IDs mismatch %s != %s", ID, jobID)
-		// 		}
-		// 	}()
-		// }
-		// wg.Wait()
-		// time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry jobs.
+		var batchIDs []string
+		for i := 0; i < nBatches; i++ {
+			batchID := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       batchID,
+					TenantID: "Tnt1",
+					Expiry:   time.Now().Add(time.Hour).Unix(),
+					Tags:     map[string]string{tagKey1: tagVal1, tagKey3: tagVal3},
+				},
+				BaseContents: db_api.BaseContents{
+					Spec:   []byte("spec"),
+					Status: []byte("status"),
+				},
+			}
+			batches[batchID] = batch
+			batchIDs = append(batchIDs, batchID)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := batchClient.DBStore(context.Background(), batch)
+				if err != nil {
+					t.Fatalf("Failed to store item: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+		time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry jobs.
 
-		// resJobs, _, _, err := dbClient.DBGet(context.Background(),
-		// 	&db_api.BatchDBQuery{
-		// 		Expired: true,
-		// 	}, true, 0, nJobsRmv*2)
-		// if err != nil {
-		// 	t.Fatalf("Failed to get items: %v", err)
+		// Get expired.
+		expectMore := true
+		nRet, cursor := 0, 0
+		for expectMore {
+			resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						Expired: true,
+					},
+				}, true, cursor, nBatchesRmv*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, resJob := range resJobs {
+				tJob := batchesRmv[resJob.ID]
+				if resJob.ID != tJob.ID {
+					t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
+				}
+				if resJob.TenantID != tJob.TenantID {
+					t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
+				}
+				if resJob.Expiry != tJob.Expiry {
+					t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
+				}
+				if !bytes.Equal(resJob.Spec, tJob.Spec) {
+					t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
+				}
+				if !bytes.Equal(resJob.Status, tJob.Status) {
+					t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
+				}
+				if !maps.Equal(resJob.Tags, tJob.Tags) {
+					t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
+				}
+				nRet++
+			}
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nBatchesRmv {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatchesRmv)
+		}
+
+		// Get by IDs.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						IDs: batchIDs,
+					},
+				}, true, cursor, nBatches*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, resJob := range resJobs {
+				tJob := batches[resJob.ID]
+				if resJob.ID != tJob.ID {
+					t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
+				}
+				if resJob.TenantID != tJob.TenantID {
+					t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
+				}
+				if resJob.Expiry != tJob.Expiry {
+					t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
+				}
+				if !bytes.Equal(resJob.Spec, tJob.Spec) {
+					t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
+				}
+				if !bytes.Equal(resJob.Status, tJob.Status) {
+					t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
+				}
+				if !maps.Equal(resJob.Tags, tJob.Tags) {
+					t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
+				}
+				nRet++
+			}
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nBatches {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatchesRmv)
+		}
+
+		// Get by tenant.
+		expectMore = true
+		nRet, cursor = 0, 0
+		for expectMore {
+			resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID: "Tnt2",
+					},
+				}, true, cursor, nBatchesRmv*2)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, resJob := range resJobs {
+				tJob := batchesRmv[resJob.ID]
+				if resJob.ID != tJob.ID {
+					t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
+				}
+				if resJob.TenantID != tJob.TenantID {
+					t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
+				}
+				if resJob.Expiry != tJob.Expiry {
+					t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
+				}
+				if !bytes.Equal(resJob.Spec, tJob.Spec) {
+					t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
+				}
+				if !bytes.Equal(resJob.Status, tJob.Status) {
+					t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
+				}
+				if !maps.Equal(resJob.Tags, tJob.Tags) {
+					t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
+				}
+				nRet++
+			}
+			expectMore = expectM
+			cursor = cur
+		}
+		if nRet != nBatchesRmv {
+			t.Fatalf("Invalid number of items %d != %d", nRet, nBatchesRmv)
+		}
+
+		// Get by tags.
+		// expectMore = true
+		// nRet, cursor = 0, 0
+		// for expectMore {
+		// 	resJobs, cur, expectM, err := batchClient.DBGet(context.Background(),
+		// 		&db_api.BatchQuery{
+		// 			BaseQuery: db_api.BaseQuery{
+		// 				TagSelectors:    db_api.Tags{tagKey1: tagVal1, tagKey3: tagVal3},
+		// 				TagsLogicalCond: db_api.LogicalCondAnd,
+		// 			},
+		// 		}, true, cursor, nBatches*2)
+		// 	if err != nil {
+		// 		t.Fatalf("Failed to get items: %v", err)
+		// 	}
+		// 	for _, resJob := range resJobs {
+		// 		tJob := batches[resJob.ID]
+		// 		if resJob.ID != tJob.ID {
+		// 			t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
+		// 		}
+		// 		if resJob.TenantID != tJob.TenantID {
+		// 			t.Fatalf("Mismatch TenantID %s != %s", resJob.TenantID, tJob.TenantID)
+		// 		}
+		// 		if resJob.Expiry != tJob.Expiry {
+		// 			t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
+		// 		}
+		// 		if !bytes.Equal(resJob.Spec, tJob.Spec) {
+		// 			t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
+		// 		}
+		// 		if !bytes.Equal(resJob.Status, tJob.Status) {
+		// 			t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
+		// 		}
+		// 		if !maps.Equal(resJob.Tags, tJob.Tags) {
+		// 			t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
+		// 		}
+		// 		nRet++
+		// 	}
+		// 	expectMore = expectM
+		// 	cursor = cur
 		// }
-		// if len(resJobs) != nJobsRmv {
-		// 	t.Fatalf("Invalid number of items %d != %d", len(resJobs), nJobsRmv)
-		// }
-		// for _, resJob := range resJobs {
-		// 	tJob := jobsRmv[resJob.ID]
-		// 	if resJob.ID != tJob.ID {
-		// 		t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-		// 	}
-		// 	if resJob.Expiry != tJob.Expiry {
-		// 		t.Fatalf("Mismatch expiry %d != %d", resJob.Expiry, tJob.Expiry)
-		// 	}
-		// 	if !bytes.Equal(resJob.Spec, tJob.Spec) {
-		// 		t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-		// 	}
-		// 	if !bytes.Equal(resJob.Status, tJob.Status) {
-		// 		t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-		// 	}
-		// 	if !maps.Equal(resJob.Tags, tJob.Tags) {
-		// 		t.Fatalf("Mismatch tags %v != %v", resJob.Tags, tJob.Tags)
-		// 	}
+		// if nRet != nBatches {
+		// 	t.Fatalf("Invalid number of items %d != %d", nRet, nBatchesRmv)
 		// }
 
-		// resJobs, _, _, err = dbClient.DBGet(context.Background(),
-		// 	&db_api.BatchDBQuery{
-		// 		IDs: jobIDs,
-		// 	}, true, 0, nJobs*2)
-		// if err != nil {
-		// 	t.Fatalf("Failed to get items: %v", err)
-		// }
-		// if len(resJobs) != nJobs {
-		// 	t.Fatalf("Invalid number of items %d != %d", len(resJobs), nJobs)
-		// }
-		// for _, resJob := range resJobs {
-		// 	tJob := jobs[resJob.ID]
-		// 	if resJob.ID != tJob.ID {
-		// 		t.Fatalf("Mismatch id %s != %s", resJob.ID, tJob.ID)
-		// 	}
-		// 	// if !resJob.SLO.Equal(tJob.SLO) {
-		// 	// 	t.Fatalf("Mismatch slo %s != %s", resJob.SLO, tJob.SLO)
-		// 	// }
-		// 	if !bytes.Equal(resJob.Spec, tJob.Spec) {
-		// 		t.Fatalf("Mismatch spec %s != %s", resJob.Spec, tJob.Spec)
-		// 	}
-		// 	if !bytes.Equal(resJob.Status, tJob.Status) {
-		// 		t.Fatalf("Mismatch status %s != %s", resJob.Spec, tJob.Spec)
-		// 	}
-		// 	// if !slices.Equal(resJob.Tags, tJob.Tags) { TBD
-		// 	// 	t.Fatalf("Mismatch tags %s != %s", resJob.Spec, tJob.Spec)
-		// 	// }
-		// }
 	})
 
 }

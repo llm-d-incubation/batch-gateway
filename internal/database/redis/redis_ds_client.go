@@ -96,7 +96,7 @@ type DSClientRedis struct {
 	timeout            time.Duration
 	idleLogFreq        time.Duration
 	idleLogLast        time.Time
-	onceClose          sync.Once
+	onceClose          *sync.Once
 }
 
 type BatchDBClientRedis struct {
@@ -186,6 +186,7 @@ func NewDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTim
 		timeout:            opTimeout,
 		idleLogFreq:        logFreqDefault,
 		idleLogLast:        time.Now(),
+		onceClose:          &sync.Once{},
 	}, nil
 }
 
