@@ -62,6 +62,28 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.InferenceConfig.MaxRetries != 3 {
 		t.Fatalf("MaxRetries = %d, want %d", c.InferenceConfig.MaxRetries, 3)
 	}
+
+	// upload retry spot-check
+	if c.UploadRetry.MaxRetries != 3 {
+		t.Fatalf("UploadRetry.MaxRetries = %d, want %d", c.UploadRetry.MaxRetries, 3)
+	}
+	if c.UploadRetry.InitialBackoff != 1*time.Second {
+		t.Fatalf("UploadRetry.InitialBackoff = %v, want %v", c.UploadRetry.InitialBackoff, 1*time.Second)
+	}
+	if c.UploadRetry.MaxBackoff != 10*time.Second {
+		t.Fatalf("UploadRetry.MaxBackoff = %v, want %v", c.UploadRetry.MaxBackoff, 10*time.Second)
+	}
+
+	// output expiration default: 90 days
+	want90Days := int64(90 * 24 * 60 * 60)
+	if c.DefaultOutputExpirationSeconds != want90Days {
+		t.Fatalf("DefaultOutputExpirationSeconds = %d, want %d", c.DefaultOutputExpirationSeconds, want90Days)
+	}
+
+	// progress TTL default: 24 hours
+	if c.ProgressTTLSeconds != 86400 {
+		t.Fatalf("ProgressTTLSeconds = %d, want %d", c.ProgressTTLSeconds, 86400)
+	}
 }
 
 func TestProcessorConfig_SSLEnabled(t *testing.T) {
@@ -259,6 +281,12 @@ inference_config:
   initial_backoff: 250ms
   max_backoff: 10s
   tls_insecure_skip_verify: true
+upload_retry:
+  max_retries: 5
+  initial_backoff: 500ms
+  max_backoff: 30s
+default_output_expiration_seconds: 86400
+progress_ttl_seconds: 3600
 `)
 
 	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
@@ -315,5 +343,23 @@ inference_config:
 	}
 	if !c.InferenceConfig.TLSInsecureSkipVerify {
 		t.Fatalf("TLSInsecureSkipVerify = false, want true")
+	}
+
+	if c.UploadRetry.MaxRetries != 5 {
+		t.Fatalf("UploadRetry.MaxRetries = %d, want %d", c.UploadRetry.MaxRetries, 5)
+	}
+	if c.UploadRetry.InitialBackoff != 500*time.Millisecond {
+		t.Fatalf("UploadRetry.InitialBackoff = %v, want %v", c.UploadRetry.InitialBackoff, 500*time.Millisecond)
+	}
+	if c.UploadRetry.MaxBackoff != 30*time.Second {
+		t.Fatalf("UploadRetry.MaxBackoff = %v, want %v", c.UploadRetry.MaxBackoff, 30*time.Second)
+	}
+
+	if c.DefaultOutputExpirationSeconds != 86400 {
+		t.Fatalf("DefaultOutputExpirationSeconds = %d, want %d", c.DefaultOutputExpirationSeconds, 86400)
+	}
+
+	if c.ProgressTTLSeconds != 3600 {
+		t.Fatalf("ProgressTTLSeconds = %d, want %d", c.ProgressTTLSeconds, 3600)
 	}
 }

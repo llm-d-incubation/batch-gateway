@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -54,6 +55,8 @@ func (p *Processor) runJob(
 	metrics.IncActiveWorkers()
 	defer metrics.DecActiveWorkers()
 
+	jobStart := time.Now()
+
 	// event watcher for cancel event
 	eventWatcher, err := p.clients.event.ECConsumerGetChannel(ctx, jobInfo.JobID)
 	if err != nil {
@@ -82,38 +85,80 @@ func (p *Processor) runJob(
 
 	// phase 1: pre-process job
 	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
-		switch {
-		case errors.Is(err, ErrCancelled):
-			// user initiated cancellation
-			if cancelErr := p.handleCancelled(ctx, jobItem, updater); cancelErr != nil {
-				logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
-			}
-			return
-
-		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-			// processor shutdown / job context cancelled
-			// re-enqueue the job to the queue so this job can be picked up later by another worker
-			// use background context to avoid context cancellation error while preserving logger values.
-			if task != nil {
-				bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
-				if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
-					logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
-				} else {
-					logger.V(logging.INFO).Info("Re-enqueued the job to the queue")
-				}
-			}
-			return
-
-		default:
-			// treat as failed job
-			if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
-				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
-			}
-			return
-		}
+		p.handleJobError(ctx, err, jobItem, updater, task)
+		return
 	}
 
-	// TODO:phase 2: process plans and execute requests
+	// transition to in_progress before executing requests
+	if err := updater.UpdatePersistentStatus(ctx, jobItem, openai.BatchStatusInProgress, nil, nil); err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to update status to in_progress")
+		if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
+			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
+		}
+		return
+	}
+
+	// phase 2: execute inference requests
+	requestCounts, err := p.executeJob(ctx, updater, jobInfo, &cancelRequested)
+	if err != nil {
+		p.handleJobError(ctx, err, jobItem, updater, task)
+		return
+	}
+
+	// phase 3: finalize (upload output, update status to completed)
+	if err := p.finalizeJob(ctx, updater, jobItem, jobInfo, requestCounts); err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
+		if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
+			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
+		}
+		return
+	}
+
+	// cleanup local artifacts (best-effort)
+	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
+	metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
+	logger.V(logging.INFO).Info("Job completed successfully")
+}
+
+// handleJobError routes a phase error to the appropriate handler (cancel, re-enqueue, or fail).
+func (p *Processor) handleJobError(
+	ctx context.Context,
+	err error,
+	jobItem *db.BatchItem,
+	updater *StatusUpdater,
+	task *db.BatchJobPriority,
+) {
+	logger := klog.FromContext(ctx)
+
+	switch {
+	case errors.Is(err, ErrCancelled):
+		if cancelErr := p.handleCancelled(ctx, jobItem, updater); cancelErr != nil {
+			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
+		}
+
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// context canceled or deadline exceeded
+		// re-enqueue the job to the queue so this job can be picked up later by another worker
+		if task != nil {
+			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
+				// re-enqueue failed, handle as failed
+				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
+				if failErr := p.handleFailed(bgCtx, jobItem, updater); failErr != nil {
+					// best-effort
+					logger.V(logging.ERROR).Error(failErr, "Failed to mark job as failed after re-enqueue failure")
+				}
+			} else {
+				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
+				logger.V(logging.INFO).Info("Re-enqueued the job to the queue")
+			}
+		}
+	default:
+		if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
+			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
+		}
+	}
 }
 
 func (p *Processor) handleFailed(

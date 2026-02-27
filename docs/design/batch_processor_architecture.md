@@ -210,26 +210,30 @@ Directory layout:
 jobs/
 └── <job_id>/
     ├── input.jsonl
-    ├── metadata.json
+    ├── model_map.json
     └── plans/
-        ├── <model_id_1>.plan
-        ├── <model_id_2>.plan
+        ├── <safe_model_id_1>.plan
+        ├── <safe_model_id_2>.plan
         └── ...
 ```
 -   `input.jsonl` is append-only. Each line is an inference request in json format.
--   `metadata.json` includes information for file name map, and total request line count.
-```
+-   `model_map.json` provides bidirectional mapping between original model IDs and sanitized (safe) file names, plus the total request line count.
+```json
 {
-    "file_name_map": {
-        "model_a": "model_a.plan",
-        "model_b": "model_b.plan",
-        ...
+    "model_to_safe": {
+        "org/model-A:1": "org_model_A_1",
+        "model-B": "model_B"
     },
-    "total_request_count": 5000
+    "safe_to_model": {
+        "org_model_A_1": "org/model-A:1",
+        "model_B": "model-B"
+    },
+    "line_count": 5000
 }
 ```
--   `file_name_map` is needed as model ids are sanitized for safe file name
--   `total_request_count` is stored since this is the first process we read the whole file.
+-   `model_to_safe` maps original model IDs to sanitized file names used for plan files.
+-   `safe_to_model` is the reverse mapping, used during Phase 2 execution to recover the original model ID.
+-   `line_count` is stored since Phase 1 is the first (and only) pass over the entire input file.
 
 For each `input.jsonl` line:
 1.  Compute current byte offset in input.jsonl file

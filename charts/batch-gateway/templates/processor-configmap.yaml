@@ -33,6 +33,14 @@ data:
       tls_client_cert_file: {{ .Values.processor.config.inferenceConfig.tlsClientCertFile | default "" | quote }}
       tls_client_key_file: {{ .Values.processor.config.inferenceConfig.tlsClientKeyFile | default "" | quote }}
 
+    upload_retry:
+      max_retries: {{ .Values.processor.config.uploadRetry.maxRetries }}
+      initial_backoff: {{ .Values.processor.config.uploadRetry.initialBackoff | quote }}
+      max_backoff: {{ .Values.processor.config.uploadRetry.maxBackoff | quote }}
+
+    default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
+    progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
+
     queue_time_bucket:
       bucket_start: {{ .Values.processor.config.queueTimeBucket.bucketStart }}
       bucket_factor: {{ .Values.processor.config.queueTimeBucket.bucketFactor }}

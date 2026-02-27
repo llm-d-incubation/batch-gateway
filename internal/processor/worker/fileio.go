@@ -46,6 +46,22 @@ func (p *Processor) jobInputFilePath(jobID, tenantID string) (string, error) {
 	return filepath.Join(jobRootDir, "input.jsonl"), nil
 }
 
+func (p *Processor) jobOutputFilePath(jobID, tenantID string) (string, error) {
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(jobRootDir, "output.jsonl"), nil
+}
+
+func (p *Processor) jobPlansDir(jobID, tenantID string) (string, error) {
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(jobRootDir, "plans"), nil
+}
+
 // createLocalInputFile creates or truncates the local input file for a job.
 func (p *Processor) createLocalInputFile(jobID, tenantID string) (*os.File, string, error) {
 	localInputFilePath, err := p.jobInputFilePath(jobID, tenantID)
@@ -53,7 +69,7 @@ func (p *Processor) createLocalInputFile(jobID, tenantID string) (*os.File, stri
 		return nil, "", err
 	}
 
-	localInputFile, err := os.OpenFile(localInputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	localInputFile, err := os.OpenFile(localInputFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, localInputFilePath, fmt.Errorf("failed to create local input file: %w", err)
 	}

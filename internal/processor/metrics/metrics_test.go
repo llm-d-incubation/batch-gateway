@@ -88,8 +88,8 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 		IncActiveWorkers()
 		DecActiveWorkers()
 
-		RecordJobError("test")
-		RecordJobError("test")
+		RecordRequestError("test")
+		RecordRequestError("test")
 		IncProcessorInflightRequests()
 		IncProcessorInflightRequests()
 		DecProcessorInflightRequests()
@@ -174,9 +174,9 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 		}
 
 		{
-			mf := find("job_errors_by_model_total")
+			mf := find("request_errors_by_model_total")
 			if mf == nil {
-				t.Fatalf("job_errors_by_model_total not found")
+				t.Fatalf("request_errors_by_model_total not found")
 			}
 			var got float64
 			for _, m := range mf.Metric {
@@ -191,7 +191,7 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 				}
 			}
 			if got != 2 {
-				t.Fatalf("job_errors_by_model_total{model=%q}=%v, want 2", "test", got)
+				t.Fatalf("request_errors_by_model_total{model=%q}=%v, want 2", "test", got)
 			}
 		}
 

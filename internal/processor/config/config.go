@@ -71,6 +71,23 @@ type ProcessorConfig struct {
 
 	// Inference Config
 	InferenceConfig InferenceConfig `yaml:"inference_config"`
+
+	// UploadRetry controls retry behaviour when uploading output files to shared storage.
+	UploadRetry RetryConfig `yaml:"upload_retry"`
+
+	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
+	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
+	// 0 means no expiration (keep until explicitly deleted).
+	DefaultOutputExpirationSeconds int64 `yaml:"default_output_expiration_seconds"`
+
+	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
+	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
+}
+
+type RetryConfig struct {
+	MaxRetries     int           `yaml:"max_retries"`
+	InitialBackoff time.Duration `yaml:"initial_backoff"`
+	MaxBackoff     time.Duration `yaml:"max_backoff"`
 }
 
 type InferenceConfig struct {
@@ -163,6 +180,13 @@ func NewConfig() *ProcessorConfig {
 			MaxBackoff:            60 * time.Second,
 			TLSInsecureSkipVerify: false,
 		},
+		UploadRetry: RetryConfig{
+			MaxRetries:     3,
+			InitialBackoff: 1 * time.Second,
+			MaxBackoff:     10 * time.Second,
+		},
+		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
+		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 	}
 }
 
@@ -274,9 +298,26 @@ func (c *ProcessorConfig) Validate() error {
 		}
 	}
 
+	if c.UploadRetry.MaxRetries < 0 {
+		return fmt.Errorf("upload_retry.max_retries must be >= 0")
+	}
+	if c.UploadRetry.InitialBackoff <= 0 {
+		return fmt.Errorf("upload_retry.initial_backoff must be > 0")
+	}
+	if c.UploadRetry.MaxBackoff <= 0 {
+		return fmt.Errorf("upload_retry.max_backoff must be > 0")
+	}
+	if c.UploadRetry.MaxBackoff < c.UploadRetry.InitialBackoff {
+		return fmt.Errorf("upload_retry.max_backoff must be >= upload_retry.initial_backoff")
+	}
+
 	// <= 0 means unlimited.
 	if c.MaxOpenFiles <= 0 {
 		c.MaxOpenFiles = 0
+	}
+
+	if c.ProgressTTLSeconds <= 0 {
+		return fmt.Errorf("progress_ttl_seconds must be > 0")
 	}
 
 	return nil

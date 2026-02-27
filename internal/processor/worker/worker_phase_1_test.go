@@ -178,8 +178,8 @@ func makeInputLines(models []string) [][]byte {
 	return lines
 }
 
-// Read plan entries from a single plan file
-func readPlanEntries(t *testing.T, planPath string) []planEntry {
+// testReadPlanEntries reads plan entries from a single plan file (test helper).
+func testReadPlanEntries(t *testing.T, planPath string) []planEntry {
 	t.Helper()
 	b, err := os.ReadFile(planPath)
 	if err != nil {
@@ -369,7 +369,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		if _, err := os.Stat(planPath); err != nil {
 			t.Fatalf("missing plan file for safeID=%q: %v", safeID, err)
 		}
-		entries := readPlanEntries(t, planPath)
+		entries := testReadPlanEntries(t, planPath)
 
 		// For each entry, read input.jsonl slice and ensure it is a valid JSON line ending with '\n'
 		for _, e := range entries {
@@ -422,7 +422,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	}
 
 	p := NewProcessor(config.NewConfig(), &ProcessorClients{})
-	updater := NewStatusUpdater(dbClient, statusClient)
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
 	if err != nil {
@@ -594,7 +594,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 		t.Fatalf("WriteFile dummy: %v", err)
 	}
 
-	updater := NewStatusUpdater(dbClient, statusClient)
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	if err := p.handleCancelled(ctx, jobItem, updater); err != nil {
 		t.Fatalf("handleCancelled: %v", err)

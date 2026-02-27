@@ -24,6 +24,7 @@ const (
 	ErrCategoryServer     ErrorCategory = "SERVER_ERROR" // retryable
 	ErrCategoryInvalidReq ErrorCategory = "INVALID_REQ"  // not retryable
 	ErrCategoryAuth       ErrorCategory = "AUTH_ERROR"   // not retryable
+	ErrCategoryParse      ErrorCategory = "PARSE_ERROR"  // not retryable
 	ErrCategoryUnknown    ErrorCategory = "UNKNOWN"      // not retryable
 )
 

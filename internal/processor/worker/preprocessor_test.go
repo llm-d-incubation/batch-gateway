@@ -20,7 +20,7 @@ func TestCheckPreProcessCancellation_ContextDone(t *testing.T) {
 	cancel()
 
 	var cancelRequested atomic.Bool
-	err := checkPreProcessCancellation(ctx, &cancelRequested)
+	err := checkCancellation(ctx, &cancelRequested)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -31,7 +31,7 @@ func TestCheckPreProcessCancellation_CancelRequested(t *testing.T) {
 	var cancelRequested atomic.Bool
 	cancelRequested.Store(true)
 
-	err := checkPreProcessCancellation(ctx, &cancelRequested)
+	err := checkCancellation(ctx, &cancelRequested)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got %v", err)
 	}
@@ -41,7 +41,7 @@ func TestCheckPreProcessCancellation_None(t *testing.T) {
 	ctx := context.Background()
 	var cancelRequested atomic.Bool
 
-	if err := checkPreProcessCancellation(ctx, &cancelRequested); err != nil {
+	if err := checkCancellation(ctx, &cancelRequested); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 }

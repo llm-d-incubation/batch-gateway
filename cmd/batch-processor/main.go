@@ -270,6 +270,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (wo
 	logger := klog.FromContext(ctx)
 
 	// TODO: remove mock clients and replace with actual clients + logging update
+	// TODO: avoid logging full cfg — may expose sensitive paths (e.g. InferenceAPIKeyFile)
 
 	logger.V(logging.INFO).Info("Building processor clients with mock clients for now", "inferenceConfig", cfg)
 
