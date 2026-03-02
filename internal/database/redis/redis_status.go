@@ -47,7 +47,7 @@ func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL in
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	res := c.redisClient.SetEx(cctx, getKeyForStatus(ID), data, time.Duration(int64(TTL)*int64(time.Second)))
+	res := c.redisClient.Set(cctx, getKeyForStatus(ID), data, time.Duration(TTL)*time.Second)
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
 		logger.Error(err, "StatusSet:")

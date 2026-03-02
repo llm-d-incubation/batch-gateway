@@ -103,7 +103,7 @@ func TestRedisClient(t *testing.T) {
 		t.Logf("Memory address of the clients: base=%p batch=%p file=%p exchange=%p",
 			baseClient, batchClient, fileClient, exchClient)
 		if baseClient == nil || batchClient == nil || fileClient == nil || exchClient == nil {
-			t.Fatal("Expected redis clients to be non-nil")
+			t.Fatalf("Expected redis clients to be non-nil")
 		}
 	})
 
@@ -113,6 +113,7 @@ func TestRedisClient(t *testing.T) {
 			baseClient.Close()
 		})
 
+		// Store.
 		nBatches := 20
 		nBatchesRmv := 10
 		var wg sync.WaitGroup
@@ -351,6 +352,7 @@ func TestRedisClient(t *testing.T) {
 			baseClient.Close()
 		})
 
+		// Store.
 		nFiles := 20
 		nFilesRmv := 10
 		var wg sync.WaitGroup
@@ -584,6 +586,71 @@ func TestRedisClient(t *testing.T) {
 
 	})
 
+	t.Run("Event exchange operations", func(t *testing.T) {
+		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Get event channel.
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+		if ec == nil {
+			t.Fatalf("Invalid event consumer channel")
+		}
+		if ec.ID != ID {
+			t.Fatalf("Mismatch ID %s != %s", ec.ID, ID)
+		}
+		// defer ec.CloseFn()
+
+		// Send events.
+		events := []db_api.BatchEvent{
+			{
+				ID:   ID,
+				Type: db_api.BatchEventCancel,
+				TTL:  1000,
+			},
+			{
+				ID:   ID,
+				Type: db_api.BatchEventPause,
+				TTL:  1000,
+			},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), events)
+		if err != nil {
+			t.Fatalf("Failed to send events: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("invalid number of returned IDs %d", len(sentIDs))
+		}
+		if sentIDs[0] != ID {
+			t.Fatalf("Mismatch ID %s != %s", sentIDs[0], ID)
+		}
+
+		// Get the events.
+		for _, evo := range events {
+			select {
+			case evc := <-ec.Events:
+				isSameEvent(t, &evo, &evc)
+			case <-time.After(1 * time.Second):
+				t.Fatalf("Event channel timeout")
+			}
+		}
+	})
+
+}
+
+func isSameEvent(t *testing.T, a, b *db_api.BatchEvent) bool {
+	if a.ID != b.ID {
+		t.Fatalf("ID mismatch %s != %s", a.ID, b.ID)
+	}
+	if a.Type != b.Type {
+		t.Fatalf("Type mismatch %v != %v", a.Type, b.Type)
+	}
+	return true
 }
 
 func sameMembersBatch(t *testing.T, sl []*db_api.BatchItem, mp map[string]*db_api.BatchItem) bool {
@@ -595,7 +662,7 @@ func sameMembersBatch(t *testing.T, sl []*db_api.BatchItem, mp map[string]*db_ap
 
 func isEqualBatchItem(t *testing.T, a, b *db_api.BatchItem) bool {
 	if a == nil || b == nil {
-		t.Fatal("Invalid items to compare")
+		t.Fatalf("Invalid items to compare")
 	}
 	if a.ID != b.ID {
 		t.Fatalf("Mismatch id %s != %s", a.ID, b.ID)
@@ -627,7 +694,7 @@ func sameMembersFile(t *testing.T, sl []*db_api.FileItem, mp map[string]*db_api.
 
 func isEqualFileItem(t *testing.T, a, b *db_api.FileItem) bool {
 	if a == nil || b == nil {
-		t.Fatal("Invalid items to compare")
+		t.Fatalf("Invalid items to compare")
 	}
 	if a.ID != b.ID {
 		t.Fatalf("Mismatch id %s != %s", a.ID, b.ID)

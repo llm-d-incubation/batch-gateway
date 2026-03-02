@@ -145,7 +145,7 @@ func (c *ExchangeDBClientRedis) ECProducerSendEvents(ctx context.Context, events
 			key := getKeyForEvent(event.ID)
 			res := pipe.RPush(cctx, key, eventTypeStr)
 			resMap[event.ID] = res
-			pipe.Expire(cctx, key, time.Duration(int64(event.TTL)*int64(time.Second)))
+			pipe.Expire(cctx, key, time.Duration(event.TTL)*time.Second)
 		}
 		return nil
 	})
