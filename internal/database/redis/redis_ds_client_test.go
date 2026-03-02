@@ -306,6 +306,31 @@ func TestRedisClient(t *testing.T) {
 			t.Fatalf("Invalid number of items %d != %d", nRet, nBatches)
 		}
 
+		// Update.
+		updId := batchesIDs[0]
+		updBatch := batches[updId]
+		updBatch.Status = []byte("statusUpdated")
+		err := batchClient.DBUpdate(context.Background(), updBatch)
+		if err != nil {
+			t.Fatalf("Failed to update item: %v", err)
+		}
+		resItems, _, expectM, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{updId},
+				},
+			}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("Failed to get item: %v", err)
+		}
+		if expectM {
+			t.Fatalf("Invalid expect more")
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Invalid number of returned items")
+		}
+		isEqualBatchItem(t, updBatch, resItems[0])
+
 		// Delete.
 		deletedIDs, err := batchClient.DBDelete(context.Background(), batchesAllIDs)
 		if err != nil {
@@ -519,6 +544,31 @@ func TestRedisClient(t *testing.T) {
 		if nRet != nFiles {
 			t.Fatalf("Invalid number of items %d != %d", nRet, nFiles)
 		}
+
+		// Update.
+		updId := filesIDs[0]
+		updFile := files[updId]
+		updFile.Status = []byte("statusUpdated")
+		err := fileClient.DBUpdate(context.Background(), updFile)
+		if err != nil {
+			t.Fatalf("Failed to update item: %v", err)
+		}
+		resItems, _, expectM, err := fileClient.DBGet(context.Background(),
+			&db_api.FileQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{updId},
+				},
+			}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("Failed to get item: %v", err)
+		}
+		if expectM {
+			t.Fatalf("Invalid expect more")
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Invalid number of returned items")
+		}
+		isEqualFileItem(t, updFile, resItems[0])
 
 		// Delete.
 		deletedIDs, err := fileClient.DBDelete(context.Background(), filesAllIDs)
