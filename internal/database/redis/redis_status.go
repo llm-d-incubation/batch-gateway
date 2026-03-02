@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"k8s.io/klog/v2"
 )
 
@@ -84,12 +85,15 @@ func (c *ExchangeDBClientRedis) StatusGet(ctx context.Context, ID string) (data 
 		logger.Error(err, "StatusGet:")
 		return
 	}
-	if err = res.Err(); err != nil {
+	if res.Err() == redis.Nil {
+		logger.Info("StatusGet: no status")
+		return
+	} else if err = res.Err(); err != nil {
 		logger.Error(err, "StatusGet: redis command error")
 		return
 	}
-	data = []byte(res.Val())
 
+	data = []byte(res.Val())
 	logger.Info("StatusGet: succeeded", "len(data)", len(data))
 
 	return

@@ -604,7 +604,7 @@ func TestRedisClient(t *testing.T) {
 		if ec.ID != ID {
 			t.Fatalf("Mismatch ID %s != %s", ec.ID, ID)
 		}
-		// defer ec.CloseFn()
+		defer ec.CloseFn()
 
 		// Send events.
 		events := []db_api.BatchEvent{
@@ -641,6 +641,83 @@ func TestRedisClient(t *testing.T) {
 		}
 	})
 
+	t.Run("Status exchange operations", func(t *testing.T) {
+		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		origStatus, updStatus := []byte("orig status"), []byte("updated status")
+
+		// Set status.
+		ID := uuid.New().String()
+		err := exchClient.StatusSet(context.Background(), ID, 1000, origStatus)
+		if err != nil {
+			t.Fatalf("Failed to set status: %v", err)
+		}
+
+		// Get status.
+		stData, err := exchClient.StatusGet(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get status: %v", err)
+		}
+		if !bytes.Equal(stData, origStatus) {
+			t.Fatalf("Invalid status data:\ngot: %s\nwant:%s", stData, origStatus)
+		}
+
+		// Update status.
+		err = exchClient.StatusSet(context.Background(), ID, 1000, updStatus)
+		if err != nil {
+			t.Fatalf("Failed to set status: %v", err)
+		}
+
+		// Get status.
+		stData, err = exchClient.StatusGet(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get status: %v", err)
+		}
+		if !bytes.Equal(stData, updStatus) {
+			t.Fatalf("Invalid status data:\ngot: %s\nwant:%s", stData, updStatus)
+		}
+
+		// Delete status.
+		nDel, err := exchClient.StatusDelete(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to delete status: %v", err)
+		}
+		if nDel != 1 {
+			t.Fatalf("Invalid number of deleted items: %d != 1", nDel)
+		}
+		stData, err = exchClient.StatusGet(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get status: %v", err)
+		}
+		if len(stData) != 0 {
+			t.Fatalf("Status data should be empty but got: %s", stData)
+		}
+	})
+
+	t.Run("Queue exchange operations", func(t *testing.T) {
+		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		itemData := []byte("additional data")
+
+		// Enqueue.
+		ID := uuid.New().String()
+		item := &db_api.BatchJobPriority{
+			ID:   ID,
+			SLO:  time.Now().Add(time.Second),
+			TTL:  1000,
+			Data: itemData,
+		}
+		err := exchClient.PQEnqueue(context.Background(), item)
+		if err != nil {
+			t.Fatalf("Failed to enqueue: %v", err)
+		}
+	})
 }
 
 func isSameEvent(t *testing.T, a, b *db_api.BatchEvent) bool {

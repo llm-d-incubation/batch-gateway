@@ -104,9 +104,6 @@ func (bj *BatchJobPriority) IsValid() error {
 	if bj.SLO.IsZero() {
 		return fmt.Errorf("SLO is zero for ID %s", bj.ID)
 	}
-	// if bj.TTL <= 0 { TBD
-	// 	return fmt.Errorf("TTL is invalid for ID %s", bj.ID)
-	// }
 	return nil
 }
 
