@@ -86,3 +86,5 @@ jobs:
           echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.tag }}"
           echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
           echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
+          echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.tag }}"

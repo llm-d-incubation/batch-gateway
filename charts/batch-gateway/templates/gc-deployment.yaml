@@ -1,0 +1,71 @@
+{{- if .Values.gc.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "batch-gateway.gc.fullname" . }}
+  labels:
+    {{- include "batch-gateway.gc.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gc.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "batch-gateway.gc.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/gc-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "batch-gateway.gc.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.gc.podSecurityContext | nindent 8 }}
+      containers:
+      - name: gc
+        securityContext:
+          {{- toYaml .Values.gc.securityContext | nindent 12 }}
+        image: {{ include "batch-gateway.gc.image" . }}
+        imagePullPolicy: {{ .Values.gc.image.pullPolicy }}
+        args:
+        - --config=/etc/batch-gc/config.yaml
+        - --v={{ .Values.gc.logging.verbosity }}
+        resources:
+          {{- toYaml .Values.gc.resources | nindent 12 }}
+        volumeMounts:
+        - name: config
+          mountPath: /etc/batch-gc
+          readOnly: true
+        {{- include "batch-gateway.filesStorage.volumeMount" . | nindent 8 }}
+        {{- if .Values.global.appSecretName }}
+        - name: secrets
+          mountPath: /etc/.secrets
+          readOnly: true
+        {{- end }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "batch-gateway.gc.fullname" . }}-config
+      {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
+      {{- if .Values.global.appSecretName }}
+      - name: secrets
+        projected:
+          sources:
+          - secret:
+              name: {{ .Values.global.appSecretName }}
+      {{- end }}
+      {{- with .Values.gc.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gc.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gc.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

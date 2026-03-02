@@ -25,7 +25,7 @@ variable "SOURCE_REPO" {
 
 # Common group to build all images
 group "default" {
-  targets = ["apiserver", "processor"]
+  targets = ["apiserver", "processor", "gc"]
 }
 
 # API Server target
@@ -91,5 +91,38 @@ target "processor" {
   ]
   cache-to = [
     "type=registry,ref=${REGISTRY}/batch-gateway-processor:buildcache,mode=max"
+  ]
+}
+
+# Garbage Collector target
+target "gc" {
+  context    = "."
+  dockerfile = "docker/Dockerfile.gc"
+
+  platforms = ["linux/amd64", "linux/arm64"]
+
+  tags = [
+    # Always tag with commit SHA if provided
+    notequal("", COMMIT_SHA) ? "${REGISTRY}/batch-gateway-gc:${COMMIT_SHA}" : "",
+    # Tag with version (could be 'latest', a release tag like 'v1.0.0', or 'dev')
+    "${REGISTRY}/batch-gateway-gc:${TAG}",
+  ]
+
+  labels = {
+    "org.opencontainers.image.created"       = "${BUILD_DATE}"
+    "org.opencontainers.image.source"        = "${SOURCE_REPO}"
+    "org.opencontainers.image.version"       = "${VERSION}"
+    "org.opencontainers.image.revision"      = "${COMMIT_SHA}"
+    "org.opencontainers.image.title"         = "Batch Gateway Garbage Collector"
+    "org.opencontainers.image.description"   = "Garbage collector for expired batch jobs and files"
+    "org.opencontainers.image.vendor"        = "llm-d"
+  }
+
+  # Enable layer caching
+  cache-from = [
+    "type=registry,ref=${REGISTRY}/batch-gateway-gc:buildcache"
+  ]
+  cache-to = [
+    "type=registry,ref=${REGISTRY}/batch-gateway-gc:buildcache,mode=max"
   ]
 }
