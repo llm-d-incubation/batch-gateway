@@ -47,6 +47,96 @@ type Clientset struct {
 	Inference *inference.GatewayResolver
 }
 
+// NewFSFileClient creates a filesystem-based file storage client.
+func NewFSFileClient(ctx context.Context, cfg *fsclient.Config) (fsapi.BatchFilesClient, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("fs config cannot be nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid fs config: %w", err)
+	}
+	c, err := fsclient.New(cfg.BasePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fs file client: %w", err)
+	}
+	klog.FromContext(ctx).Info("Filesystem-based file client created", "base_path", cfg.BasePath)
+	return c, nil
+}
+
+// NewS3FileClient creates an S3-based file storage client.
+// It reads the secret access key from the mounted secrets when not set in the config.
+func NewS3FileClient(ctx context.Context, cfg *s3client.Config) (fsapi.BatchFilesClient, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("s3 config cannot be nil")
+	}
+	if cfg.SecretAccessKey == "" {
+		s3SecretAccessKey, err := ucom.ReadSecretFile(ucom.SecretKeyS3SecretAccessKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read S3 secret access key: %w", err)
+		}
+		cfg.SecretAccessKey = s3SecretAccessKey
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid s3 config: %w", err)
+	}
+	c, err := s3client.New(ctx, *cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create s3 file client: %w", err)
+	}
+	klog.FromContext(ctx).Info("S3 file client created", "region", cfg.Region, "endpoint", cfg.Endpoint)
+	return c, nil
+}
+
+// NewRedisDBClients creates Redis-backed batch and file database clients.
+// It reads the Redis URL from the mounted secrets when not set in the config.
+func NewRedisDBClients(ctx context.Context, cfg *uredis.RedisClientConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, error) {
+	if cfg == nil {
+		return nil, nil, fmt.Errorf("redis config cannot be nil")
+	}
+	if cfg.Url == "" {
+		redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg.Url = redisURL
+	}
+	batchDB, err := dbRedis.NewBatchDBClientRedis(ctx, nil, cfg, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create redis batch-db client: %w", err)
+	}
+	fileDB, err := dbRedis.NewFileDBClientRedis(ctx, nil, cfg, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create redis file-db client: %w", err)
+	}
+	klog.FromContext(ctx).Info("Redis-based database client created")
+	return batchDB, fileDB, nil
+}
+
+// NewPostgreSQLDBClients creates PostgreSQL-backed batch and file database clients.
+// It reads the URL from the mounted secrets when not set in the config.
+func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, error) {
+	if cfg == nil {
+		return nil, nil, fmt.Errorf("postgresql config cannot be nil")
+	}
+	if cfg.Url == "" {
+		postgreSQLURL, err := ucom.ReadSecretFile(ucom.SecretKeyPostgreSQLURL)
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg.Url = postgreSQLURL
+	}
+	batchDB, err := postgresql.NewPostgresBatchDBClient(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create postgresql batch-db client: %w", err)
+	}
+	fileDB, err := postgresql.NewPostgresFileDBClient(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
+	}
+	klog.FromContext(ctx).Info("PostgreSQL-based database client created")
+	return batchDB, fileDB, nil
+}
+
 // NewClientset creates all clients.
 func NewClientset(
 	ctx context.Context,
@@ -72,7 +162,7 @@ func NewClientset(
 	// Consider adding a separate type parameter for these if we need alternative backends.
 	// See: https://github.com/llm-d-incubation/batch-gateway/pull/102#discussion_r2906181334
 
-	// build redis client
+	// build redis exchange client
 	if redisCfg.Url == "" {
 		redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
 		if err != nil {
@@ -92,40 +182,17 @@ func NewClientset(
 	// build file store client
 	switch fileClientType {
 	case "fs":
-		if fsCfg == nil {
-			return nil, fmt.Errorf("fsCfg cannot be nil when file_client.type is \"fs\"")
-		}
-		if err := fsCfg.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid fs config: %w", err)
-		}
-		c, err := fsclient.New(fsCfg.BasePath)
+		c, err := NewFSFileClient(ctx, fsCfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create fs file client: %w", err)
+			return nil, err
 		}
-		logger.Info("Filesystem-based file client created", "base_path", fsCfg.BasePath)
 		cs.File = c
-
 	case "s3":
-		if s3Cfg == nil {
-			return nil, fmt.Errorf("s3Cfg cannot be nil when file_client.type is \"s3\"")
-		}
-		if s3Cfg.SecretAccessKey == "" {
-			s3SecretAccessKey, err := ucom.ReadSecretFile(ucom.SecretKeyS3SecretAccessKey)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read S3 secret access key: %w", err)
-			}
-			s3Cfg.SecretAccessKey = s3SecretAccessKey
-		}
-		if err := s3Cfg.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid s3 config: %w", err)
-		}
-		c, err := s3client.New(ctx, *s3Cfg)
+		c, err := NewS3FileClient(ctx, s3Cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create s3 file client: %w", err)
+			return nil, err
 		}
-		logger.Info("S3 file client created", "region", s3Cfg.Region, "endpoint", s3Cfg.Endpoint)
 		cs.File = c
-
 	default:
 		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", fileClientType)
 	}
@@ -133,39 +200,19 @@ func NewClientset(
 	// build database client
 	switch dbType {
 	case "redis":
-		batchDB, err := dbRedis.NewBatchDBClientRedis(ctx, nil, redisCfg, 0)
+		batchDB, fileDB, err := NewRedisDBClients(ctx, redisCfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create redis batch-db client: %w", err)
-		}
-		fileDB, err := dbRedis.NewFileDBClientRedis(ctx, nil, redisCfg, 0)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create redis file-db client: %w", err)
+			return nil, err
 		}
 		cs.BatchDB = batchDB
 		cs.FileDB = fileDB
-		logger.Info("Redis-based database client created")
 	case "postgresql":
-		if postgreSQLCfg == nil {
-			return nil, fmt.Errorf("postgreSQLCfg cannot be nil when database.type is \"postgresql\"")
-		}
-		if postgreSQLCfg.Url == "" {
-			postgreSQLURL, err := ucom.ReadSecretFile(ucom.SecretKeyPostgreSQLURL)
-			if err != nil {
-				return nil, err
-			}
-			postgreSQLCfg.Url = postgreSQLURL
-		}
-		batchDB, err := postgresql.NewPostgresBatchDBClient(ctx, postgreSQLCfg)
+		batchDB, fileDB, err := NewPostgreSQLDBClients(ctx, postgreSQLCfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create postgresql batch-db client: %w", err)
-		}
-		fileDB, err := postgresql.NewPostgresFileDBClient(ctx, postgreSQLCfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
+			return nil, err
 		}
 		cs.BatchDB = batchDB
 		cs.FileDB = fileDB
-		logger.Info("PostgreSQL-based database client created")
 	default:
 		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, postgresql)", dbType)
 	}
