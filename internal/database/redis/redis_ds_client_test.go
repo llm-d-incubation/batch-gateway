@@ -143,7 +143,7 @@ func TestRedisClient(t *testing.T) {
 				defer wg.Done()
 				err := batchClient.DBStore(context.Background(), batch)
 				if err != nil {
-					t.Fatalf("Failed to store item: %v", err)
+					t.Errorf("Failed to store item: %v", err)
 				}
 			}()
 		}
@@ -170,7 +170,7 @@ func TestRedisClient(t *testing.T) {
 				defer wg.Done()
 				err := batchClient.DBStore(context.Background(), batch)
 				if err != nil {
-					t.Fatalf("Failed to store item: %v", err)
+					t.Errorf("Failed to store item: %v", err)
 				}
 			}()
 		}
@@ -384,7 +384,7 @@ func TestRedisClient(t *testing.T) {
 				defer wg.Done()
 				err := fileClient.DBStore(context.Background(), file)
 				if err != nil {
-					t.Fatalf("Failed to store item: %v", err)
+					t.Errorf("Failed to store item: %v", err)
 				}
 			}()
 		}
@@ -411,7 +411,7 @@ func TestRedisClient(t *testing.T) {
 				defer wg.Done()
 				err := fileClient.DBStore(context.Background(), file)
 				if err != nil {
-					t.Fatalf("Failed to store item: %v", err)
+					t.Errorf("Failed to store item: %v", err)
 				}
 			}()
 		}
