@@ -37,7 +37,7 @@ import (
 	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
 
-func setupRedisClients(t *testing.T, redisUrl, redisCaCert string) (
+func setupRedisDSClients(t *testing.T, redisUrl, redisCaCert string) (
 	*dbredis.DSClientRedis, *dbredis.BatchDBClientRedis, *dbredis.FileDBClientRedis, *dbredis.ExchangeDBClientRedis) {
 	t.Helper()
 	cfg := &uredis.RedisClientConfig{
@@ -70,7 +70,7 @@ func setupRedisClients(t *testing.T, redisUrl, redisCaCert string) (
 	return baseClient, batchClient, fileClient, exchClient
 }
 
-func TestRedisClient(t *testing.T) {
+func TestRedisDSClient(t *testing.T) {
 
 	redisUrl := os.Getenv("TEST_REDIS_URL")
 	redisCaCert := os.Getenv("TEST_REDIS_CACERT_PATH")
@@ -98,7 +98,7 @@ func TestRedisClient(t *testing.T) {
 
 	t.Run("Create clients", func(t *testing.T) {
 		t.Parallel()
-		baseClient, batchClient, fileClient, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		baseClient, batchClient, fileClient, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
@@ -111,7 +111,7 @@ func TestRedisClient(t *testing.T) {
 
 	t.Run("Batch db operations", func(t *testing.T) {
 		t.Parallel()
-		baseClient, batchClient, _, _ := setupRedisClients(t, redisUrl, redisCaCert)
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
@@ -351,7 +351,7 @@ func TestRedisClient(t *testing.T) {
 
 	t.Run("File db operations", func(t *testing.T) {
 		t.Parallel()
-		baseClient, _, fileClient, _ := setupRedisClients(t, redisUrl, redisCaCert)
+		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
@@ -595,7 +595,7 @@ func TestRedisClient(t *testing.T) {
 		if minirds != nil {
 			t.Skip("Miniredis model")
 		}
-		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
@@ -651,7 +651,7 @@ func TestRedisClient(t *testing.T) {
 
 	t.Run("Status exchange operations", func(t *testing.T) {
 		t.Parallel()
-		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
@@ -711,7 +711,7 @@ func TestRedisClient(t *testing.T) {
 		if minirds != nil {
 			t.Skip("Miniredis model")
 		}
-		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
 		})
