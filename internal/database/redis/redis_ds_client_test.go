@@ -732,6 +732,16 @@ func TestRedisClient(t *testing.T) {
 		if len(items) != 1 {
 			t.Fatalf("Invalid items list length %d", len(items))
 		}
+		isSamePrio(t, items[0], item)
+
+		// Delete.
+		nDel, err := exchClient.PQDelete(context.Background(), item)
+		if err != nil {
+			t.Fatalf("Failed to delete items: %v", err)
+		}
+		if nDel != 0 {
+			t.Fatalf("Invalid delete count %d", nDel)
+		}
 	})
 }
 
@@ -739,7 +749,7 @@ func isSamePrio(t *testing.T, a, b *db_api.BatchJobPriority) bool {
 	if a.ID != b.ID {
 		t.Fatalf("ID mismatch %s != %s", a.ID, b.ID)
 	}
-	if a.SLO != b.SLO {
+	if !a.SLO.Equal(b.SLO) {
 		t.Fatalf("SLO mismatch %v != %v", a.SLO, b.SLO)
 	}
 	if !bytes.EqualFold(a.Data, b.Data) {
