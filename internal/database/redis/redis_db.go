@@ -216,9 +216,7 @@ func (c *DSClientRedis) DBDelete(ctx context.Context, IDs []string, itemType, lo
 	defer ccancel()
 	cmds, err = c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
 		for _, id := range IDs {
-			res := pipe.HDel(cctx, getKeyForStore(id, itemType),
-				fieldNameVersion, fieldNameID, fieldNameTenantID, fieldNameExpiry,
-				fieldNameTags, fieldNameStatus, fieldNameSpec, fieldNamePurpose)
+			res := pipe.Del(cctx, getKeyForStore(id, itemType))
 			resMap[id] = res
 		}
 		return nil
