@@ -43,6 +43,7 @@ const (
 	itemTypeBatch        = "batch"
 	itemTypeFile         = "file"
 	eventReadCount       = 4
+	eventReadTimeout     = 10 * time.Second
 	keysPrefix           = "llmd_batch:"
 	storeKeysPrefix      = keysPrefix + "store:"
 	queueKeysPrefix      = keysPrefix + "queue:"

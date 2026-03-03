@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	"k8s.io/klog/v2"
 )
 
@@ -85,7 +85,7 @@ func (c *ExchangeDBClientRedis) StatusGet(ctx context.Context, ID string) (data 
 		logger.Error(err, "StatusGet:")
 		return
 	}
-	if res.Err() == redis.Nil {
+	if res.Err() == goredis.Nil {
 		logger.Info("StatusGet: no status")
 		return
 	} else if err = res.Err(); err != nil {

@@ -73,9 +73,7 @@ func (c *ExchangeDBClientRedis) ECConsumerGetChannel(ctx context.Context, ID str
 				return
 			default:
 				logger.V(logging.DEBUG).Info("Listener: Start BLMPop")
-				lcctx, lccancel := context.WithTimeout(lctx, c.timeout+2*time.Second)
-				_, events, err := c.redisClient.BLMPop(lcctx, c.timeout, "left", int64(eventReadCount), eventsKeyId).Result()
-				lccancel()
+				_, events, err := c.redisClient.BLMPop(lctx, eventReadTimeout, "left", int64(eventReadCount), eventsKeyId).Result()
 				logger.V(logging.DEBUG).Info("Listener: Finished BLMPop")
 				if err != nil {
 					if unrecognizedBlockingError(err) {

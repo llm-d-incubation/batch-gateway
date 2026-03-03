@@ -95,7 +95,7 @@ func TestRedisClient(t *testing.T) {
 		})
 	}
 
-	t.Run("creates clients", func(t *testing.T) {
+	t.Run("Create clients", func(t *testing.T) {
 		baseClient, batchClient, fileClient, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -107,7 +107,7 @@ func TestRedisClient(t *testing.T) {
 		}
 	})
 
-	t.Run("batch db operations", func(t *testing.T) {
+	t.Run("Batch db operations", func(t *testing.T) {
 		baseClient, batchClient, _, _ := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -346,7 +346,7 @@ func TestRedisClient(t *testing.T) {
 
 	})
 
-	t.Run("file db operations", func(t *testing.T) {
+	t.Run("File db operations", func(t *testing.T) {
 		baseClient, _, fileClient, _ := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -587,6 +587,9 @@ func TestRedisClient(t *testing.T) {
 	})
 
 	t.Run("Event exchange operations", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
 		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -698,6 +701,9 @@ func TestRedisClient(t *testing.T) {
 	})
 
 	t.Run("Queue exchange operations", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
 		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -717,7 +723,29 @@ func TestRedisClient(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to enqueue: %v", err)
 		}
+
+		// Dequeue.
+		items, err := exchClient.PQDequeue(context.Background(), 2*time.Second, 4)
+		if err != nil {
+			t.Fatalf("Failed to dequeue items: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Invalid items list length %d", len(items))
+		}
 	})
+}
+
+func isSamePrio(t *testing.T, a, b *db_api.BatchJobPriority) bool {
+	if a.ID != b.ID {
+		t.Fatalf("ID mismatch %s != %s", a.ID, b.ID)
+	}
+	if a.SLO != b.SLO {
+		t.Fatalf("SLO mismatch %v != %v", a.SLO, b.SLO)
+	}
+	if !bytes.EqualFold(a.Data, b.Data) {
+		t.Fatalf("Data mismatch %v != %v", a.Data, b.Data)
+	}
+	return true
 }
 
 func isSameEvent(t *testing.T, a, b *db_api.BatchEvent) bool {

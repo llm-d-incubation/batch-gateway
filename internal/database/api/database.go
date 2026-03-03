@@ -93,8 +93,8 @@ var LogicalCondNames = map[LogicalCond]string{
 type BatchJobPriority struct {
 	ID   string    `json:"id,omitempty"`   // [mandatory] ID of the batch job.
 	SLO  time.Time `json:"slo,omitempty"`  // [mandatory] The SLO value determines the priority of the job.
-	TTL  int       `json:"ttl,omitempty"`  // [optional] TTL in seconds for the record.
 	Data []byte    `json:"data,omitempty"` // [optional] User defined data.
+	TTL  int       // [optional] TTL in seconds for the queue.
 }
 
 func (bj *BatchJobPriority) IsValid() error {

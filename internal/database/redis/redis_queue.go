@@ -61,19 +61,30 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	}
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	res := c.redisClient.ZAddNX(cctx, priorityQueueKeyName, zitem)
-	if res == nil {
+	cmdRes, lerr := c.redisClient.Pipelined(cctx, func(pipe goredis.Pipeliner) error {
+		pipe.ZAddNX(cctx, priorityQueueKeyName, zitem)
+		if item.TTL > 0 {
+			pipe.Expire(cctx, priorityQueueKeyName, time.Duration(item.TTL)*time.Second)
+		}
+		return nil
+	})
+	if lerr != nil {
+		err = lerr
+		logger.Error(err, "PQEnqueue:")
+	}
+	if cmdRes == nil {
 		err = fmt.Errorf("redis command result is nil")
 		logger.Error(err, "PQEnqueue:")
 		return
 	}
-	if err = res.Err(); err != nil {
-		logger.Error(err, "PQEnqueue: redis ZAddNX failed")
-		return
+	for _, cmd := range cmdRes {
+		if err = cmd.Err(); err != nil {
+			logger.Error(err, "PQEnqueue: redis command failed", "cmd", cmd.Name())
+			return
+		}
 	}
 
 	logger.Info("PQEnqueue: succeeded")
-
 	return
 }
 
@@ -103,6 +114,10 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 		logger.Error(err, "PQDelete:")
 		return
 	}
+	if res.Err() == goredis.Nil {
+		logger.Info("PQDelete: key not found")
+		return
+	}
 	if err = res.Err(); err != nil {
 		logger.Error(err, "PQDelete: redis ZRemRangeByScore failed")
 		return
@@ -110,7 +125,6 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	nDeleted = int(res.Val())
 
 	logger.Info("PQDelete: succeeded")
-
 	return
 }
 
@@ -123,10 +137,8 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	logger := klog.FromContext(ctx)
 
 	// Get items from the queue.
-	cctx, ccancel := context.WithTimeout(ctx, timeout+2*time.Second)
-	defer ccancel()
 	_, vals, err := c.redisClient.BZMPop(
-		cctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
+		ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
 	if err != nil {
 		if unrecognizedBlockingError(err) {
 			logger.Error(err, "PQDequeue: BZMPop failed")
