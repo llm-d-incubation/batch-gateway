@@ -101,15 +101,15 @@ type DSClientRedis struct {
 }
 
 type BatchDBClientRedis struct {
-	DSClientRedis
+	*DSClientRedis
 }
 
 type FileDBClientRedis struct {
-	DSClientRedis
+	*DSClientRedis
 }
 
 type ExchangeDBClientRedis struct {
-	DSClientRedis
+	*DSClientRedis
 }
 
 // NewBatchDBClientRedis returns a new redis based batch db client.
@@ -124,7 +124,7 @@ func NewBatchDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, 
 			return nil, err
 		}
 	}
-	redisClient = &BatchDBClientRedis{DSClientRedis: *baseRedisClient}
+	redisClient = &BatchDBClientRedis{DSClientRedis: baseRedisClient}
 	return
 }
 
@@ -140,7 +140,7 @@ func NewFileDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, c
 			return nil, err
 		}
 	}
-	redisClient = &FileDBClientRedis{DSClientRedis: *baseRedisClient}
+	redisClient = &FileDBClientRedis{DSClientRedis: baseRedisClient}
 	return
 }
 
@@ -156,7 +156,7 @@ func NewExchangeDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedi
 			return nil, err
 		}
 	}
-	redisClient = &ExchangeDBClientRedis{DSClientRedis: *baseRedisClient}
+	redisClient = &ExchangeDBClientRedis{DSClientRedis: baseRedisClient}
 	return
 }
 
