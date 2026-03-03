@@ -53,3 +53,34 @@ func GetFolderNameByTenantID(tenantID string) (string, error) {
 	// This provides virtually collision-free tenant ID mapping while staying under S3's 63-char limit
 	return "t-" + hashStr[:61], nil
 }
+
+// SameMembersInStrSlice checks if two slices of strings contain the same members,
+// regardless of order.
+//
+// Parameters:
+//   - a: the first slice of strings.
+//   - b: the second slice of strings.
+//
+// Returns:
+//   - true if both slices contain the same members, false otherwise.
+func SameMembersInStrSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int)
+	for _, x := range a {
+		counts[x]++
+	}
+	for _, x := range b {
+		counts[x]--
+		if counts[x] < 0 {
+			return false
+		}
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}

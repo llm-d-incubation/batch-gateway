@@ -32,6 +32,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	dbredis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
@@ -96,6 +97,7 @@ func TestRedisClient(t *testing.T) {
 	}
 
 	t.Run("Create clients", func(t *testing.T) {
+		t.Parallel()
 		baseClient, batchClient, fileClient, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -108,6 +110,7 @@ func TestRedisClient(t *testing.T) {
 	})
 
 	t.Run("Batch db operations", func(t *testing.T) {
+		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -340,13 +343,14 @@ func TestRedisClient(t *testing.T) {
 		if deletedIDs == nil || len(deletedIDs) != len(batchesAllIDs) {
 			t.Fatalf("Failed to delete items: %d", len(deletedIDs))
 		}
-		if !sameMembersInStrSlice(deletedIDs, batchesAllIDs) {
+		if !ucom.SameMembersInStrSlice(deletedIDs, batchesAllIDs) {
 			t.Fatalf("Deletion IDs mismatch: %v != %v", deletedIDs, batchesAllIDs)
 		}
 
 	})
 
 	t.Run("File db operations", func(t *testing.T) {
+		t.Parallel()
 		baseClient, _, fileClient, _ := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -580,13 +584,14 @@ func TestRedisClient(t *testing.T) {
 		if deletedIDs == nil || len(deletedIDs) != len(filesAllIDs) {
 			t.Fatalf("Failed to delete items: %d", len(deletedIDs))
 		}
-		if !sameMembersInStrSlice(deletedIDs, filesAllIDs) {
+		if !ucom.SameMembersInStrSlice(deletedIDs, filesAllIDs) {
 			t.Fatalf("Deletion IDs mismatch: %v != %v", deletedIDs, filesAllIDs)
 		}
 
 	})
 
 	t.Run("Event exchange operations", func(t *testing.T) {
+		t.Parallel()
 		if minirds != nil {
 			t.Skip("Miniredis model")
 		}
@@ -645,6 +650,7 @@ func TestRedisClient(t *testing.T) {
 	})
 
 	t.Run("Status exchange operations", func(t *testing.T) {
+		t.Parallel()
 		baseClient, _, _, exchClient := setupRedisClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
 			baseClient.Close()
@@ -701,6 +707,7 @@ func TestRedisClient(t *testing.T) {
 	})
 
 	t.Run("Queue exchange operations", func(t *testing.T) {
+		t.Parallel()
 		if minirds != nil {
 			t.Skip("Miniredis model")
 		}
@@ -710,42 +717,64 @@ func TestRedisClient(t *testing.T) {
 		})
 
 		itemData := []byte("additional data")
+		nHead, nTail := 30, 30
+		itemsHead, itemsTail := make([]*db_api.BatchJobPriority, 0, nHead), make([]*db_api.BatchJobPriority, 0, nTail)
 
 		// Enqueue.
-		ID := uuid.New().String()
-		item := &db_api.BatchJobPriority{
-			ID:   ID,
-			SLO:  time.Now().Add(time.Second),
-			TTL:  1000,
-			Data: itemData,
+		for i := 0; i < nTail; i++ {
+			itemTail := &db_api.BatchJobPriority{
+				ID:   uuid.New().String(),
+				SLO:  time.Now().Add(time.Hour),
+				TTL:  1000,
+				Data: itemData,
+			}
+			err := exchClient.PQEnqueue(context.Background(), itemTail)
+			if err != nil {
+				t.Fatalf("Failed to enqueue: %v", err)
+			}
+			itemsTail = append(itemsTail, itemTail)
 		}
-		err := exchClient.PQEnqueue(context.Background(), item)
-		if err != nil {
-			t.Fatalf("Failed to enqueue: %v", err)
+		for i := 0; i < nHead; i++ {
+			itemHead := &db_api.BatchJobPriority{
+				ID:   uuid.New().String(),
+				SLO:  time.Now().Add(time.Second),
+				TTL:  1000,
+				Data: itemData,
+			}
+			err := exchClient.PQEnqueue(context.Background(), itemHead)
+			if err != nil {
+				t.Fatalf("Failed to enqueue: %v", err)
+			}
+			itemsHead = append(itemsHead, itemHead)
 		}
 
 		// Dequeue.
-		items, err := exchClient.PQDequeue(context.Background(), 2*time.Second, 4)
+		items, err := exchClient.PQDequeue(context.Background(), 6*time.Second, nHead)
 		if err != nil {
 			t.Fatalf("Failed to dequeue items: %v", err)
 		}
-		if len(items) != 1 {
+		if len(items) != nHead {
 			t.Fatalf("Invalid items list length %d", len(items))
 		}
-		isSamePrio(t, items[0], item)
+		for i, item := range items {
+			isSamePrio(t, item, itemsHead[i])
+		}
 
 		// Delete.
-		nDel, err := exchClient.PQDelete(context.Background(), item)
-		if err != nil {
-			t.Fatalf("Failed to delete items: %v", err)
-		}
-		if nDel != 0 {
-			t.Fatalf("Invalid delete count %d", nDel)
+		for i := 0; i < nTail; i++ {
+			nDel, err := exchClient.PQDelete(context.Background(), itemsTail[i])
+			if err != nil {
+				t.Fatalf("Failed to delete items: %v", err)
+			}
+			if nDel != 1 {
+				t.Fatalf("Invalid delete count %d", nDel)
+			}
 		}
 	})
 }
 
 func isSamePrio(t *testing.T, a, b *db_api.BatchJobPriority) bool {
+	t.Helper()
 	if a.ID != b.ID {
 		t.Fatalf("ID mismatch %s != %s", a.ID, b.ID)
 	}
@@ -759,6 +788,7 @@ func isSamePrio(t *testing.T, a, b *db_api.BatchJobPriority) bool {
 }
 
 func isSameEvent(t *testing.T, a, b *db_api.BatchEvent) bool {
+	t.Helper()
 	if a.ID != b.ID {
 		t.Fatalf("ID mismatch %s != %s", a.ID, b.ID)
 	}
@@ -769,6 +799,7 @@ func isSameEvent(t *testing.T, a, b *db_api.BatchEvent) bool {
 }
 
 func sameMembersBatch(t *testing.T, sl []*db_api.BatchItem, mp map[string]*db_api.BatchItem) bool {
+	t.Helper()
 	for _, item := range sl {
 		isEqualBatchItem(t, item, mp[item.ID])
 	}
@@ -776,6 +807,7 @@ func sameMembersBatch(t *testing.T, sl []*db_api.BatchItem, mp map[string]*db_ap
 }
 
 func isEqualBatchItem(t *testing.T, a, b *db_api.BatchItem) bool {
+	t.Helper()
 	if a == nil || b == nil {
 		t.Fatalf("Invalid items to compare")
 	}
@@ -801,6 +833,7 @@ func isEqualBatchItem(t *testing.T, a, b *db_api.BatchItem) bool {
 }
 
 func sameMembersFile(t *testing.T, sl []*db_api.FileItem, mp map[string]*db_api.FileItem) bool {
+	t.Helper()
 	for _, item := range sl {
 		isEqualFileItem(t, item, mp[item.ID])
 	}
@@ -808,6 +841,7 @@ func sameMembersFile(t *testing.T, sl []*db_api.FileItem, mp map[string]*db_api.
 }
 
 func isEqualFileItem(t *testing.T, a, b *db_api.FileItem) bool {
+	t.Helper()
 	if a == nil || b == nil {
 		t.Fatalf("Invalid items to compare")
 	}
@@ -831,28 +865,6 @@ func isEqualFileItem(t *testing.T, a, b *db_api.FileItem) bool {
 	}
 	if !bytes.Equal(a.Status, b.Status) {
 		t.Fatalf("Mismatch status %s != %s", a.Spec, b.Spec)
-	}
-	return true
-}
-
-func sameMembersInStrSlice(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	counts := make(map[string]int)
-	for _, x := range a {
-		counts[x]++
-	}
-	for _, x := range b {
-		counts[x]--
-		if counts[x] < 0 {
-			return false
-		}
-	}
-	for _, count := range counts {
-		if count != 0 {
-			return false
-		}
 	}
 	return true
 }
