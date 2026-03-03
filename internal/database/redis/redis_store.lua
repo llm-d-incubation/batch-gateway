@@ -36,7 +36,7 @@ if fieldItemType == 'batch' then
     -- Set expiration.
     local result = redis.pcall('EXPIRE', hashKey, ttl)
     if type(result) == 'table' and result.err then
-        redis.pcall('HDEL', hashKey, "ver", "ID", "tenantID", "expiry", "tags", "status", "spec")
+        redis.pcall('DEL', hashKey)
         return result.err
     end
 else
@@ -48,7 +48,7 @@ else
     -- Set expiration.
     local result = redis.pcall('EXPIRE', hashKey, ttl)
     if type(result) == 'table' and result.err then
-        redis.pcall('HDEL', hashKey, "ver", "ID", "tenantID", "expiry", "tags", "status", "spec", "purpose")
+        redis.pcall('DEL', hashKey)
         return result.err
     end
 end
