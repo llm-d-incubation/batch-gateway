@@ -94,7 +94,7 @@ type BatchJobPriority struct {
 	ID   string    `json:"id,omitempty"`   // [mandatory] ID of the batch job.
 	SLO  time.Time `json:"slo,omitempty"`  // [mandatory] The SLO value determines the priority of the job.
 	Data []byte    `json:"data,omitempty"` // [optional] User defined data.
-	TTL  int       // [optional] TTL in seconds for the queue.
+	TTL  int       // [optional] TTL in seconds applied on the entire queue. If used, this should be set to a sufficiently large value to prevent premature removal of items.
 }
 
 func (bj *BatchJobPriority) IsValid() error {

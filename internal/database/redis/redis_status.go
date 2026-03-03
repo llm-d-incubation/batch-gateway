@@ -45,6 +45,9 @@ func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL in
 		logger.Error(err, "StatusSet:")
 		return
 	}
+	if TTL <= 0 {
+		TTL = ttlSecDefault
+	}
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()

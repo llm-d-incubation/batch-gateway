@@ -28,6 +28,7 @@ import (
 	"time"
 
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
 	"k8s.io/klog/v2"
 )
@@ -137,8 +138,14 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	logger := klog.FromContext(ctx)
 
 	// Get items from the queue.
+	if timeout > 0 {
+		logger.V(logging.DEBUG).Info("PQDequeue: Start BZMPop")
+	} else {
+		logger.Info("PQDequeue: Start BZMPop without timeout")
+	}
 	_, vals, err := c.redisClient.BZMPop(
 		ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
+	logger.V(logging.DEBUG).Info("PQDequeue: End BZMPop")
 	if err != nil {
 		if unrecognizedBlockingError(err) {
 			logger.Error(err, "PQDequeue: BZMPop failed")
@@ -174,7 +181,6 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	}
 
 	logger.Info("PQDequeue: succeeded", "nItems", len(jobPriorities))
-
 	return
 }
 

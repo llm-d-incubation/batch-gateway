@@ -48,13 +48,13 @@ const (
 	eventKeysPrefix      = keysPrefix + "event:"
 	statusKeysPrefix     = keysPrefix + "status:"
 	priorityQueueKeyName = queueKeysPrefix + "priority"
+	eventChanSize        = 100
 	eventReadCount       = 4
-	eventReadTimeout     = 10 * time.Second
-	eventChanTimeout     = 10 * time.Second
+	eventReadTimeout     = 20 * time.Second
+	eventChanTimeout     = 20 * time.Second
 	cmdTimeout           = 20 * time.Second
 	routineStopTimeout   = 20 * time.Second
 	ttlSecDefault        = 60 * 60 * 24 * 60
-	eventChanSize        = 100
 	logFreqDefault       = 10 * time.Minute
 	versionV1            = "1"
 )
