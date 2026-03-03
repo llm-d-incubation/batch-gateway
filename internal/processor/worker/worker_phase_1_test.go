@@ -56,7 +56,7 @@ func (s *spyPQ) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) 
 	return s.inner.PQDelete(ctx, jobPriority)
 }
 func (s *spyPQ) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
-	return s.inner.GetContext(parentCtx, timeLimit)
+	return context.WithTimeout(parentCtx, timeLimit)
 }
 func (s *spyPQ) Close() error { return s.inner.Close() }
 
@@ -110,7 +110,7 @@ func (s *spyBatchDB) DBDelete(ctx context.Context, IDs []string) ([]string, erro
 }
 
 func (s *spyBatchDB) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
-	return s.inner.GetContext(parentCtx, timeLimit)
+	return context.WithTimeout(parentCtx, timeLimit)
 }
 
 func (s *spyBatchDB) Close() error {

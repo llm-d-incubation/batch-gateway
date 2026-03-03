@@ -39,7 +39,7 @@ func (d *dbUpdateErrWrapper) DBDelete(ctx context.Context, IDs []string) ([]stri
 	return d.inner.DBDelete(ctx, IDs)
 }
 func (d *dbUpdateErrWrapper) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
-	return d.inner.GetContext(parentCtx, timeLimit)
+	return context.WithTimeout(parentCtx, timeLimit)
 }
 func (d *dbUpdateErrWrapper) Close() error {
 	return d.inner.Close()

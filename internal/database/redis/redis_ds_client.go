@@ -42,17 +42,17 @@ const (
 	fieldNamePurpose     = "purpose"
 	itemTypeBatch        = "batch"
 	itemTypeFile         = "file"
-	eventReadCount       = 4
-	eventReadTimeout     = 10 * time.Second
 	keysPrefix           = "llmd_batch:"
 	storeKeysPrefix      = keysPrefix + "store:"
 	queueKeysPrefix      = keysPrefix + "queue:"
 	eventKeysPrefix      = keysPrefix + "event:"
 	statusKeysPrefix     = keysPrefix + "status:"
 	priorityQueueKeyName = queueKeysPrefix + "priority"
-	routineStopTimeout   = 20 * time.Second
+	eventReadCount       = 4
+	eventReadTimeout     = 10 * time.Second
 	eventChanTimeout     = 10 * time.Second
 	cmdTimeout           = 20 * time.Second
+	routineStopTimeout   = 20 * time.Second
 	ttlSecDefault        = 60 * 60 * 24 * 60
 	eventChanSize        = 100
 	logFreqDefault       = 10 * time.Minute
@@ -198,14 +198,4 @@ func (c *DSClientRedis) Close() (err error) {
 		}
 	})
 	return
-}
-
-func (c *DSClientRedis) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
-	if timeLimit > 0 {
-		return context.WithTimeout(parentCtx, timeLimit)
-	}
-	return context.WithTimeout(parentCtx, c.timeout)
 }

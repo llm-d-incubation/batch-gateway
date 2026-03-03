@@ -18,19 +18,10 @@ limitations under the License.
 
 package store
 
-import (
-	"context"
-	"time"
-)
-
 // -- Admin interfaces --
 
 // BatchClientAdmin specifies administrative interface functions.
 type BatchClientAdmin interface {
-
-	// GetContext returns a derived context for a call.
-	// If no time limit is set, the context will be set with a default time limit.
-	GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc)
 
 	// Close closes the client.
 	Close() error
