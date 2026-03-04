@@ -35,6 +35,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
@@ -71,6 +72,18 @@ func run() error {
 		logger.Error(err, "Invalid config. Processor cannot start", "err", err)
 		return err
 	}
+
+	// initialize OpenTelemetry tracing
+	shutdownTracer, err := uotel.InitTracer(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to initialize tracer")
+		return err
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		shutdownTracer(shutdownCtx)
+	}()
 
 	// metrics setup
 	if err := metrics.InitMetrics(*cfg); err != nil {
@@ -269,7 +282,10 @@ func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, w
 func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*clientset.Clientset, error) {
 	logger := klog.FromContext(ctx)
 
-	redisCfg := &uredis.RedisClientConfig{ServiceName: "batch-processor"}
+	redisCfg := &uredis.RedisClientConfig{
+		ServiceName:   "batch-processor",
+		EnableTracing: cfg.OTel.RedisTracing,
+	}
 
 	inferenceCfg := &inference.HTTPClientConfig{
 		BaseURL:               cfg.InferenceConfig.GatewayURL,

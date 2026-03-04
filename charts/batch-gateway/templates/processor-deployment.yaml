@@ -40,6 +40,13 @@ spec:
         args:
         - --config=/etc/config/config.yaml
         - --v={{ .Values.processor.logging.verbosity }}
+        {{- if .Values.global.otel.endpoint }}
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.global.otel.endpoint | quote }}
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: {{ .Values.global.otel.insecure | quote }}
+        {{- end }}
         ports:
         - name: metrics
           containerPort: {{ (splitList ":" .Values.processor.config.addr | last) | int }}

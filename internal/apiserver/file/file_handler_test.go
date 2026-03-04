@@ -419,7 +419,7 @@ func doTestRetrieveFile(t *testing.T) {
 	// Test 1: Retrieve existing file
 	t.Run("RetrieveExistingFile", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/files/"+createdFile.ID, nil)
-		req.SetPathValue(pathParamFileID, createdFile.ID)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -466,7 +466,7 @@ func doTestRetrieveFile(t *testing.T) {
 	t.Run("RetrieveNonExistentFile", func(t *testing.T) {
 		nonExistentID := "file_nonexistent"
 		req := httptest.NewRequest(http.MethodGet, "/v1/files/"+nonExistentID, nil)
-		req.SetPathValue(pathParamFileID, nonExistentID)
+		req.SetPathValue(common.PathParamFileID, nonExistentID)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -522,7 +522,7 @@ func doTestDownloadFile(t *testing.T) {
 	// Test 1: Download existing file
 	t.Run("DownloadExistingFile", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/files/"+createdFile.ID+"/content", nil)
-		req.SetPathValue(pathParamFileID, createdFile.ID)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -569,7 +569,7 @@ func doTestDownloadFile(t *testing.T) {
 	t.Run("DownloadNonExistentFile", func(t *testing.T) {
 		nonExistentID := "file_nonexistent"
 		req := httptest.NewRequest(http.MethodGet, "/v1/files/"+nonExistentID+"/content", nil)
-		req.SetPathValue(pathParamFileID, nonExistentID)
+		req.SetPathValue(common.PathParamFileID, nonExistentID)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -610,7 +610,7 @@ func doTestDeleteFile(t *testing.T) {
 	// Test 1: Delete existing file
 	t.Run("DeleteExistingFile", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
-		req.SetPathValue(pathParamFileID, createdFile.ID)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()
@@ -666,7 +666,7 @@ func doTestDeleteFile(t *testing.T) {
 	t.Run("DeleteNonExistentFile", func(t *testing.T) {
 		nonExistentID := "file_nonexistent"
 		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+nonExistentID, nil)
-		req.SetPathValue(pathParamFileID, nonExistentID)
+		req.SetPathValue(common.PathParamFileID, nonExistentID)
 		req = req.WithContext(ctx)
 
 		w := httptest.NewRecorder()

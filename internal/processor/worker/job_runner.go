@@ -26,11 +26,18 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 func (p *Processor) runJob(
@@ -40,6 +47,24 @@ func (p *Processor) runJob(
 	jobInfo *batch_types.JobInfo,
 	task *db.BatchJobPriority,
 ) {
+	// Restore parent trace context propagated from the apiserver via Redis tags
+	if len(jobInfo.TraceContext) > 0 {
+		propagator := otel.GetTextMapPropagator()
+		ctx = propagator.Extract(ctx, propagation.MapCarrier(jobInfo.TraceContext))
+	}
+
+	spanAttrs := []attribute.KeyValue{
+		attribute.String(uotel.AttrJobID, jobItem.ID),
+		attribute.String(uotel.AttrTenantID, jobItem.TenantID),
+	}
+	if jobInfo.BatchJob != nil {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrFileID, jobInfo.BatchJob.InputFileID))
+	}
+	ctx, span := uotel.StartSpan(ctx, "process-batch",
+		trace.WithAttributes(spanAttrs...),
+	)
+	defer span.End()
+
 	// this logger includes job ID in the context
 	logger := klog.FromContext(ctx)
 
@@ -49,6 +74,8 @@ func (p *Processor) runJob(
 		if r := recover(); r != nil {
 			recoverErr := fmt.Errorf("%v", r)
 			klog.FromContext(ctx).Error(recoverErr, "Panic recovered")
+			span.RecordError(recoverErr)
+			span.SetStatus(codes.Error, "panic recovered")
 		}
 	}()
 
@@ -85,6 +112,8 @@ func (p *Processor) runJob(
 
 	// phase 1: pre-process job
 	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "pre-process failed")
 		p.handleJobError(ctx, err, jobItem, updater, task)
 		return
 	}
@@ -92,6 +121,8 @@ func (p *Processor) runJob(
 	// transition to in_progress before executing requests
 	if err := updater.UpdatePersistentStatus(ctx, jobItem, openai.BatchStatusInProgress, nil, nil); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update status to in_progress")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "status transition failed")
 		if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
@@ -101,6 +132,8 @@ func (p *Processor) runJob(
 	// phase 2: execute inference requests
 	requestCounts, err := p.executeJob(ctx, updater, jobInfo, &cancelRequested)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "execution failed")
 		p.handleJobError(ctx, err, jobItem, updater, task)
 		return
 	}
@@ -108,6 +141,8 @@ func (p *Processor) runJob(
 	// phase 3: finalize (upload output, update status to completed)
 	if err := p.finalizeJob(ctx, updater, jobItem, jobInfo, requestCounts); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "finalize failed")
 		if failErr := p.handleFailed(ctx, jobItem, updater); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}

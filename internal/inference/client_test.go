@@ -783,9 +783,8 @@ func testTLSConfiguration(t *testing.T) {
 		require.NotNil(t, client)
 
 		// Access the underlying transport to verify TLS configuration
-		httpClient := client.client.GetClient()
-		transport, ok := httpClient.Transport.(*http.Transport)
-		assert.True(t, ok, "expected *http.Transport")
+		transport := client.transport
+		require.NotNil(t, transport, "expected transport to be set")
 
 		// Note: Clone() creates a TLSClientConfig with default values
 		// Verify certificate verification is enabled (InsecureSkipVerify = false)
@@ -803,9 +802,8 @@ func testTLSConfiguration(t *testing.T) {
 		require.NotNil(t, client)
 
 		// Access the underlying transport to verify TLS configuration
-		httpClient := client.client.GetClient()
-		transport, ok := httpClient.Transport.(*http.Transport)
-		assert.True(t, ok, "expected *http.Transport")
+		transport := client.transport
+		require.NotNil(t, transport, "expected transport to be set")
 
 		// Verify InsecureSkipVerify is actually set to true
 		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should be set")
@@ -961,9 +959,8 @@ func testTLSConfiguration(t *testing.T) {
 		require.NotNil(t, client)
 
 		// Verify the transport has custom TLS config
-		httpClient := client.client.GetClient()
-		transport, ok := httpClient.Transport.(*http.Transport)
-		assert.True(t, ok, "expected *http.Transport")
+		transport := client.transport
+		require.NotNil(t, transport, "expected transport to be set")
 		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should be set")
 	})
 }

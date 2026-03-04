@@ -81,6 +81,11 @@ type ProcessorConfig struct {
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
 
+	// OTel holds OpenTelemetry-related settings.
+	OTel struct {
+		RedisTracing bool `yaml:"redis_tracing"`
+	} `yaml:"otel"`
+
 	// FileClient holds configuration for the shared file storage client (fs or s3).
 	FileClientCfg struct {
 		Type     string          `yaml:"type"`

@@ -26,6 +26,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
@@ -33,14 +38,7 @@ import (
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-)
-
-const (
-	pathParamBatchID = "batch_id"
-	pathParamLimit   = "limit"
-	pathParamAfter   = "after"
-
-	tagSLO = "slo_unix_micro"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 type BatchAPIHandler struct {
@@ -61,21 +59,25 @@ func (c *BatchAPIHandler) GetRoutes() []common.Route {
 			Method:      http.MethodPost,
 			Pattern:     "/v1/batches",
 			HandlerFunc: c.CreateBatch,
+			SpanName:    "api-create-batch",
 		},
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/batches",
 			HandlerFunc: c.ListBatches,
+			SpanName:    "api-list-batch",
 		},
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/batches/{batch_id}",
 			HandlerFunc: c.RetrieveBatch,
+			SpanName:    "api-get-batch",
 		},
 		{
 			Method:      http.MethodPost,
 			Pattern:     "/v1/batches/{batch_id}/cancel",
 			HandlerFunc: c.CancelBatch,
+			SpanName:    "api-cancel-batch",
 		},
 	}
 }
@@ -133,6 +135,12 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	batchID := fmt.Sprintf("batch_%s", uuid.NewString())
 
+	// add attributes to span
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String(uotel.AttrFileID, batchReq.InputFileID),
+		attribute.String(uotel.AttrBatchID, batchID),
+	)
+
 	// store batch job
 	completionDuration, err := time.ParseDuration(batchReq.CompletionWindow)
 	if err != nil {
@@ -161,11 +169,11 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	// TODO: output_expires_after_anchor and output_expires_after_seconds are saved to database as tag. The cleanup service should delete the output file by this value
 	// Note that the output_expires_after_anchor is the file creation time, not the time the batch is created.
 	tags := api.Tags{
-		tagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+		batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
 	}
 	if batchReq.OutputExpiresAfter != nil {
-		tags["output_expires_after_anchor"] = batchReq.OutputExpiresAfter.Anchor
-		tags["output_expires_after_seconds"] = fmt.Sprintf("%d", batchReq.OutputExpiresAfter.Seconds)
+		tags[batch_types.TagOutputExpiresAfterAnchor] = batchReq.OutputExpiresAfter.Anchor
+		tags[batch_types.TagOutputExpiresAfterSeconds] = fmt.Sprintf("%d", batchReq.OutputExpiresAfter.Seconds)
 		logger.V(logging.DEBUG).Info("output expiration configured",
 			"anchor", batchReq.OutputExpiresAfter.Anchor,
 			"seconds", batchReq.OutputExpiresAfter.Seconds,
@@ -175,8 +183,16 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	// Capture configured pass-through headers into tags with "pth:" prefix
 	for _, headerName := range c.config.BatchAPI.PassThroughHeaders {
 		if value := r.Header.Get(headerName); value != "" {
-			tags["pth:"+headerName] = value
+			tags[batch_types.TagPrefixPassThroughHeader+headerName] = value
 		}
+	}
+
+	// Inject OTel trace context into tags with "otel:" prefix
+	propagator := otel.GetTextMapPropagator()
+	carrier := propagation.MapCarrier{}
+	propagator.Inject(ctx, carrier)
+	for k, v := range carrier {
+		tags[batch_types.TagPrefixOTel+k] = v
 	}
 
 	// Convert to database item
@@ -230,7 +246,7 @@ func (c *BatchAPIHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	query := r.URL.Query()
 	limit := 20
-	if limitStr := query.Get(pathParamLimit); limitStr != "" {
+	if limitStr := query.Get(common.QueryParamLimit); limitStr != "" {
 		var parsedLimit int
 		if _, err := fmt.Sscanf(limitStr, "%d", &parsedLimit); err != nil {
 			apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid limit parameter: must be an integer", nil)
@@ -247,7 +263,7 @@ func (c *BatchAPIHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 	}
 
 	after := 0
-	if afterStr := query.Get(pathParamAfter); afterStr != "" {
+	if afterStr := query.Get(common.QueryParamAfter); afterStr != "" {
 		var parsedAfter int
 		if _, err := fmt.Sscanf(afterStr, "%d", &parsedAfter); err != nil {
 			apiErr := openai.NewAPIError(http.StatusBadRequest, "", "invalid after parameter: must be an integer", nil)
@@ -307,12 +323,12 @@ func (c *BatchAPIHandler) getBatchItemFromDB(r *http.Request, operation string) 
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
-	batchID := r.PathValue(pathParamBatchID)
+	batchID := r.PathValue(common.PathParamBatchID)
 	if batchID == "" {
 		apiErr := openai.NewAPIError(
 			http.StatusBadRequest,
 			"",
-			pathParamBatchID+" is required",
+			common.PathParamBatchID+" is required",
 			nil,
 		)
 		return nil, &apiErr
@@ -364,6 +380,7 @@ func (c *BatchAPIHandler) getBatchItemFromDB(r *http.Request, operation string) 
 }
 
 func (c *BatchAPIHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
 	item, apiErr := c.getBatchItemFromDB(r, "retrieve")
@@ -378,6 +395,15 @@ func (c *BatchAPIHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 		common.WriteInternalServerError(w, r)
 		return
 	}
+
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrFileID, batch.BatchSpec.InputFileID)}
+	if batch.OutputFileID != "" {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
+	}
+	if batch.ErrorFileID != "" {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrErrorFileID, batch.ErrorFileID))
+	}
+	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)
 }
@@ -399,6 +425,15 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrFileID, batch.BatchSpec.InputFileID)}
+	if batch.OutputFileID != "" {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
+	}
+	if batch.ErrorFileID != "" {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrErrorFileID, batch.ErrorFileID))
+	}
+	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
+
 	// Check if batch can be cancelled
 	if batch.Status.IsFinal() {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
@@ -409,7 +444,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	// Try to remove from the priority queue first.
 	// Reconstruct the exact SLO score from the stored tag.
 	removedFromQueue := false
-	sloStr, hasSLO := item.Tags[tagSLO]
+	sloStr, hasSLO := item.Tags[batch_types.TagSLO]
 	sloMicro, parseErr := strconv.ParseInt(sloStr, 10, 64)
 	if hasSLO && parseErr == nil {
 		slo := time.UnixMicro(sloMicro).UTC()
@@ -425,7 +460,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		removedFromQueue = nDeleted > 0
 	} else {
-		logger.V(logging.WARNING).Info("SLO tag missing or malformed, skipping queue removal", "key", tagSLO, "hasSLO", hasSLO, "error", parseErr)
+		logger.V(logging.WARNING).Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
 	}
 
 	if removedFromQueue {
