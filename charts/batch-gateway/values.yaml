@@ -80,6 +80,20 @@ apiserver:
   tolerations: []
   affinity: {}
 
+  # Gateway API HTTPRoute configuration (requires Gateway API CRDs to be installed)
+  # When enabled, creates an HTTPRoute to expose the Batch API endpoints
+  # (/v1/batches and /v1/files) through a Gateway API-compliant gateway.
+  httpRoute:
+    enabled: false
+    annotations: {}
+    # parentRefs define which Gateway(s) this HTTPRoute attaches to.
+    parentRefs:
+      - name: "llm-d-inference-gateway"
+        # Namespace of the parent Gateway. Leave empty to use the release namespace.
+        namespace: ""
+        # Section on the Gateway to attach to (e.g. a specific listener name).
+        sectionName: ""
+
   # API Server specific configuration
   config:
     host: ""
