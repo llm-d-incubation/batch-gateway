@@ -83,7 +83,7 @@ var (
 	activeWorkers                 prometheus.Gauge
 	requestErrorsModelTotal       *prometheus.CounterVec
 	processorInflightRequests     prometheus.Gauge
-	processorMaxInflightConc     prometheus.Gauge
+	processorMaxInflightConc      prometheus.Gauge
 	planBuildDuration             *prometheus.HistogramVec
 	modelInflightRequests         *prometheus.GaugeVec
 	modelRequestExecutionDuration *prometheus.HistogramVec

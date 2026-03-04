@@ -170,8 +170,8 @@ func NewConfig() *ProcessorConfig {
 
 		GlobalConcurrency:      100,
 		PerModelMaxConcurrency: 10,
-		NumWorkers:        1,
-		Addr:              ":9090",
+		NumWorkers:             1,
+		Addr:                   ":9090",
 		// Keep observability as best-effort by default.
 		TerminateOnObservabilityFailure: false,
 		ShutdownTimeout:                 30 * time.Second,
