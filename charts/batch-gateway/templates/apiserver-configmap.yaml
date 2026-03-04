@@ -30,6 +30,12 @@ data:
         use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
     batch_api:
       batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.batchEventTTLSeconds }}
+      {{- if .Values.apiserver.config.batchAPI.passThroughHeaders }}
+      pass_through_headers:
+        {{- range .Values.apiserver.config.batchAPI.passThroughHeaders }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
     file_api:
       default_expiration_seconds: {{ .Values.apiserver.config.fileAPI.defaultExpirationSeconds }}
       max_size_bytes: {{ .Values.apiserver.config.fileAPI.maxSizeBytes }}

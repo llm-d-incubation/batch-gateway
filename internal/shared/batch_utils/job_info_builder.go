@@ -18,6 +18,8 @@ limitations under the License.
 package batch_utils
 
 import (
+	"strings"
+
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -38,6 +40,16 @@ func FromDBItemToJobInfoObject(job *db.BatchItem) (*batch_types.JobInfo, error) 
 
 	jobInfo.BatchJob = batchJob
 	jobInfo.TenantID = job.TenantID
+
+	// Extract pass-through headers from tags with "pth:" prefix
+	for key, value := range job.Tags {
+		if strings.HasPrefix(key, "pth:") {
+			if jobInfo.PassThroughHeaders == nil {
+				jobInfo.PassThroughHeaders = make(map[string]string)
+			}
+			jobInfo.PassThroughHeaders[strings.TrimPrefix(key, "pth:")] = value
+		}
+	}
 
 	return jobInfo, nil
 }

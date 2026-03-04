@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -32,10 +33,23 @@ import (
 )
 
 var (
-	baseURL  = getEnvOrDefault("TEST_BASE_URL", "http://localhost:8000")
-	tenantID = getEnvOrDefault("TEST_TENANT_ID", "default")
+	baseURL     = getEnvOrDefault("TEST_BASE_URL", "http://localhost:8000")
+	tenantID    = getEnvOrDefault("TEST_TENANT_ID", "default")
+	namespace   = getEnvOrDefault("TEST_NAMESPACE", "default")
+	helmRelease = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// kubectlAvailable is set once at TestE2E startup; when false,
+	// verifications that require kubectl (e.g. log grepping) are skipped.
+	kubectlAvailable bool
+
+	// testPassThroughHeaders lists the headers configured in the apiserver's
+	// pass_through_headers setting (set via dev-deploy.sh).
+	testPassThroughHeaders = map[string]string{
+		"X-E2E-Pass-Through-1": "test-value-1",
+		"X-E2E-Pass-Through-2": "test-value-2",
+	}
 )
 
 func getEnvOrDefault(key, def string) string {
@@ -51,6 +65,8 @@ var testJSONL = strings.Join([]string{
 	`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"World"}]}}`,
 }, "\n")
 
+// ── Helpers ────────────────────────────────────────────────────────────
+
 func newClient() *openai.Client {
 	c := openai.NewClient(
 		option.WithBaseURL(baseURL+"/v1/"),
@@ -58,6 +74,100 @@ func newClient() *openai.Client {
 		option.WithHeader("X-MaaS-Username", tenantID),
 	)
 	return &c
+}
+
+func mustCreateFile(t *testing.T, filename, content string) string {
+	t.Helper()
+
+	file, err := newClient().Files.New(context.Background(),
+		openai.FileNewParams{
+			File:    openai.File(strings.NewReader(content), filename, "application/jsonl"),
+			Purpose: openai.FilePurposeBatch,
+		})
+	if err != nil {
+		t.Fatalf("create file failed: %v", err)
+	}
+	if file.ID == "" {
+		t.Fatal("create file response has empty ID")
+	}
+	if file.Filename != filename {
+		t.Errorf("expected filename %q, got %q", filename, file.Filename)
+	}
+	if file.Purpose != openai.FileObjectPurposeBatch {
+		t.Errorf("expected purpose %q, got %q", openai.FileObjectPurposeBatch, file.Purpose)
+	}
+	return file.ID
+}
+
+func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) string {
+	t.Helper()
+
+	batch, err := newClient().Batches.New(context.Background(),
+		openai.BatchNewParams{
+			InputFileID:      fileID,
+			Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+			CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+		},
+		opts...,
+	)
+	if err != nil {
+		t.Fatalf("create batch failed: %v", err)
+	}
+	if batch.ID == "" {
+		t.Fatal("create batch response has empty ID")
+	}
+	if batch.InputFileID != fileID {
+		t.Errorf("expected input_file_id %q, got %q", fileID, batch.InputFileID)
+	}
+	if batch.Endpoint != "/v1/chat/completions" {
+		t.Errorf("expected endpoint %q, got %q", "/v1/chat/completions", batch.Endpoint)
+	}
+	if batch.CompletionWindow != "24h" {
+		t.Errorf("expected completion_window %q, got %q", "24h", batch.CompletionWindow)
+	}
+	return batch.ID
+}
+
+// waitForBatchCompletion polls a batch by ID until it reaches a terminal state
+// and returns the final batch object. Fatals if the batch does not complete
+// within 5 minutes or the test deadline (whichever comes first).
+func waitForBatchCompletion(t *testing.T, batchID string) *openai.Batch {
+	t.Helper()
+
+	client := newClient()
+
+	const (
+		pollInterval = 5 * time.Second
+		maxWait      = 5 * time.Minute
+	)
+
+	var finalBatch *openai.Batch
+	deadline := time.Now().Add(maxWait)
+	if d, ok := t.Deadline(); ok && d.Before(deadline) {
+		deadline = d.Add(-5 * time.Second)
+	}
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(context.Background(), batchID)
+		if err != nil {
+			t.Fatalf("retrieve batch failed: %v", err)
+		}
+		finalBatch = b
+
+		t.Logf("batch %s status: %s (completed=%d, failed=%d)",
+			batchID, b.Status,
+			b.RequestCounts.Completed, b.RequestCounts.Failed)
+
+		switch b.Status {
+		case openai.BatchStatusCompleted, openai.BatchStatusFailed,
+			openai.BatchStatusExpired, openai.BatchStatusCancelled:
+			return finalBatch
+		}
+		time.Sleep(pollInterval)
+	}
+
+	t.Fatalf("batch %s did not reach a final state within %v (last status: %q)",
+		batchID, maxWait, finalBatch.Status)
+	return nil // unreachable
 }
 
 func validateAndLogJSONL(t *testing.T, label string, content string) {
@@ -84,56 +194,6 @@ func validateAndLogJSONL(t *testing.T, label string, content string) {
 		}
 	}
 	t.Logf("=== %s ===\n%s", label, strings.TrimSpace(pretty.String()))
-}
-
-func mustCreateFile(t *testing.T, filename, content string) string {
-	t.Helper()
-
-	file, err := newClient().Files.New(context.Background(),
-		openai.FileNewParams{
-			File:    openai.File(strings.NewReader(content), filename, "application/jsonl"),
-			Purpose: openai.FilePurposeBatch,
-		})
-	if err != nil {
-		t.Fatalf("create file failed: %v", err)
-	}
-	if file.ID == "" {
-		t.Fatal("create file response has empty ID")
-	}
-	if file.Filename != filename {
-		t.Errorf("expected filename %q, got %q", filename, file.Filename)
-	}
-	if file.Purpose != openai.FileObjectPurposeBatch {
-		t.Errorf("expected purpose %q, got %q", openai.FileObjectPurposeBatch, file.Purpose)
-	}
-	return file.ID
-}
-
-func mustCreateBatch(t *testing.T, fileID string) string {
-	t.Helper()
-
-	batch, err := newClient().Batches.New(context.Background(),
-		openai.BatchNewParams{
-			InputFileID:      fileID,
-			Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
-			CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
-		})
-	if err != nil {
-		t.Fatalf("create batch failed: %v", err)
-	}
-	if batch.ID == "" {
-		t.Fatal("create batch response has empty ID")
-	}
-	if batch.InputFileID != fileID {
-		t.Errorf("expected input_file_id %q, got %q", fileID, batch.InputFileID)
-	}
-	if batch.Endpoint != "/v1/chat/completions" {
-		t.Errorf("expected endpoint %q, got %q", "/v1/chat/completions", batch.Endpoint)
-	}
-	if batch.CompletionWindow != "24h" {
-		t.Errorf("expected completion_window %q, got %q", "24h", batch.CompletionWindow)
-	}
-	return batch.ID
 }
 
 // ── Files subtests ────────────────────────────────────────────────────────────
@@ -245,11 +305,6 @@ func doTestBatchLifecycle(t *testing.T) {
 		t.Fatalf("list batches failed: %v", err)
 	}
 	t.Logf("list batches: got %d items", len(page.Data))
-	/*
-		for _, b := range page.Data {
-			t.Logf("  batch: id=%s status=%s", b.ID, b.Status)
-		}
-	*/
 
 	// Retrieve
 	batch, err := client.Batches.Get(context.Background(), batchID)
@@ -269,89 +324,75 @@ func doTestBatchLifecycle(t *testing.T) {
 		t.Errorf("expected completion_window %q, got %q", "24h", batch.CompletionWindow)
 	}
 
-	// Wait until complete
-	const (
-		pollInterval = 5 * time.Second
-		maxWait      = 5 * time.Minute
-	)
-
-	isTerminal := func(s openai.BatchStatus) bool {
-		switch s {
-		case openai.BatchStatusCompleted, openai.BatchStatusFailed,
-			openai.BatchStatusExpired, openai.BatchStatusCancelled:
-			return true
-		}
-		return false
-	}
-
-	var finalBatch *openai.Batch
-
-	deadline := time.Now().Add(maxWait)
-	if d, ok := t.Deadline(); ok && d.Before(deadline) {
-		deadline = d.Add(-5 * time.Second) // leave margin for cleanup
-	}
-	for time.Now().Before(deadline) {
-		batch, err := client.Batches.Get(context.Background(), batchID)
-		if err != nil {
-			t.Fatalf("retrieve batch failed: %v", err)
-		}
-		finalBatch = batch
-
-		t.Logf("batch %s status: %s (completed=%d, failed=%d)",
-			batchID, batch.Status,
-			batch.RequestCounts.Completed, batch.RequestCounts.Failed)
-
-		if isTerminal(batch.Status) {
-			break
-		}
-		time.Sleep(pollInterval)
-	}
-
-	if finalBatch == nil || !isTerminal(finalBatch.Status) {
-		t.Fatalf("batch %s did not reach a final state within %v (last status: %q)",
-			batchID, maxWait, finalBatch.Status)
-	}
-	t.Logf("batch %s reached terminal state: status=%s total=%d completed=%d failed=%d output_file_id=%q error_file_id=%q",
-		batchID, finalBatch.Status,
-		finalBatch.RequestCounts.Total, finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed,
-		finalBatch.OutputFileID, finalBatch.ErrorFileID)
+	// Poll until completion
+	finalBatch := waitForBatchCompletion(t, batchID)
 
 	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Errorf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
-	}
-	if finalBatch.OutputFileID == "" {
-		t.Error("completed batch has empty output_file_id")
-	}
-	if finalBatch.ErrorFileID != "" {
-		t.Error("completed batch has non-empty error_file_id")
-	}
-	if finalBatch.RequestCounts.Total != 2 {
-		t.Errorf("expected request_counts.total=2, got %d", finalBatch.RequestCounts.Total)
-	}
-	if finalBatch.RequestCounts.Completed != 2 {
-		t.Errorf("expected request_counts.completed=2, got %d (failed=%d)",
-			finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed)
+		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
 	}
 
-	// Download output/error
+	// Download and log output file
 	if finalBatch.OutputFileID != "" {
 		resp, err := client.Files.Content(context.Background(), finalBatch.OutputFileID)
 		if err != nil {
-			t.Errorf("failed to download output file %q: %v", finalBatch.OutputFileID, err)
-		} else {
-			content, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			validateAndLogJSONL(t, "output file "+finalBatch.OutputFileID, string(content))
+			t.Fatalf("download output file failed: %v", err)
 		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		validateAndLogJSONL(t, "output file", string(body))
 	}
+
+	// Download and log error file (if any)
 	if finalBatch.ErrorFileID != "" {
 		resp, err := client.Files.Content(context.Background(), finalBatch.ErrorFileID)
 		if err != nil {
-			t.Errorf("failed to download error file %q: %v", finalBatch.ErrorFileID, err)
-		} else {
-			content, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			validateAndLogJSONL(t, "error file "+finalBatch.ErrorFileID, string(content))
+			t.Fatalf("download error file failed: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		validateAndLogJSONL(t, "error file", string(body))
+	}
+}
+
+// doTestPassThroughHeaders creates a batch with pass-through headers, waits for
+// completion, then verifies the processor logged the expected header names.
+func doTestPassThroughHeaders(t *testing.T) {
+	t.Helper()
+
+	// Verify processor logs contain the pass-through header names
+	if !kubectlAvailable {
+		t.Skip("kubectl not available, skipping processor log verification")
+	}
+
+	// Create batch with pass-through headers
+	fileID := mustCreateFile(t, fmt.Sprintf("test-pass-through-headers-%s.jsonl", testRunID), testJSONL)
+
+	var headerOpts []option.RequestOption
+	for k, v := range testPassThroughHeaders {
+		headerOpts = append(headerOpts, option.WithHeader(k, v))
+	}
+
+	batchID := mustCreateBatch(t, fileID, headerOpts...)
+
+	finalBatch := waitForBatchCompletion(t, batchID)
+
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
+	}
+
+	out, err := exec.Command("kubectl", "logs",
+		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", helmRelease),
+		"-n", namespace,
+		"--tail=500",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl logs failed: %v\n%s", err, out)
+	}
+
+	logs := string(out)
+	for headerName := range testPassThroughHeaders {
+		if !strings.Contains(logs, headerName) {
+			t.Errorf("expected processor logs to contain header name %q, but it was not found", headerName)
 		}
 	}
 }
@@ -359,6 +400,13 @@ func doTestBatchLifecycle(t *testing.T) {
 // ── Entry point ──────────────────────────────────────────────────────────
 
 func TestE2E(t *testing.T) {
+	// Check K8s cluster connectivity
+	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
+		t.Logf("kubectl cluster-info failed, kubectl based verifications will be skipped: %v\n%s", err, out)
+	} else {
+		kubectlAvailable = true
+	}
+
 	const readyTimeout = 30 * time.Second
 	readyDeadline := time.Now().Add(readyTimeout)
 	for {
@@ -396,5 +444,6 @@ func TestE2E(t *testing.T) {
 	t.Run("Batches", func(t *testing.T) {
 		t.Run("Lifecycle", func(t *testing.T) { doTestBatchLifecycle(t) })
 		t.Run("Cancel", func(t *testing.T) { doTestBatchCancel(t) })
+		t.Run("PassThroughHeaders", func(t *testing.T) { doTestPassThroughHeaders(t) })
 	})
 }

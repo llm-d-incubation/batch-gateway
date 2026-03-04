@@ -55,7 +55,8 @@ const (
 )
 
 type BatchAPIConfig struct {
-	BatchEventTTLSeconds int `yaml:"batch_event_ttl_seconds"`
+	BatchEventTTLSeconds int      `yaml:"batch_event_ttl_seconds"`
+	PassThroughHeaders   []string `yaml:"pass_through_headers"`
 }
 
 func (b *BatchAPIConfig) applyDefaults() {

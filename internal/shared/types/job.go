@@ -22,9 +22,10 @@ import (
 )
 
 type JobInfo struct {
-	JobID    string        `json:"job_id"`
-	TenantID string        `json:"tenant_id"`
-	BatchJob *openai.Batch `json:"batch_job"`
+	JobID              string            `json:"job_id"`
+	TenantID           string            `json:"tenant_id"`
+	BatchJob           *openai.Batch     `json:"batch_job"`
+	PassThroughHeaders map[string]string `json:"pass_through_headers,omitempty"`
 }
 
 // Request represents a line in input jsonl file

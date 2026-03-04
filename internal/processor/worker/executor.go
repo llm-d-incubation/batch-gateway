@@ -157,9 +157,18 @@ func (p *Processor) executeJob(
 	//   - PerModelConcurrency (max in-flight requests per model)
 	//   - Starvation prevention: models drained mid-turn are removed from rotation
 	// See: docs/design/batch_processor_architecture.md (Phase 2 Scheduling)
+	passThroughHeaders := jobInfo.PassThroughHeaders
+	if len(passThroughHeaders) > 0 {
+		headerNames := make([]string, 0, len(passThroughHeaders))
+		for k := range passThroughHeaders {
+			headerNames = append(headerNames, k)
+		}
+		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
+	}
+
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		go func(safeModelID, modelID string) {
-			err := p.processModel(execCtx, inputFile, plansDir, safeModelID, modelID, writer, &writerMu, cancelRequested, progress)
+			err := p.processModel(execCtx, inputFile, plansDir, safeModelID, modelID, writer, &writerMu, cancelRequested, progress, passThroughHeaders)
 			if err != nil {
 				execCancel()
 			}
@@ -209,6 +218,7 @@ func (p *Processor) processModel(
 	writerMu *sync.Mutex,
 	cancelRequested *atomic.Bool,
 	progress *executionProgress,
+	passThroughHeaders map[string]string,
 ) error {
 	logger := klog.FromContext(ctx).WithValues("model", modelID)
 	ctx = klog.NewContext(ctx, logger)
@@ -228,7 +238,7 @@ func (p *Processor) processModel(
 			return err
 		}
 
-		result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID)
+		result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
 		if execErr != nil {
 			return execErr
 		}
@@ -262,6 +272,7 @@ func (p *Processor) executeOneRequest(
 	inputFile *os.File,
 	entry planEntry,
 	modelID string,
+	passThroughHeaders map[string]string,
 ) (*outputLine, error) {
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
@@ -293,6 +304,7 @@ func (p *Processor) executeOneRequest(
 		RequestID: requestID,
 		Endpoint:  req.URL,
 		Params:    req.Body,
+		Headers:   passThroughHeaders,
 	}
 
 	start := time.Now()

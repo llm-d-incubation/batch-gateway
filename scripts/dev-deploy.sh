@@ -362,6 +362,7 @@ install_batch_gateway() {
         --set "processor.config.inferenceConfig.gatewayUrl=${vllm_sim_url}"
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
+        --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
         --namespace "${NAMESPACE}"
     )
 

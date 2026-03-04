@@ -172,6 +172,13 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// Capture configured pass-through headers into tags with "pth:" prefix
+	for _, headerName := range c.config.BatchAPI.PassThroughHeaders {
+		if value := r.Header.Get(headerName); value != "" {
+			tags["pth:"+headerName] = value
+		}
+	}
+
 	// Convert to database item
 	dbItem, err := converter.BatchToDBItem(batch, tenantID, tags)
 	if err != nil {

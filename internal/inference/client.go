@@ -176,6 +176,11 @@ func (c *HTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*Gener
 		restyReq.SetHeader("X-Request-ID", req.RequestID)
 	}
 
+	// Set pass-through headers
+	for k, v := range req.Headers {
+		restyReq.SetHeader(k, v)
+	}
+
 	// Set request body (resty handles JSON marshaling)
 	restyReq.SetBody(req.Params)
 

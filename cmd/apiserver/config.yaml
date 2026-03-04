@@ -65,6 +65,10 @@ file_client:
 batch_api:
   # Batch event TTL in seconds (default: 30 days)
   batch_event_ttl_seconds: 2592000
+  # HTTP headers to capture from batch creation requests and forward to inference.
+  # pass_through_headers:
+  #   - "X-MaaS-Username"
+  #   - "X-MaaS-Group"
 
 # File API configuration
 file_api:
