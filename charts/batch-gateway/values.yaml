@@ -224,7 +224,8 @@ processor:
     taskWaitTime: "1s"
     pollInterval: "5s"
     numWorkers: 20
-    maxJobConcurrency: 10
+    globalConcurrency: 100
+    perModelMaxConcurrency: 10
     queueTimeBucket:
       bucketStart: 0.1
       bucketFactor: 2
@@ -236,7 +237,6 @@ processor:
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
-    maxOpenFiles: 50
     inferenceConfig:
       gatewayUrl: "http://localhost:8000"
       requestTimeout: "5m"

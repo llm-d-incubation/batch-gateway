@@ -137,7 +137,8 @@ func (p *Processor) executeJob(
 		return nil, err
 	}
 
-	// run one goroutine per model for per-model processing, collect errors via channel
+	// one goroutine per model; concurrency within each model is bounded
+	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit)
 	var writerMu sync.Mutex
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
@@ -150,13 +151,6 @@ func (p *Processor) executeJob(
 
 	errCh := make(chan error, len(modelMap.SafeToModel))
 
-	// TODO: current implementation runs one goroutine per model without scheduling.
-	// Design calls for:
-	//   - Round-robin model selection with model_request_budget per turn
-	//   - GlobalConcurrency (max in-flight requests per job)
-	//   - PerModelConcurrency (max in-flight requests per model)
-	//   - Starvation prevention: models drained mid-turn are removed from rotation
-	// See: docs/design/batch_processor_architecture.md (Phase 2 Scheduling)
 	passThroughHeaders := jobInfo.PassThroughHeaders
 	if len(passThroughHeaders) > 0 {
 		headerNames := make([]string, 0, len(passThroughHeaders))
@@ -177,7 +171,6 @@ func (p *Processor) executeJob(
 	}
 
 	var firstErr error
-	// collect errors from all model goroutines
 	for range modelMap.SafeToModel {
 		if err := <-errCh; err != nil && firstErr == nil {
 			firstErr = err
@@ -207,9 +200,9 @@ func (p *Processor) executeJob(
 	return counts, nil
 }
 
-// processModel processes all plan entries for a single model.
-// It writes output lines to the shared writer under writerMu and
-// updates progress after every request.
+// processModel processes all plan entries for a single model concurrently.
+// Concurrency is bounded by both a global semaphore (p.globalSem, shared across
+// all models/workers) and a per-model semaphore (PerModelMaxConcurrency).
 func (p *Processor) processModel(
 	ctx context.Context,
 	inputFile *os.File,
@@ -231,38 +224,77 @@ func (p *Processor) processModel(
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "entries", len(entries))
 
-	// process each plan entry sequentially
-	// TODO: use concurrent processing with bounded concurrency (global concurrency and per-model concurrency)
+	modelSem := make(chan struct{}, p.cfg.PerModelMaxConcurrency)
+
+	var (
+		wg       sync.WaitGroup
+		errOnce  sync.Once
+		firstErr error
+	)
+
+dispatch:
 	for _, entry := range entries {
 		if err := checkCancellation(ctx, cancelRequested); err != nil {
-			return err
+			errOnce.Do(func() { firstErr = err })
+			break
 		}
 
-		result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
-		if execErr != nil {
-			return execErr
+		// Acquire per-model semaphore
+		select {
+		case modelSem <- struct{}{}:
+		case <-ctx.Done():
+			break dispatch
 		}
 
-		// update progress after every request
-		// TODO: update progress every certain number of requests?
-		progress.record(ctx, result.Error == nil)
-
-		lineBytes, err := json.Marshal(result)
-		if err != nil {
-			return fmt.Errorf("failed to marshal output line: %w", err)
+		// Acquire global semaphore
+		select {
+		case p.globalSem <- struct{}{}:
+		case <-ctx.Done():
+			<-modelSem
+			break dispatch
 		}
-		lineBytes = append(lineBytes, '\n')
 
-		// shared writer under writerMu
-		writerMu.Lock()
-		_, writeErr := writer.Write(lineBytes)
-		writerMu.Unlock()
-		if writeErr != nil {
-			return fmt.Errorf("failed to write output line: %w", writeErr)
-		}
+		wg.Add(1)
+		go func(entry planEntry) {
+			defer wg.Done()
+			defer func() { <-p.globalSem }()
+			defer func() { <-modelSem }()
+
+			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
+			if execErr != nil {
+				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
+				errOnce.Do(func() { firstErr = execErr })
+				return
+			}
+
+			progress.record(ctx, result.Error == nil)
+
+			lineBytes, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				logger.Error(marshalErr, "Failed to marshal output line", "offset", entry.Offset)
+				errOnce.Do(func() { firstErr = fmt.Errorf("failed to marshal output line: %w", marshalErr) })
+				return
+			}
+			lineBytes = append(lineBytes, '\n')
+
+			writerMu.Lock()
+			_, writeErr := writer.Write(lineBytes)
+			writerMu.Unlock()
+			if writeErr != nil {
+				logger.Error(writeErr, "Failed to write output line", "offset", entry.Offset)
+				errOnce.Do(func() { firstErr = fmt.Errorf("failed to write output line: %w", writeErr) })
+			}
+		}(entry)
 	}
 
-	return nil
+	wg.Wait()
+
+	if firstErr == nil && ctx.Err() != nil {
+		firstErr = ctx.Err()
+	}
+
+	logger.V(logging.INFO).Info("Finished processing model", "entries", len(entries), "hasError", firstErr != nil)
+	return firstErr
 }
 
 // executeOneRequest reads a single input line from the input file at the given plan entry offset,

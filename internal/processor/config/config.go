@@ -36,8 +36,13 @@ type ProcessorConfig struct {
 	// NumWorkers is the fixed number of worker goroutines spawned to process jobs
 	NumWorkers int `yaml:"num_workers"`
 
-	// MaxJobConcurrency defines how many lines within a single job are processed concurrently
-	MaxJobConcurrency int `yaml:"max_job_concurrency"`
+	// GlobalConcurrency limits total in-flight inference requests across all workers in a processor.
+	// Protects system resources (goroutines, sockets, memory) from unbounded growth.
+	GlobalConcurrency int `yaml:"global_concurrency"`
+
+	// PerModelMaxConcurrency limits concurrent inference requests per individual model.
+	// Protects downstream inference gateway from being overwhelmed by a single model's requests.
+	PerModelMaxConcurrency int `yaml:"per_model_max_concurrency"`
 
 	// PollInterval defines how frequently the processor checks the database for new jobs
 	PollInterval time.Duration `yaml:"poll_interval"`
@@ -47,9 +52,6 @@ type ProcessorConfig struct {
 
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
-
-	// MaxOpenFiles is the maximum number of open files for the plan writer
-	MaxOpenFiles int `yaml:"max_open_files"`
 
 	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
 	DatabaseType string `yaml:"database_type"`
@@ -166,14 +168,14 @@ func NewConfig() *ProcessorConfig {
 			BucketCount:  10,
 		},
 
-		MaxJobConcurrency: 10,
+		GlobalConcurrency:      100,
+		PerModelMaxConcurrency: 10,
 		NumWorkers:        1,
 		Addr:              ":9090",
 		// Keep observability as best-effort by default.
 		TerminateOnObservabilityFailure: false,
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
-		MaxOpenFiles:                    50, // default to 50 open files
 		DatabaseType:                    "redis",
 		FileClientCfg: struct {
 			Type     string          `yaml:"type"`
@@ -213,8 +215,11 @@ func (c *ProcessorConfig) Validate() error {
 	if c.NumWorkers <= 0 {
 		return fmt.Errorf("num_workers must be > 0")
 	}
-	if c.MaxJobConcurrency <= 0 {
-		return fmt.Errorf("max_job_concurrency must be > 0")
+	if c.GlobalConcurrency <= 0 {
+		return fmt.Errorf("global_concurrency must be > 0")
+	}
+	if c.PerModelMaxConcurrency <= 0 {
+		return fmt.Errorf("per_model_max_concurrency must be > 0")
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
@@ -292,11 +297,6 @@ func (c *ProcessorConfig) Validate() error {
 	}
 	if c.UploadRetry.MaxBackoff < c.UploadRetry.InitialBackoff {
 		return fmt.Errorf("upload_retry.max_backoff must be >= upload_retry.initial_backoff")
-	}
-
-	// <= 0 means unlimited.
-	if c.MaxOpenFiles <= 0 {
-		c.MaxOpenFiles = 0
 	}
 
 	if c.ProgressTTLSeconds <= 0 {

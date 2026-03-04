@@ -61,6 +61,7 @@ func writePlanFile(t *testing.T, dir, safeModelID string, entries []planEntry) {
 		var buf [planEntrySize]byte
 		binary.LittleEndian.PutUint64(buf[0:8], uint64(e.Offset))
 		binary.LittleEndian.PutUint32(buf[8:12], e.Length)
+		binary.LittleEndian.PutUint32(buf[12:16], e.PrefixHash)
 		if _, err := f.Write(buf[:]); err != nil {
 			t.Fatalf("write plan entry: %v", err)
 		}

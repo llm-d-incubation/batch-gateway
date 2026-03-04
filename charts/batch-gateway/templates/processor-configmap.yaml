@@ -13,12 +13,12 @@ data:
     task_wait_time: {{ .Values.processor.config.taskWaitTime | quote }}
     poll_interval: {{ .Values.processor.config.pollInterval | quote }}
     num_workers: {{ .Values.processor.config.numWorkers }}
-    max_job_concurrency: {{ .Values.processor.config.maxJobConcurrency }}
+    global_concurrency: {{ .Values.processor.config.globalConcurrency }}
+    per_model_max_concurrency: {{ .Values.processor.config.perModelMaxConcurrency }}
 
     terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
     shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}
     work_dir: {{ .Values.processor.config.workDir | quote }}
-    max_open_files: {{ .Values.processor.config.maxOpenFiles }}
 
     database_type: {{ .Values.global.databaseType | quote }}
 
