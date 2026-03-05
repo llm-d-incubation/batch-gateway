@@ -62,6 +62,8 @@ data:
       bucket_factor: {{ .Values.processor.config.processTimeBucket.bucketFactor }}
       bucket_count: {{ .Values.processor.config.processTimeBucket.bucketCount }}
 
+    otel:
+      redis_tracing: {{ .Values.global.otel.redisTracing }}
     {{- if .Values.processor.tls.enabled }}
     ssl_cert_file: "/etc/tls/tls.crt"
     ssl_key_file: "/etc/tls/tls.key"

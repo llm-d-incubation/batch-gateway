@@ -255,7 +255,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "test-batch")
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "test-batch")
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 
 	badEntry := planEntry{Offset: 99999, Length: 10}
 	ctx := testLoggerCtx()
-	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil)
+	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil, "test-batch")
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
 	}
@@ -452,7 +452,7 @@ func TestProcessModel_Success(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "test-batch")
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "test-batch")
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}

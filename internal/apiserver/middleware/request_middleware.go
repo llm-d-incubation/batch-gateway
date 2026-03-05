@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
@@ -68,18 +69,14 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 				tenantID = common.DefaultTenantID
 			}
 
-			// Extract file ID
+			// Extract file ID and batch ID from path for logging
 			fileID := ""
-			fileIDMatches := fileIDRegex.FindStringSubmatch(path)
-			if len(fileIDMatches) > 1 {
-				fileID = fileIDMatches[1]
+			if m := fileIDRegex.FindStringSubmatch(path); len(m) > 1 {
+				fileID = m[1]
 			}
-
-			// Extract batch ID
 			batchID := ""
-			batchIDMatches := batchIDRegex.FindStringSubmatch(path)
-			if len(batchIDMatches) > 1 {
-				batchID = batchIDMatches[1]
+			if m := batchIDRegex.FindStringSubmatch(path); len(m) > 1 {
+				batchID = m[1]
 			}
 
 			// Create request logger with request ID and tenant ID
@@ -95,9 +92,7 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 
 			ctx := klog.NewContext(r.Context(), logger)
 			ctx = context.WithValue(ctx, common.RequestIDKey, requestID)
-			if tenantID != "" {
-				ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
-			}
+			ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
 
 			// Wrap response writer to capture status code
 			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
@@ -129,4 +124,8 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) StatusCode() int {
+	return rw.statusCode
 }

@@ -31,6 +31,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -41,6 +43,7 @@ import (
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 // outputLine represents a single line in the output JSONL file following the OpenAI batch output format.
@@ -160,9 +163,10 @@ func (p *Processor) executeJob(
 		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
 	}
 
+	// jobInfo.JobID holds the batch ID (e.g. "batch_<uuid>")
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		go func(safeModelID, modelID string) {
-			err := p.processModel(execCtx, inputFile, plansDir, safeModelID, modelID, writer, &writerMu, cancelRequested, progress, passThroughHeaders)
+			err := p.processModel(execCtx, inputFile, plansDir, safeModelID, modelID, writer, &writerMu, cancelRequested, progress, passThroughHeaders, jobInfo.JobID)
 			if err != nil {
 				execCancel()
 			}
@@ -217,6 +221,7 @@ func (p *Processor) processModel(
 	cancelRequested *atomic.Bool,
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
+	batchID string,
 ) error {
 	logger := klog.FromContext(ctx).WithValues("model", modelID)
 	ctx = klog.NewContext(ctx, logger)
@@ -265,7 +270,7 @@ dispatch:
 			defer func() { <-p.globalSem }()
 			defer func() { <-modelSem }()
 
-			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
+			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders, batchID)
 			if execErr != nil {
 				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
 				errOnce.Do(func() { firstErr = execErr })
@@ -310,6 +315,7 @@ func (p *Processor) executeOneRequest(
 	entry planEntry,
 	modelID string,
 	passThroughHeaders map[string]string,
+	batchID string,
 ) (*outputLine, error) {
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
@@ -348,6 +354,9 @@ func (p *Processor) executeOneRequest(
 	metrics.IncProcessorInflightRequests()
 	metrics.IncModelInflightRequests(modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
+
+	// Add batch.id to the current span so the otelhttp transport child span can be correlated
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrBatchID, batchID))
 
 	inferResp, inferErr := p.clients.Inference.Generate(ctx, inferReq)
 
@@ -422,6 +431,7 @@ func (p *Processor) finalizeJob(
 	}
 
 	outputFileID := fmt.Sprintf("file_%s", uuid.NewString())
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrOutputFileID, outputFileID))
 	outputFileName := fmt.Sprintf("batch_output_%s.jsonl", jobInfo.JobID)
 
 	fileSize, err := p.uploadOutputFile(ctx, jobInfo, outputFileName)
@@ -531,7 +541,7 @@ func (p *Processor) storeOutputFileRecord(
 // Priority: user-provided output_expires_after_seconds tag > config default.
 // Returns 0 (no expiration) if neither is set.
 func (p *Processor) resolveOutputExpiration(now int64, batchTags db.Tags) int64 {
-	if s, ok := batchTags["output_expires_after_seconds"]; ok {
+	if s, ok := batchTags[batch_types.TagOutputExpiresAfterSeconds]; ok {
 		if ttl, err := strconv.ParseInt(s, 10, 64); err == nil && ttl > 0 {
 			return now + ttl
 		}

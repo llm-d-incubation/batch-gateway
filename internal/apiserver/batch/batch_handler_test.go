@@ -32,6 +32,7 @@ import (
 	mockapi "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
@@ -190,13 +191,13 @@ func TestBatchHandler(t *testing.T) {
 			}
 
 			dbItem := items[0]
-			if dbItem.Tags["output_expires_after_seconds"] != "86400" {
+			if dbItem.Tags[batch_types.TagOutputExpiresAfterSeconds] != "86400" {
 				t.Errorf("Expected output_expires_after_seconds tag to be '86400', got %q",
-					dbItem.Tags["output_expires_after_seconds"])
+					dbItem.Tags[batch_types.TagOutputExpiresAfterSeconds])
 			}
-			if dbItem.Tags["output_expires_after_anchor"] != "created_at" {
+			if dbItem.Tags[batch_types.TagOutputExpiresAfterAnchor] != "created_at" {
 				t.Errorf("Expected output_expires_after_anchor tag to be 'created_at', got %q",
-					dbItem.Tags["output_expires_after_anchor"])
+					dbItem.Tags[batch_types.TagOutputExpiresAfterAnchor])
 			}
 		})
 
@@ -433,7 +434,7 @@ func TestBatchHandler(t *testing.T) {
 		}
 		slo := time.Now().UTC().Add(24 * time.Hour)
 		item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
-			tagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+			batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
 		})
 		if err != nil {
 			t.Fatalf("Failed to convert batch to DB item: %v", err)

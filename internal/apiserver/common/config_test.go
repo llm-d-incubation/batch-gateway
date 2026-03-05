@@ -121,7 +121,8 @@ file_client:
 				err := config.Load()
 
 				if (err != nil) != tt.wantErr {
-					t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
+					cwd, _ := os.Getwd()
+					t.Errorf("Load() error = %v, wantErr %v (cwd: %s, configFile: %s)", err, tt.wantErr, cwd, configFile)
 					return
 				}
 

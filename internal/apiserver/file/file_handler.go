@@ -27,6 +27,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
@@ -34,10 +37,10 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 const (
-	pathParamFileID       = "file_id"
 	defaultListFilesLimit = 10000
 	maxListFilesLimit     = 10000
 )
@@ -60,26 +63,31 @@ func (c *FileAPIHandler) GetRoutes() []common.Route {
 			Method:      http.MethodPost,
 			Pattern:     "/v1/files",
 			HandlerFunc: c.CreateFile,
+			SpanName:    "api-create-file",
 		},
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/files",
 			HandlerFunc: c.ListFiles,
+			SpanName:    "api-list-file",
 		},
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/files/{file_id}",
 			HandlerFunc: c.RetrieveFile,
+			SpanName:    "api-get-file",
 		},
 		{
 			Method:      http.MethodGet,
 			Pattern:     "/v1/files/{file_id}/content",
 			HandlerFunc: c.DownloadFile,
+			SpanName:    "api-download-file",
 		},
 		{
 			Method:      http.MethodDelete,
 			Pattern:     "/v1/files/{file_id}",
 			HandlerFunc: c.DeleteFile,
+			SpanName:    "api-delete-file",
 		},
 	}
 }
@@ -90,7 +98,7 @@ func (c *FileAPIHandler) getFileItemFromDB(r *http.Request, operation string) (*
 	ctx := r.Context()
 	logger := logging.FromRequest(r)
 
-	fileID := r.PathValue(pathParamFileID)
+	fileID := r.PathValue(common.PathParamFileID)
 	if fileID == "" {
 		apiErr := openai.NewAPIError(
 			http.StatusBadRequest,
@@ -263,6 +271,8 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 
 	fileID := fmt.Sprintf("file_%s", uuid.NewString())
 
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrFileID, fileID))
+
 	// Sanitize filename
 	fileName := filepath.Base(fileHeader.Filename)
 	if fileName == "" || fileName == "." || fileName == ".." {
@@ -332,10 +342,10 @@ func (c *FileAPIHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	logger := logging.FromRequest(r)
 
 	// Parse query parameters
-	after := r.URL.Query().Get("after")
-	limitStr := r.URL.Query().Get("limit")
-	order := r.URL.Query().Get("order")
-	purposeStr := r.URL.Query().Get("purpose")
+	after := r.URL.Query().Get(common.QueryParamAfter)
+	limitStr := r.URL.Query().Get(common.QueryParamLimit)
+	order := r.URL.Query().Get(common.QueryParamOrder)
+	purposeStr := r.URL.Query().Get(common.QueryParamPurpose)
 
 	// Validate and parse start
 	// TODO : OpenAI's after is a cursor for use in pagination. after is an object ID that defines your place in the list. For instance, if you make a list request and receive 100 objects, ending with obj_foo, your subsequent call can include after=obj_foo in order to fetch the next page of the list.

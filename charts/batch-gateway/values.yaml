@@ -15,6 +15,17 @@ global:
   # Database backend type: "redis", or "postgresql"
   databaseType: "redis"
 
+  # OpenTelemetry configuration
+  otel:
+    # OTLP gRPC endpoint (e.g. "http://jaeger.default.svc.cluster.local:4317")
+    # Leave empty to disable tracing.
+    endpoint: ""
+    # Use insecure (plaintext) gRPC connection to the collector.
+    insecure: true
+    # Enable per-command Redis tracing spans. Can produce high span volume
+    # for batch workloads — leave disabled unless actively debugging Redis.
+    redisTracing: false
+
   # File client configuration
   fileClient:
     type: "fs"  # Options: "fs", "s3"

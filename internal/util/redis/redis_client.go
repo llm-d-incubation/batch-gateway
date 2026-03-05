@@ -29,6 +29,7 @@ import (
 
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	gredis "github.com/redis/go-redis/v9"
 	"k8s.io/klog/v2"
 )
@@ -43,6 +44,7 @@ type RedisClientConfig struct {
 	EnableTLS       bool
 	Insecure        bool
 	Certificates    *utls.Certificates
+	EnableTracing   bool
 	ServiceName     string
 	Timeout         time.Duration // Timeout for socket operations: dial, read, write.
 	MaxRetries      int           // Maximum number of retries before giving up. Default is 3 retries; -1 (not 0) disables retries.
@@ -141,6 +143,13 @@ func NewRedisClient(ctx context.Context, cnf *RedisClientConfig) (*gredis.Client
 		err = fmt.Errorf("redis.NewClient returned nil client [addr: %s]", redisOps.Addr)
 		logger.Error(err, "NewRedisClient")
 		return nil, err
+	}
+	if cnf.EnableTracing {
+		if err := redisotel.InstrumentTracing(rds); err != nil {
+			logger.Error(err, "NewRedisClient: failed to instrument Redis tracing")
+			rds.Close()
+			return nil, err
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), REDIS_PING_WAIT_SEC*time.Second)
 	defer cancel()
