@@ -130,6 +130,11 @@ func createTestFile(t *testing.T, handler *FileAPIHandler, ctx context.Context, 
 }
 
 func doTestCreateFile(t *testing.T) {
+	t.Run("Success", doTestCreateFileSuccess)
+	t.Run("ExpiresAfterValidation", doTestCreateFileExpiresAfter)
+}
+
+func doTestCreateFileSuccess(t *testing.T) {
 	ctx := context.Background()
 	handler := setupTestHandler(t)
 
@@ -217,6 +222,82 @@ func doTestCreateFile(t *testing.T) {
 	if string(uploadedContent) != expectedStoredContent {
 		t.Errorf("uploaded content doesn't match expected.\nExpected:\n%s\nGot:\n%s",
 			expectedStoredContent, string(uploadedContent))
+	}
+}
+
+func doTestCreateFileExpiresAfter(t *testing.T) {
+	ctx := context.Background()
+	handler := setupTestHandler(t)
+	fileContent := `{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`
+
+	buildRequest := func(name, anchor, seconds string) *http.Request {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+
+		fileWriter, err := writer.CreateFormFile("file", name+".jsonl")
+		if err != nil {
+			t.Fatalf("failed to create form file: %v", err)
+		}
+		if _, err := io.WriteString(fileWriter, fileContent); err != nil {
+			t.Fatalf("failed to write file content: %v", err)
+		}
+		if err := writer.WriteField("purpose", "batch"); err != nil {
+			t.Fatalf("failed to write purpose field: %v", err)
+		}
+		if anchor != "" {
+			if err := writer.WriteField("expires_after[anchor]", anchor); err != nil {
+				t.Fatalf("failed to write anchor field: %v", err)
+			}
+		}
+		if seconds != "" {
+			if err := writer.WriteField("expires_after[seconds]", seconds); err != nil {
+				t.Fatalf("failed to write seconds field: %v", err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("failed to close multipart writer: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/files", body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req.WithContext(ctx)
+	}
+
+	tests := []struct {
+		name           string
+		anchor         string
+		seconds        string
+		expectedStatus int
+	}{
+		{"valid min boundary", "created_at", "3600", http.StatusOK},
+		{"valid max boundary", "created_at", "2592000", http.StatusOK},
+		{"valid mid range", "created_at", "86400", http.StatusOK},
+		{"too small", "created_at", "3599", http.StatusBadRequest},
+		{"too large", "created_at", "2592001", http.StatusBadRequest},
+		{"negative", "created_at", "-1", http.StatusBadRequest},
+		{"zero", "created_at", "0", http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := buildRequest(tc.name, tc.anchor, tc.seconds)
+			w := httptest.NewRecorder()
+			handler.CreateFile(w, req)
+
+			if w.Code != tc.expectedStatus {
+				t.Errorf("expected status %d, got %d, body: %s", tc.expectedStatus, w.Code, w.Body.String())
+			}
+
+			if tc.expectedStatus == http.StatusOK {
+				var fileObj openai.FileObject
+				if err := json.Unmarshal(w.Body.Bytes(), &fileObj); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+				if fileObj.ExpiresAt <= fileObj.CreatedAt {
+					t.Errorf("expected expiresAt > createdAt, got expiresAt=%d, createdAt=%d", fileObj.ExpiresAt, fileObj.CreatedAt)
+				}
+			}
+		})
 	}
 }
 

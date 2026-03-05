@@ -259,6 +259,18 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if expiresAfterSeconds < openai.MinExpirationSeconds || expiresAfterSeconds > openai.MaxExpirationSeconds {
+			logger.V(logging.DEBUG).Info("expires_after seconds out of range", "seconds", expiresAfterSeconds)
+			apiErr := openai.NewAPIError(
+				http.StatusBadRequest,
+				"",
+				fmt.Sprintf("expires_after[seconds] must be between %d (1 hour) and %d (30 days)", openai.MinExpirationSeconds, openai.MaxExpirationSeconds),
+				nil,
+			)
+			common.WriteAPIError(w, r, apiErr)
+			return
+		}
+
 		expiresAt = createdAt + expiresAfterSeconds
 
 		logger.V(logging.DEBUG).Info("file expiration set from request", "anchor", expiresAfterAnchor, "seconds", expiresAfterSeconds, "expiresAt", expiresAt)
