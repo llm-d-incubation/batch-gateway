@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,7 +41,9 @@ type planRequestLine struct {
 }
 
 // NoPrefixHash is used when a request has no system prompt.
-const NoPrefixHash uint32 = 0
+// Set to MaxUint32 so that no-prompt requests sort last, allowing
+// requests with actual system prompts to be dispatched first.
+const NoPrefixHash uint32 = math.MaxUint32
 
 // planEntry is a single entry in the plan file.
 // 16 bytes:
