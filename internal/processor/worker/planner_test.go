@@ -17,7 +17,6 @@ limitations under the License.
 package worker
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -79,12 +78,9 @@ func TestPlanAccumulator_AppendAndFinalize_WritesLittleEndian16Bytes(t *testing.
 	}
 
 	readEntry := func(off int) planEntry {
-		chunk := b[off : off+16]
-		return planEntry{
-			Offset:     int64(binary.LittleEndian.Uint64(chunk[0:8])),
-			Length:     binary.LittleEndian.Uint32(chunk[8:12]),
-			PrefixHash: binary.LittleEndian.Uint32(chunk[12:16]),
-		}
+		var buf [planEntrySize]byte
+		copy(buf[:], b[off:off+planEntrySize])
+		return unmarshalPlanEntry(buf)
 	}
 
 	// entries should be sorted by PrefixHash: e2 (42) before e1 (99)

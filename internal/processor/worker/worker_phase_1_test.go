@@ -3,7 +3,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,12 +192,9 @@ func testReadPlanEntries(t *testing.T, planPath string) []planEntry {
 	n := len(b) / planEntrySize
 	out := make([]planEntry, 0, n)
 	for i := 0; i < n; i++ {
-		chunk := b[i*planEntrySize : (i+1)*planEntrySize]
-		out = append(out, planEntry{
-			Offset:     int64(binary.LittleEndian.Uint64(chunk[0:8])),
-			Length:     binary.LittleEndian.Uint32(chunk[8:12]),
-			PrefixHash: binary.LittleEndian.Uint32(chunk[12:16]),
-		})
+		var buf [planEntrySize]byte
+		copy(buf[:], b[i*planEntrySize:(i+1)*planEntrySize])
+		out = append(out, unmarshalPlanEntry(buf))
 	}
 	return out
 }

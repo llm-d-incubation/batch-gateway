@@ -56,6 +56,15 @@ type planEntry struct {
 	PrefixHash uint32
 }
 
+// marshalBinary encodes the entry into a fixed-size 16-byte little-endian buffer.
+func (e planEntry) marshalBinary() [planEntrySize]byte {
+	var buf [planEntrySize]byte
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(e.Offset))
+	binary.LittleEndian.PutUint32(buf[8:12], e.Length)
+	binary.LittleEndian.PutUint32(buf[12:16], e.PrefixHash)
+	return buf
+}
+
 // planAccumulator collects plan entries in memory per model.
 // At finalization it sorts each model's entries by PrefixHash and writes them to disk.
 type planAccumulator struct {
@@ -158,11 +167,8 @@ func (a *planAccumulator) Finalize(modelIDs []string) error {
 			return fmt.Errorf("create plan file %s: %w", safeModelID, err)
 		}
 
-		var buf [planEntrySize]byte
 		for _, e := range entries {
-			binary.LittleEndian.PutUint64(buf[0:8], uint64(e.Offset))
-			binary.LittleEndian.PutUint32(buf[8:12], e.Length)
-			binary.LittleEndian.PutUint32(buf[12:16], e.PrefixHash)
+			buf := e.marshalBinary()
 			if _, err := f.Write(buf[:]); err != nil {
 				f.Close()
 				_ = os.Remove(tmpPath)

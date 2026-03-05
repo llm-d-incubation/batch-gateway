@@ -232,7 +232,7 @@ func (p *Processor) processModel(
 		return fmt.Errorf("failed to read plan for model %s: %w", modelID, err)
 	}
 
-	logger.V(logging.INFO).Info("Processing requests for a model", "entries", len(entries))
+	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
 	modelSem := make(chan struct{}, p.cfg.PerModelMaxConcurrency)
 
@@ -304,7 +304,7 @@ dispatch:
 		firstErr = ctx.Err()
 	}
 
-	logger.V(logging.INFO).Info("Finished processing model", "entries", len(entries), "hasError", firstErr != nil)
+	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", firstErr != nil)
 	return firstErr
 }
 

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -58,10 +57,7 @@ func writePlanFile(t *testing.T, dir, safeModelID string, entries []planEntry) {
 	}
 	defer f.Close()
 	for _, e := range entries {
-		var buf [planEntrySize]byte
-		binary.LittleEndian.PutUint64(buf[0:8], uint64(e.Offset))
-		binary.LittleEndian.PutUint32(buf[8:12], e.Length)
-		binary.LittleEndian.PutUint32(buf[12:16], e.PrefixHash)
+		buf := e.marshalBinary()
 		if _, err := f.Write(buf[:]); err != nil {
 			t.Fatalf("write plan entry: %v", err)
 		}
