@@ -340,7 +340,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "")
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -593,7 +593,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil)
+		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "")
 	}()
 
 	<-started
