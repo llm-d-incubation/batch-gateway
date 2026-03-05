@@ -267,8 +267,8 @@ dispatch:
 		wg.Add(1)
 		go func(entry planEntry) {
 			defer wg.Done()
-			defer func() { <-p.globalSem }()
 			defer func() { <-modelSem }()
+			defer func() { <-p.globalSem }()
 
 			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders, batchID)
 			if execErr != nil {

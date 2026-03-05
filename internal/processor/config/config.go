@@ -226,6 +226,9 @@ func (c *ProcessorConfig) Validate() error {
 	if c.PerModelMaxConcurrency <= 0 {
 		return fmt.Errorf("per_model_max_concurrency must be > 0")
 	}
+	if c.PerModelMaxConcurrency > c.GlobalConcurrency {
+		return fmt.Errorf("per_model_max_concurrency (%d) must be <= global_concurrency (%d)", c.PerModelMaxConcurrency, c.GlobalConcurrency)
+	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
 	}

@@ -162,15 +162,18 @@ func (a *planAccumulator) Finalize(modelIDs []string) error {
 			binary.LittleEndian.PutUint32(buf[12:16], e.PrefixHash)
 			if _, err := f.Write(buf[:]); err != nil {
 				f.Close()
+				_ = os.Remove(tmpPath)
 				return fmt.Errorf("write plan entry for %s: %w", safeModelID, err)
 			}
 		}
 
 		if err := f.Close(); err != nil {
+			_ = os.Remove(tmpPath)
 			return fmt.Errorf("close plan file %s: %w", safeModelID, err)
 		}
 
 		if err := os.Rename(tmpPath, finalPath); err != nil {
+			_ = os.Remove(tmpPath)
 			return fmt.Errorf("rename plan file %s: %w", safeModelID, err)
 		}
 	}
