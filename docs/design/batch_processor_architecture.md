@@ -233,7 +233,7 @@ For each `input.jsonl` line:
 1.  Compute current byte offset in input.jsonl file
 2.  Compute request length (including newline)
 3.  Parse minimal JSON to extract model
-4.  Extract and hash the system prompt content from the request body for grouping similar requests in Phase 2. If the system prompt is absent, the hash defaults to 0.
+4.  Extract and hash the system prompt content from the request body for grouping requests with identical system prompts in Phase 2. If the system prompt is absent, the hash defaults to 0.
 5.  Intern modelID for plan file name
 6.  Accumulate plan entry (offset, length, prefix hash) in memory per model
 
@@ -259,7 +259,7 @@ Renamed atomically upon completion.
 type PlanEntry struct {
     Offset     int64  // 8 bytes: Position in input.jsonl
     Length     uint32 // 4 bytes: Length of the JSON line
-    PrefixHash uint32 // 4 bytes: Hash of the request's system prompt, used to group similar requests together in Phase 2
+    PrefixHash uint32 // 4 bytes: FNV-32a hash of the request's system prompt, used to group requests with identical system prompts in Phase 2
 }
 ```
 The request JSON body is NOT stored in the plan.
@@ -365,6 +365,20 @@ Goals:
 -   Maximize downstream prefix cache efficiency via sorted dispatch order
 -   Ensure fairness across models via bounded per-model concurrency
 -   Prevent system overload via global concurrency cap
+
+**Limitation — PrefixHash grouping (exact match only):**
+
+The current implementation hashes the full system prompt text using FNV-32a and groups requests with identical hashes. This means only requests with **exactly the same** system prompt are grouped together — requests with **similar but not identical** prompts are not considered neighbors.
+
+This is a known limitation. Downstream inference engines (e.g., vLLM) perform prefix matching at the token level, where even partially overlapping prompts can benefit from KV cache reuse. A more advanced approach (e.g., greedy string prefix matching or token-aware grouping) could capture these "similar prefix" cases, but adds complexity (tokenization dependency, O(n²) comparisons, etc.) that is out of scope for the MVP.
+
+For the MVP, exact-match grouping via hashing provides a simple, O(n log n) solution that captures the most common case (many requests sharing the same system prompt verbatim) without introducing additional dependencies.
+
+FNV-32a hash collisions (32-bit space, ~4 billion values) are theoretically possible but do not affect correctness — they only reduce grouping optimality. In practice, the number of distinct system prompts per batch is small relative to the hash space, making collisions negligible.
+
+**Future work — similar-prefix grouping:**
+
+A potential improvement is to sort by the system prompt string lexicographically instead of by hash. Lexicographic sorting naturally places prompts with a shared prefix adjacent to each other, which would improve KV cache hit rates for prompts that are similar but not identical. This avoids tokenization dependency (which would couple the batch gateway to model-specific tokenizers) while still capturing partial prefix overlap at the string level. The main trade-off is memory: it requires holding system prompt strings in memory during Phase 1 rather than just a 4-byte hash. This is tracked as a post-MVP enhancement.
 
 -------------------------------------------------------------------
 

@@ -99,8 +99,8 @@ func TestExtractModelAndPrefixHash_Valid(t *testing.T) {
 	if modelID != "m1" {
 		t.Fatalf("expected modelID m1, got %q", modelID)
 	}
-	if prefixHash != 0 {
-		t.Fatalf("expected prefixHash 0 (no system prompt), got %d", prefixHash)
+	if prefixHash != NoPrefixHash {
+		t.Fatalf("expected NoPrefixHash (no system prompt), got %d", prefixHash)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestExtractModelAndPrefixHash_WithSystemPrompt(t *testing.T) {
 	if modelID != "m1" {
 		t.Fatalf("expected modelID m1, got %q", modelID)
 	}
-	if prefixHash == 0 {
+	if prefixHash == NoPrefixHash {
 		t.Fatalf("expected non-zero prefixHash for system prompt")
 	}
 

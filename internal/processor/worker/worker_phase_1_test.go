@@ -529,22 +529,22 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 		}
 	}
 
-	// The entry with no system prompt should have PrefixHash == 0
+	// The entry with no system prompt should have PrefixHash == NoPrefixHash
 	foundZero := false
 	for _, e := range entries {
-		if e.PrefixHash == 0 {
+		if e.PrefixHash == NoPrefixHash {
 			foundZero = true
 			break
 		}
 	}
 	if !foundZero {
-		t.Fatalf("expected at least one entry with PrefixHash==0 (no system prompt)")
+		t.Fatalf("expected at least one entry with NoPrefixHash (no system prompt)")
 	}
 
-	// Entries with system prompts should have PrefixHash != 0
+	// Entries with system prompts should have PrefixHash != NoPrefixHash
 	nonZeroCount := 0
 	for _, e := range entries {
-		if e.PrefixHash != 0 {
+		if e.PrefixHash != NoPrefixHash {
 			nonZeroCount++
 		}
 	}
@@ -559,7 +559,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 	}
 	foundDuplicate := false
 	for h, c := range hashCounts {
-		if h != 0 && c >= 2 {
+		if h != NoPrefixHash && c >= 2 {
 			foundDuplicate = true
 			break
 		}

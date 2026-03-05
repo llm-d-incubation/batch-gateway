@@ -39,11 +39,14 @@ type planRequestLine struct {
 	} `json:"body"`
 }
 
+// NoPrefixHash is used when a request has no system prompt.
+const NoPrefixHash uint32 = 0
+
 // planEntry is a single entry in the plan file.
 // 16 bytes:
 // Offset [int64 Offset] start byte offset of the request line in input.jsonl
 // Length [uint32 Length] length of the request line in input.jsonl
-// PrefixHash [uint32 PrefixHash] FNV-32a hash of the request's system prompt, used to group similar requests together in Phase 2. If the system prompt is absent, the hash defaults to 0.
+// PrefixHash [uint32 PrefixHash] FNV-32a hash of the request's system prompt, used to group similar requests together in Phase 2. If the system prompt is absent, the hash defaults to NoPrefixHash.
 type planEntry struct {
 	Offset     int64
 	Length     uint32

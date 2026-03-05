@@ -197,22 +197,21 @@ func readNormalizedLine(r *bufio.Reader) ([]byte, bool, error) {
 }
 
 // extractModelAndPrefixHash parses a request line and returns the model ID
-// and a FNV-32a hash of the first system prompt's content (0 if absent).
+// and a FNV-32a hash of the first system prompt's content (NoPrefixHash if absent).
 func extractModelAndPrefixHash(line []byte) (string, uint32, error) {
 	var req planRequestLine
 	trimmedLine := bytes.TrimSuffix(line, []byte{'\n'})
 	if err := json.Unmarshal(trimmedLine, &req); err != nil {
-		return "", 0, err
+		return "", NoPrefixHash, err
 	}
 	modelID := req.Body.Model
 	if modelID == "" {
-		return "", 0, fmt.Errorf("model id is empty")
+		return "", NoPrefixHash, fmt.Errorf("model id is empty")
 	}
 
-	var prefixHash uint32
+	prefixHash := NoPrefixHash
 	for _, msg := range req.Body.Messages {
 		if msg.Role == "system" && msg.Content != "" {
-			// use only the first system prompt for prefix hash calculation
 			h := fnv.New32a()
 			h.Write([]byte(msg.Content))
 			prefixHash = h.Sum32()

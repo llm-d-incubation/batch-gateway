@@ -203,6 +203,11 @@ func (p *Processor) executeJob(
 // processModel processes all plan entries for a single model concurrently.
 // Concurrency is bounded by both a global semaphore (p.globalSem, shared across
 // all models/workers) and a per-model semaphore (PerModelMaxConcurrency).
+//
+// Error strategy in this function: when a goroutine encounters a fatal error, firstErr is captured
+// via errOnce but the context is NOT cancelled within this function. Already-dispatched
+// goroutines run to completion. Context cancellation is propagated at the executeJob level
+// (execCancel), which stops dispatch across all models.
 func (p *Processor) processModel(
 	ctx context.Context,
 	inputFile *os.File,
