@@ -249,14 +249,15 @@ dispatch:
 			break
 		}
 
-		// Acquire per-model semaphore
+		// Acquire semaphores in order: local (per-model) before global (shared).
+		// This order prevents starving other models — blocking on global only wastes a local slot.
+		// TODO: consider extracting a generic ordered-semaphore utility if this pattern is needed elsewhere.
 		select {
 		case modelSem <- struct{}{}:
 		case <-ctx.Done():
 			break dispatch
 		}
 
-		// Acquire global semaphore
 		select {
 		case p.globalSem <- struct{}{}:
 		case <-ctx.Done():
