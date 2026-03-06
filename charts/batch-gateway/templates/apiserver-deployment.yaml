@@ -39,6 +39,13 @@ spec:
         args:
         - --config=/etc/config/config.yaml
         - --v={{ .Values.apiserver.logging.verbosity }}
+        {{- if .Values.global.otel.endpoint }}
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.global.otel.endpoint | quote }}
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: {{ .Values.global.otel.insecure | quote }}
+        {{- end }}
         ports:
         - name: http
           containerPort: {{ .Values.apiserver.config.port }}
@@ -53,6 +60,7 @@ spec:
         - name: config
           mountPath: /etc/config
           readOnly: true
+        {{- include "batch-gateway.filesStorage.volumeMount" . | nindent 8 }}
         {{- if .Values.apiserver.tls.enabled }}
         - name: tls
           mountPath: /etc/tls
@@ -61,10 +69,16 @@ spec:
         {{- with .Values.apiserver.volumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- if .Values.global.appSecretName }}
+        - name: secrets
+          mountPath: /etc/.secrets
+          readOnly: true
+        {{- end }}
       volumes:
       - name: config
         configMap:
           name: {{ include "batch-gateway.apiserver.fullname" . }}-config
+      {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
       {{- if .Values.apiserver.tls.enabled }}
       - name: tls
         secret:
@@ -75,6 +89,13 @@ spec:
           {{- else }}
           secretName: {{ include "batch-gateway.apiserver.fullname" . }}-tls
           {{- end }}
+      {{- end }}
+      {{- if .Values.global.appSecretName }}
+      - name: secrets
+        projected:
+          sources:
+          - secret:
+              name: {{ .Values.global.appSecretName }}
       {{- end }}
       {{- with .Values.apiserver.volumes }}
       {{- toYaml . | nindent 6 }}

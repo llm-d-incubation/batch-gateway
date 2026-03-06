@@ -20,15 +20,13 @@ package config
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"strings"
 	"time"
 
+	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
+	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	"gopkg.in/yaml.v3"
 )
-
-const secretsMountPath = "/etc/.secrets"
 
 type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
@@ -38,8 +36,13 @@ type ProcessorConfig struct {
 	// NumWorkers is the fixed number of worker goroutines spawned to process jobs
 	NumWorkers int `yaml:"num_workers"`
 
-	// MaxJobConcurrency defines how many lines within a single job are processed concurrently
-	MaxJobConcurrency int `yaml:"max_job_concurrency"`
+	// GlobalConcurrency limits total in-flight inference requests across all workers in a processor.
+	// Protects system resources (goroutines, sockets, memory) from unbounded growth.
+	GlobalConcurrency int `yaml:"global_concurrency"`
+
+	// PerModelMaxConcurrency limits concurrent inference requests per individual model.
+	// Protects downstream inference gateway from being overwhelmed by a single model's requests.
+	PerModelMaxConcurrency int `yaml:"per_model_max_concurrency"`
 
 	// PollInterval defines how frequently the processor checks the database for new jobs
 	PollInterval time.Duration `yaml:"poll_interval"`
@@ -50,11 +53,8 @@ type ProcessorConfig struct {
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
 
-	// MaxOpenFiles is the maximum number of open files for the plan writer
-	MaxOpenFiles int `yaml:"max_open_files"`
-
-	// DatabaseURLFile is the filename within secretsMountPath containing the database connection URL.
-	DatabaseURLFile string `yaml:"database_url_file"`
+	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
+	DatabaseType string `yaml:"database_type"`
 
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`
@@ -82,6 +82,18 @@ type ProcessorConfig struct {
 
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
+
+	// OTel holds OpenTelemetry-related settings.
+	OTel struct {
+		RedisTracing bool `yaml:"redis_tracing"`
+	} `yaml:"otel"`
+
+	// FileClient holds configuration for the shared file storage client (fs or s3).
+	FileClientCfg struct {
+		Type     string          `yaml:"type"`
+		FSConfig fsclient.Config `yaml:"fs"`
+		S3Config s3client.Config `yaml:"s3"`
+	} `yaml:"file_client"`
 }
 
 type RetryConfig struct {
@@ -96,9 +108,6 @@ type InferenceConfig struct {
 
 	// RequestTimeout is the timeout for individual inference requests
 	RequestTimeout time.Duration `yaml:"request_timeout"`
-
-	// APIKeyFile is the filename within secretsMountPath containing the inference gateway API key.
-	APIKeyFile string `yaml:"api_key_file"`
 
 	// MaxRetries is the maximum number of retry attempts for failed requests
 	MaxRetries int `yaml:"max_retries"`
@@ -164,14 +173,22 @@ func NewConfig() *ProcessorConfig {
 			BucketCount:  10,
 		},
 
-		MaxJobConcurrency: 10,
-		NumWorkers:        1,
-		Addr:              ":9090",
+		GlobalConcurrency:      100,
+		PerModelMaxConcurrency: 10,
+		NumWorkers:             1,
+		Addr:                   ":9090",
 		// Keep observability as best-effort by default.
 		TerminateOnObservabilityFailure: false,
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
-		MaxOpenFiles:                    50, // default to 50 open files
+		DatabaseType:                    "redis",
+		FileClientCfg: struct {
+			Type     string          `yaml:"type"`
+			FSConfig fsclient.Config `yaml:"fs"`
+			S3Config s3client.Config `yaml:"s3"`
+		}{
+			Type: "mock",
+		},
 		InferenceConfig: InferenceConfig{
 			GatewayURL:            "http://localhost:8000",
 			RequestTimeout:        5 * time.Minute,
@@ -190,33 +207,6 @@ func NewConfig() *ProcessorConfig {
 	}
 }
 
-func (pc *ProcessorConfig) GetDatabaseURL() (string, error) {
-	return readSecretFile(pc.DatabaseURLFile)
-}
-
-func (pc *ProcessorConfig) GetInferenceAPIKey() (string, error) {
-	return readSecretFile(pc.InferenceConfig.APIKeyFile)
-}
-
-func readSecretFile(filename string) (string, error) {
-	if filename == "" {
-		return "", nil
-	}
-	f, err := os.OpenInRoot(secretsMountPath, filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
 func (c *ProcessorConfig) Validate() error {
 	if c.PollInterval <= 0 {
 		return fmt.Errorf("poll_interval must be > 0")
@@ -230,8 +220,14 @@ func (c *ProcessorConfig) Validate() error {
 	if c.NumWorkers <= 0 {
 		return fmt.Errorf("num_workers must be > 0")
 	}
-	if c.MaxJobConcurrency <= 0 {
-		return fmt.Errorf("max_job_concurrency must be > 0")
+	if c.GlobalConcurrency <= 0 {
+		return fmt.Errorf("global_concurrency must be > 0")
+	}
+	if c.PerModelMaxConcurrency <= 0 {
+		return fmt.Errorf("per_model_max_concurrency must be > 0")
+	}
+	if c.PerModelMaxConcurrency > c.GlobalConcurrency {
+		return fmt.Errorf("per_model_max_concurrency (%d) must be <= global_concurrency (%d)", c.PerModelMaxConcurrency, c.GlobalConcurrency)
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
@@ -309,11 +305,6 @@ func (c *ProcessorConfig) Validate() error {
 	}
 	if c.UploadRetry.MaxBackoff < c.UploadRetry.InitialBackoff {
 		return fmt.Errorf("upload_retry.max_backoff must be >= upload_retry.initial_backoff")
-	}
-
-	// <= 0 means unlimited.
-	if c.MaxOpenFiles <= 0 {
-		c.MaxOpenFiles = 0
 	}
 
 	if c.ProgressTTLSeconds <= 0 {

@@ -14,10 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements batch database interfaces using postgresql.
+package openai
 
-package postgresql
-
-type PostgreSQLConfig struct {
-	Url string
-}
+const (
+	// MinExpirationSeconds is the minimum allowed expiration time (1 hour)
+	MinExpirationSeconds = 3600
+	// MaxExpirationSeconds is the maximum allowed expiration time (30 days)
+	MaxExpirationSeconds = 2592000
+)

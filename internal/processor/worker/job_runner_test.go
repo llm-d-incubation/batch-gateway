@@ -12,6 +12,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
 type errEventClient struct {
@@ -26,8 +27,8 @@ func (c *errEventClient) ECConsumerGetChannel(ctx context.Context, ID string) (*
 func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
-	p := NewProcessor(cfg, &ProcessorClients{
-		event: &errEventClient{err: errors.New("event unavailable")},
+	p := NewProcessor(cfg, &clientset.Clientset{
+		Event: &errEventClient{err: errors.New("event unavailable")},
 	})
 
 	if !p.acquire(context.Background()) {
@@ -53,10 +54,10 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 	eventClient := mockdb.NewMockBatchEventChannelClient()
-	p := NewProcessor(cfg, &ProcessorClients{
-		database: dbClient,
-		status:   statusClient,
-		event:    eventClient,
+	p := NewProcessor(cfg, &clientset.Clientset{
+		BatchDB: dbClient,
+		Status:  statusClient,
+		Event:   eventClient,
 	})
 
 	jobItem := &db.BatchItem{
@@ -113,7 +114,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 	}
 	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
-	p := NewProcessor(config.NewConfig(), &ProcessorClients{})
+	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
 	err := p.handleFailed(testLoggerCtx(), &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{

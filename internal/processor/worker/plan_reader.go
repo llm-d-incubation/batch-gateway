@@ -25,7 +25,16 @@ import (
 	"path/filepath"
 )
 
-const planEntrySize = 12 // 8 bytes offset + 4 bytes length
+const planEntrySize = 16 // 8 bytes offset + 4 bytes length + 4 bytes prefixHash
+
+// unmarshalPlanEntry decodes a 16-byte little-endian buffer into a planEntry.
+func unmarshalPlanEntry(buf [planEntrySize]byte) planEntry {
+	return planEntry{
+		Offset:     int64(binary.LittleEndian.Uint64(buf[0:8])),
+		Length:     binary.LittleEndian.Uint32(buf[8:12]),
+		PrefixHash: binary.LittleEndian.Uint32(buf[12:16]),
+	}
+}
 
 // readPlanEntries reads all plan entries from a finalized plan file.
 func readPlanEntries(planFilePath string) ([]planEntry, error) {
@@ -57,10 +66,7 @@ func readPlanEntries(planFilePath string) ([]planEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read plan entry: %w", err)
 		}
-		entries = append(entries, planEntry{
-			Offset: int64(binary.LittleEndian.Uint64(buffer[0:8])),
-			Length: binary.LittleEndian.Uint32(buffer[8:12]),
-		})
+		entries = append(entries, unmarshalPlanEntry(buffer))
 	}
 
 	return entries, nil

@@ -39,6 +39,10 @@ host: 0.0.0.0
 port: "8080"
 ssl_cert_file: testdata/cert.pem
 ssl_key_file: testdata/key.pem
+database_type: "mock"
+file_client:
+  type: "fs"
+  fs_base_path: "/tmp/batch-gateway"
 `,
 				fileName: "config.yaml",
 				want: ServerConfig{
@@ -54,6 +58,10 @@ ssl_key_file: testdata/key.pem
 				yamlConfig: `
 host: 127.0.0.1
 port: "9000"
+database_type: "mock"
+file_client:
+  type: "fs"
+  fs_base_path: "/tmp/batch-gateway"
 `,
 				fileName: "config.yml",
 				want: ServerConfig{
@@ -67,6 +75,10 @@ port: "9000"
 				yamlConfig: `
 host: localhost
 port: "3000"
+database_type: "mock"
+file_client:
+  type: "fs"
+  fs_base_path: "/tmp/batch-gateway"
 `,
 				fileName: "config.yaml",
 				want: ServerConfig{
@@ -109,7 +121,8 @@ port: "3000"
 				err := config.Load()
 
 				if (err != nil) != tt.wantErr {
-					t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
+					cwd, _ := os.Getwd()
+					t.Errorf("Load() error = %v, wantErr %v (cwd: %s, configFile: %s)", err, tt.wantErr, cwd, configFile)
 					return
 				}
 

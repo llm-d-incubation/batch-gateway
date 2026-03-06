@@ -32,29 +32,36 @@ import (
 	mockapi "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
-func setupBatchAPIHandlerForTest() (*BatchAPIHandler, dbapi.FileDBClient) {
+func setupTestHandler() *BatchAPIHandler {
 	config := &common.ServerConfig{}
-	dbClient := mockapi.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
-		func(b *dbapi.BatchItem) string { return b.ID },
-		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
-	)
-	fileDBClient := mockapi.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
-		func(f *dbapi.FileItem) string { return f.ID },
-		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
-	)
-	eventClient := mockapi.NewMockBatchEventChannelClient()
-	queueClient := mockapi.NewMockBatchPriorityQueueClient()
-	statusClient := mockapi.NewMockBatchStatusClient()
-	handler := NewBatchAPIHandler(config, dbClient, fileDBClient, queueClient, eventClient, statusClient)
-	return handler, fileDBClient
+
+	clients := &clientset.Clientset{
+		Inference: nil,
+		File:      nil,
+		BatchDB: mockapi.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
+			func(b *dbapi.BatchItem) string { return b.ID },
+			func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+		),
+		FileDB: mockapi.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
+			func(f *dbapi.FileItem) string { return f.ID },
+			func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+		),
+		Queue:  mockapi.NewMockBatchPriorityQueueClient(),
+		Event:  mockapi.NewMockBatchEventChannelClient(),
+		Status: mockapi.NewMockBatchStatusClient(),
+	}
+	handler := NewBatchAPIHandler(config, clients)
+	return handler
 }
 
 func TestBatchHandler(t *testing.T) {
 	t.Run("CreateBatch", func(t *testing.T) {
 		t.Run("Basic", func(t *testing.T) {
-			handler, fileDBClient := setupBatchAPIHandlerForTest()
+			handler := setupTestHandler()
 
 			// First, create a file in the database
 			fileItem := &dbapi.FileItem{
@@ -64,7 +71,7 @@ func TestBatchHandler(t *testing.T) {
 				},
 			}
 			ctx := context.Background()
-			if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+			if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
 				t.Fatalf("Failed to store file: %v", err)
 			}
 
@@ -119,7 +126,7 @@ func TestBatchHandler(t *testing.T) {
 		})
 
 		t.Run("WithOutputExpiresAfter", func(t *testing.T) {
-			handler, fileDBClient := setupBatchAPIHandlerForTest()
+			handler := setupTestHandler()
 
 			// First, create a file in the database
 			fileItem := &dbapi.FileItem{
@@ -129,7 +136,7 @@ func TestBatchHandler(t *testing.T) {
 				},
 			}
 			ctx := context.Background()
-			if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+			if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
 				t.Fatalf("Failed to store file: %v", err)
 			}
 
@@ -169,14 +176,13 @@ func TestBatchHandler(t *testing.T) {
 			}
 
 			// Verify tags were stored in database
-			dbClient := handler.batchDBClient
 			query := &dbapi.BatchQuery{
 				BaseQuery: dbapi.BaseQuery{
 					IDs:      []string{batch.ID},
 					TenantID: common.DefaultTenantID,
 				},
 			}
-			items, _, _, err := dbClient.DBGet(ctx, query, true, 0, 1)
+			items, _, _, err := handler.clients.BatchDB.DBGet(ctx, query, true, 0, 1)
 			if err != nil {
 				t.Fatalf("Failed to retrieve batch from database: %v", err)
 			}
@@ -185,19 +191,19 @@ func TestBatchHandler(t *testing.T) {
 			}
 
 			dbItem := items[0]
-			if dbItem.Tags["output_expires_after_seconds"] != "86400" {
+			if dbItem.Tags[batch_types.TagOutputExpiresAfterSeconds] != "86400" {
 				t.Errorf("Expected output_expires_after_seconds tag to be '86400', got %q",
-					dbItem.Tags["output_expires_after_seconds"])
+					dbItem.Tags[batch_types.TagOutputExpiresAfterSeconds])
 			}
-			if dbItem.Tags["output_expires_after_anchor"] != "created_at" {
+			if dbItem.Tags[batch_types.TagOutputExpiresAfterAnchor] != "created_at" {
 				t.Errorf("Expected output_expires_after_anchor tag to be 'created_at', got %q",
-					dbItem.Tags["output_expires_after_anchor"])
+					dbItem.Tags[batch_types.TagOutputExpiresAfterAnchor])
 			}
 		})
 
 		t.Run("Negative", func(t *testing.T) {
 			t.Run("UnknownField", func(t *testing.T) {
-				handler, _ := setupBatchAPIHandlerForTest()
+				handler := setupTestHandler()
 
 				// Send request with unknown field
 				reqBodyJSON := `{
@@ -235,7 +241,7 @@ func TestBatchHandler(t *testing.T) {
 			})
 
 			t.Run("FileNotFound", func(t *testing.T) {
-				handler, _ := setupBatchAPIHandlerForTest()
+				handler := setupTestHandler()
 
 				// Create batch with non-existent file
 				reqBody := openai.CreateBatchRequest{
@@ -277,8 +283,7 @@ func TestBatchHandler(t *testing.T) {
 	})
 
 	t.Run("RetrieveBatch", func(t *testing.T) {
-		handler, _ := setupBatchAPIHandlerForTest()
-		dbClient := handler.batchDBClient
+		handler := setupTestHandler()
 
 		// create a batch first
 		batchID := "batch-test-123"
@@ -304,7 +309,7 @@ func TestBatchHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to convert batch to DB item: %v", err)
 		}
-		if err := dbClient.DBStore(context.Background(), item); err != nil {
+		if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
 			t.Fatalf("Failed to store item: %v", err)
 		}
 
@@ -334,8 +339,7 @@ func TestBatchHandler(t *testing.T) {
 	})
 
 	t.Run("ListBatches", func(t *testing.T) {
-		handler, _ := setupBatchAPIHandlerForTest()
-		dbClient := handler.batchDBClient
+		handler := setupTestHandler()
 
 		// create two batches
 		for i := range 2 {
@@ -362,7 +366,7 @@ func TestBatchHandler(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to convert batch to DB item: %v", err)
 			}
-			if err := dbClient.DBStore(context.Background(), item); err != nil {
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
 				t.Fatalf("Failed to store item: %v", err)
 			}
 		}
@@ -406,8 +410,7 @@ func TestBatchHandler(t *testing.T) {
 	})
 
 	t.Run("CancelBatch", func(t *testing.T) {
-		handler, _ := setupBatchAPIHandlerForTest()
-		dbClient := handler.batchDBClient
+		handler := setupTestHandler()
 
 		// create a batch first
 		batchID := "batch-test-cancel"
@@ -429,11 +432,14 @@ func TestBatchHandler(t *testing.T) {
 				},
 			},
 		}
-		item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{})
+		slo := time.Now().UTC().Add(24 * time.Hour)
+		item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
+			batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+		})
 		if err != nil {
 			t.Fatalf("Failed to convert batch to DB item: %v", err)
 		}
-		if err := dbClient.DBStore(context.Background(), item); err != nil {
+		if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
 			t.Fatalf("Failed to store item: %v", err)
 		}
 
@@ -467,8 +473,7 @@ func TestBatchHandler(t *testing.T) {
 
 // Benchmark tests for batch handler
 func BenchmarkBatchHandler(b *testing.B) {
-	handler, _ := setupBatchAPIHandlerForTest()
-	dbClient := handler.batchDBClient
+	handler := setupTestHandler()
 
 	b.Run("CreateBatch", func(b *testing.B) {
 		reqBody := openai.CreateBatchRequest{
@@ -512,7 +517,7 @@ func BenchmarkBatchHandler(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Failed to convert batch to DB item: %v", err)
 		}
-		if err := dbClient.DBStore(context.Background(), item); err != nil {
+		if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
 			b.Fatalf("Failed to store item: %v", err)
 		}
 
@@ -551,7 +556,7 @@ func BenchmarkBatchHandler(b *testing.B) {
 			if err != nil {
 				b.Fatalf("Failed to convert batch to DB item: %v", err)
 			}
-			if err := dbClient.DBStore(context.Background(), item); err != nil {
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
 				b.Fatalf("Failed to store item: %v", err)
 			}
 		}
@@ -592,7 +597,7 @@ func BenchmarkBatchHandler(b *testing.B) {
 			if err != nil {
 				b.Fatalf("Failed to convert batch to DB item: %v", err)
 			}
-			if err := dbClient.DBStore(context.Background(), item); err != nil {
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
 				b.Fatalf("Failed to store item: %v", err)
 			}
 			b.StartTimer()

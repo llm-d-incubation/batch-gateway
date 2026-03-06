@@ -28,13 +28,16 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"k8s.io/klog/v2"
 )
 
 // HTTPClient implements InferenceClient interface for HTTP-based inference gateways
 // Supports both llm-d (OpenAI-compatible) and GAIE endpoints
 type HTTPClient struct {
-	client *resty.Client
+	client    *resty.Client
+	transport *http.Transport // underlying transport (before OTel wrapping), for testing
 }
 
 // HTTPClientConfig holds configuration for the HTTP client
@@ -114,7 +117,11 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	}
 	// Otherwise, TLSClientConfig stays nil = Go uses system root CAs + TLS 1.2+ defaults
 
-	client.SetTransport(transport)
+	client.SetTransport(otelhttp.NewTransport(transport,
+		otelhttp.WithSpanNameFormatter(func(_ string, _ *http.Request) string {
+			return "inference-request"
+		}),
+	))
 
 	// Configure retry only if enabled
 	if config.MaxRetries > 0 {
@@ -144,7 +151,8 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	}
 
 	return &HTTPClient{
-		client: client,
+		client:    client,
+		transport: transport,
 	}, nil
 }
 
@@ -173,6 +181,11 @@ func (c *HTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*Gener
 	// Set request ID header if provided
 	if req.RequestID != "" {
 		restyReq.SetHeader("X-Request-ID", req.RequestID)
+	}
+
+	// Set pass-through headers
+	for k, v := range req.Headers {
+		restyReq.SetHeader(k, v)
 	}
 
 	// Set request body (resty handles JSON marshaling)
@@ -217,8 +230,11 @@ func (c *HTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*Gener
 		}
 	}
 
-	klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d",
-		req.RequestID, resp.StatusCode(), len(resp.Body()))
+	if klog.V(logging.DEBUG).Enabled() {
+		promptTokens, completionTokens, totalTokens := extractUsage(rawData)
+		klog.V(logging.DEBUG).Infof("Received successful response for request_id=%s, status=%d, body_size=%d, prompt_tokens=%v, completion_tokens=%v, total_tokens=%v",
+			req.RequestID, resp.StatusCode(), len(resp.Body()), promptTokens, completionTokens, totalTokens)
+	}
 
 	return &GenerateResponse{
 		RequestID: req.RequestID,
@@ -363,4 +379,15 @@ func buildTLSConfig(config HTTPClientConfig) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+// extractUsage pulls prompt/completion/total token counts from a parsed JSON response body.
+// Returns nil for any field not present.
+func extractUsage(rawData interface{}) (promptTokens, completionTokens, totalTokens interface{}) {
+	if m, ok := rawData.(map[string]interface{}); ok {
+		if usage, ok := m["usage"].(map[string]interface{}); ok {
+			return usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"]
+		}
+	}
+	return nil, nil, nil
 }

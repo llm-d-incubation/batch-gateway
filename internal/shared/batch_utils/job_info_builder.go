@@ -39,11 +39,20 @@ func FromDBItemToJobInfoObject(job *db.BatchItem) (*batch_types.JobInfo, error) 
 	}
 
 	jobInfo.BatchJob = batchJob
+	jobInfo.TenantID = job.TenantID
 
-	for _, tag := range job.Tags {
-		if strings.HasPrefix(tag, "tenant:") {
-			jobInfo.TenantID = strings.TrimPrefix(tag, "tenant:")
-			break
+	// Extract pass-through headers and OTel trace context from tags
+	for key, value := range job.Tags {
+		if strings.HasPrefix(key, batch_types.TagPrefixPassThroughHeader) {
+			if jobInfo.PassThroughHeaders == nil {
+				jobInfo.PassThroughHeaders = make(map[string]string)
+			}
+			jobInfo.PassThroughHeaders[strings.TrimPrefix(key, batch_types.TagPrefixPassThroughHeader)] = value
+		} else if strings.HasPrefix(key, batch_types.TagPrefixOTel) {
+			if jobInfo.TraceContext == nil {
+				jobInfo.TraceContext = make(map[string]string)
+			}
+			jobInfo.TraceContext[strings.TrimPrefix(key, batch_types.TagPrefixOTel)] = value
 		}
 	}
 

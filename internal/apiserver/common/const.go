@@ -14,10 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements batch database interfaces using postgresql.
+package common
 
-package postgresql
+type ContextKey string
 
-type PostgreSQLConfig struct {
-	Url string
-}
+const (
+	RequestIDKey ContextKey = "requestID"
+	TenantIDKey  ContextKey = "tenantID"
+
+	DefaultRequestID = "unknown"
+	DefaultTenantID  = "default"
+
+	PathParamFileID  = "file_id"
+	PathParamBatchID = "batch_id"
+
+	QueryParamLimit   = "limit"
+	QueryParamAfter   = "after"
+	QueryParamOrder   = "order"
+	QueryParamPurpose = "purpose"
+)

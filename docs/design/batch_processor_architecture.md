@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 1
--   **Last Updated**: 2026-02-17
+-   **Revision**: 2
+-   **Last Updated**: 2026-03-03
 
 -------------------------------------------------------------------
 
@@ -30,14 +30,8 @@ This document describes the proposed 3-phase processing architecture and schedul
 
 -   Maximum 50,000 requests per batch
 -   Maximum 200MB input file
--   Memory usage must be bounded and independent of request count
--   Only active requests should reside in memory
-
-Target memory complexity:
-
-```
-O(activeModels + concurrency)
-```
+-   Memory usage must be bounded regardless of request count
+-   Request bodies are never accumulated in memory
 
 -------------------------------------------------------------------
 
@@ -99,7 +93,7 @@ Unsupported features must return OpenAI-compatible error responses.
 **Non-Goals (MVP)**
 
 -   GPU placement or resource allocation strategies
--   Cross-job fairness (time-sliced or budget-based scheduling across multiple jobs) is not provided. Jobs are processed in a run-to-completion manner once assigned to a worker. Model-level fairness is achieved via bounded concurrent dispatch with per-model concurrency limits and round-robin scheduling.
+-   Cross-job fairness (time-sliced or budget-based scheduling across multiple jobs) is not provided. Jobs are processed in a run-to-completion manner once assigned to a worker. Model-level fairness is achieved via bounded concurrent dispatch with global and per-model concurrency limits using semaphores.
 -   Cost-based (token-length-aware) scheduling - cost(expected total tokens: input + max output tokens, expected execution time, GPU compute usage, memory footprint, average latency history) is not considered.
 -   Advanced adaptive scheduling (e.g., latency-aware scheduling, backpressure-based throttling, token-cost-aware scheduling, dynamic budget tuning) is not provided.
 -   Assumption (MVP): the priority queue provides exclusive dequeue semantics. Lease/heartbeat-based recovery for worker death is out of scope for MVP.
@@ -130,15 +124,15 @@ Unsupported features must return OpenAI-compatible error responses.
             ↓
         - Read line by line
             ↓
-        - Write to local storage
+        - Write to local storage (input.jsonl)
             ↓
-        - Parse (minimal) to get the requested model of the request
+        - Parse (minimal) to get the requested model of the request and PrefixHash value
             ↓
-        - Write the request's location and size to plan files
+        - accumulate the request's location, size, and PrefixHash in memory
+            ↓
+        - Sort accumulated plan entries per model by PrefixHash, write sorted entries to plan files, and create a metadata file for model ID to filename map and total request line information
             ↓
         - Finalize input file
-            ↓
-        - Finalize plan files per model, and a metadata file for model ID to filename map, and total request line information
       ↓
     [ Process Phase 2 ] – Scheduling & Execution
       ↓
@@ -239,8 +233,9 @@ For each `input.jsonl` line:
 1.  Compute current byte offset in input.jsonl file
 2.  Compute request length (including newline)
 3.  Parse minimal JSON to extract model
-4.  Intern modelID for plan file name
-5.  Append plan entry to plan file (per model)
+4.  Extract and hash the system prompt content from the request body for grouping requests with identical system prompts in Phase 2. If the system prompt is absent, the hash defaults to 0.
+5.  Intern modelID for plan file name
+6.  Accumulate plan entry (offset, length, prefix hash) in memory per model
 
 
 -------------------------------------------------------------------
@@ -260,10 +255,11 @@ Renamed atomically upon completion.
 - Plan entry format:
 
 ``` go
-// Plan Entry Structure (Binary, 12 bytes)
+// Plan Entry Structure (Binary, 16 bytes)
 type PlanEntry struct {
-    Offset int64  // 8 bytes: Position in input.jsonl
-    Length uint32 // 4 bytes: Length of the JSON line
+    Offset     int64  // 8 bytes: Position in input.jsonl
+    Length     uint32 // 4 bytes: Length of the JSON line
+    PrefixHash uint32 // 4 bytes: FNV-32a hash of the request's system prompt, used to group requests with identical system prompts in Phase 2
 }
 ```
 The request JSON body is NOT stored in the plan.
@@ -274,17 +270,18 @@ The plan acts as an index into `input.jsonl`.
 
 ##### Memory Characteristics
 
--   Plan entry ≈ 12 bytes
--   50,000 requests → ~600KB plan storage
--   Requests are never accumulated in memory
--   Only in-flight requests reside in memory
+-   Plan entry ≈ 16 bytes
+-   50,000 requests → ~800KB plan storage
+-   Request bodies are never accumulated in memory; only lightweight plan entries (16 bytes each) are held in memory during Phase 1
+-   Only in-flight requests reside in memory during Phase 2
 
-Worst-case memory usage:
+Worst-case memory usage (processor-level):
 ```
-O(activeModels + concurrency)
+Phase 1: O(totalRequestsPerJob × numWorkers) plan entries in memory (≤ 800KB per worker for 50,000 requests)
+Phase 2: O(GlobalConcurrency) in-flight requests (shared across all workers)
 ```
 
-Independent of total request count.
+Plan entry overhead is negligible (16 bytes each). Request bodies are never buffered.
 
 ------------------------------------------------------------------------
 
@@ -297,71 +294,99 @@ Each plan file functions as a per-model execution queue.
 
 -------------------------------------------------------------------
 
-##### Scheduling Policy: Sticky Model + Budget (round-robin) with Bounded Concurrency
-**Scheduling semantics (important):**
-- Round-robin is used only for **model selection at dispatch time**.
-- It is **not** a sequential "one-model-at-a-time" execution mode.
-- Actual request execution is always asynchronous and bounded by concurrency controls.
-- The scheduler continuously fills available slots up to `GlobalConcurrency`, while respecting `PerModelConcurrency`.
-- `model_request_budget` controls fairness/locality trade-off per turn, not overall parallelism.
+##### Scheduling Policy: Per-Model Goroutines with Semaphore-Based Concurrency Control
+
+**Scheduling semantics:**
+- Each model runs in its own goroutine, independently dispatching requests from its plan file.
+- (Updated) There is no central round-robin scheduler or model selection loop.
+- Concurrency is controlled by two levels of semaphores:
+  - **Global semaphore** (`GlobalConcurrency`): limits total in-flight requests across all workers in a processor.
+  - **Per-model semaphore** (`PerModelMaxConcurrency`): limits concurrent requests per individual model.
+- Fairness across models is achieved naturally through goroutine scheduling and the global semaphore: no single model can monopolize all slots because each model is independently bounded by `PerModelMaxConcurrency`.
+
+**Downstream-aware ordering:**
+- Plan entries are already sorted by `PrefixHash` during Phase 1 finalization.
+- This groups requests with the same system prompt together, enabling the downstream inference gateway to maximize KV prefix cache hits by routing similar requests to the same backend pod.
 
 ###### Scheduling and Execution Sequence
 ``` mermaid
 sequenceDiagram
-    participant S as Scheduler
-    participant P as Plan Reader
-    participant E as Executor (Goroutines)
+    participant Ex as Executor
+    participant GS as GlobalSemaphore
+    participant MS as ModelSemaphore
+    participant E as Goroutine
     participant B as Inference Backend
     participant W as Result Writer
 
-    Note over S: round-robin rotation starts
+    Note over Ex: Launch one goroutine per model
 
-    loop Until All Plans Drained
-        S->>S: Select Next Model (Sticky Model)
-
-        loop Within Model Budget & Global/Per-Model Concurrency
-            S->>P: Request Plan Entry (Offset/Length)
-            P-->>S: Return Entry
-
-            S->>E: Dispatch Request (Async)
+    par Model A Goroutine
+        loop For each plan entry (sorted by PrefixHash)
+            Ex->>GS: Acquire global slot
+            Ex->>MS: Acquire model slot
+            Ex->>E: Dispatch request (async)
             activate E
             E->>E: ReadAt(input.jsonl, offset, length)
-            E->>B: Post Inference Request
-            B-->>E: Return Response
-            E->>W: Send to Writing Channel
+            E->>B: POST inference request
+            B-->>E: Return response
+            E->>W: Write result
+            E->>MS: Release model slot
+            E->>GS: Release global slot
             deactivate E
-
-            W->>W: Append to output.jsonl
         end
-
-        Note over S: Switch to Next Model
+    and Model B Goroutine
+        loop For each plan entry (sorted by PrefixHash)
+            Ex->>GS: Acquire global slot
+            Ex->>MS: Acquire model slot
+            Ex->>E: Dispatch request (async)
+            activate E
+            E->>B: POST inference request
+            B-->>E: Return response
+            E->>W: Write result
+            E->>MS: Release model slot
+            E->>GS: Release global slot
+            deactivate E
+        end
     end
 
-    S->>W: Signal Completion
-    W-->>S: Finalize & Close File
+    Ex->>W: Signal Completion
+    W-->>Ex: Finalize & Close File
 ```
 
 ###### Algorithm:
-1.  Scheduler iterates models in round-robin order.
-2.  For each model, it dispatches up to `model_request_budget` requests subject to:
-    - `GlobalConcurrency` (max in-flight requests per job)
-    - `PerModelConcurrency` (max in-flight requests per model)
-3.  When a model is drained, it is removed from rotation.
+1.  Executor launches one goroutine per model.
+2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during Phase 1 finalization) and dispatches requests concurrently, subject to:
+    - `GlobalConcurrency` (global semaphore: max in-flight requests across all workers. this is to protect system resource from too many goroutines being opened at once)
+    - `PerModelMaxConcurrency` (per-model semaphore: max in-flight requests per model. this is to protect downstream from too many requests being dumped at once)
+3.  When a model's plan is fully drained, its goroutine exits.
+4.  The executor waits for all model goroutines to complete before finalizing.
 
 Goals:
--   Preserve locality
--   Ensure fairness
--   Prevent starvation
+-   Maximize downstream prefix cache efficiency via sorted dispatch order
+-   Ensure fairness across models via bounded per-model concurrency
+-   Prevent system overload via global concurrency cap
 
-If a model has fewer than `model_request_budget` entries remaining, it is drained and removed at once.
+**Limitation — PrefixHash grouping (exact match only):**
+
+The current implementation hashes the full system prompt text using FNV-32a and groups requests with identical hashes. This means only requests with **exactly the same** system prompt are grouped together — requests with **similar but not identical** prompts are not considered neighbors.
+
+This is a known limitation. Downstream inference engines (e.g., vLLM) perform prefix matching at the token level, where even partially overlapping prompts can benefit from KV cache reuse. A more advanced approach (e.g., greedy string prefix matching or token-aware grouping) could capture these "similar prefix" cases, but adds complexity (tokenization dependency, O(n²) comparisons, etc.) that is out of scope for the MVP.
+
+For the MVP, exact-match grouping via hashing provides a simple, O(n log n) solution that captures the most common case (many requests sharing the same system prompt verbatim) without introducing additional dependencies.
+
+FNV-32a hash collisions (32-bit space, ~4 billion values) are theoretically possible but do not affect correctness — they only reduce grouping optimality. In practice, the number of distinct system prompts per batch is small relative to the hash space, making collisions negligible.
+
+**Future work — similar-prefix grouping:**
+
+A potential improvement is to sort by the system prompt string lexicographically instead of by hash. Lexicographic sorting naturally places prompts with a shared prefix adjacent to each other, which would improve KV cache hit rates for prompts that are similar but not identical. This avoids tokenization dependency (which would couple the batch gateway to model-specific tokenizers) while still capturing partial prefix overlap at the string level. The main trade-off is memory: it requires holding system prompt strings in memory during Phase 1 rather than just a 4-byte hash. This is tracked as a post-MVP enhancement.
 
 -------------------------------------------------------------------
 
 ###### Concurrency Budget Terms
-**Global Concurrency**: Limits total in-flight inference calls.
-**Per Model Concurrency**: Limits concurrent execution per model.
-    - Default recommendation: small value (e.g., 1-2)
-**Model Request Budget**: Limits number of requests that can be processed in one turn (once this is exceeded, process other models as we don't want to starve models with smaller requests)
+**Global Concurrency** (`GlobalConcurrency`): Limits total in-flight inference calls across all workers in a processor. Protects system resources (goroutines, sockets, memory) from unbounded growth as models and jobs scale.
+    - Default: 100
+**Per-Model Concurrency** (`PerModelMaxConcurrency`): Limits concurrent execution per model. Protects downstream inference gateway from being overwhelmed by a single model's requests.
+    - Default: 10
 
 -------------------------------------------------------------------
 
@@ -387,16 +412,15 @@ Approaches:
 
 #### Planner
 -   Download input
--   Build per-model plans
+-   Build per-model plans (accumulate entries in memory)
+-   Sort plan entries by PrefixHash for downstream optimization
+-   Write sorted plan files to disk
 -   Create metadata file
--   Append entries
--   Manage open file limits
 -   Provide plan readers
 
 #### Scheduler
--   Model selection
--   Budget enforcement
--   Concurrency control
+-   Per-model goroutine lifecycle management
+-   Global and per-model concurrency control via semaphores
 
 #### Executor
 -   Read request via offset/length
@@ -462,13 +486,16 @@ Approaches:
 
 The following metrics improve visibility into scheduling behavior, concurrency control, and phase-level performance.
 
+- `processor_max_inflight_concurrency` (gauge)
+  Configured `GlobalConcurrency` value. Used with `processor_inflight_requests` to compute utilization.
+
 - `processor_inflight_requests` (gauge)
-  Global number of in-flight inference requests (bounded by `GlobalConcurrency`).
+  Global number of in-flight inference requests across all workers (bounded by `GlobalConcurrency`).
   This is the primary saturation signal for scheduler/executor health and is kept intentionally
   even when per-model metrics are present.
 
 - `model_inflight_requests{model}` (gauge)
-  Per-model in-flight request count (bounded by `PerModelConcurrency`).
+  Per-model in-flight request count (bounded by `PerModelMaxConcurrency`).
   This is a decomposition metric for in-flight requests status which enables control over request per model
 
 

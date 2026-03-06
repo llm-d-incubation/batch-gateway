@@ -11,6 +11,10 @@ process_time_bucket:
   bucket_factor: 2
   bucket_count: 15
 
+# Concurrency Control
+global_concurrency: 100
+per_model_max_concurrency: 10
+
 # Metrics & Health Check Server Address - ":PORT" format (e.g. ":9090")
 addr: ":9090"
 # Observability server failure should not terminate the processor in best-effort mode by default.
@@ -21,9 +25,6 @@ shutdown_timeout: "30s"
 
 # Work directory for processor
 work_dir: "/var/lib/batch-gateway/processor"
-
-# Maximum number of open files for the plan writer (unlimited if <= 0)
-max_open_files: 50
 
 # Inference Client Configuration
 inference_config:

@@ -28,6 +28,7 @@ type GenerateRequest struct {
 	RequestID string                 // unique request id set by user
 	Endpoint  string                 // API endpoint (e.g., "/v1/chat/completions")
 	Params    map[string]interface{} // parameters (must include "model")
+	Headers   map[string]string      // extra headers to forward to the inference endpoint
 }
 
 // Request Params example openai chat completion with tool calls:
