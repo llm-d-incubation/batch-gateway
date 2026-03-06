@@ -24,6 +24,16 @@ data:
 
     inference_config:
       gateway_url: {{ .Values.processor.config.inferenceConfig.gatewayUrl | quote }}
+      {{- with .Values.processor.config.inferenceConfig.modelGateways }}
+      model_gateways:
+        {{- range $model, $cfg := . }}
+        {{ $model | quote }}:
+          url: {{ $cfg.url | quote }}
+          {{- if $cfg.apiKeyName }}
+          api_key_name: {{ $cfg.apiKeyName | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
       request_timeout: {{ .Values.processor.config.inferenceConfig.requestTimeout | quote }}
       max_retries: {{ .Values.processor.config.inferenceConfig.maxRetries }}
       initial_backoff: {{ .Values.processor.config.inferenceConfig.initialBackoff | quote }}

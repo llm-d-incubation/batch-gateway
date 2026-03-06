@@ -28,8 +28,19 @@ work_dir: "/var/lib/batch-gateway/processor"
 
 # Inference Client Configuration
 inference_config:
-  # Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
+  # Default inference gateway endpoint, used for all models unless overridden below.
   gateway_url: "http://localhost:8000"
+
+  # Per-model gateway overrides (optional).
+  # Lookup order: model_gateways[model] -> gateway_url (fallback).
+  # api_key_name is a key name in /etc/.secrets/; when omitted, the default
+  # inference-api-key secret is used.
+  # model_gateways:
+  #   "llama-3":
+  #     url: "http://gateway-a:8000"
+  #   "mistral":
+  #     url: "http://gateway-b:8000"
+  #     api_key_name: "gateway-b-api-key"
 
   # Request timeout for individual inference requests
   request_timeout: "5m"

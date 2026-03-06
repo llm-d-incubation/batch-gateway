@@ -26,7 +26,7 @@ func validProcessorClients() *clientset.Clientset {
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Status:    mockdb.NewMockBatchStatusClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		Inference: &fakeInferenceClient{},
+		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}
 }
 

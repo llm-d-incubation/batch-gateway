@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -287,7 +288,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		EnableTracing: cfg.OTel.RedisTracing,
 	}
 
-	inferenceCfg := &inference.HTTPClientConfig{
+	inferenceHTTPCfg := &inference.HTTPClientConfig{
 		BaseURL:               cfg.InferenceConfig.GatewayURL,
 		Timeout:               cfg.InferenceConfig.RequestTimeout,
 		MaxRetries:            cfg.InferenceConfig.MaxRetries,
@@ -298,6 +299,16 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		TLSClientCertFile:     cfg.InferenceConfig.TLSClientCertFile,
 		TLSClientKeyFile:      cfg.InferenceConfig.TLSClientKeyFile,
 	}
+
+	modelEndpoints := make(map[string]inference.GatewayEndpoint, len(cfg.InferenceConfig.ModelGateways))
+	for model, gw := range cfg.InferenceConfig.ModelGateways {
+		ep, err := inference.NewGatewayEndpoint(gw.URL, gw.APIKeyName)
+		if err != nil {
+			return nil, fmt.Errorf("resolve gateway for model %q: %w", model, err)
+		}
+		modelEndpoints[model] = ep
+	}
+
 	clients, err := clientset.NewClientset(
 		ctx,
 		cfg.DatabaseType,
@@ -306,7 +317,8 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
-		inferenceCfg,
+		inferenceHTTPCfg,
+		modelEndpoints,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")

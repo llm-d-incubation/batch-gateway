@@ -263,7 +263,16 @@ processor:
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
     inferenceConfig:
-      gatewayUrl: "http://localhost:8000"
+      gatewayUrl: "http://localhost:8000"  # default for all models
+      # Per-model overrides. Lookup: modelGateways[model] -> gatewayUrl (fallback).
+      # apiKeyName is a key name in the app secret (mounted at /etc/.secrets/).
+      # When omitted, the default inference-api-key is used.
+      # modelGateways:
+      #   "llama-3":
+      #     url: "http://gateway-a:8000"
+      #   "mistral":
+      #     url: "http://gateway-b:8000"
+      #     apiKeyName: "gateway-b-api-key"
       requestTimeout: "5m"
       maxRetries: 3
       initialBackoff: "1s"

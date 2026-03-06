@@ -424,8 +424,29 @@ Approaches:
 
 #### Executor
 -   Read request via offset/length
+-   Resolve per-model inference client via `GatewayResolver`
 -   Call inference backend
 -   Return result
+
+###### Multi-Gateway Routing
+The processor supports routing requests to different inference gateway endpoints based on the model name. Configuration uses a **default + override** pattern with optional per-gateway API keys:
+
+```yaml
+inference_config:
+  gateway_url: "http://gateway-a:8000"       # default for all models
+  model_gateways:                             # optional per-model overrides
+    "llama-3":
+      url: "http://gateway-a:8000"
+    "mistral":
+      url: "http://gateway-b:8000"
+      api_key_name: "gateway-b-api-key"       # key name in /etc/.secrets/
+```
+
+**Lookup order:** `model_gateways[model]` -> `gateway_url` (fallback).
+
+Each entry in `model_gateways` has a `url` and an optional `api_key_name`. The `api_key_name` is a key name within the mounted app secret (`/etc/.secrets/`). API key resolution follows the same fallback chain as other secrets: per-gateway key → default `inference-api-key` → no auth.
+
+`GatewayResolver` (in `internal/inference/gateway_resolver.go`) manages the client pool. Clients sharing the same URL **and** API key reuse a single `HTTPClient` instance to reuse connection pools. When `model_gateways` is empty or absent, all models use `gateway_url` (backward compatible).
 
 #### ResultWriter
 

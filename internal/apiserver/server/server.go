@@ -63,6 +63,7 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 		&config.FileClientCfg.FSConfig,
 		&config.FileClientCfg.S3Config,
 		nil,
+		nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clients: %w", err)
