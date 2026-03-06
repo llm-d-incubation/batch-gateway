@@ -41,7 +41,7 @@ func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeBatch, "DBStore[Batch]", nil, nil)
+		itemTypeBatch, "DBStore[Batch]", nil)
 }
 
 func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) (err error) {
@@ -54,12 +54,12 @@ func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) 
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeFile, "DBStore[File]", nil, []interface{}{item.Purpose})
+		itemTypeFile, "DBStore[File]", []any{item.Purpose})
 }
 
 func (c *DSClientRedis) dbStore(ctx context.Context,
 	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
-	itemType, logPref string, extraFieldsBatch, extraFieldsFile []interface{}) (err error) {
+	itemType, logPref string, extraFields []any) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -71,12 +71,10 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 		logger.Error(err, logPref+": tags packing failed")
 		return err
 	}
-	args := []interface{}{itemType, versionV1, indexes.ID, indexes.TenantID,
+	args := []any{itemType, versionV1, indexes.ID, indexes.TenantID,
 		indexes.Expiry, ptags, contents.Status, contents.Spec, ttlSecDefault}
-	if len(extraFieldsFile) > 0 && itemType == itemTypeFile {
-		args = append(args, extraFieldsFile...)
-	} else if len(extraFieldsBatch) > 0 && itemType == itemTypeBatch {
-		args = append(args, extraFieldsBatch...)
+	if len(extraFields) > 0 {
+		args = append(args, extraFields...)
 	}
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
@@ -98,9 +96,9 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 }
 
 func getUpdateFields(status []byte, tags db_api.Tags) (
-	fields []interface{}, updateStatus, updateTags bool, err error) {
+	fields []any, updateStatus, updateTags bool, err error) {
 
-	fields = make([]interface{}, 0, 2)
+	fields = make([]any, 0, 2)
 	if len(status) > 0 {
 		fields = append(fields, fieldNameStatus, status)
 		updateStatus = true
@@ -228,7 +226,7 @@ func (c *DSClientRedis) dbGet(
 	ctx context.Context, itemType, logPref string,
 	includeStatic bool, start, limit int,
 	IDs []string, tagSelectors db_api.Tags, tagsLogicalCond db_api.LogicalCond,
-	expired bool, tenantID, purpose string) (res []interface{}, err error) {
+	expired bool, tenantID, purpose string) (res []any, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -324,7 +322,7 @@ func (c *BatchDBClientRedis) DBGet(
 		return
 	}
 
-	var res []interface{}
+	var res []any
 	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", includeStatic, start, limit,
 		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
 	if err != nil {
@@ -357,7 +355,7 @@ func (c *FileDBClientRedis) DBGet(
 		return
 	}
 
-	var res []interface{}
+	var res []any
 	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", includeStatic, start, limit,
 		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, query.Purpose)
 	if err != nil {
@@ -376,14 +374,14 @@ func (c *FileDBClientRedis) DBGet(
 	return
 }
 
-func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
+func processGetScriptResultBatch(res []any, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
 
 	if len(res) != 2 {
 		err = fmt.Errorf("unexpected result from script")
 		return
 	}
-	resItems, ok := res[1].([]interface{})
+	resItems, ok := res[1].([]any)
 	if !ok {
 		err = fmt.Errorf("unexpected result type from script: %T", res[1])
 		return
@@ -395,7 +393,7 @@ func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	}
 	items = make([]*db_api.BatchItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		item, err := batchItemFromHget(resItem.([]interface{}), includeStatic)
+		item, err := batchItemFromHget(resItem.([]any), includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -409,14 +407,14 @@ func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	return
 }
 
-func processGetScriptResultFile(res []interface{}, includeStatic bool) (
+func processGetScriptResultFile(res []any, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.FileItem, err error) {
 
 	if len(res) != 2 {
 		err = fmt.Errorf("unexpected result from script")
 		return
 	}
-	resItems, ok := res[1].([]interface{})
+	resItems, ok := res[1].([]any)
 	if !ok {
 		err = fmt.Errorf("unexpected result type from script: %T", res[1])
 		return
@@ -428,7 +426,7 @@ func processGetScriptResultFile(res []interface{}, includeStatic bool) (
 	}
 	items = make([]*db_api.FileItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		item, err := fileItemFromHget(resItem.([]interface{}), includeStatic)
+		item, err := fileItemFromHget(resItem.([]any), includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -483,7 +481,7 @@ func convertTags(tags map[string]string) (ctags []string) {
 	return
 }
 
-func batchItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.BatchItem, err error) {
+func batchItemFromHget(vals []any, includeStatic bool) (item *db_api.BatchItem, err error) {
 
 	ID, tenantID, expiry, tags, _, status, spec, err := itemFromHget(vals, includeStatic)
 	if err != nil {
@@ -506,7 +504,7 @@ func batchItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.Bat
 	return
 }
 
-func fileItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.FileItem, err error) {
+func fileItemFromHget(vals []any, includeStatic bool) (item *db_api.FileItem, err error) {
 
 	ID, tenantID, expiry, tags, purpose, status, spec, err := itemFromHget(vals, includeStatic)
 	if err != nil {
@@ -530,7 +528,7 @@ func fileItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.File
 	return
 }
 
-func itemFromHget(vals []interface{}, includeStatic bool) (
+func itemFromHget(vals []any, includeStatic bool) (
 	ID, tenantID string, expiry int64, tags db_api.Tags,
 	purpose string, status, spec []byte, err error) {
 
