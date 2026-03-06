@@ -361,7 +361,8 @@ func (p *Processor) executeOneRequest(
 	// Add batch.id to the current span so the otelhttp transport child span can be correlated
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrBatchID, batchID))
 
-	inferResp, inferErr := p.clients.Inference.Generate(ctx, inferReq)
+	inferClient := p.clients.Inference.ClientFor(modelID)
+	inferResp, inferErr := inferClient.Generate(ctx, inferReq)
 
 	metrics.DecModelInflightRequests(modelID)
 	metrics.DecProcessorInflightRequests()

@@ -102,9 +102,20 @@ type RetryConfig struct {
 	MaxBackoff     time.Duration `yaml:"max_backoff"`
 }
 
+// ModelGatewayConfig describes a per-model gateway override.
+type ModelGatewayConfig struct {
+	URL        string `yaml:"url"`
+	APIKeyName string `yaml:"api_key_name"` // key name in /etc/.secrets/; empty = use default inference-api-key
+}
+
 type InferenceConfig struct {
-	// GatewayURL is the base URL of the inference gateway (llm-d or GAIE)
+	// GatewayURL is the default inference gateway endpoint, used for all models
+	// unless overridden by ModelGateways.
 	GatewayURL string `yaml:"gateway_url"`
+
+	// ModelGateways optionally maps model names to specific gateway endpoints.
+	// Lookup order: ModelGateways[model] -> GatewayURL (fallback).
+	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
 	// RequestTimeout is the timeout for individual inference requests
 	RequestTimeout time.Duration `yaml:"request_timeout"`
@@ -248,6 +259,11 @@ func (c *ProcessorConfig) Validate() error {
 
 	if c.InferenceConfig.GatewayURL == "" {
 		return fmt.Errorf("inference_config.gateway_url cannot be empty")
+	}
+	for model, gw := range c.InferenceConfig.ModelGateways {
+		if gw.URL == "" {
+			return fmt.Errorf("inference_config.model_gateways[%s].url cannot be empty", model)
+		}
 	}
 	if c.InferenceConfig.RequestTimeout <= 0 {
 		return fmt.Errorf("inference_config.request_timeout must be > 0")
