@@ -19,6 +19,7 @@ HELM_RELEASE="${HELM_RELEASE:-batch-gateway}"
 NAMESPACE="${NAMESPACE:-default}"
 DEV_VERSION="${DEV_VERSION:-0.0.1}"
 LOCAL_PORT="${LOCAL_PORT:-8000}"
+JAEGER_PORT="${JAEGER_PORT:-16686}"
 REDIS_RELEASE="redis"
 POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
@@ -26,6 +27,7 @@ INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-dummy-s3-secret-access-key}"
 APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
 FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
+JAEGER_NAME="${JAEGER_NAME:-jaeger}"
 VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
@@ -269,6 +271,81 @@ EOF
     log "PVC '${FILES_PVC_NAME}' created."
 }
 
+# ── Jaeger (OpenTelemetry collector & trace UI) ──────────────────────────────
+
+install_jaeger() {
+    step "Installing Jaeger all-in-one '${JAEGER_NAME}'..."
+
+    if kubectl get deployment "${JAEGER_NAME}" -n "${NAMESPACE}" &>/dev/null; then
+        log "Jaeger '${JAEGER_NAME}' already exists. Skipping."
+        return
+    fi
+
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${JAEGER_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${JAEGER_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${JAEGER_NAME}
+    spec:
+      containers:
+      - name: jaeger
+        image: jaegertracing/all-in-one:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+          protocol: TCP
+        - containerPort: 16686
+          name: query-http
+          protocol: TCP
+        - containerPort: 16685
+          name: query-grpc
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${JAEGER_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${JAEGER_NAME}
+spec:
+  selector:
+    app: ${JAEGER_NAME}
+  ports:
+  - name: otlp-grpc
+    protocol: TCP
+    port: 4317
+    targetPort: 4317
+  - name: query-http
+    protocol: TCP
+    port: 16686
+    targetPort: 16686
+  - name: query-grpc
+    protocol: TCP
+    port: 16685
+    targetPort: 16685
+  type: ClusterIP
+EOF
+
+    wait_for_deployment "${JAEGER_NAME}" "${NAMESPACE}" 120s
+    log "Jaeger installed. OTLP gRPC: ${JAEGER_NAME}:4317, UI: ${JAEGER_NAME}:16686"
+}
+
 # ── vLLM Simulator ────────────────────────────────────────────────────────────
 
 install_vllm_sim() {
@@ -363,6 +440,9 @@ install_batch_gateway() {
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
+        --set "global.otel.endpoint=http://${JAEGER_NAME}.${NAMESPACE}.svc.cluster.local:4317"
+        --set "global.otel.insecure=true"
+        --set "global.otel.redisTracing=true"
         --namespace "${NAMESPACE}"
     )
 
@@ -407,7 +487,7 @@ wait_for_deployment() {
     done
 }
 
-start_port_forward() {
+start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
     step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 -n ${NAMESPACE}..."
 
@@ -427,6 +507,18 @@ start_port_forward() {
     done
 
     die "Timed out waiting for API server to become ready"
+}
+
+start_jaeger_port_forward() {
+    local svc="svc/${JAEGER_NAME}"
+    step "Starting port-forward: ${svc} ${JAEGER_PORT}:16686 -n ${NAMESPACE}..."
+
+    kubectl port-forward "${svc}" "${JAEGER_PORT}:16686" -n "${NAMESPACE}" &
+    local pf_pid=$!
+    disown "${pf_pid}"
+
+    log "Jaeger port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
+    log "Jaeger UI available at http://localhost:${JAEGER_PORT}"
 }
 
 print_usage() {
@@ -456,11 +548,18 @@ print_usage() {
     echo "         -H 'Content-Type: application/json' \\"
     echo "         -d '{\"input_file_id\":\"FILE_ID\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}'"
     echo ""
-    echo "  4. Cleanup:"
+    echo "  4. Jaeger UI (trace visualization):"
+    echo ""
+    echo "       http://localhost:${JAEGER_PORT}"
+    echo ""
+    echo "     Select service 'batch-gateway' to view traces."
+    echo ""
+    echo "  5. Cleanup:"
     echo ""
     echo "       helm uninstall ${HELM_RELEASE} -n ${NAMESPACE}"
     echo "       helm uninstall ${REDIS_RELEASE} -n ${NAMESPACE}"
     echo "       helm uninstall ${POSTGRESQL_RELEASE} -n ${NAMESPACE}"
+    echo "       kubectl delete deployment,svc ${JAEGER_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete secret ${APP_SECRET_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete pvc ${FILES_PVC_NAME} -n ${NAMESPACE}"
@@ -488,11 +587,13 @@ main() {
     create_secret
     create_pvc
     load_images
+    install_jaeger
     install_vllm_sim
     install_batch_gateway
     verify_deployment
     print_usage
-    start_port_forward
+    start_apiserver_port_forward
+    start_jaeger_port_forward
 
     log "Deployment complete!"
 }

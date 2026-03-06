@@ -17,7 +17,6 @@ limitations under the License.
 package worker
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -54,72 +53,60 @@ func TestInternModelID(t *testing.T) {
 	}
 }
 
-func TestPlanWriter_AppendEntry_WritesLittleEndian12Bytes(t *testing.T) {
+func TestPlanAccumulator_AppendAndFinalize_WritesLittleEndian16Bytes(t *testing.T) {
 	root := t.TempDir()
-	w := newPlanWriter(root, 10)
+	acc := newPlanAccumulator(root)
 
 	model := "m1"
-	e1 := planEntry{Offset: 123, Length: 456}
-	e2 := planEntry{Offset: 999999, Length: 1}
+	e1 := planEntry{Offset: 123, Length: 456, PrefixHash: 99}
+	e2 := planEntry{Offset: 999999, Length: 1, PrefixHash: 42}
 
-	if err := w.AppendEntry(model, e1); err != nil {
-		t.Fatalf("AppendEntry e1: %v", err)
-	}
-	if err := w.AppendEntry(model, e2); err != nil {
-		t.Fatalf("AppendEntry e2: %v", err)
-	}
+	acc.Append(model, e1)
+	acc.Append(model, e2)
 
-	// close to ensure data flush
-	if err := w.CloseAll(); err != nil {
-		t.Fatalf("CloseAll: %v", err)
+	if err := acc.Finalize([]string{model}); err != nil {
+		t.Fatalf("Finalize: %v", err)
 	}
 
-	path := filepath.Join(root, "plans", model+".plan.tmp")
+	path := filepath.Join(root, "plans", model+".plan")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(b) != 24 {
-		t.Fatalf("len=%d want 24", len(b))
+	if len(b) != 32 {
+		t.Fatalf("len=%d want 32", len(b))
 	}
 
 	readEntry := func(off int) planEntry {
-		chunk := b[off : off+12]
-		o := int64(binary.LittleEndian.Uint64(chunk[0:8]))
-		l := binary.LittleEndian.Uint32(chunk[8:12])
-		return planEntry{Offset: o, Length: l}
+		var buf [planEntrySize]byte
+		copy(buf[:], b[off:off+planEntrySize])
+		return unmarshalPlanEntry(buf)
 	}
 
-	if got := readEntry(0); got != e1 {
-		t.Fatalf("entry1=%+v want %+v", got, e1)
+	// entries should be sorted by PrefixHash: e2 (42) before e1 (99)
+	got0 := readEntry(0)
+	got1 := readEntry(16)
+	if got0 != e2 {
+		t.Fatalf("entry0=%+v want %+v (sorted by PrefixHash)", got0, e2)
 	}
-	if got := readEntry(12); got != e2 {
-		t.Fatalf("entry2=%+v want %+v", got, e2)
+	if got1 != e1 {
+		t.Fatalf("entry1=%+v want %+v (sorted by PrefixHash)", got1, e1)
 	}
 }
 
-func TestPlanWriter_EvictAndFinalize(t *testing.T) {
+func TestPlanAccumulator_MultipleModels_Finalize(t *testing.T) {
 	root := t.TempDir()
-	w := newPlanWriter(root, 1) // force eviction
+	acc := newPlanAccumulator(root)
 
-	// create two model files
-	if err := w.AppendEntry("a", planEntry{Offset: 0, Length: 10}); err != nil {
-		t.Fatalf("AppendEntry a: %v", err)
-	}
-	if err := w.AppendEntry("b", planEntry{Offset: 10, Length: 20}); err != nil {
-		t.Fatalf("AppendEntry b: %v", err)
-	}
+	acc.Append("a", planEntry{Offset: 0, Length: 10, PrefixHash: 5})
+	acc.Append("b", planEntry{Offset: 10, Length: 20, PrefixHash: 3})
+	acc.Append("a", planEntry{Offset: 30, Length: 40, PrefixHash: 1})
 
-	// reopen a and append again (ensures eviction doesn't break reopen)
-	if err := w.AppendEntry("a", planEntry{Offset: 30, Length: 40}); err != nil {
-		t.Fatalf("AppendEntry a2: %v", err)
-	}
-
-	if err := w.Finalize([]string{"a", "b", "missing"}); err != nil {
+	if err := acc.Finalize([]string{"a", "b", "missing"}); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 
-	// tmp files should be gone (best effort; if a model had no tmp, it's fine)
+	// tmp files should be gone
 	if _, err := os.Stat(filepath.Join(root, "plans", "a.plan.tmp")); err == nil {
 		t.Fatalf("a.plan.tmp should not exist after Finalize")
 	}
@@ -133,6 +120,18 @@ func TestPlanWriter_EvictAndFinalize(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "plans", "b.plan")); err != nil {
 		t.Fatalf("b.plan missing: %v", err)
+	}
+
+	// verify model "a" entries are sorted by PrefixHash
+	entries, err := readPlanEntries(filepath.Join(root, "plans", "a.plan"))
+	if err != nil {
+		t.Fatalf("readPlanEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries=%d want 2", len(entries))
+	}
+	if entries[0].PrefixHash != 1 || entries[1].PrefixHash != 5 {
+		t.Fatalf("entries not sorted by PrefixHash: %+v", entries)
 	}
 }
 
@@ -173,5 +172,37 @@ func TestWriteModelMapFile_AtomicWrite(t *testing.T) {
 	}
 	if got.SafeToModel["m_safe"] != "m" {
 		t.Fatalf("SafeToModel mismatch: %+v", got.SafeToModel)
+	}
+}
+
+func TestReadPlanEntries_NonexistentFile(t *testing.T) {
+	_, err := readPlanEntries(filepath.Join(t.TempDir(), "nonexistent.plan"))
+	if err == nil {
+		t.Fatalf("expected error for nonexistent file")
+	}
+}
+
+func TestReadPlanEntries_TruncatedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.plan")
+	if err := os.WriteFile(path, make([]byte, planEntrySize+3), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := readPlanEntries(path)
+	if err == nil {
+		t.Fatalf("expected error for file size not multiple of planEntrySize")
+	}
+}
+
+func TestReadPlanEntries_EmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.plan")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	entries, err := readPlanEntries(path)
+	if err != nil {
+		t.Fatalf("unexpected error for empty file: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
 	}
 }

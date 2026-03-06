@@ -49,7 +49,10 @@ type Server struct {
 func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.Clientset, error) {
 	logger := klog.FromContext(ctx)
 
-	redisCfg := &uredis.RedisClientConfig{ServiceName: "batch-apiserver"}
+	redisCfg := &uredis.RedisClientConfig{
+		ServiceName:   "batch-apiserver",
+		EnableTracing: config.OTel.RedisTracing,
+	}
 
 	clients, err := clientset.NewClientset(
 		ctx,

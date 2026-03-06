@@ -125,6 +125,11 @@ type ServerConfig struct {
 
 	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
 	DatabaseType string `yaml:"database_type"`
+
+	// OTel holds OpenTelemetry-related settings.
+	OTel struct {
+		RedisTracing bool `yaml:"redis_tracing"`
+	} `yaml:"otel"`
 }
 
 func NewConfig() *ServerConfig {
