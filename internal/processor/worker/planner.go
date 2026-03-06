@@ -14,60 +14,68 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// this file contains the plan file reader/writer logic for the job processing plan files
+// this file contains the plan file accumulation and writing logic for the job processing plan files
 package worker
 
 import (
-	"container/list"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"sync"
 )
 
 const modelMapFileName = "model_map.json"
 
 type planRequestLine struct {
 	Body struct {
-		Model string `json:"model"`
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
 	} `json:"body"`
 }
 
-// planEntry is a single entry in the plan file
-// Offset: start byte offset of the request line in input.jsonl
-// Length: exact byte length of that line in input.jsonl (including '\n')
+// NoPrefixHash is used when a request has no system prompt.
+// Set to MaxUint32 so that no-prompt requests sort last, allowing
+// requests with actual system prompts to be dispatched first.
+const NoPrefixHash uint32 = math.MaxUint32
+
+// planEntry is a single entry in the plan file.
+// 16 bytes:
+// Offset [int64 Offset] start byte offset of the request line in input.jsonl
+// Length [uint32 Length] length of the request line in input.jsonl
+// PrefixHash [uint32 PrefixHash] FNV-32a hash of the request's system prompt, used to group similar requests together in Phase 2. If the system prompt is absent, the hash defaults to NoPrefixHash.
 type planEntry struct {
-	Offset int64
-	Length uint32
+	Offset     int64
+	Length     uint32
+	PrefixHash uint32
 }
 
-// planWriter is a writer struct for the plan files
-// it uses a least recently used (LRU) cache to manage the open files, with the max open files limit.
-// this is to avoid opening too many files at once, which can cause performance issues
-// jobRootDir is the root directory for the job - caller should ensure the dir is created with jobID so that the plan files are stored in the job directory
-type planWriter struct {
+// marshalBinary encodes the entry into a fixed-size 16-byte little-endian buffer.
+func (e planEntry) marshalBinary() [planEntrySize]byte {
+	var buf [planEntrySize]byte
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(e.Offset))
+	binary.LittleEndian.PutUint32(buf[8:12], e.Length)
+	binary.LittleEndian.PutUint32(buf[12:16], e.PrefixHash)
+	return buf
+}
+
+// planAccumulator collects plan entries in memory per model.
+// At finalization it sorts each model's entries by PrefixHash and writes them to disk.
+type planAccumulator struct {
 	jobRootDir string
-	maxOpen    int
-
-	mu    sync.Mutex
-	files map[string]*os.File
-
-	openFiles      *list.List               // list of modelIDs in the order of most recently used. front: Most Recently Used, back: Least Recently Used
-	openFilesIndex map[string]*list.Element // modelID -> list node in openFiles list
+	entries    map[string][]planEntry // safeModelID -> entries
 }
 
-// newPlanWriter creates a plan writer
-func newPlanWriter(jobRootDir string, maxOpen int) *planWriter {
-	return &planWriter{
-		jobRootDir:     jobRootDir,
-		maxOpen:        maxOpen,
-		files:          make(map[string]*os.File),
-		openFiles:      list.New(),
-		openFilesIndex: make(map[string]*list.Element),
+func newPlanAccumulator(jobRootDir string) *planAccumulator {
+	return &planAccumulator{
+		jobRootDir: jobRootDir,
+		entries:    make(map[string][]planEntry),
 	}
 }
 
@@ -108,22 +116,12 @@ func writeModelMapFile(jobRootDir string, modelMapFile modelMapFile) error {
 // safeFileNameRegex is a regex to replace invalid file name characters with '_'
 var safeFileNameRegex = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
-// plansDir returns the directory for the plan files
-// it is a subdirectory of the job root directory
-func (w *planWriter) plansDir() string {
-	return filepath.Join(w.jobRootDir, "plans")
+func (a *planAccumulator) plansDir() string {
+	return filepath.Join(a.jobRootDir, "plans")
 }
 
-// tempPlanPath returns the temporary path for the plan file
-// it is used to write the plan file while the download is in progress
-func (w *planWriter) tempPlanPath(modelID string) string {
-	return filepath.Join(w.plansDir(), modelID+".plan.tmp")
-}
-
-// finalPath returns the final path for the plan file
-// it is used to store the plan file after the download is completed
-func (w *planWriter) finalPath(modelID string) string {
-	return filepath.Join(w.plansDir(), modelID+".plan")
+func (a *planAccumulator) Append(safeModelID string, entry planEntry) {
+	a.entries[safeModelID] = append(a.entries[safeModelID], entry)
 }
 
 // internModelID interns the modelID to a safe file name
@@ -143,160 +141,81 @@ func internModelID(modelID string, used map[string]int) string {
 	return fmt.Sprintf("%s_%d", base, used[base])
 }
 
-// reorderOpenFiles reorders the open files list for the modelID
-// it moves the specified modelID to the front of the open files list, making it the most recently used
-func (w *planWriter) reorderOpenFiles(modelID string) {
-	if element, ok := w.openFilesIndex[modelID]; ok {
-		w.openFiles.MoveToFront(element)
-		return
-	}
-	w.openFilesIndex[modelID] = w.openFiles.PushFront(modelID)
-}
-
-// evict evicts the least recently used modelID if the max open files limit is reached
-func (w *planWriter) evict() error {
-	if w.maxOpen <= 0 {
-		return nil // unlimited open file. do nothing.
-	}
-	for len(w.files) > w.maxOpen { // max open files limit is reached.
-		target := w.openFiles.Back() // get the least recently used modelID
-		if target == nil {
-			return nil
-		}
-		modelID := target.Value.(string)
-		w.openFiles.Remove(target)
-		delete(w.openFilesIndex, modelID) // remove the pointer to the modelID from the openfiles index map
-
-		file := w.files[modelID]
-		delete(w.files, modelID) // remove the file from the files map
-		if file != nil {
-			if err := file.Close(); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// openFile must be called with the lock held
-func (w *planWriter) openFile(modelID string) (*os.File, error) {
-	if file, ok := w.files[modelID]; ok && file != nil {
-		w.reorderOpenFiles(modelID)
-		return file, nil
-	}
-
-	if err := os.MkdirAll(w.plansDir(), 0o700); err != nil { //rwx------
-		return nil, err
-	}
-
-	// important: append-only, truncate is forbidden
-	file, err := os.OpenFile(w.tempPlanPath(modelID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // -rw-------
-	if err != nil {
-		return nil, err
-	}
-
-	w.files[modelID] = file
-	w.reorderOpenFiles(modelID)
-
-	if err := w.evict(); err != nil {
-		return nil, err
-	}
-	return file, nil
-}
-
-// format (little-endian, fixed 12 bytes):
-// [int64 offset][uint32 length]
-func (w *planWriter) AppendEntry(modelID string, entry planEntry) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	file, err := w.openFile(modelID)
-	if err != nil {
+// Finalize sorts each model's entries by PrefixHash and writes them to disk.
+// Entries with the same PrefixHash are grouped together, enabling downstream
+// inference gateway optimizations such as prefix cache hits.
+func (a *planAccumulator) Finalize(modelIDs []string) error {
+	if err := os.MkdirAll(a.plansDir(), 0o700); err != nil {
 		return err
 	}
 
-	var buffer [12]byte // 8 bytes for offset, 4 bytes for length
-	binary.LittleEndian.PutUint64(buffer[0:8], uint64(entry.Offset))
-	binary.LittleEndian.PutUint32(buffer[8:12], entry.Length)
-
-	_, err = file.Write(buffer[:])
-	return err
-}
-
-func (w *planWriter) CloseAll() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	var firstErr error
-	for modelID, f := range w.files {
-		if f == nil {
+	for _, safeModelID := range modelIDs {
+		entries := a.entries[safeModelID]
+		if len(entries) == 0 {
 			continue
 		}
-		if err := f.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("close %s: %w", modelID, err)
+
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].PrefixHash < entries[j].PrefixHash
+		})
+
+		tmpPath := filepath.Join(a.plansDir(), safeModelID+".plan.tmp")
+		finalPath := filepath.Join(a.plansDir(), safeModelID+".plan")
+
+		f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return fmt.Errorf("create plan file %s: %w", safeModelID, err)
 		}
-	}
 
-	w.files = make(map[string]*os.File)
-	w.openFiles.Init()
-	w.openFilesIndex = make(map[string]*list.Element)
-	return firstErr
-}
-
-func (w *planWriter) Finalize(modelIDs []string) error {
-	if err := w.CloseAll(); err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(w.plansDir(), 0o700); err != nil {
-		return err
-	}
-
-	for _, modelID := range modelIDs {
-		tmp := w.tempPlanPath(modelID)
-		final := w.finalPath(modelID)
-
-		if _, err := os.Stat(tmp); err != nil {
-			if os.IsNotExist(err) {
-				continue
+		for _, e := range entries {
+			buf := e.marshalBinary()
+			if _, err := f.Write(buf[:]); err != nil {
+				f.Close()
+				_ = os.Remove(tmpPath)
+				return fmt.Errorf("write plan entry for %s: %w", safeModelID, err)
 			}
-			return err
 		}
 
-		if err := os.Rename(tmp, final); err != nil {
-			return err
+		if err := f.Close(); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("close plan file %s: %w", safeModelID, err)
+		}
+
+		if err := os.Rename(tmpPath, finalPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("rename plan file %s: %w", safeModelID, err)
 		}
 	}
 	return nil
 }
 
-func appendPlanEntryForModel(
-	planWriter *planWriter,
+// accumulatePlanEntry accumulates a plan entry in memory.
+// returns the next offset in the input file
+func accumulatePlanEntry(
+	acc *planAccumulator,
 	modelID string,
 	modelToSafe map[string]string,
 	used map[string]int,
 	offset int64,
-	line []byte,
-) (int64, string, uint32, error) {
+	length uint32,
+	prefixHash uint32,
+) int64 {
 	safeModelID, ok := modelToSafe[modelID]
 	if !ok {
 		safeModelID = internModelID(modelID, used)
 		modelToSafe[modelID] = safeModelID
 	}
 
-	length := uint32(len(line))
-	if err := planWriter.AppendEntry(safeModelID, planEntry{Offset: offset, Length: length}); err != nil {
-		return offset, safeModelID, length, err
-	}
-	return offset + int64(length), safeModelID, length, nil
+	acc.Append(safeModelID, planEntry{Offset: offset, Length: length, PrefixHash: prefixHash})
+	return offset + int64(length)
 }
 
-func finalizePlanFiles(planWriter *planWriter, modelToSafe map[string]string) error {
+// finalizePlanFiles sorts and writes the plan entries to disk.
+func finalizePlanFiles(acc *planAccumulator, modelToSafe map[string]string) error {
 	modelIDs := make([]string, 0, len(modelToSafe))
 	for _, safeID := range modelToSafe {
 		modelIDs = append(modelIDs, safeID)
 	}
-	// predictable order helps reproducibility and debugging.
 	sort.Strings(modelIDs)
-	return planWriter.Finalize(modelIDs)
+	return acc.Finalize(modelIDs)
 }

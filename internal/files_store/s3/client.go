@@ -65,12 +65,20 @@ var _ api.BatchFilesClient = (*Client)(nil)
 
 // Config holds configuration for the S3 client.
 type Config struct {
-	Region          string
-	Endpoint        string
-	AccessKeyID     string
-	SecretAccessKey string
-	Prefix          string
-	UsePathStyle    bool
+	Region          string `yaml:"region"`
+	Endpoint        string `yaml:"endpoint"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"-"`
+	Prefix          string `yaml:"prefix"`
+	UsePathStyle    bool   `yaml:"use_path_style"`
+}
+
+// Validate checks that all required fields are set.
+func (c *Config) Validate() error {
+	if c.Region == "" {
+		return fmt.Errorf("s3.region cannot be empty")
+	}
+	return nil
 }
 
 // New creates a new S3-based BatchFilesClient.

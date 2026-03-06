@@ -23,6 +23,34 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
+{{/* ========== File Storage Helpers ========== */}}
+
+{{/*
+Volume for shared file storage.
+- "fs": mounts a PersistentVolumeClaim; global.fileClient.fs.pvcName must be set.
+- "s3", "mock": no volume needed.
+*/}}
+{{- define "batch-gateway.filesStorage.volume" -}}
+{{- if eq .Values.global.fileClient.type "fs" }}
+{{- if not .Values.global.fileClient.fs.pvcName }}
+{{- fail "global.fileClient.fs.pvcName must be set when global.fileClient.type is \"fs\"" }}
+{{- end }}
+- name: files-storage
+  persistentVolumeClaim:
+    claimName: {{ .Values.global.fileClient.fs.pvcName }}
+{{- end }}
+{{- end }}
+
+{{/*
+VolumeMount for shared file storage. Only rendered when type is "fs".
+*/}}
+{{- define "batch-gateway.filesStorage.volumeMount" -}}
+{{- if eq .Values.global.fileClient.type "fs" }}
+- name: files-storage
+  mountPath: {{ .Values.global.fileClient.fs.basePath }}
+{{- end }}
+{{- end }}
+
 {{/* ========== API Server Helpers ========== */}}
 
 {{/*

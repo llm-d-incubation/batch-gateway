@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy
 
 SHELL := /usr/bin/env bash
 
@@ -75,14 +75,15 @@ run-processor-dev: build-processor
 ## test: Run tests with summary
 test:
 	@echo "Running tests..."
-	@$(GO) test $(TEST_FLAGS) -v ./... 2>&1 | tee /tmp/test-output.txt; \
+	@OUT=$$(mktemp); \
+	$(GO) test $(TEST_FLAGS) -v ./... 2>&1 | tee $$OUT; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
-	PASS_COUNT=$$(grep -- '--- PASS:' /tmp/test-output.txt 2>/dev/null | wc -l | tr -d ' '); \
-	FAIL_COUNT=$$(grep -- '--- FAIL:' /tmp/test-output.txt 2>/dev/null | wc -l | tr -d ' '); \
-	SKIP_COUNT=$$(grep -- '--- SKIP:' /tmp/test-output.txt 2>/dev/null | wc -l | tr -d ' '); \
+	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
+	FAIL_COUNT=$$(grep -- '--- FAIL:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
+	SKIP_COUNT=$$(grep -- '--- SKIP:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
 	echo ""; \
 	echo "========== Test Summary =========="; \
-	grep -E "^\s*--- (PASS|FAIL|SKIP):" /tmp/test-output.txt || true; \
+	grep -E "^\s*--- (PASS|FAIL|SKIP):" $$OUT || true; \
 	echo ""; \
 	echo "Passed: $$PASS_COUNT | Failed: $$FAIL_COUNT | Skipped: $$SKIP_COUNT"; \
 	echo ""; \
@@ -91,7 +92,7 @@ test:
 	else \
 		echo "❌ Tests failed with exit code $$TEST_EXIT"; \
 	fi; \
-	rm -f /tmp/test-output.txt; \
+	rm -f $$OUT; \
 	exit $$TEST_EXIT
 
 ## test-coverage: Run tests with coverage
@@ -201,3 +202,30 @@ test-integration:
 
 ## test-all: Run all tests (unit + integration)
 test-all: test test-integration
+
+## deploy: Deploy batch-gateway to a local kind cluster and start port-forward
+dev-deploy:
+	@bash scripts/dev-deploy.sh
+
+## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or port-forward)
+test-e2e:
+	@echo "Running E2E tests..."
+	@OUT=$$(mktemp); \
+	cd test/e2e && $(GO) test -v -count=1 ./... 2>&1 | tee $$OUT; \
+	TEST_EXIT=$${PIPESTATUS[0]}; \
+	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
+	FAIL_COUNT=$$(grep -- '--- FAIL:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
+	SKIP_COUNT=$$(grep -- '--- SKIP:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
+	echo ""; \
+	echo "========== E2E Test Summary =========="; \
+	grep -E "^\s*--- (PASS|FAIL|SKIP):" $$OUT || true; \
+	echo ""; \
+	echo "Passed: $$PASS_COUNT | Failed: $$FAIL_COUNT | Skipped: $$SKIP_COUNT"; \
+	echo ""; \
+	if [ $$TEST_EXIT -eq 0 ]; then \
+		echo "✅ All E2E tests passed!"; \
+	else \
+		echo "❌ E2E tests failed with exit code $$TEST_EXIT"; \
+	fi; \
+	rm -f $$OUT; \
+	exit $$TEST_EXIT

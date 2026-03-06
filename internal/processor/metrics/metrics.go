@@ -83,6 +83,7 @@ var (
 	activeWorkers                 prometheus.Gauge
 	requestErrorsModelTotal       *prometheus.CounterVec
 	processorInflightRequests     prometheus.Gauge
+	processorMaxInflightConc      prometheus.Gauge
 	planBuildDuration             *prometheus.HistogramVec
 	modelInflightRequests         *prometheus.GaugeVec
 	modelRequestExecutionDuration *prometheus.HistogramVec
@@ -132,6 +133,15 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		},
 	)
 
+	// configured GlobalConcurrency value for utilization calculation
+	processorMaxInflightConc = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "processor_max_inflight_concurrency",
+			Help: "Configured maximum number of concurrent in-flight inference requests (GlobalConcurrency)",
+		},
+	)
+	processorMaxInflightConc.Set(float64(cfg.GlobalConcurrency))
+
 	// phase 1 plan build duration
 	planBuildDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -167,7 +177,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		}, []string{"model"},
 	)
 
-	// job processing duratino
+	// job processing duration
 	jobProcessingDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name: "job_processing_duration_seconds",
@@ -202,6 +212,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		jobsProcessed,
 		requestErrorsModelTotal,
 		processorInflightRequests,
+		processorMaxInflightConc,
 		planBuildDuration,
 		modelInflightRequests,
 		modelRequestExecutionDuration,

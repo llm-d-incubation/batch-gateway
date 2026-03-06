@@ -28,15 +28,15 @@ import (
 
 	"k8s.io/klog/v2"
 
-	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
 
@@ -73,6 +73,18 @@ func run() error {
 		return err
 	}
 
+	// initialize OpenTelemetry tracing
+	shutdownTracer, err := uotel.InitTracer(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to initialize tracer")
+		return err
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		shutdownTracer(shutdownCtx)
+	}()
+
 	// metrics setup
 	if err := metrics.InitMetrics(*cfg); err != nil {
 		logger.Error(err, "Failed to initialize metrics")
@@ -101,15 +113,16 @@ func run() error {
 		logger.Error(err, "Failed to build processor clients")
 		return err
 	}
+	defer procClients.Close()
 
-	if err := procClients.Validate(); err != nil {
+	if err := worker.ValidateClientset(procClients); err != nil {
 		logger.Error(err, "Processor client validation failed")
 		return err
 	}
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc := worker.NewProcessor(cfg, &procClients)
+	proc := worker.NewProcessor(cfg, procClients)
 	defer func() {
 		// stop with a fresh timeout ctx (avoid already-cancelled ctx)
 		// timeout should be less than k8s terminationGracePeriodSeconds
@@ -265,25 +278,18 @@ func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, w
 	}
 }
 
-// build clients for processor (mock now, later replace with actual clients)
-func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (worker.ProcessorClients, error) {
+// buildProcessorClients constructs all processor clients using the same backend as the apiserver
+func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*clientset.Clientset, error) {
 	logger := klog.FromContext(ctx)
 
-	// TODO: remove mock clients and replace with actual clients + logging update
-	// TODO: avoid logging full cfg — may expose sensitive paths (e.g. InferenceAPIKeyFile)
-
-	logger.V(logging.INFO).Info("Building processor clients with mock clients for now", "inferenceConfig", cfg)
-
-	// Initialize inference client with configuration
-	inferenceAPIKey, err := cfg.GetInferenceAPIKey()
-	if err != nil {
-		logger.Error(err, "Failed to read inference API key")
-		return worker.ProcessorClients{}, err
+	redisCfg := &uredis.RedisClientConfig{
+		ServiceName:   "batch-processor",
+		EnableTracing: cfg.OTel.RedisTracing,
 	}
-	inferenceClient, err := inference.NewHTTPClient(inference.HTTPClientConfig{
+
+	inferenceCfg := &inference.HTTPClientConfig{
 		BaseURL:               cfg.InferenceConfig.GatewayURL,
 		Timeout:               cfg.InferenceConfig.RequestTimeout,
-		APIKey:                inferenceAPIKey,
 		MaxRetries:            cfg.InferenceConfig.MaxRetries,
 		InitialBackoff:        cfg.InferenceConfig.InitialBackoff,
 		MaxBackoff:            cfg.InferenceConfig.MaxBackoff,
@@ -291,33 +297,25 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (wo
 		TLSCACertFile:         cfg.InferenceConfig.TLSCACertFile,
 		TLSClientCertFile:     cfg.InferenceConfig.TLSClientCertFile,
 		TLSClientKeyFile:      cfg.InferenceConfig.TLSClientKeyFile,
-	})
-	if err != nil {
-		logger.Error(err, "Failed to initialize inference client")
-		return worker.ProcessorClients{}, err
 	}
-	logger.V(logging.INFO).Info("Initialized inference client",
-		"baseURL", cfg.InferenceConfig.GatewayURL,
-		"timeout", cfg.InferenceConfig.RequestTimeout,
-		"maxRetries", cfg.InferenceConfig.MaxRetries)
-
-	batchDBClient := mockdb.NewMockDBClient(
-		func(b *dbapi.BatchItem) string { return b.ID },
-		func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	clients, err := clientset.NewClientset(
+		ctx,
+		cfg.DatabaseType,
+		nil,
+		redisCfg,
+		cfg.FileClientCfg.Type,
+		&cfg.FileClientCfg.FSConfig,
+		&cfg.FileClientCfg.S3Config,
+		inferenceCfg,
 	)
+	if err != nil {
+		logger.Error(err, "Failed to create clients")
+		return nil, err
+	}
 
-	fileDBClient := mockdb.NewMockDBClient(
-		func(f *dbapi.FileItem) string { return f.ID },
-		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
-	)
+	logger.V(logging.INFO).Info("Processor clients initialized",
+		"inferenceURL", cfg.InferenceConfig.GatewayURL,
+		"fileClientType", cfg.FileClientCfg.Type)
 
-	return worker.NewProcessorClients(
-		batchDBClient,
-		fileDBClient,
-		mockfiles.NewMockBatchFilesClient(),
-		mockdb.NewMockBatchPriorityQueueClient(),
-		mockdb.NewMockBatchStatusClient(),
-		mockdb.NewMockBatchEventChannelClient(),
-		inferenceClient,
-	), nil
+	return clients, nil
 }

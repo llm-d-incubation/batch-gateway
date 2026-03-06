@@ -14,6 +14,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
 // --- resolveOutputExpiration ---
@@ -24,7 +25,7 @@ func TestResolveOutputExpiration_UserTagOverridesConfig(t *testing.T) {
 	p := NewProcessor(cfg, validProcessorClients())
 
 	now := int64(1000000)
-	tags := db.Tags{"output_expires_after_seconds": "3600"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
 
 	got := p.resolveOutputExpiration(now, tags)
 	want := now + 3600
@@ -68,7 +69,7 @@ func TestResolveOutputExpiration_InvalidTagFallsBackToConfig(t *testing.T) {
 	p := NewProcessor(cfg, validProcessorClients())
 
 	now := int64(1000000)
-	tags := db.Tags{"output_expires_after_seconds": "not-a-number"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "not-a-number"}
 
 	got := p.resolveOutputExpiration(now, tags)
 	want := now + 86400
@@ -83,7 +84,7 @@ func TestResolveOutputExpiration_ZeroTagFallsBackToConfig(t *testing.T) {
 	p := NewProcessor(cfg, validProcessorClients())
 
 	now := int64(1000000)
-	tags := db.Tags{"output_expires_after_seconds": "0"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "0"}
 
 	got := p.resolveOutputExpiration(now, tags)
 	want := now + 86400
@@ -139,12 +140,12 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
 	fileDB := newMockFileDBClient()
-	p := NewProcessor(cfg, &ProcessorClients{
-		fileDatabase: fileDB,
+	p := NewProcessor(cfg, &clientset.Clientset{
+		FileDB: fileDB,
 	})
 
 	ctx := testLoggerCtx()
-	tags := db.Tags{"output_expires_after_seconds": "3600"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
 
 	err := p.storeOutputFileRecord(ctx, "file_abc", "output.jsonl", "tenant-1", 1024, tags)
 	if err != nil {
@@ -203,7 +204,7 @@ func TestUploadOutputFile_RetriesAndSucceeds(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 2}
-	p := NewProcessor(cfg, &ProcessorClients{files: mock})
+	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-retry", "tenant-1")
 	ctx := testLoggerCtx()
@@ -230,7 +231,7 @@ func TestUploadOutputFile_ExhaustsRetries(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 100}
-	p := NewProcessor(cfg, &ProcessorClients{files: mock})
+	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-exhaust", "tenant-1")
 	ctx := testLoggerCtx()
@@ -254,7 +255,7 @@ func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 100}
-	p := NewProcessor(cfg, &ProcessorClients{files: mock})
+	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-cancel", "tenant-1")
 	ctx, cancel := context.WithCancel(testLoggerCtx())
