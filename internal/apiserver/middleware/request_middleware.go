@@ -62,9 +62,18 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 			}
 			w.Header().Set(RequestIdHeaderKey, requestID)
 
-			// Extract tenant ID from header
+			// Extract tenant ID from header.
+			// The external auth service (via Envoy ext_authz) may append
+			// request headers as separate entries instead of overwriting them. If a client
+			// sends a spoofed tenant header, the auth service appends the real value as a
+			// second entry. We take the last entry from r.Header.Values() because Envoy's
+			// ext_authz pipeline guarantees auth-injected entries come after client-supplied
+			// ones.
 			tenantHeader := config.GetTenantHeader()
-			tenantID := r.Header.Get(tenantHeader)
+			tenantID := common.DefaultTenantID
+			if tenants := r.Header.Values(tenantHeader); len(tenants) > 0 {
+				tenantID = tenants[len(tenants)-1]
+			}
 			if tenantID == "" {
 				tenantID = common.DefaultTenantID
 			}
