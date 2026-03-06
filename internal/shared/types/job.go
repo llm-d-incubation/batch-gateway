@@ -21,11 +21,21 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
+// Tag key prefixes and names stored in database tags (db.Tags).
+const (
+	TagPrefixPassThroughHeader   = "pth:"
+	TagPrefixOTel                = "otel:"
+	TagSLO                       = "slo_unix_micro"
+	TagOutputExpiresAfterAnchor  = "output_expires_after_anchor"
+	TagOutputExpiresAfterSeconds = "output_expires_after_seconds"
+)
+
 type JobInfo struct {
 	JobID              string            `json:"job_id"`
 	TenantID           string            `json:"tenant_id"`
 	BatchJob           *openai.Batch     `json:"batch_job"`
 	PassThroughHeaders map[string]string `json:"pass_through_headers,omitempty"`
+	TraceContext       map[string]string `json:"trace_context,omitempty"`
 }
 
 // Request represents a line in input jsonl file

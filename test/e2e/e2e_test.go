@@ -34,6 +34,7 @@ import (
 
 var (
 	baseURL     = getEnvOrDefault("TEST_BASE_URL", "http://localhost:8000")
+	jaegerURL   = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
 	tenantID    = getEnvOrDefault("TEST_TENANT_ID", "default")
 	namespace   = getEnvOrDefault("TEST_NAMESPACE", "default")
 	helmRelease = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
@@ -397,6 +398,60 @@ func doTestPassThroughHeaders(t *testing.T) {
 	}
 }
 
+// ── Observability subtests ────────────────────────────────────────────────────
+
+// doTestOtelTraces verifies that traces are exported to Jaeger after a batch
+// lifecycle. It queries the Jaeger query API for traces from the batch-gateway
+// service.
+func doTestOtelTraces(t *testing.T) {
+	t.Helper()
+
+	// Check Jaeger is reachable
+	jaegerClient := &http.Client{Timeout: 5 * time.Second}
+	checkResp, err := jaegerClient.Get(jaegerURL + "/")
+	if err != nil {
+		t.Skipf("Jaeger not reachable at %s, skipping OTel trace verification: %v", jaegerURL, err)
+	}
+	checkResp.Body.Close()
+
+	// Run a quick batch to generate traces
+	fileID := mustCreateFile(t, fmt.Sprintf("test-otel-%s.jsonl", testRunID), testJSONL)
+	batchID := mustCreateBatch(t, fileID)
+	finalBatch := waitForBatchCompletion(t, batchID)
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
+	}
+
+	// Give Jaeger a moment to index the traces
+	time.Sleep(3 * time.Second)
+
+	// Query Jaeger for traces from the batch-gateway service
+	jaegerQueryURL := fmt.Sprintf("%s/api/traces?service=batch-gateway&limit=1", jaegerURL)
+	resp, err := jaegerClient.Get(jaegerQueryURL)
+	if err != nil {
+		t.Fatalf("failed to query Jaeger API: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Jaeger API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode Jaeger response: %v", err)
+	}
+
+	if len(result.Data) == 0 {
+		t.Fatal("expected at least 1 trace from Jaeger, got 0")
+	}
+
+	t.Logf("Jaeger returned %d trace(s) for service batch-gateway", len(result.Data))
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────
 
 func TestE2E(t *testing.T) {
@@ -445,5 +500,9 @@ func TestE2E(t *testing.T) {
 		t.Run("Lifecycle", func(t *testing.T) { doTestBatchLifecycle(t) })
 		t.Run("Cancel", func(t *testing.T) { doTestBatchCancel(t) })
 		t.Run("PassThroughHeaders", func(t *testing.T) { doTestPassThroughHeaders(t) })
+	})
+
+	t.Run("Observability", func(t *testing.T) {
+		t.Run("OtelTraces", func(t *testing.T) { doTestOtelTraces(t) })
 	})
 }

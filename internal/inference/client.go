@@ -29,13 +29,15 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"k8s.io/klog/v2"
 )
 
 // HTTPClient implements InferenceClient interface for HTTP-based inference gateways
 // Supports both llm-d (OpenAI-compatible) and GAIE endpoints
 type HTTPClient struct {
-	client *resty.Client
+	client    *resty.Client
+	transport *http.Transport // underlying transport (before OTel wrapping), for testing
 }
 
 // HTTPClientConfig holds configuration for the HTTP client
@@ -115,7 +117,11 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	}
 	// Otherwise, TLSClientConfig stays nil = Go uses system root CAs + TLS 1.2+ defaults
 
-	client.SetTransport(transport)
+	client.SetTransport(otelhttp.NewTransport(transport,
+		otelhttp.WithSpanNameFormatter(func(_ string, _ *http.Request) string {
+			return "inference-request"
+		}),
+	))
 
 	// Configure retry only if enabled
 	if config.MaxRetries > 0 {
@@ -145,7 +151,8 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	}
 
 	return &HTTPClient{
-		client: client,
+		client:    client,
+		transport: transport,
 	}, nil
 }
 

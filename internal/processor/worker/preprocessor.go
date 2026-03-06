@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"sync/atomic"
@@ -83,15 +84,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	}
 	defer localInputFile.Close()
 
-	// copy input file stream to local input file
 	writer := bufio.NewWriterSize(localInputFile, 1024*1024)
 
-	// plan writer creation
-	planWriter := newPlanWriter(jobRootDir, p.cfg.MaxOpenFiles)
-	defer func() {
-		// best-effort
-		_ = planWriter.CloseAll()
-	}()
+	acc := newPlanAccumulator(jobRootDir)
 
 	// model intern tables
 	used := make(map[string]int)           // to prevent duplicate model IDs
@@ -132,21 +127,16 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 			return err
 		}
 
-		// parse line and extract model id
-		modelID, err := extractModelID(line)
+		// extract model ID and prefix hash from the request line
+		modelID, prefixHash, err := extractModelAndPrefixHash(line)
 		if err != nil {
 			logger.V(logging.ERROR).Error(err, "Failed to unmarshal request line", "lineCount", lineCount)
 			return err
 		}
 
-		// plan entry append
-		nextOffset, safeModelID, length, err := appendPlanEntryForModel(
-			planWriter, modelID, modelToSafe, used, offset, line,
+		nextOffset := accumulatePlanEntry(
+			acc, modelID, modelToSafe, used, offset, uint32(len(line)), prefixHash,
 		)
-		if err != nil {
-			logger.V(logging.ERROR).Error(err, "Failed to append plan entry", "modelID", modelID, "safeModelID", safeModelID, "offset", offset, "length", length, "lineCount", lineCount)
-			return err
-		}
 		offset = nextOffset
 	}
 
@@ -156,8 +146,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		return err
 	}
 
-	// finalize the plan files
-	if err := finalizePlanFiles(planWriter, modelToSafe); err != nil {
+	if err := finalizePlanFiles(acc, modelToSafe); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to finalize plan files")
 		return err
 	}
@@ -169,7 +158,11 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	}
 
 	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), jobInfo.TenantID, metrics.GetSizeBucket(int(lineCount)))
-	logger.V(logging.INFO).Info("Processor Pre-processing job completed", "inputFilePath", localInputFilePath, "planFilePath", planWriter.plansDir(), "lineCount", lineCount)
+	modelCounts := make(map[string]int, len(modelToSafe))
+	for model, safe := range modelToSafe {
+		modelCounts[model] = len(acc.entries[safe])
+	}
+	logger.V(logging.INFO).Info("Processor Pre-processing job completed", "inputFilePath", localInputFilePath, "planFilePath", acc.plansDir(), "lineCount", lineCount, "models", modelCounts)
 
 	return nil
 }
@@ -186,8 +179,8 @@ func checkCancellation(ctx context.Context, cancelRequested *atomic.Bool) error 
 	return nil
 }
 
-// readNormalizedLine reads a line from the input file and returns it normalized (terminated with '\n')
-// if error occurs, it returns false for loop continuation decision (means not EOF) and the error
+// readNormalizedLine reads the next line from the reader, ensuring it ends with '\n'.
+// Returns (line, eof, err): line is the normalized bytes, eof is true when input is exhausted.
 func readNormalizedLine(r *bufio.Reader) ([]byte, bool, error) {
 	line, err := r.ReadBytes('\n')
 	if err != nil && err != io.EOF {
@@ -203,17 +196,30 @@ func readNormalizedLine(r *bufio.Reader) ([]byte, bool, error) {
 	return line, false, nil
 }
 
-func extractModelID(line []byte) (string, error) {
+// extractModelAndPrefixHash parses a request line and returns the model ID
+// and a FNV-32a hash of the first system prompt's content (NoPrefixHash if absent).
+func extractModelAndPrefixHash(line []byte) (string, uint32, error) {
 	var req planRequestLine
 	trimmedLine := bytes.TrimSuffix(line, []byte{'\n'})
 	if err := json.Unmarshal(trimmedLine, &req); err != nil {
-		return "", err
+		return "", NoPrefixHash, err
 	}
 	modelID := req.Body.Model
 	if modelID == "" {
-		return "", fmt.Errorf("model id is empty")
+		return "", NoPrefixHash, fmt.Errorf("model id is empty")
 	}
-	return modelID, nil
+
+	prefixHash := NoPrefixHash
+	for _, msg := range req.Body.Messages {
+		if msg.Role == "system" && msg.Content != "" {
+			h := fnv.New32a()
+			h.Write([]byte(msg.Content))
+			prefixHash = h.Sum32()
+			break
+		}
+	}
+
+	return modelID, prefixHash, nil
 }
 
 func writeModelMappings(jobRootDir string, modelToSafe map[string]string, lineCount int64) error {

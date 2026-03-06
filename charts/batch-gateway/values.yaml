@@ -15,6 +15,17 @@ global:
   # Database backend type: "redis", or "postgresql"
   databaseType: "redis"
 
+  # OpenTelemetry configuration
+  otel:
+    # OTLP gRPC endpoint (e.g. "http://jaeger.default.svc.cluster.local:4317")
+    # Leave empty to disable tracing.
+    endpoint: ""
+    # Use insecure (plaintext) gRPC connection to the collector.
+    insecure: true
+    # Enable per-command Redis tracing spans. Can produce high span volume
+    # for batch workloads — leave disabled unless actively debugging Redis.
+    redisTracing: false
+
   # File client configuration
   fileClient:
     type: "fs"  # Options: "fs", "s3"
@@ -108,6 +119,20 @@ apiserver:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+
+  # Gateway API HTTPRoute configuration (requires Gateway API CRDs to be installed)
+  # When enabled, creates an HTTPRoute to expose the Batch API endpoints
+  # (/v1/batches and /v1/files) through a Gateway API-compliant gateway.
+  httpRoute:
+    enabled: false
+    annotations: {}
+    # parentRefs define which Gateway(s) this HTTPRoute attaches to.
+    parentRefs:
+      - name: "llm-d-inference-gateway"
+        # Namespace of the parent Gateway. Leave empty to use the release namespace.
+        namespace: ""
+        # Section on the Gateway to attach to (e.g. a specific listener name).
+        sectionName: ""
 
   # Application configuration
   config:
@@ -224,7 +249,8 @@ processor:
     taskWaitTime: "1s"
     pollInterval: "5s"
     numWorkers: 20
-    maxJobConcurrency: 10
+    globalConcurrency: 100
+    perModelMaxConcurrency: 10
     queueTimeBucket:
       bucketStart: 0.1
       bucketFactor: 2
@@ -236,7 +262,6 @@ processor:
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
-    maxOpenFiles: 50
     inferenceConfig:
       gatewayUrl: "http://localhost:8000"
       requestTimeout: "5m"

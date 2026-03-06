@@ -39,6 +39,9 @@ type Processor struct {
 	tokens chan struct{}
 	wg     sync.WaitGroup
 
+	// globalSem limits total in-flight inference requests across all workers.
+	globalSem chan struct{}
+
 	clients *clientset.Clientset
 	poller  *Poller
 	updater *StatusUpdater
@@ -58,11 +61,12 @@ func NewProcessor(
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
-		cfg:     cfg,
-		tokens:  sem,
-		clients: clients,
-		poller:  poller,
-		updater: updater,
+		cfg:       cfg,
+		tokens:    sem,
+		globalSem: make(chan struct{}, cfg.GlobalConcurrency),
+		clients:   clients,
+		poller:    poller,
+		updater:   updater,
 	}
 }
 

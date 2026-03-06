@@ -267,6 +267,16 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 				t.Fatalf("expected at least 1 observation for model_request_execution_duration_seconds")
 			}
 		}
+		{
+			mf := find("processor_max_inflight_concurrency")
+			if mf == nil || len(mf.Metric) != 1 {
+				t.Fatalf("processor_max_inflight_concurrency metric not found or invalid")
+			}
+			got := mf.Metric[0].GetGauge().GetValue()
+			if got != float64(cfg.GlobalConcurrency) {
+				t.Fatalf("processor_max_inflight_concurrency=%v, want %v", got, float64(cfg.GlobalConcurrency))
+			}
+		}
 	})
 }
 

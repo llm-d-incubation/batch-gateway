@@ -39,14 +39,17 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.NumWorkers != 1 {
 		t.Fatalf("NumWorkers = %d, want %d", c.NumWorkers, 1)
 	}
-	if c.MaxJobConcurrency != 10 {
-		t.Fatalf("MaxJobConcurrency = %d, want %d", c.MaxJobConcurrency, 10)
+	if c.GlobalConcurrency != 100 {
+		t.Fatalf("GlobalConcurrency = %d, want %d", c.GlobalConcurrency, 100)
+	}
+	if c.PerModelMaxConcurrency != 10 {
+		t.Fatalf("PerModelMaxConcurrency = %d, want %d", c.PerModelMaxConcurrency, 10)
 	}
 	if c.WorkDir == "" {
 		t.Fatalf("WorkDir should not be empty")
 	}
-	if c.MaxOpenFiles != 50 {
-		t.Fatalf("MaxOpenFiles = %d, want %d", c.MaxOpenFiles, 50)
+	if c.DatabaseType != "redis" {
+		t.Fatalf("DatabaseType = %q, want %q", c.DatabaseType, "redis")
 	}
 	// inference config spot-check
 	if c.InferenceConfig.GatewayURL != "http://localhost:8000" {
@@ -229,9 +232,15 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 	}
 
 	c = NewConfig()
-	c.MaxJobConcurrency = 0
+	c.GlobalConcurrency = 0
 	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error for max_job_concurrency <= 0, got nil")
+		t.Fatalf("Validate() expected error for global_concurrency <= 0, got nil")
+	}
+
+	c = NewConfig()
+	c.PerModelMaxConcurrency = 0
+	if err := c.Validate(); err == nil {
+		t.Fatalf("Validate() expected error for per_model_max_concurrency <= 0, got nil")
 	}
 
 	c = NewConfig()
@@ -247,18 +256,6 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 	}
 }
 
-func TestProcessorConfig_Validate_MaxOpenFilesUnlimitedWhenNonPositive(t *testing.T) {
-	c := NewConfig()
-	c.DatabaseType = "mock"
-	c.MaxOpenFiles = -10
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate() unexpected error for negative max_open_files: %v", err)
-	}
-	if c.MaxOpenFiles != 0 {
-		t.Fatalf("MaxOpenFiles = %d, want 0 (unlimited)", c.MaxOpenFiles)
-	}
-}
-
 func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.yaml")
@@ -268,8 +265,8 @@ func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 poll_interval: 2s
 task_wait_time: 500ms
 num_workers: 3
-max_job_concurrency: 7
-max_open_files: 12
+global_concurrency: 50
+per_model_max_concurrency: 5
 work_dir: "` + dir + `/work"
 addr: ":1234"
 inference_config:
@@ -305,11 +302,11 @@ progress_ttl_seconds: 3600
 	if c.NumWorkers != 3 {
 		t.Fatalf("NumWorkers = %d, want %d", c.NumWorkers, 3)
 	}
-	if c.MaxJobConcurrency != 7 {
-		t.Fatalf("MaxJobConcurrency = %d, want %d", c.MaxJobConcurrency, 7)
+	if c.GlobalConcurrency != 50 {
+		t.Fatalf("GlobalConcurrency = %d, want %d", c.GlobalConcurrency, 50)
 	}
-	if c.MaxOpenFiles != 12 {
-		t.Fatalf("MaxOpenFiles = %d, want %d", c.MaxOpenFiles, 12)
+	if c.PerModelMaxConcurrency != 5 {
+		t.Fatalf("PerModelMaxConcurrency = %d, want %d", c.PerModelMaxConcurrency, 5)
 	}
 	if c.WorkDir != filepath.Join(dir, "work") {
 		t.Fatalf("WorkDir = %q, want %q", c.WorkDir, filepath.Join(dir, "work"))

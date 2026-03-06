@@ -20,10 +20,12 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/server"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"k8s.io/klog/v2"
 )
 
@@ -41,6 +43,17 @@ func main() {
 	parentCtx := context.Background()
 	ctx, cancel := interrupt.ContextWithSignal(parentCtx)
 	defer cancel()
+
+	// initialize OpenTelemetry tracing
+	shutdownTracer, err := uotel.InitTracer(ctx)
+	if err != nil {
+		klog.Fatalf("failed to initialize tracer: %v", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		shutdownTracer(shutdownCtx)
+	}()
 
 	// start server
 	logger := klog.FromContext(ctx)

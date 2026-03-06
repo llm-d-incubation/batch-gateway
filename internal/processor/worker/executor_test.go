@@ -25,7 +25,7 @@ func TestResolveOutputExpiration_UserTagOverridesConfig(t *testing.T) {
 	p := NewProcessor(cfg, validProcessorClients())
 
 	now := int64(1000000)
-	tags := db.Tags{"output_expires_after_seconds": "3600"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
 
 	got := p.resolveOutputExpiration(now, tags)
 	want := now + 3600
@@ -69,7 +69,7 @@ func TestResolveOutputExpiration_InvalidTagFallsBackToConfig(t *testing.T) {
 	p := NewProcessor(cfg, validProcessorClients())
 
 	now := int64(1000000)
-	tags := db.Tags{"output_expires_after_seconds": "not-a-number"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "not-a-number"}
 
 	got := p.resolveOutputExpiration(now, tags)
 	want := now + 86400
@@ -84,7 +84,7 @@ func TestResolveOutputExpiration_ZeroTagFallsBackToConfig(t *testing.T) {
 	p := NewProcessor(cfg, validProcessorClients())
 
 	now := int64(1000000)
-	tags := db.Tags{"output_expires_after_seconds": "0"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "0"}
 
 	got := p.resolveOutputExpiration(now, tags)
 	want := now + 86400
@@ -145,7 +145,7 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	})
 
 	ctx := testLoggerCtx()
-	tags := db.Tags{"output_expires_after_seconds": "3600"}
+	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
 
 	err := p.storeOutputFileRecord(ctx, "file_abc", "output.jsonl", "tenant-1", 1024, tags)
 	if err != nil {

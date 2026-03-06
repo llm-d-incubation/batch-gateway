@@ -3,7 +3,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,17 +185,16 @@ func testReadPlanEntries(t *testing.T, planPath string) []planEntry {
 	if err != nil {
 		t.Fatalf("read plan file: %v", err)
 	}
-	if len(b)%12 != 0 {
-		t.Fatalf("plan file size not multiple of 12: %d", len(b))
+	if len(b)%planEntrySize != 0 {
+		t.Fatalf("plan file size not multiple of %d: %d", planEntrySize, len(b))
 	}
 
-	n := len(b) / 12
+	n := len(b) / planEntrySize
 	out := make([]planEntry, 0, n)
 	for i := 0; i < n; i++ {
-		chunk := b[i*12 : (i+1)*12]
-		off := int64(binary.LittleEndian.Uint64(chunk[0:8]))
-		l := binary.LittleEndian.Uint32(chunk[8:12])
-		out = append(out, planEntry{Offset: off, Length: l})
+		var buf [planEntrySize]byte
+		copy(buf[:], b[i*planEntrySize:(i+1)*planEntrySize])
+		out = append(out, unmarshalPlanEntry(buf))
 	}
 	return out
 }
@@ -240,8 +238,6 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
 	cfg.WorkDir = workDir
-	cfg.MaxOpenFiles = 2
-
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
 	filesClient := mockfiles.NewMockBatchFilesClient()
@@ -392,6 +388,183 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	}
 }
 
+type inputLineSpec struct {
+	Model        string
+	SystemPrompt string // empty means no system prompt
+}
+
+func makeInputLinesWithSystemPrompts(specs []inputLineSpec) [][]byte {
+	lines := make([][]byte, 0, len(specs))
+	for i, s := range specs {
+		body := map[string]any{"model": s.Model}
+		if s.SystemPrompt != "" {
+			body["messages"] = []map[string]string{
+				{"role": "system", "content": s.SystemPrompt},
+				{"role": "user", "content": fmt.Sprintf("question %d", i)},
+			}
+		}
+		req := map[string]any{"body": body, "meta": map[string]any{"i": i}}
+		b, _ := json.Marshal(req)
+		lines = append(lines, append(b, '\n'))
+	}
+	return lines
+}
+
+func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	tenantID := uniqueTestFolder(t, "tenantA/job-sys-prompt")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	cleanMockFilesFolder(t, folder)
+
+	specs := []inputLineSpec{
+		{Model: "m1", SystemPrompt: "You are a helpful assistant."},
+		{Model: "m1", SystemPrompt: "You are a code reviewer."},
+		{Model: "m1", SystemPrompt: "You are a helpful assistant."}, // same as [0]
+		{Model: "m1", SystemPrompt: ""},                             // no system prompt
+	}
+
+	lines := makeInputLinesWithSystemPrompts(specs)
+	var remoteBuf bytes.Buffer
+	for _, ln := range lines {
+		remoteBuf.Write(ln)
+	}
+
+	filename := "input.jsonl"
+	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+
+	inputFileID := "file-sys-prompt"
+	fileSpec := &openai.FileObject{Filename: filename}
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, fileSpec)},
+	}
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	cs := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
+	}
+	p := NewProcessor(cfg, cs)
+
+	jobID := "job-sys-prompt"
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	var cancelRequested atomic.Bool
+	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+		t.Fatalf("preProcessJob: %v", err)
+	}
+
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+
+	mm, err := readModelMap(jobRootDir)
+	if err != nil {
+		t.Fatalf("readModelMap: %v", err)
+	}
+
+	safeID := mm.ModelToSafe["m1"]
+	planPath := filepath.Join(jobRootDir, "plans", safeID+".plan")
+	entries := testReadPlanEntries(t, planPath)
+	if len(entries) != len(specs) {
+		t.Fatalf("expected %d entries, got %d", len(specs), len(entries))
+	}
+
+	// Collect hashes to verify properties
+	hashBySpec := make([]uint32, len(specs))
+	for i, e := range entries {
+		// Read actual line from local input to identify which spec it corresponds to
+		localInput, err := p.jobInputFilePath(jobID, tenantID)
+		if err != nil {
+			t.Fatalf("jobInputFilePath: %v", err)
+		}
+		f, err := os.Open(localInput)
+		if err != nil {
+			t.Fatalf("open local input: %v", err)
+		}
+		chunk := readAtExact(t, f, e.Offset, e.Length)
+		f.Close()
+		_ = chunk
+		hashBySpec[i] = e.PrefixHash
+	}
+
+	// Entries must be sorted by PrefixHash (ascending)
+	for i := 1; i < len(entries); i++ {
+		if entries[i].PrefixHash < entries[i-1].PrefixHash {
+			t.Fatalf("entries not sorted by PrefixHash: [%d]=%d > [%d]=%d",
+				i-1, entries[i-1].PrefixHash, i, entries[i].PrefixHash)
+		}
+	}
+
+	// The entry with no system prompt should have PrefixHash == NoPrefixHash
+	foundZero := false
+	for _, e := range entries {
+		if e.PrefixHash == NoPrefixHash {
+			foundZero = true
+			break
+		}
+	}
+	if !foundZero {
+		t.Fatalf("expected at least one entry with NoPrefixHash (no system prompt)")
+	}
+
+	// Entries with system prompts should have PrefixHash != NoPrefixHash
+	nonZeroCount := 0
+	for _, e := range entries {
+		if e.PrefixHash != NoPrefixHash {
+			nonZeroCount++
+		}
+	}
+	if nonZeroCount != 3 {
+		t.Fatalf("expected 3 entries with non-zero PrefixHash, got %d", nonZeroCount)
+	}
+
+	// Two entries with identical system prompt ("You are a helpful assistant.") must share the same hash
+	hashCounts := map[uint32]int{}
+	for _, e := range entries {
+		hashCounts[e.PrefixHash]++
+	}
+	foundDuplicate := false
+	for h, c := range hashCounts {
+		if h != NoPrefixHash && c >= 2 {
+			foundDuplicate = true
+			break
+		}
+	}
+	if !foundDuplicate {
+		t.Fatalf("expected at least one non-zero PrefixHash shared by 2+ entries, got counts: %v", hashCounts)
+	}
+}
+
 func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	ctx := testLoggerCtx()
 
@@ -463,8 +636,6 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
 	cfg.WorkDir = workDir
-	cfg.MaxOpenFiles = 3
-
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
 	filesClient := mockfiles.NewMockBatchFilesClient()
