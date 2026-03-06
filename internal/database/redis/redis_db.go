@@ -223,8 +223,7 @@ func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, lo
 }
 
 func (c *DSClientRedis) dbGet(
-	ctx context.Context, itemType, logPref string,
-	includeStatic bool, start, limit int,
+	ctx context.Context, itemType, logPref string, start, limit int,
 	IDs []string, tagSelectors db_api.Tags, tagsLogicalCond db_api.LogicalCond,
 	expired bool, tenantID, purpose string) (res []any, err error) {
 
@@ -242,7 +241,7 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
-			keys, strconv.FormatBool(includeStatic), tenantID).Slice()
+			keys, tenantID).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -260,7 +259,7 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(itemType), start, limit, tenantID).Slice()
+			ctags, cond, getKeyPatternForStore(itemType), start, limit, tenantID).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -272,8 +271,8 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
-			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemType), start, limit, tenantID).Slice()
+			[]string{}, curTimestamp, getKeyPatternForStore(itemType),
+			start, limit, tenantID).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -284,8 +283,8 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByPurpose.Run(cctx, c.redisClient,
-			[]string{}, purpose, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemType), start, limit, tenantID).Slice()
+			[]string{}, purpose, getKeyPatternForStore(itemType),
+			start, limit, tenantID).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -296,8 +295,8 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
-			[]string{}, tenantID, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemType), start, limit).Slice()
+			[]string{}, tenantID, getKeyPatternForStore(itemType),
+			start, limit).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -323,12 +322,11 @@ func (c *BatchDBClientRedis) DBGet(
 	}
 
 	var res []any
-	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", includeStatic, start, limit,
+	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit,
 		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
 	if err != nil {
 		return
 	}
-
 	if res != nil {
 		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
 		if err != nil {
@@ -356,12 +354,11 @@ func (c *FileDBClientRedis) DBGet(
 	}
 
 	var res []any
-	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", includeStatic, start, limit,
+	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", start, limit,
 		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, query.Purpose)
 	if err != nil {
 		return
 	}
-
 	if res != nil {
 		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
 		if err != nil {
@@ -532,26 +529,40 @@ func itemFromHget(vals []any, includeStatic bool) (
 	ID, tenantID string, expiry int64, tags db_api.Tags,
 	purpose string, status, spec []byte, err error) {
 
-	// Field positions: [0]=ID, [1]=tenantID, [2]=expiry, [3]=tags, [4]=purpose, [5]=status, [6]=spec (if includeStatic).
-
-	if (includeStatic && len(vals) != 7) || (!includeStatic && len(vals) != 6) {
-		err = fmt.Errorf("unexpected result contents from HMGet: %v", vals)
+	if len(vals)%2 != 0 {
+		err = fmt.Errorf("unexpected result contents from HGETALL (odd length): %v", vals)
 		return
 	}
 
-	var ok bool
-	ID, ok = vals[0].(string)
-	if !ok || len(ID) == 0 {
-		err = fmt.Errorf("missing or invalid id field: %v", vals[0])
+	// HGETALL returns a flat array: [field1, value1, field2, value2, ...].
+	// Build a map from the flat array.
+	hash := make(map[string]string)
+	for i := 0; i < len(vals); i += 2 {
+		fieldName, ok := vals[i].(string)
+		if !ok {
+			err = fmt.Errorf("invalid field name at index %d: %v", i, vals[i])
+			return
+		}
+		fieldValue, ok := vals[i+1].(string)
+		if !ok {
+			err = fmt.Errorf("invalid field value at index %d: %v", i+1, vals[i+1])
+			return
+		}
+		hash[fieldName] = fieldValue
+	}
+
+	// Extract ID (required).
+	ID = hash["ID"]
+	if len(ID) == 0 {
+		err = fmt.Errorf("missing or invalid id field")
 		return
 	}
 
-	tenantID, ok = vals[1].(string)
-	if !ok {
-		tenantID = ""
-	}
+	// Extract tenantID.
+	tenantID = hash["tenantID"]
 
-	if expiryStr, ok := vals[2].(string); ok && len(expiryStr) > 0 {
+	// Extract expiry.
+	if expiryStr := hash["expiry"]; len(expiryStr) > 0 {
 		expiry, err = strconv.ParseInt(expiryStr, 10, 64)
 		if err != nil {
 			err = fmt.Errorf("invalid expiry field %q: %w", expiryStr, err)
@@ -559,26 +570,24 @@ func itemFromHget(vals []any, includeStatic bool) (
 		}
 	}
 
-	tagsStr, ok := vals[3].(string)
-	if !ok {
-		tagsStr = ""
-	}
+	// Extract tags.
+	tagsStr := hash["tags"]
 	tags, err = unpackTags(tagsStr)
 	if err != nil {
 		return
 	}
 
-	purpose, ok = vals[4].(string)
-	if !ok {
-		purpose = ""
-	}
+	// Extract purpose.
+	purpose = hash["purpose"]
 
-	if statusStr, ok := vals[5].(string); ok && len(statusStr) > 0 {
+	// Extract status.
+	if statusStr := hash["status"]; len(statusStr) > 0 {
 		status = []byte(statusStr)
 	}
 
+	// Extract spec.
 	if includeStatic {
-		if specStr, ok := vals[6].(string); ok && len(specStr) > 0 {
+		if specStr := hash["spec"]; len(specStr) > 0 {
 			spec = []byte(specStr)
 		}
 	}

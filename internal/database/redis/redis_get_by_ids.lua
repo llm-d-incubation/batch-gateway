@@ -16,8 +16,7 @@
 
 -- Parse inputs.
 local keys = KEYS
-local includeStatic = ARGV[1]
-local tenantID = ARGV[2]
+local tenantID = ARGV[1]
 
 -- Check inputs.
 local result = {}
@@ -28,14 +27,14 @@ end
 -- Iterate over the IDs.
 for _, key in ipairs(keys) do
 	-- Get the key's contents.
-	local contents
-	if includeStatic == 'true' then
-		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "purpose", "status", "spec")
-	else
-		contents = redis.call('HMGET', key, "ID", "tenantID", "expiry", "tags", "purpose", "status")
+	local contents = redis.call('HGETALL', key)
+	-- HGETALL returns a flat array: [field1, value1, field2, value2, ...]. Convert to a map.
+	local hash = {}
+	for i = 1, #contents, 2 do
+		hash[contents[i]] = contents[i + 1]
 	end
 	-- Check inclusion condition.
-	if (contents ~= nil) and (tenantID == nil or tenantID == '' or tenantID == contents[2]) then
+	if (#contents > 0) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
 		table.insert(result, contents)
 	end
 end
