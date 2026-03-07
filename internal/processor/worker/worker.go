@@ -32,15 +32,16 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
 
 type Processor struct {
 	cfg    *config.ProcessorConfig
-	tokens chan struct{}
+	tokens semaphore.Semaphore
 	wg     sync.WaitGroup
 
 	// globalSem limits total in-flight inference requests across all workers.
-	globalSem chan struct{}
+	globalSem semaphore.Semaphore
 
 	clients *clientset.Clientset
 	poller  *Poller
@@ -53,17 +54,16 @@ func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
 ) *Processor {
-	sem := make(chan struct{}, cfg.NumWorkers)
-	for i := 0; i < cfg.NumWorkers; i++ {
-		sem <- struct{}{}
-	}
 	// TODO: need to group clients by usecase (poller, updater, etc.)
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
+	// TODO: Handle errors from semaphore.New().
+	tokenSem, _ := semaphore.New(cfg.NumWorkers)
+	globalSem, _ := semaphore.New(cfg.GlobalConcurrency)
 	return &Processor{
 		cfg:       cfg,
-		tokens:    sem,
-		globalSem: make(chan struct{}, cfg.GlobalConcurrency),
+		tokens:    tokenSem,
+		globalSem: globalSem,
 		clients:   clients,
 		poller:    poller,
 		updater:   updater,
@@ -223,22 +223,14 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 }
 
 func (p *Processor) acquire(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
+	if err := p.tokens.Acquire(ctx); err != nil {
 		return false
-	case <-p.tokens:
-		return true
 	}
+	return true
 }
 
 func (p *Processor) release() {
-	select {
-	case p.tokens <- struct{}{}:
-		return
-	default:
-		// Should never happen: every release is paired with exactly one acquire.
-		klog.Background().Error(nil, "CRITICAL: token channel is full, skipping release")
-	}
+	p.tokens.Release()
 }
 
 func (p *Processor) releaseAndWaitPollInterval(ctx context.Context) bool {
