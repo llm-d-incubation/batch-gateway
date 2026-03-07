@@ -41,7 +41,7 @@ func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeBatch, "DBStore[Batch]", nil, nil)
+		itemTypeBatch, "DBStore[Batch]", nil)
 }
 
 func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) (err error) {
@@ -54,12 +54,12 @@ func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) 
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeFile, "DBStore[File]", nil, []interface{}{item.Purpose})
+		itemTypeFile, "DBStore[File]", []any{item.Purpose})
 }
 
 func (c *DSClientRedis) dbStore(ctx context.Context,
 	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
-	itemType, logPref string, extraFieldsBatch, extraFieldsFile []interface{}) (err error) {
+	itemType, logPref string, extraFields []any) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -71,12 +71,10 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 		logger.Error(err, logPref+": tags packing failed")
 		return err
 	}
-	args := []interface{}{itemType, versionV1, indexes.ID, indexes.TenantID,
+	args := []any{itemType, versionV1, indexes.ID, indexes.TenantID,
 		indexes.Expiry, ptags, contents.Status, contents.Spec, ttlSecDefault}
-	if len(extraFieldsFile) > 0 && itemType == itemTypeFile {
-		args = append(args, extraFieldsFile...)
-	} else if len(extraFieldsBatch) > 0 && itemType == itemTypeBatch {
-		args = append(args, extraFieldsBatch...)
+	if len(extraFields) > 0 {
+		args = append(args, extraFields...)
 	}
 
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
@@ -98,9 +96,9 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 }
 
 func getUpdateFields(status []byte, tags db_api.Tags) (
-	fields []interface{}, updateStatus, updateTags bool, err error) {
+	fields []any, updateStatus, updateTags bool, err error) {
 
-	fields = make([]interface{}, 0, 2)
+	fields = make([]any, 0, 2)
 	if len(status) > 0 {
 		fields = append(fields, fieldNameStatus, status)
 		updateStatus = true
@@ -224,6 +222,91 @@ func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, lo
 	return
 }
 
+func (c *DSClientRedis) dbGet(
+	ctx context.Context, itemType, logPref string, start, limit int,
+	IDs []string, tagSelectors db_api.Tags, tagsLogicalCond db_api.LogicalCond,
+	expired bool, tenantID, purpose string) (res []any, err error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := klog.FromContext(ctx)
+
+	if len(IDs) > 0 {
+
+		keys := make([]string, 0, len(IDs))
+		for _, id := range IDs {
+			keys = append(keys, getKeyForStore(id, itemType))
+		}
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
+			keys, tenantID).Slice()
+		if err != nil {
+			logger.Error(err, logPref+": script failed")
+			return
+		}
+
+	} else if len(tagSelectors) > 0 {
+
+		cond, found := db_api.LogicalCondNames[tagsLogicalCond]
+		if !found {
+			err = fmt.Errorf("invalid logical condition value: %d", tagsLogicalCond)
+			logger.Error(err, logPref+":")
+			return
+		}
+		ctags := convertTags(tagSelectors)
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
+			ctags, cond, getKeyPatternForStore(itemType), start, limit, tenantID).Slice()
+		if err != nil {
+			logger.Error(err, logPref+": script failed")
+			return
+		}
+
+	} else if expired {
+
+		curTimestamp := time.Now().Unix()
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
+			[]string{}, curTimestamp, getKeyPatternForStore(itemType),
+			start, limit, tenantID).Slice()
+		if err != nil {
+			logger.Error(err, logPref+": script failed")
+			return
+		}
+
+	} else if len(purpose) > 0 {
+
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByPurpose.Run(cctx, c.redisClient,
+			[]string{}, purpose, getKeyPatternForStore(itemType),
+			start, limit, tenantID).Slice()
+		if err != nil {
+			logger.Error(err, logPref+": script failed")
+			return
+		}
+
+	} else if len(tenantID) > 0 {
+
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
+			[]string{}, tenantID, getKeyPatternForStore(itemType),
+			start, limit).Slice()
+		if err != nil {
+			logger.Error(err, logPref+": script failed")
+			return
+		}
+
+	}
+
+	return
+}
+
 func (c *BatchDBClientRedis) DBGet(
 	ctx context.Context, query *db_api.BatchQuery,
 	includeStatic bool, start, limit int) (
@@ -238,92 +321,21 @@ func (c *BatchDBClientRedis) DBGet(
 		return
 	}
 
-	if len(query.IDs) > 0 {
-
-		var res []interface{}
-		keys := make([]string, 0, len(query.IDs))
-		for _, id := range query.IDs {
-			keys = append(keys, getKeyForStore(id, itemTypeBatch))
-		}
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
-			keys, strconv.FormatBool(includeStatic), query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: script failed")
-			return
-		}
+	var res []any
+	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit,
+		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
+	if err != nil {
+		return
+	}
+	if res != nil {
 		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
 		if err != nil {
 			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
 			return
 		}
-
-	} else if len(query.TagSelectors) > 0 {
-
-		cond, found := db_api.LogicalCondNames[query.TagsLogicalCond]
-		if !found {
-			err = fmt.Errorf("invalid logical condition value: %d", query.TagsLogicalCond)
-			logger.Error(err, "DBGet[Batch]:")
-			return
-		}
-		var res []interface{}
-		ctags := convertTags(query.TagSelectors)
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(itemTypeBatch), start, limit, query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
-			return
-		}
-
-	} else if query.Expired {
-
-		var res []interface{}
-		curTimestamp := time.Now().Unix()
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
-			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemTypeBatch), start, limit, query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
-			return
-		}
-
-	} else if len(query.TenantID) > 0 {
-
-		var res []interface{}
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
-			[]string{}, query.TenantID, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemTypeBatch), start, limit).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
-			return
-		}
-
 	}
 
 	logger.Info("DBGet[Batch]: succeeded", "nItems", len(items))
-
 	return
 }
 
@@ -341,121 +353,32 @@ func (c *FileDBClientRedis) DBGet(
 		return
 	}
 
-	if len(query.IDs) > 0 {
-
-		var res []interface{}
-		keys := make([]string, 0, len(query.IDs))
-		for _, id := range query.IDs {
-			keys = append(keys, getKeyForStore(id, itemTypeFile))
-		}
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
-			keys, strconv.FormatBool(includeStatic), query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[File]: script failed")
-			return
-		}
+	var res []any
+	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", start, limit,
+		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, query.Purpose)
+	if err != nil {
+		return
+	}
+	if res != nil {
 		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
 		if err != nil {
 			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
 			return
 		}
-
-	} else if len(query.TagSelectors) > 0 {
-
-		cond, found := db_api.LogicalCondNames[query.TagsLogicalCond]
-		if !found {
-			err = fmt.Errorf("invalid logical condition value: %d", query.TagsLogicalCond)
-			logger.Error(err, "DBGet[File]:")
-			return
-		}
-		var res []interface{}
-		ctags := convertTags(query.TagSelectors)
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, strconv.FormatBool(includeStatic), getKeyPatternForStore(itemTypeFile), start, limit, query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[File]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
-			return
-		}
-
-	} else if query.Expired {
-
-		var res []interface{}
-		curTimestamp := time.Now().Unix()
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
-			[]string{}, curTimestamp, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemTypeFile), start, limit, query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[File]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
-			return
-		}
-
-	} else if len(query.Purpose) > 0 {
-
-		var res []interface{}
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByPurpose.Run(cctx, c.redisClient,
-			[]string{}, query.Purpose, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemTypeFile), start, limit, query.TenantID).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[File]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
-			return
-		}
-
-	} else if len(query.TenantID) > 0 {
-
-		var res []interface{}
-		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
-		defer ccancel()
-		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
-			[]string{}, query.TenantID, strconv.FormatBool(includeStatic),
-			getKeyPatternForStore(itemTypeFile), start, limit).Slice()
-		if err != nil {
-			logger.Error(err, "DBGet[File]: script failed")
-			return
-		}
-		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
-		if err != nil {
-			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
-			return
-		}
-
 	}
 
 	logger.Info("DBGet[File]: succeeded", "nItems", len(items))
-
 	return
 }
 
-func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
+func processGetScriptResultBatch(res []any, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
 
 	if len(res) != 2 {
 		err = fmt.Errorf("unexpected result from script")
 		return
 	}
-	resItems, ok := res[1].([]interface{})
+	resItems, ok := res[1].([]any)
 	if !ok {
 		err = fmt.Errorf("unexpected result type from script: %T", res[1])
 		return
@@ -467,7 +390,7 @@ func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	}
 	items = make([]*db_api.BatchItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		item, err := batchItemFromHget(resItem.([]interface{}), includeStatic)
+		item, err := batchItemFromHget(resItem.([]any), includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -481,14 +404,14 @@ func processGetScriptResultBatch(res []interface{}, includeStatic bool) (
 	return
 }
 
-func processGetScriptResultFile(res []interface{}, includeStatic bool) (
+func processGetScriptResultFile(res []any, includeStatic bool) (
 	cursor int, expectMore bool, items []*db_api.FileItem, err error) {
 
 	if len(res) != 2 {
 		err = fmt.Errorf("unexpected result from script")
 		return
 	}
-	resItems, ok := res[1].([]interface{})
+	resItems, ok := res[1].([]any)
 	if !ok {
 		err = fmt.Errorf("unexpected result type from script: %T", res[1])
 		return
@@ -500,7 +423,7 @@ func processGetScriptResultFile(res []interface{}, includeStatic bool) (
 	}
 	items = make([]*db_api.FileItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		item, err := fileItemFromHget(resItem.([]interface{}), includeStatic)
+		item, err := fileItemFromHget(resItem.([]any), includeStatic)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -555,7 +478,7 @@ func convertTags(tags map[string]string) (ctags []string) {
 	return
 }
 
-func batchItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.BatchItem, err error) {
+func batchItemFromHget(vals []any, includeStatic bool) (item *db_api.BatchItem, err error) {
 
 	ID, tenantID, expiry, tags, _, status, spec, err := itemFromHget(vals, includeStatic)
 	if err != nil {
@@ -578,7 +501,7 @@ func batchItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.Bat
 	return
 }
 
-func fileItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.FileItem, err error) {
+func fileItemFromHget(vals []any, includeStatic bool) (item *db_api.FileItem, err error) {
 
 	ID, tenantID, expiry, tags, purpose, status, spec, err := itemFromHget(vals, includeStatic)
 	if err != nil {
@@ -602,30 +525,44 @@ func fileItemFromHget(vals []interface{}, includeStatic bool) (item *db_api.File
 	return
 }
 
-func itemFromHget(vals []interface{}, includeStatic bool) (
+func itemFromHget(vals []any, includeStatic bool) (
 	ID, tenantID string, expiry int64, tags db_api.Tags,
 	purpose string, status, spec []byte, err error) {
 
-	// Field positions: [0]=ID, [1]=tenantID, [2]=expiry, [3]=tags, [4]=purpose, [5]=status, [6]=spec (if includeStatic).
-
-	if (includeStatic && len(vals) != 7) || (!includeStatic && len(vals) != 6) {
-		err = fmt.Errorf("unexpected result contents from HMGet: %v", vals)
+	if len(vals)%2 != 0 {
+		err = fmt.Errorf("unexpected result contents from HGETALL (odd length): %v", vals)
 		return
 	}
 
-	var ok bool
-	ID, ok = vals[0].(string)
-	if !ok || len(ID) == 0 {
-		err = fmt.Errorf("missing or invalid id field: %v", vals[0])
+	// HGETALL returns a flat array: [field1, value1, field2, value2, ...].
+	// Build a map from the flat array.
+	hash := make(map[string]string)
+	for i := 0; i < len(vals); i += 2 {
+		fieldName, ok := vals[i].(string)
+		if !ok {
+			err = fmt.Errorf("invalid field name at index %d: %v", i, vals[i])
+			return
+		}
+		fieldValue, ok := vals[i+1].(string)
+		if !ok {
+			err = fmt.Errorf("invalid field value at index %d: %v", i+1, vals[i+1])
+			return
+		}
+		hash[fieldName] = fieldValue
+	}
+
+	// Extract ID (required).
+	ID = hash["ID"]
+	if len(ID) == 0 {
+		err = fmt.Errorf("missing or invalid id field")
 		return
 	}
 
-	tenantID, ok = vals[1].(string)
-	if !ok {
-		tenantID = ""
-	}
+	// Extract tenantID.
+	tenantID = hash["tenantID"]
 
-	if expiryStr, ok := vals[2].(string); ok && len(expiryStr) > 0 {
+	// Extract expiry.
+	if expiryStr := hash["expiry"]; len(expiryStr) > 0 {
 		expiry, err = strconv.ParseInt(expiryStr, 10, 64)
 		if err != nil {
 			err = fmt.Errorf("invalid expiry field %q: %w", expiryStr, err)
@@ -633,26 +570,24 @@ func itemFromHget(vals []interface{}, includeStatic bool) (
 		}
 	}
 
-	tagsStr, ok := vals[3].(string)
-	if !ok {
-		tagsStr = ""
-	}
+	// Extract tags.
+	tagsStr := hash["tags"]
 	tags, err = unpackTags(tagsStr)
 	if err != nil {
 		return
 	}
 
-	purpose, ok = vals[4].(string)
-	if !ok {
-		purpose = ""
-	}
+	// Extract purpose.
+	purpose = hash["purpose"]
 
-	if statusStr, ok := vals[5].(string); ok && len(statusStr) > 0 {
+	// Extract status.
+	if statusStr := hash["status"]; len(statusStr) > 0 {
 		status = []byte(statusStr)
 	}
 
+	// Extract spec.
 	if includeStatic {
-		if specStr, ok := vals[6].(string); ok && len(specStr) > 0 {
+		if specStr := hash["spec"]; len(specStr) > 0 {
 			spec = []byte(specStr)
 		}
 	}
