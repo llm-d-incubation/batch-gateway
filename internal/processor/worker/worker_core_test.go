@@ -136,4 +136,3 @@ func TestProcessorTokenHelpers(t *testing.T) {
 		t.Fatalf("expected false when context canceled")
 	}
 }
-
