@@ -136,17 +136,3 @@ func TestProcessorTokenHelpers(t *testing.T) {
 		t.Fatalf("expected false when context canceled")
 	}
 }
-
-func TestProcessorRelease_GracefulWhenChannelFull(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.NumWorkers = 1
-	p := NewProcessor(cfg, validProcessorClients())
-
-	// channel is already full (pre-filled in NewProcessor), release should not panic
-	p.release()
-
-	// verify the token channel is still at capacity
-	if len(p.tokens) != cfg.NumWorkers {
-		t.Fatalf("expected token channel length %d, got %d", cfg.NumWorkers, len(p.tokens))
-	}
-}

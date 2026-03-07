@@ -44,6 +44,7 @@ import (
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
 
 // outputLine represents a single line in the output JSONL file following the OpenAI batch output format.
@@ -208,6 +209,9 @@ func (p *Processor) executeJob(
 // Concurrency is bounded by both a global semaphore (p.globalSem, shared across
 // all models/workers) and a per-model semaphore (PerModelMaxConcurrency).
 //
+// Semaphore acquisition order: local (per-model) before global (shared).
+// This prevents starving other models — blocking on global only wastes a local slot.
+//
 // Error strategy in this function: when a goroutine encounters a fatal error, firstErr is captured
 // via errOnce but the context is NOT cancelled within this function. Already-dispatched
 // goroutines run to completion. Context cancellation is propagated at the executeJob level
@@ -234,7 +238,10 @@ func (p *Processor) processModel(
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
-	modelSem := make(chan struct{}, p.cfg.PerModelMaxConcurrency)
+	modelSem, err := semaphore.New(p.cfg.PerModelMaxConcurrency)
+	if err != nil {
+		return fmt.Errorf("failed to create model semaphore: %w", err)
+	}
 
 	var (
 		wg       sync.WaitGroup
@@ -251,25 +258,20 @@ dispatch:
 
 		// Acquire semaphores in order: local (per-model) before global (shared).
 		// This order prevents starving other models — blocking on global only wastes a local slot.
-		// TODO: consider extracting a generic ordered-semaphore utility if this pattern is needed elsewhere.
-		select {
-		case modelSem <- struct{}{}:
-		case <-ctx.Done():
+		if err := modelSem.Acquire(ctx); err != nil {
 			break dispatch
 		}
 
-		select {
-		case p.globalSem <- struct{}{}:
-		case <-ctx.Done():
-			<-modelSem
+		if err := p.globalSem.Acquire(ctx); err != nil {
+			modelSem.Release()
 			break dispatch
 		}
 
 		wg.Add(1)
 		go func(entry planEntry) {
 			defer wg.Done()
-			defer func() { <-modelSem }()
-			defer func() { <-p.globalSem }()
+			defer modelSem.Release()
+			defer p.globalSem.Release()
 
 			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders, batchID)
 			if execErr != nil {
