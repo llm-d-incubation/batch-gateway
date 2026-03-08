@@ -124,6 +124,9 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 	}
 }
 
+// Compile-time check: responseWriter implements common.StatusRecorder.
+var _ common.StatusRecorder = (*responseWriter)(nil)
+
 // responseWriter wraps http.ResponseWriter to capture status code
 type responseWriter struct {
 	http.ResponseWriter

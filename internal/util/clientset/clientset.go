@@ -68,6 +68,10 @@ func NewClientset(
 
 	cs := &Clientset{}
 
+	// TODO: The exchange interfaces (priority queue, events, status) currently always use Redis.
+	// Consider adding a separate type parameter for these if we need alternative backends.
+	// See: https://github.com/llm-d-incubation/batch-gateway/pull/102#discussion_r2906181334
+
 	// build redis client
 	if redisCfg.Url == "" {
 		redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
@@ -142,7 +146,7 @@ func NewClientset(
 		logger.Info("Redis-based database client created")
 	case "postgresql":
 		if postgreSQLCfg == nil {
-			return nil, fmt.Errorf("postgreSQLCfg cannot be nil")
+			return nil, fmt.Errorf("postgreSQLCfg cannot be nil when database.type is \"postgresql\"")
 		}
 		if postgreSQLCfg.Url == "" {
 			postgreSQLURL, err := ucom.ReadSecretFile(ucom.SecretKeyPostgreSQLURL)
@@ -151,7 +155,17 @@ func NewClientset(
 			}
 			postgreSQLCfg.Url = postgreSQLURL
 		}
-		return nil, fmt.Errorf("database_type %q is not yet implemented", dbType)
+		batchDB, err := postgresql.NewPostgresBatchDBClient(ctx, postgreSQLCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create postgresql batch-db client: %w", err)
+		}
+		fileDB, err := postgresql.NewPostgresFileDBClient(ctx, postgreSQLCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
+		}
+		cs.BatchDB = batchDB
+		cs.FileDB = fileDB
+		logger.Info("PostgreSQL-based database client created")
 	default:
 		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, postgresql)", dbType)
 	}
