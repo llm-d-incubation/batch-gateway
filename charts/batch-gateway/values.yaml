@@ -264,6 +264,7 @@ processor:
     workDir: "/var/lib/batch-gateway/processor"
     # modelGateways.default is required and acts as fallback for all models.
     # Lookup order: modelGateways[model] -> modelGateways["default"].
+    # Each model name maps to exactly one gateway config (one entry per model).
     # apiKeyName is a key name in the app secret (mounted at /etc/.secrets/).
     # When omitted, the default inference-api-key is used.
     # Per-model entries must be fully specified — HTTP fields are NOT inherited from "default".

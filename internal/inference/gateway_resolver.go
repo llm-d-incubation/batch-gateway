@@ -40,8 +40,8 @@ type GatewayClientConfig struct {
 	TLSClientKeyFile      string
 }
 
-// gwToHTTPCfg maps a GatewayClientConfig directly to an HTTPClientConfig.
-func gwToHTTPCfg(gw GatewayClientConfig) HTTPClientConfig {
+// toHTTPClientConfig converts a GatewayClientConfig to an HTTPClientConfig.
+func (gw GatewayClientConfig) toHTTPClientConfig() HTTPClientConfig {
 	return HTTPClientConfig{
 		BaseURL:               gw.URL,
 		APIKey:                gw.APIKey,
@@ -72,37 +72,6 @@ type GatewayResolver struct {
 	modelClients  map[string]Client
 }
 
-// clientKey is the deduplication key for the HTTP client pool.
-// Two gateways sharing identical URL, API key, and HTTP/TLS settings reuse a
-// single client instance (and therefore the same connection pool).
-// API key is included because the same URL may be reached with different keys.
-type clientKey struct {
-	url            string
-	apiKey         string
-	timeout        time.Duration
-	maxRetries     int
-	initialBackoff time.Duration
-	maxBackoff     time.Duration
-	tlsSkipVerify  bool
-	tlsCAFile      string
-	tlsClientCert  string
-	tlsClientKey   string
-}
-
-func clientKeyFromHTTPCfg(cfg HTTPClientConfig) clientKey {
-	return clientKey{
-		url:            cfg.BaseURL,
-		apiKey:         cfg.APIKey,
-		timeout:        cfg.Timeout,
-		maxRetries:     cfg.MaxRetries,
-		initialBackoff: cfg.InitialBackoff,
-		maxBackoff:     cfg.MaxBackoff,
-		tlsSkipVerify:  cfg.TLSInsecureSkipVerify,
-		tlsCAFile:      cfg.TLSCACertFile,
-		tlsClientCert:  cfg.TLSClientCertFile,
-		tlsClientKey:   cfg.TLSClientKeyFile,
-	}
-}
 
 // NewGatewayResolver creates a GatewayResolver from a map of model-to-gateway
 // configs. The reserved key "default" is required and becomes the fallback client
@@ -117,16 +86,16 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 		return nil, fmt.Errorf("modelGateways must contain a \"default\" entry")
 	}
 
-	defaultCfg := gwToHTTPCfg(defaultGW)
-	defaultClient, err := NewHTTPClient(defaultCfg)
+	defaultClient, err := NewHTTPClient(defaultGW.toHTTPClientConfig())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default inference client: %w", err)
 	}
 
-	// Pool of clients for reuse. The key is the HTTPClientConfig.
-	// enables sharing of clients with the same URL, API key, and HTTP/TLS config.
-	pool := map[clientKey]Client{
-		clientKeyFromHTTPCfg(defaultCfg): defaultClient,
+	// GatewayClientConfig is used directly as the pool key: all its fields are
+	// comparable primitives, so two configs with identical settings produce the
+	// same key and reuse a single HTTPClient (and its connection pool).
+	pool := map[GatewayClientConfig]Client{
+		defaultGW: defaultClient,
 	}
 	modelClients := make(map[string]Client, len(modelGateways))
 
@@ -135,19 +104,16 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 			continue
 		}
 
-		cfg := gwToHTTPCfg(gw)
-		key := clientKeyFromHTTPCfg(cfg)
-
-		if client, ok := pool[key]; ok {
+		if client, ok := pool[gw]; ok {
 			modelClients[model] = client
 			continue
 		}
 
-		client, err := NewHTTPClient(cfg)
+		client, err := NewHTTPClient(gw.toHTTPClientConfig())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}
-		pool[key] = client
+		pool[gw] = client
 		modelClients[model] = client
 	}
 
