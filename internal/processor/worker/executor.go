@@ -587,6 +587,9 @@ func (p *Processor) uploadJobFile(
 	retryCfg := p.cfg.UploadRetry
 	maxAttempts := retryCfg.MaxRetries + 1
 
+	// TODO: distinguish retryable (network/storage transient) vs non-retryable (auth, permission)
+	// errors and skip retries for the latter. Deferred until we have more storage backends
+	// or see real non-transient failures in production.
 	fileMeta, err := p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
 	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
 		metrics.RecordFileUploadRetry(fileType)
