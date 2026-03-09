@@ -356,7 +356,7 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 	if defaultGW, ok := resolved[DefaultModelGatewayKey]; ok && defaultGW.APIKey == "" {
 		apiKey, err := ucom.ReadSecretFile(ucom.SecretKeyInferenceAPI)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read default inference API key: %w", err)
 		}
 		defaultGW.APIKey = apiKey
 		resolved[DefaultModelGatewayKey] = defaultGW
