@@ -185,7 +185,6 @@ func (p *Processor) executeJob(
 		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
 	}
 
-	// jobInfo.JobID holds the batch ID (e.g. "batch_<uuid>")
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		go func(safeModelID, modelID string) {
 			err := p.processModel(
@@ -454,8 +453,8 @@ func (p *Processor) executeOneRequest(
 	return result, nil
 }
 
-// finalizeJob performs phase 3: uploads the output file to file storage,
-// creates a file record in the database, and updates job status to completed.
+// finalizeJob performs phase 3: uploads output and error files to shared storage,
+// creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
 	ctx context.Context,
 	updater *StatusUpdater,
@@ -647,7 +646,7 @@ func (p *Processor) storeFileRecord(
 	return nil
 }
 
-// resolveOutputExpiration returns the ExpiresAt timestamp for an output file.
+// resolveOutputExpiration returns the ExpiresAt timestamp for an output or error file.
 // Priority: user-provided output_expires_after_seconds tag > config default.
 // Returns 0 (no expiration) if neither is set.
 func (p *Processor) resolveOutputExpiration(now int64, batchTags db.Tags) int64 {
