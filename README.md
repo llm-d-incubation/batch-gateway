@@ -11,35 +11,35 @@ The system is designed to facilitate efficient processing of batch workloads in 
 
 ### Use Cases
 
-- Inferencing large datasets
-- Generating embeddings for large corpora
-- Model evaluations and testing
-- Offline analysis and batch processing
-- Cost-optimized inference using differential billing for batch vs. interactive workloads
+- Inferencing large datasets.
+- Generating embeddings for large corpora.
+- Model evaluations and testing.
+- Offline analysis and batch processing.
+- Cost-optimized inference using differential billing for batch vs. interactive workloads.
 
 ## Key Features
 
 ### Batch Processing
 
-- **OpenAI API Compatibility**: Full schema parity with OpenAI's `/v1/batches` and `/v1/files` endpoints
-- **Large-Scale Processing**: Support for up to 50,000 requests per job
-- **Progress Tracking**: Real-time job status progress updates
-- **Job Management and Control**: Enables to manage and control batch jobs, before, during, and after their processing
-- **Model-Aware Scheduling**: Groups and orders requests by model and system prompt for optimal downstream utilization
-- **Intelligent inference dispatching**: Monitors downstream metrics to determine the flow volume of batch inference requests
+- **OpenAI API Compatibility**: Full schema parity with OpenAI's `/v1/batches` and `/v1/files` endpoints.
+- **Large-Scale Processing**: Support for up to 50,000 requests per job.
+- **Progress Tracking**: Real-time job status progress updates.
+- **Job Management and Control**: Enables to manage and control batch jobs, before, during, and after their processing.
+- **Model-Aware Scheduling**: Groups and orders requests by model and system prompt for optimal downstream utilization.
+- **Intelligent inference dispatching**: Monitors downstream metrics to determine the flow volume of batch inference requests.
 
 ### System Design
 
-- **Deployment Flexibility**: Separate API server, batch processor, and request dispatcher components for independent scaling
-- **Pluggable Storage Backends**: Supports pluggable storage backends for files, metadata, and queues
-- **Fault Tolerance**: Automatic recovery from batch processor crashes
+- **Deployment Flexibility**: Separate API server, batch processor, and request dispatcher components for independent scaling.
+- **Pluggable Storage Backends**: Supports pluggable storage backends for files, metadata, and queues.
+- **Fault Tolerance**: Automatic recovery from batch processor crashes.
 
 ### Operations
 
-- **Kubernetes Native**: Helm charts with OpenShift compatibility
-- **Observability**: Prometheus metrics and Open Telemetry integration
-- **Health Checks**: Liveness and readiness probes for the system components
-- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem
+- **Kubernetes Native**: Helm charts with OpenShift compatibility.
+- **Observability**: Prometheus metrics and Open Telemetry integration.
+- **Health Checks**: Liveness and readiness probes for the system components.
+- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem.
 
 ## Architecture
 
@@ -47,33 +47,33 @@ The system is designed to facilitate efficient processing of batch workloads in 
 
 ![Architecture Diagram](docs/design/diagrams/arch_1.png)
 
-#### Components
+### Components
 
 1. **API Server** ([`batch-gateway-apiserver`](cmd/apiserver))
-   - Handles REST API requests for batch job submission, management and tracking, as well as file management
-   - Exposes OpenAI-compatible `/v1/batches` and `/v1/files` endpoints
+   - Handles REST API requests for batch job submission, management and tracking, as well as file management.
+   - Exposes OpenAI-compatible `/v1/batches` and `/v1/files` endpoints.
 
 2. **Batch Processor** ([`batch-gateway-processor`](cmd/batch-processor))
-   - Pulls a batch job from a priority queue, and gets its associated file of inference requests
-   - Pre-processes the batch file and builds per-model execution plans
-   - Sends downstream individual inference requests from the batch file, with per-model and global concurrency control
-   - Writes results to an output file
-   - Updates job status
-   - Listens to job events (e.g. cancellation) during job processing
+   - Pulls a batch job from a priority queue, and gets its associated file of inference requests.
+   - Pre-processes the batch file and builds per-model execution plans.
+   - Sends downstream individual inference requests from the batch file, with per-model and global concurrency control.
+   - Writes results to an output file.
+   - Updates job status.
+   - Listens to job events (e.g. cancellation) during job processing.
 
 3. **Data Layer**
-   - Manages batch input and output files, batch jobs' and files' metadata, priority queue, events and status mechanisms
+   - Manages batch input and output files, batch jobs' and files' metadata, priority queue, events and status mechanisms.
    - Supports pluggable backends.
    - Backends available out of the box:
-     - Job and file metadata storage: `PostgreSQL`
-     - Priority queue, event channels, and status updates: `Redis`
-     - File storage: `S3`, `filesystem`
+     - Job and file metadata storage: `PostgreSQL`.
+     - Priority queue, event channels, and status updates: `Redis`.
+     - File storage: `S3`, `filesystem`.
 
 4. **Batch Dispatcher**
-   - Implements intelligent flow control to balance batch and interactive workloads
-   - Monitors downstream inference system metrics (e.g. queue depth, latency, utilization)
+   - Implements intelligent flow control to balance batch and interactive workloads.
+   - Monitors downstream inference system metrics (e.g. queue depth, latency, utilization).
    - Dynamically adjusts dispatch flow of batch requests based on downstream system load, to minimize interference with interactive requests while meeting batch jobs SLOs.
-   - Provides backpressure mechanisms to prevent overwhelming downstream inference engines
+   - Provides backpressure mechanisms to prevent overwhelming downstream inference engines.
 
 ### Processing Flow
 
@@ -104,12 +104,13 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
 
 ### Design Documents
 
-For detailed architecture information, see:
+For detailed architecture information see:
 
-- [Batch Inference Architecture](docs/design/batch_inference_architecture.md) - Overall system design and requirements
-- [Batch Processor Architecture](docs/design/batch_processor_architecture.md) - Detailed batch processor design
-- [Batch Dispatcher](docs/design/batch-dispatcher.md) - Dispatch flow control mechanism
-- [Resource Lifecycle](docs/design/resource-lifecycle.md) - Job and file state management
+- [Batch Inference Architecture](docs/design/batch_inference_architecture.md) - Overall system design and requirements.
+- [Batch Processor Architecture](docs/design/batch_processor_architecture.md) - Detailed batch processor design.
+- [Batch Dispatcher](docs/design/batch-dispatcher.md) - Dispatch flow control mechanism.
+- [MaaS integration](docs/design/maas-integration.md) - Integration with the MaaS component.
+- [Resource Lifecycle](docs/design/resource-lifecycle.md) - Job and file state management.
 
 ## Repository Structure
 
@@ -155,22 +156,22 @@ batch-gateway/
 
 ### Key Directories
 
-- **`cmd/`**: Contains `main.go` entry points for the components' binaries
-- **`internal/`**: All private application code, organized by component
-- **`charts/`**: Helm chart for deploying the components in Kubernetes
-- **`docs/design/`**: Detailed architecture documents with diagrams explaining the batch processing system
-- **`test/`**: Integration and E2E test suites for validating the full system
+- **`cmd/`**: Contains `main.go` entry points for the components' binaries.
+- **`internal/`**: All private application code, organized by component.
+- **`charts/`**: Helm chart for deploying the components in Kubernetes.
+- **`docs/design/`**: Detailed architecture documents with diagrams explaining the batch processing system.
+- **`test/`**: Integration and E2E test suites for validating the full system.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.25 or later
-- PostgreSQL 12+ (for metadata storage)
-- Redis 6+ (for job queue)
-- S3-compatible object storage or local filesystem
-- Docker or Podman (for containerized deployment)
-- Kubernetes 1.19+ and Helm 3.0+ (for Kubernetes deployment)
+- Go 1.25 or later.
+- PostgreSQL 12+ (for metadata storage).
+- Redis 6+ (for job queue).
+- S3-compatible object storage or local filesystem.
+- Docker or Podman (for containerized deployment).
+- Kubernetes 1.19+ and Helm 3.0+ (for Kubernetes deployment).
 
 ### Local Development
 
@@ -323,32 +324,32 @@ The processor exposes Prometheus metrics on port 9090:
 
 **Job-Level Metrics:**
 
-- `jobs_processed_total{result,reason}` - Total jobs processed by result
-- `job_processing_duration_seconds{tenantID,size_bucket}` - Job processing duration histogram
-- `job_queue_wait_duration{tenantID}` - Time jobs spend in queue
+- `jobs_processed_total{result,reason}` - Total jobs processed by result.
+- `job_processing_duration_seconds{tenantID,size_bucket}` - Job processing duration histogram.
+- `job_queue_wait_duration{tenantID}` - Time jobs spend in queue.
 
 **Worker Metrics:**
 
-- `total_workers` - Configured worker pool size
-- `active_workers` - Currently active workers
-- `processor_inflight_requests` - Global in-flight request count
-- `model_inflight_requests{model}` - Per-model in-flight requests
+- `total_workers` - Configured worker pool size.
+- `active_workers` - Currently active workers.
+- `processor_inflight_requests` - Global in-flight request count.
+- `model_inflight_requests{model}` - Per-model in-flight requests.
 
 **Error Metrics:**
 
-- `job_errors_by_model_total{model}` - Errors grouped by model
+- `job_errors_by_model_total{model}` - Errors grouped by model.
 
 ### Health Checks
 
 **API Server:**
 
-- Health: `GET /health` (port 8000)
-- Readiness: `GET /readyz` (port 8000)
+- Health: `GET /health` (port 8000).
+- Readiness: `GET /readyz` (port 8000).
 
 **Processor:**
 
-- Health: `GET /health` (port 9090)
-- Readiness: `GET /ready` (port 9090)
+- Health: `GET /health` (port 9090).
+- Readiness: `GET /ready` (port 9090).
 
 ## Development
 
@@ -380,33 +381,33 @@ This installs:
 
 ### Project Structure Conventions
 
-- Use `internal/` for all private code (not intended for external import)
-- Place shared types in `internal/shared/`
-- Keep component-specific code in dedicated subdirectories (`internal/apiserver/`, `internal/processor/`)
-- Write unit tests alongside implementation files (`*_test.go`)
-- Place E2E tests in `test/e2e/`
+- Use `internal/` for all private code (not intended for external import).
+- Place shared types in `internal/shared/`.
+- Keep component-specific code in dedicated subdirectories (`internal/apiserver/`, `internal/processor/`).
+- Write unit tests alongside implementation files (`*_test.go`).
+- Place E2E tests in `test/e2e/`.
 
 ## Contributing
 
 Contributions are welcome! Please ensure:
 
-1. All tests pass: `make test-all`
-2. Code is formatted: `make fmt`
-3. Linter passes: `make lint`
-4. New features include tests and documentation
-5. Commits follow conventional commit format
+1. All tests pass: `make test-all`.
+2. Code is formatted: `make fmt`.
+3. Linter passes: `make lint`.
+4. New features include tests and documentation.
+5. Commits follow conventional commit format.
 
 ## Security
 
 This project follows security best practices:
 
-- Non-root container execution (UID 65532)
-- Read-only root filesystem
-- All Linux capabilities dropped
-- No privilege escalation
-- Seccomp profile enabled
-- TLS support for all network communication
-- OpenShift SCC compatibility
+- Non-root container execution (UID 65532).
+- Read-only root filesystem.
+- All Linux capabilities dropped.
+- No privilege escalation.
+- Seccomp profile enabled.
+- TLS support for all network communication.
+- OpenShift SCC compatibility.
 
 To report security vulnerabilities, please contact the maintainers privately.
 
@@ -430,13 +431,13 @@ limitations under the License.
 
 ## Related Projects
 
-- [llm-d-inference-scheduler](https://github.com/llm-d-incubation/llm-d-inference-scheduler) - Inference request scheduler
-- [gateway-api-inference-extension](https://gateway-api-inference-extension.sigs.k8s.io/) - Kubernetes Gateway API extensions for inference workloads
+- [llm-d-inference-scheduler](https://github.com/llm-d/llm-d-inference-scheduler) - Inference request scheduler.
+- [gateway-api-inference-extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) - Kubernetes Gateway API extensions for inference workloads.
 
 ## Support
 
 For help and support:
 
-- Open an issue on GitHub
-- Review the [design documentation](docs/design/)
-- Check the [development guide](docs/guides/DEVELOPMENT.md)
+- Open an issue on GitHub.
+- Review the [design documentation](docs/design/).
+- Check the [development guide](docs/guides/DEVELOPMENT.md).
