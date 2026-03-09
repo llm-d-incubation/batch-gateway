@@ -56,6 +56,20 @@ type outputWriters struct {
 	errorsMu sync.Mutex
 }
 
+// write writes line to the error file if isError is true, otherwise to the output file.
+func (w *outputWriters) write(line []byte, isError bool) error {
+	if isError {
+		w.errorsMu.Lock()
+		_, err := w.errors.Write(line)
+		w.errorsMu.Unlock()
+		return err
+	}
+	w.outputMu.Lock()
+	_, err := w.output.Write(line)
+	w.outputMu.Unlock()
+	return err
+}
+
 // outputLine represents a single line in the output JSONL file following the OpenAI batch output format.
 type outputLine struct {
 	ID       string                    `json:"id"`
@@ -320,22 +334,14 @@ dispatch:
 			lineBytes = append(lineBytes, '\n')
 
 			// Write to error file if the result has an error, otherwise to output file.
-			if result.Error != nil {
-				writers.errorsMu.Lock()
-				_, writeErr := writers.errors.Write(lineBytes)
-				writers.errorsMu.Unlock()
-				if writeErr != nil {
-					logger.Error(writeErr, "Failed to write error line", "offset", entry.Offset)
-					errOnce.Do(func() { firstErr = fmt.Errorf("failed to write error line: %w", writeErr) })
+			isError := result.Error != nil
+			if writeErr := writers.write(lineBytes, isError); writeErr != nil {
+				kind := "output"
+				if isError {
+					kind = "error"
 				}
-			} else {
-				writers.outputMu.Lock()
-				_, writeErr := writers.output.Write(lineBytes)
-				writers.outputMu.Unlock()
-				if writeErr != nil {
-					logger.Error(writeErr, "Failed to write output line", "offset", entry.Offset)
-					errOnce.Do(func() { firstErr = fmt.Errorf("failed to write output line: %w", writeErr) })
-				}
+				logger.Error(writeErr, "Failed to write line", "kind", kind, "offset", entry.Offset)
+				errOnce.Do(func() { firstErr = fmt.Errorf("failed to write %s line: %w", kind, writeErr) })
 			}
 		}(entry)
 	}
@@ -529,7 +535,7 @@ func (p *Processor) uploadOutputFile(
 	if err != nil {
 		return 0, err
 	}
-	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, true)
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeOutput)
 }
 
 // uploadErrorFile uploads the local error file to shared storage with retry.
@@ -544,16 +550,15 @@ func (p *Processor) uploadErrorFile(
 	if err != nil {
 		return 0, err
 	}
-	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, false)
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeError)
 }
 
 // uploadJobFile uploads a local file to shared storage with retry.
 // Returns the file size; returns 0 without error if the file does not exist or is empty.
-// isOutput distinguishes output files (true) from error files (false) for metrics labeling.
 func (p *Processor) uploadJobFile(
 	ctx context.Context,
 	filePath, fileName, tenantID string,
-	isOutput bool,
+	fileType metrics.FileType,
 ) (int64, error) {
 	logger := klog.FromContext(ctx)
 
@@ -584,11 +589,7 @@ func (p *Processor) uploadJobFile(
 
 	fileMeta, err := p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
 	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
-		if isOutput {
-			metrics.RecordFileUploadRetry(metrics.FileTypeOutput)
-		} else {
-			metrics.RecordFileUploadRetry(metrics.FileTypeError)
-		}
+		metrics.RecordFileUploadRetry(fileType)
 		backoff := min(retryCfg.InitialBackoff*(1<<(attempt-1)), retryCfg.MaxBackoff)
 		logger.V(logging.WARNING).Info("Retrying file upload",
 			"file", fileName, "attempt", attempt+1, "maxAttempts", maxAttempts, "backoff", backoff, "error", err)

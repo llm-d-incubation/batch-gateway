@@ -36,7 +36,7 @@ const defaultServiceName = "batch-gateway"
 // Span attribute keys for batch-gateway resources.
 const (
 	AttrBatchID      = "batch.id"
-	AttrFileID       = "file.id"
+	AttrInputFileID  = "batch.input_file.id"
 	AttrOutputFileID = "batch.output_file.id"
 	AttrErrorFileID  = "batch.error_file.id"
 	AttrTenantID     = "tenant.id"

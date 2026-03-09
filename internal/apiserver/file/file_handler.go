@@ -282,7 +282,7 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 
 	fileID := ucom.NewFileID()
 
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrFileID, fileID))
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrInputFileID, fileID))
 
 	// Sanitize filename
 	fileName := filepath.Base(fileHeader.Filename)

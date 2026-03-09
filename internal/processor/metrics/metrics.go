@@ -90,10 +90,12 @@ var (
 	fileUploadRetriesTotal        *prometheus.CounterVec
 )
 
-// File type labels for file upload metrics.
+// FileType labels for file upload metrics.
+type FileType string
+
 const (
-	FileTypeOutput = "output"
-	FileTypeError  = "error"
+	FileTypeOutput FileType = "output"
+	FileTypeError  FileType = "error"
 )
 
 func InitMetrics(cfg config.ProcessorConfig) error {
@@ -310,7 +312,6 @@ func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
 }
 
 // RecordFileUploadRetry increments the upload retry counter for a given file type.
-// fileType should be one of FileTypeOutput or FileTypeError.
-func RecordFileUploadRetry(fileType string) {
-	fileUploadRetriesTotal.WithLabelValues(fileType).Inc()
+func RecordFileUploadRetry(fileType FileType) {
+	fileUploadRetriesTotal.WithLabelValues(string(fileType)).Inc()
 }

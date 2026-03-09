@@ -58,7 +58,7 @@ func (p *Processor) runJob(
 		attribute.String(uotel.AttrTenantID, jobItem.TenantID),
 	}
 	if jobInfo.BatchJob != nil {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrFileID, jobInfo.BatchJob.InputFileID))
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrInputFileID, jobInfo.BatchJob.InputFileID))
 	}
 	ctx, span := uotel.StartSpan(ctx, "process-batch",
 		trace.WithAttributes(spanAttrs...),

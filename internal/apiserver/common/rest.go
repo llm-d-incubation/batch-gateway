@@ -74,7 +74,7 @@ func otelInstrumentHandler(spanName string, next http.HandlerFunc) http.HandlerF
 
 		span.SetAttributes(attribute.String(uotel.AttrTenantID, GetTenantIDFromContext(ctx)))
 		if fileID := r.PathValue(PathParamFileID); fileID != "" {
-			span.SetAttributes(attribute.String(uotel.AttrFileID, fileID))
+			span.SetAttributes(attribute.String(uotel.AttrInputFileID, fileID))
 		}
 		if batchID := r.PathValue(PathParamBatchID); batchID != "" {
 			span.SetAttributes(attribute.String(uotel.AttrBatchID, batchID))

@@ -276,9 +276,9 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 				for _, lp := range m.Label {
 					if lp.GetName() == "file_type" {
 						switch lp.GetValue() {
-						case FileTypeOutput:
+						case string(FileTypeOutput):
 							outputRetries = m.GetCounter().GetValue()
-						case FileTypeError:
+						case string(FileTypeError):
 							errorRetries = m.GetCounter().GetValue()
 						}
 					}
