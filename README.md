@@ -75,7 +75,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
    - Dynamically adjusts dispatch flow of batch requests based on downstream system load, to minimize interference with interactive requests while meeting batch jobs SLOs.
    - Provides backpressure mechanisms to prevent overwhelming downstream inference engines
 
-#### Processing Flow
+### Processing Flow
 
 ```text
 User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
@@ -102,23 +102,13 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
                   Update Job Status
 ```
 
-### Scheduler Architecture
-
-The processor uses a **per-model goroutine architecture** with two-level semaphore-based concurrency control:
-
-![Dispatcher Architecture](docs/design/diagrams/dispatch_1.png)
-
-- **Global Semaphore** (`GlobalConcurrency`): Limits total in-flight requests across all workers (default: 100)
-- **Per-Model Semaphore** (`PerModelMaxConcurrency`): Limits concurrent requests per model (default: 10)
-- **Prefix Hash Ordering**: Requests are sorted by system prompt hash to maximize downstream KV cache hits
-
 ### Design Documents
 
 For detailed architecture information, see:
 
 - [Batch Inference Architecture](docs/design/batch_inference_architecture.md) - Overall system design and requirements
-- [Batch Processor Architecture](docs/design/batch_processor_architecture.md) - Detailed processor design and scheduling
-- [Batch Dispatcher](docs/design/batch-dispatcher.md) - Flow control and dispatch budget mechanism
+- [Batch Processor Architecture](docs/design/batch_processor_architecture.md) - Detailed batch processor design
+- [Batch Dispatcher](docs/design/batch-dispatcher.md) - Dispatch flow control mechanism
 - [Resource Lifecycle](docs/design/resource-lifecycle.md) - Job and file state management
 
 ## Repository Structure
@@ -130,15 +120,20 @@ batch-gateway/
 │   └── batch-processor/          # Batch processor binary
 ├── internal/                     # Private application code
 │   ├── apiserver/                # API server implementation
-│   │   ├── handlers/             # HTTP request handlers
+│   │   ├── batch/                # Batch job handlers
+│   │   ├── file/                 # File handlers
+│   │   ├── common/               # Shared handler utilities
+│   │   ├── health/               # Health check handler
 │   │   ├── middleware/           # HTTP middleware
 │   │   └── server/               # Server initialization
 │   ├── processor/                # Batch processor implementation
-│   │   ├── worker/               # Worker pool and job execution
-│   │   ├── planner/              # Phase 1: Plan building
-│   │   ├── executor/             # Phase 2: Request execution
+│   │   ├── worker/               # Worker pool, planning, and execution
+│   │   ├── config/               # Processor configuration
 │   │   └── metrics/              # Prometheus metrics
-│   ├── database/                 # Database clients (PostgreSQL)
+│   ├── database/                 # Database clients
+│   │   ├── api/                  # Database interfaces
+│   │   ├── redis/                # Redis implementation
+│   │   └── postgresql/           # PostgreSQL implementation
 │   ├── files_store/              # File storage clients (S3, FS)
 │   ├── inference/                # Inference gateway HTTP client
 │   ├── shared/                   # Shared types and utilities
@@ -149,8 +144,7 @@ batch-gateway/
 │   ├── design/                   # Architecture and design documents
 │   └── guides/                   # Developer and user guides
 ├── test/                         # Test suites
-│   ├── e2e/                      # End-to-end tests
-│   └── integration/              # Integration tests
+│   └── e2e/                      # End-to-end tests
 ├── docker/                       # Dockerfiles
 │   ├── Dockerfile.apiserver      # API server container image
 │   └── Dockerfile.processor      # Processor container image
@@ -161,9 +155,9 @@ batch-gateway/
 
 ### Key Directories
 
-- **`cmd/`**: Contains `main.go` entry points for both the API server and processor binaries
-- **`internal/`**: All private application code, organized by component (apiserver, processor, storage clients)
-- **`charts/`**: Helm chart for deploying both components to Kubernetes
+- **`cmd/`**: Contains `main.go` entry points for the components' binaries
+- **`internal/`**: All private application code, organized by component
+- **`charts/`**: Helm chart for deploying the components in Kubernetes
 - **`docs/design/`**: Detailed architecture documents with diagrams explaining the batch processing system
 - **`test/`**: Integration and E2E test suites for validating the full system
 
@@ -183,7 +177,7 @@ batch-gateway/
 #### 1. Build Binaries
 
 ```bash
-# Build both API server and processor
+# Build all the components
 make build
 
 # Or build individually
@@ -253,7 +247,7 @@ See [Helm Chart README](charts/batch-gateway/README.md) for full configuration o
 ### Docker Images
 
 ```bash
-# Build both images
+# Build all images
 make image-build
 
 # Or build individually
@@ -315,27 +309,11 @@ For complete API documentation, see the [OpenAI Batch API reference](https://pla
 
 ### API Server Configuration
 
-Key configuration options (environment variables or config file):
+See configuration example in `cmd/apiserver/config.yaml`.
 
-- `DATABASE_URL`: PostgreSQL connection string
-- `REDIS_URL`: Redis connection string
-- `FILE_STORAGE_TYPE`: `filesystem` or `s3`
-- `S3_BUCKET`: S3 bucket name (if using S3)
-- `PORT`: HTTP server port (default: 8000)
-- `TLS_CERT_FILE`, `TLS_KEY_FILE`: TLS certificate paths
+### Batch Processor Configuration
 
-### Processor Configuration
-
-Key configuration options:
-
-- `NUM_WORKERS`: Worker pool size (default: 3)
-- `POLL_INTERVAL`: Job queue polling interval (default: 5s)
-- `GLOBAL_CONCURRENCY`: Max concurrent requests across all workers (default: 100)
-- `PER_MODEL_MAX_CONCURRENCY`: Max concurrent requests per model (default: 10)
-- `INFERENCE_GATEWAY_URL`: Inference gateway endpoint
-- `SHUTDOWN_TIMEOUT`: Graceful shutdown timeout (default: 30s)
-
-See configuration examples in `cmd/*/config.yaml`.
+See configuration example in `cmd/batch-processor/config.yaml`.
 
 ## Monitoring
 
@@ -406,7 +384,6 @@ This installs:
 - Place shared types in `internal/shared/`
 - Keep component-specific code in dedicated subdirectories (`internal/apiserver/`, `internal/processor/`)
 - Write unit tests alongside implementation files (`*_test.go`)
-- Place integration tests in `test/integration/`
 - Place E2E tests in `test/e2e/`
 
 ## Contributing
