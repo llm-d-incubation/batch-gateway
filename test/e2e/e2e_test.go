@@ -33,11 +33,12 @@ import (
 )
 
 var (
-	baseURL     = getEnvOrDefault("TEST_BASE_URL", "http://localhost:8000")
-	jaegerURL   = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
-	tenantID    = getEnvOrDefault("TEST_TENANT_ID", "default")
-	namespace   = getEnvOrDefault("TEST_NAMESPACE", "default")
-	helmRelease = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
+	baseURL      = getEnvOrDefault("TEST_BASE_URL", "http://localhost:8000")
+	jaegerURL    = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
+	tenantHeader = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
+	tenantID     = getEnvOrDefault("TEST_TENANT_ID", "default")
+	namespace    = getEnvOrDefault("TEST_NAMESPACE", "default")
+	helmRelease  = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
@@ -69,10 +70,14 @@ var testJSONL = strings.Join([]string{
 // ── Helpers ────────────────────────────────────────────────────────────
 
 func newClient() *openai.Client {
+	return newClientForTenant(tenantID)
+}
+
+func newClientForTenant(tenant string) *openai.Client {
 	c := openai.NewClient(
 		option.WithBaseURL(baseURL+"/v1/"),
 		option.WithAPIKey("unused"),
-		option.WithHeader("X-MaaS-Username", tenantID),
+		option.WithHeader(tenantHeader, tenant),
 	)
 	return &c
 }
@@ -398,6 +403,101 @@ func doTestPassThroughHeaders(t *testing.T) {
 	}
 }
 
+// ── Multi-tenant subtests ─────────────────────────────────────────────────────
+
+// doTestMultiTenantIsolation verifies that resources created by tenant A
+// are not visible to tenant B.
+func doTestMultiTenantIsolation(t *testing.T) {
+	t.Helper()
+
+	ctx := context.Background()
+	tenantA := fmt.Sprintf("tenant-a-%s", testRunID)
+	tenantB := fmt.Sprintf("tenant-b-%s", testRunID)
+	clientA := newClientForTenant(tenantA)
+	clientB := newClientForTenant(tenantB)
+
+	// ── Files isolation ──────────────────────────────────────────────────
+
+	// Tenant A creates a file
+	filenameA := fmt.Sprintf("tenant-a-file-%s.jsonl", testRunID)
+	fileA, err := clientA.Files.New(ctx, openai.FileNewParams{
+		File:    openai.File(strings.NewReader(testJSONL), filenameA, "application/jsonl"),
+		Purpose: openai.FilePurposeBatch,
+	})
+	if err != nil {
+		t.Fatalf("tenant A: create file failed: %v", err)
+	}
+	t.Logf("tenant A created file: %s", fileA.ID)
+
+	// Tenant B should not see tenant A's file
+	_, err = clientB.Files.Get(ctx, fileA.ID)
+	if err == nil {
+		t.Error("tenant B was able to retrieve tenant A's file; expected 404")
+	} else {
+		var apiErr *openai.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404 when tenant B accesses tenant A's file, got %d", apiErr.StatusCode)
+		}
+	}
+
+	// Tenant B's file list should not contain tenant A's file
+	pageB, err := clientB.Files.List(ctx, openai.FileListParams{})
+	if err != nil {
+		t.Fatalf("tenant B: list files failed: %v", err)
+	}
+	for _, f := range pageB.Data {
+		if f.ID == fileA.ID {
+			t.Error("tenant B's file list contains tenant A's file")
+		}
+	}
+
+	// ── Batches isolation ────────────────────────────────────────────────
+
+	// Tenant A creates a batch
+	batchA, err := clientA.Batches.New(ctx, openai.BatchNewParams{
+		InputFileID:      fileA.ID,
+		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+	})
+	if err != nil {
+		t.Fatalf("tenant A: create batch failed: %v", err)
+	}
+	t.Logf("tenant A created batch: %s", batchA.ID)
+
+	// Tenant B should not see tenant A's batch
+	_, err = clientB.Batches.Get(ctx, batchA.ID)
+	if err == nil {
+		t.Error("tenant B was able to retrieve tenant A's batch; expected 404")
+	} else {
+		var apiErr *openai.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404 when tenant B accesses tenant A's batch, got %d", apiErr.StatusCode)
+		}
+	}
+
+	// Tenant B's batch list should not contain tenant A's batch
+	batchPageB, err := clientB.Batches.List(ctx, openai.BatchListParams{})
+	if err != nil {
+		t.Fatalf("tenant B: list batches failed: %v", err)
+	}
+	for _, b := range batchPageB.Data {
+		if b.ID == batchA.ID {
+			t.Error("tenant B's batch list contains tenant A's batch")
+		}
+	}
+
+	// Tenant B should not be able to cancel tenant A's batch
+	_, err = clientB.Batches.Cancel(ctx, batchA.ID)
+	if err == nil {
+		t.Error("tenant B was able to cancel tenant A's batch; expected 404")
+	} else {
+		var apiErr *openai.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404 when tenant B cancels tenant A's batch, got %d", apiErr.StatusCode)
+		}
+	}
+}
+
 // ── Observability subtests ────────────────────────────────────────────────────
 
 // doTestOtelTraces verifies that traces are exported to Jaeger after a batch
@@ -500,6 +600,10 @@ func TestE2E(t *testing.T) {
 		t.Run("Lifecycle", func(t *testing.T) { doTestBatchLifecycle(t) })
 		t.Run("Cancel", func(t *testing.T) { doTestBatchCancel(t) })
 		t.Run("PassThroughHeaders", func(t *testing.T) { doTestPassThroughHeaders(t) })
+	})
+
+	t.Run("MultiTenant", func(t *testing.T) {
+		t.Run("Isolation", func(t *testing.T) { doTestMultiTenantIsolation(t) })
 	})
 
 	t.Run("Observability", func(t *testing.T) {
