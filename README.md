@@ -5,49 +5,45 @@
 
 ## Overview
 
-Batch Gateway is a high-performance system for processing large-scale batch inference jobs in Kubernetes environments. It provides an OpenAI-compatible API for submitting, tracking, and managing batch inference requests, enabling efficient processing of grouped inference workloads with time-tolerant completion requirements (hours to days) compared to interactive requests (seconds to minutes).
+Batch Gateway is a high-performance system for processing large-scale batch inference jobs in Kubernetes environments. It provides an OpenAI-compatible API for submitting, tracking, and managing batch inference jobs.
 
-The system is designed to minimize interference with real-time interactive workloads while satisfying batch job SLOs through intelligent scheduling, model-aware execution, and resource-conscious flow control.
+The system is designed to facilitate efficient processing of batch workloads in combination with interactive workloads. It minimizes interference with interactive workloads while satisfying batch jobs' service level objectives (SLOs).
 
 ### Use Cases
 
-- Inferencing large datasets (up to 50,000 requests per batch, up to 200MB input files)
+- Inferencing large datasets
 - Generating embeddings for large corpora
 - Model evaluations and testing
 - Offline analysis and batch processing
-- Cost-optimized inference with differential billing for batch vs. interactive workloads
+- Cost-optimized inference using differential billing for batch vs. interactive workloads
 
 ## Key Features
 
 ### Batch Processing
 
 - **OpenAI API Compatibility**: Full schema parity with OpenAI's `/v1/batches` and `/v1/files` endpoints
-- **Large-Scale Processing**: Support for up to 50,000 requests per job with bounded memory usage
-- **Model-Aware Scheduling**: Groups and orders requests by model and system prompt for optimal downstream cache utilization
-- **Fairness Guarantees**: Prevents model starvation through per-model concurrency limits and global semaphore-based flow control
-- **Progress Tracking**: Real-time job status updates with granular progress indicators
+- **Large-Scale Processing**: Support for up to 50,000 requests per job
+- **Progress Tracking**: Real-time job status progress updates
+- **Job Management and Control**: Enables to manage and control batch jobs, before, during, and after their processing
+- **Model-Aware Scheduling**: Groups and orders requests by model and system prompt for optimal downstream utilization
+- **Intelligent inference dispatching**: Monitors downstream metrics to determine the flow volume of batch inference requests
 
 ### System Design
 
-- **Two-Phase Processing**:
-  - Phase 1: Streaming ingestion with memory-efficient plan building (16 bytes per request)
-  - Phase 2: Concurrent execution with downstream-aware ordering
-- **Deployment Flexibility**: Separate API server and processor components for independent scaling
-- **Storage Backend Support**: Pluggable storage for files (filesystem, S3), metadata (PostgreSQL), and queues (Redis)
-- **Fault Tolerance**: Automatic recovery from processor crashes with job re-queueing
+- **Deployment Flexibility**: Separate API server, batch processor, and request dispatcher components for independent scaling
+- **Pluggable Storage Backends**: Supports pluggable storage backends for files, metadata, and queues
+- **Fault Tolerance**: Automatic recovery from batch processor crashes
 
 ### Operations
 
-- **Observability**: Comprehensive Prometheus metrics for job processing, worker utilization, and error tracking
-- **Health Checks**: Liveness and readiness probes for both API server and processor
-- **Security**: Non-root execution, read-only filesystem, capability dropping, TLS support
 - **Kubernetes Native**: Helm charts with OpenShift compatibility
+- **Observability**: Prometheus metrics and Open Telemetry integration
+- **Health Checks**: Liveness and readiness probes for the system components
+- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem
 
 ## Architecture
 
 ### High-Level System Design
-
-The Batch Gateway consists of two main components that work together to process batch inference jobs:
 
 ![Architecture Diagram](docs/design/diagrams/arch_1.png)
 
