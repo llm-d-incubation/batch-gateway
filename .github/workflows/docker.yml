@@ -33,7 +33,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.ref }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -77,7 +77,7 @@ jobs:
 
       - name: Build Docker images (PR - no push)
         if: github.event_name == 'pull_request_target'
-        uses: docker/bake-action@v6
+        uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
           targets: default
@@ -94,7 +94,7 @@ jobs:
 
       - name: Build and push Docker images
         if: github.event_name != 'pull_request_target'
-        uses: docker/bake-action@v6
+        uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
           targets: default
