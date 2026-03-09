@@ -326,18 +326,18 @@ The API server exposes the following Prometheus metrics:
 
 **Request Metrics:**
 
-- `http_requests_total{method,path,status}` - Total HTTP requests by method, path, and status code.
-- `http_request_duration_seconds{method,path}` - HTTP request latency histogram.
+- `http_requests_total{method,path,status}` (Counter) - Total HTTP requests by method, path, and status code.
+- `http_request_duration_seconds{method,path}` (Histogram) - HTTP request latency histogram.
 
 **Batch Job Metrics:**
 
-- `batch_jobs_created_total{tenant_id}` - Total batch jobs created by tenant.
-- `batch_jobs_by_status{status,tenant_id}` - Current count of jobs by status.
+- `batch_jobs_created_total{tenant_id}` (Counter) - Total batch jobs created by tenant.
+- `batch_jobs_by_status{status,tenant_id}` (Gauge) - Current count of jobs by status.
 
 **File Metrics:**
 
-- `files_uploaded_total{tenant_id,purpose}` - Total files uploaded by tenant and purpose.
-- `file_upload_size_bytes{tenant_id}` - File upload size histogram.
+- `files_uploaded_total{tenant_id,purpose}` (Counter) - Total files uploaded by tenant and purpose.
+- `file_upload_size_bytes{tenant_id}` (Histogram) - File upload size histogram.
 
 #### Processor
 
@@ -345,20 +345,20 @@ The processor exposes the following Prometheus metrics:
 
 **Job-Level Metrics:**
 
-- `jobs_processed_total{result,reason}` - Total jobs processed by result.
-- `job_processing_duration_seconds{tenantID,size_bucket}` - Job processing duration histogram.
-- `job_queue_wait_duration{tenantID}` - Time jobs spend in queue.
+- `jobs_processed_total{result,reason}` (Counter) - Total jobs processed by result.
+- `job_processing_duration_seconds{tenantID,size_bucket}` (Histogram) - Job processing duration histogram.
+- `job_queue_wait_duration{tenantID}` (Histogram) - Time jobs spend in queue.
 
 **Worker Metrics:**
 
-- `total_workers` - Configured worker pool size.
-- `active_workers` - Currently active workers.
-- `processor_inflight_requests` - Global in-flight request count.
-- `model_inflight_requests{model}` - Per-model in-flight requests.
+- `total_workers` (Gauge) - Configured worker pool size.
+- `active_workers` (Gauge) - Currently active workers.
+- `processor_inflight_requests` (Gauge) - Global in-flight request count.
+- `model_inflight_requests{model}` (Gauge) - Per-model in-flight requests.
 
 **Error Metrics:**
 
-- `job_errors_by_model_total{model}` - Errors grouped by model.
+- `job_errors_by_model_total{model}` (Counter) - Errors grouped by model.
 
 ### Health Checks
 
