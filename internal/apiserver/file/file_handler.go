@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -281,9 +280,9 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		logger.V(logging.DEBUG).Info("file expiration set from config default", "seconds", expiresAfterSeconds, "expiresAt", expiresAt)
 	}
 
-	fileID := fmt.Sprintf("file_%s", uuid.NewString())
+	fileID := ucom.NewFileID()
 
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrFileID, fileID))
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrInputFileID, fileID))
 
 	// Sanitize filename
 	fileName := filepath.Base(fileHeader.Filename)

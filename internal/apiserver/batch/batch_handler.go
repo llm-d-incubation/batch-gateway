@@ -25,7 +25,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -37,6 +36,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
@@ -133,11 +133,11 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	batchID := fmt.Sprintf("batch_%s", uuid.NewString())
+	batchID := ucom.NewBatchID()
 
 	// add attributes to span
 	trace.SpanFromContext(ctx).SetAttributes(
-		attribute.String(uotel.AttrFileID, batchReq.InputFileID),
+		attribute.String(uotel.AttrInputFileID, batchReq.InputFileID),
 		attribute.String(uotel.AttrBatchID, batchID),
 	)
 
@@ -406,7 +406,7 @@ func (c *BatchAPIHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrFileID, batch.BatchSpec.InputFileID)}
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.BatchSpec.InputFileID)}
 	if batch.OutputFileID != "" {
 		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
 	}
@@ -435,7 +435,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrFileID, batch.BatchSpec.InputFileID)}
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.BatchSpec.InputFileID)}
 	if batch.OutputFileID != "" {
 		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
 	}

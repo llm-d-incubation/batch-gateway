@@ -98,6 +98,9 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 		IncModelInflightRequests("modelA")
 		DecModelInflightRequests("modelA")
 		RecordModelRequestExecutionDuration(300*time.Millisecond, "modelA")
+		RecordFileUploadRetry(FileTypeOutput)
+		RecordFileUploadRetry(FileTypeOutput)
+		RecordFileUploadRetry(FileTypeError)
 
 		// gather + value check
 		mfs, err := reg.Gather()
@@ -197,16 +200,12 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 
 		// histogram minimal observation check
 		{
-			mf := find("job_queue_wait_duration")
+			mf := find("job_queue_wait_duration_seconds")
 			if mf == nil || len(mf.Metric) == 0 {
-				t.Fatalf("job_queue_wait_duration not found")
+				t.Fatalf("job_queue_wait_duration_seconds not found")
 			}
 			if mf.Metric[0].GetHistogram().GetSampleCount() < 1 {
 				t.Fatalf("expected at least 1 observation")
-			}
-			// at least one tenant (tenantA) should exist
-			if len(mf.Metric) == 0 {
-				t.Fatalf("job_queue_wait_duration has no metrics")
 			}
 		}
 		{
@@ -265,6 +264,31 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 			}
 			if mf.Metric[0].GetHistogram().GetSampleCount() < 1 {
 				t.Fatalf("expected at least 1 observation for model_request_execution_duration_seconds")
+			}
+		}
+		{
+			mf := find("file_upload_retries_total")
+			if mf == nil {
+				t.Fatalf("file_upload_retries_total not found")
+			}
+			var outputRetries, errorRetries float64
+			for _, m := range mf.Metric {
+				for _, lp := range m.Label {
+					if lp.GetName() == "file_type" {
+						switch lp.GetValue() {
+						case string(FileTypeOutput):
+							outputRetries = m.GetCounter().GetValue()
+						case string(FileTypeError):
+							errorRetries = m.GetCounter().GetValue()
+						}
+					}
+				}
+			}
+			if outputRetries != 2 {
+				t.Fatalf("file_upload_retries_total{file_type=%q}=%v, want 2", FileTypeOutput, outputRetries)
+			}
+			if errorRetries != 1 {
+				t.Fatalf("file_upload_retries_total{file_type=%q}=%v, want 1", FileTypeError, errorRetries)
 			}
 		}
 		{

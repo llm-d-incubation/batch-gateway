@@ -134,7 +134,7 @@ func TestExecutionProgress_RecordAndCounts(t *testing.T) {
 	}
 }
 
-// --- storeOutputFileRecord ---
+// --- storeFileRecord ---
 
 func TestStoreOutputFileRecord_Success(t *testing.T) {
 	cfg := config.NewConfig()
@@ -147,9 +147,9 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	ctx := testLoggerCtx()
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
 
-	err := p.storeOutputFileRecord(ctx, "file_abc", "output.jsonl", "tenant-1", 1024, tags)
+	err := p.storeFileRecord(ctx, "file_abc", "output.jsonl", "tenant-1", 1024, tags)
 	if err != nil {
-		t.Fatalf("storeOutputFileRecord returned error: %v", err)
+		t.Fatalf("storeFileRecord returned error: %v", err)
 	}
 
 	items, _, _, err := fileDB.DBGet(ctx, &db.FileQuery{BaseQuery: db.BaseQuery{IDs: []string{"file_abc"}}}, true, 0, 1)

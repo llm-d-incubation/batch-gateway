@@ -23,11 +23,25 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+
+	"github.com/google/uuid"
 )
 
 var (
 	letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 )
+
+// NewFileID generates a new unique file ID in the format "file_<uuid>",
+// matching the OpenAI Files API convention.
+func NewFileID() string {
+	return fmt.Sprintf("file_%s", uuid.NewString())
+}
+
+// NewBatchID generates a new unique batch ID in the format "batch_<uuid>",
+// matching the OpenAI Batch API convention.
+func NewBatchID() string {
+	return fmt.Sprintf("batch_%s", uuid.NewString())
+}
 
 func RandString(n int) string {
 	b := make([]rune, n)

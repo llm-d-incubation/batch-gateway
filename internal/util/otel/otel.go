@@ -36,11 +36,16 @@ const defaultServiceName = "batch-gateway"
 // Span attribute keys for batch-gateway resources.
 const (
 	AttrBatchID      = "batch.id"
-	AttrFileID       = "file.id"
-	AttrOutputFileID = "outputfile.id"
-	AttrErrorFileID  = "errorfile.id"
+	AttrInputFileID  = "batch.input_file.id"
+	AttrOutputFileID = "batch.output_file.id"
+	AttrErrorFileID  = "batch.error_file.id"
 	AttrTenantID     = "tenant.id"
-	AttrJobID        = "job.id"
+	// Job-level request counts as span attributes for persistent trace-based analysis.
+	// These complement the ephemeral Redis progress store (UpdateProgressCounts),
+	// which is TTL-based and used for real-time status polling only.
+	AttrRequestTotal     = "batch.request.total"
+	AttrRequestCompleted = "batch.request.completed"
+	AttrRequestFailed    = "batch.request.failed"
 )
 
 // StartSpan creates a new span using the batch-gateway tracer.

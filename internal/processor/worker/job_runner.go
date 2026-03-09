@@ -54,11 +54,11 @@ func (p *Processor) runJob(
 	}
 
 	spanAttrs := []attribute.KeyValue{
-		attribute.String(uotel.AttrJobID, jobItem.ID),
+		attribute.String(uotel.AttrBatchID, jobItem.ID),
 		attribute.String(uotel.AttrTenantID, jobItem.TenantID),
 	}
 	if jobInfo.BatchJob != nil {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrFileID, jobInfo.BatchJob.InputFileID))
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrInputFileID, jobInfo.BatchJob.InputFileID))
 	}
 	ctx, span := uotel.StartSpan(ctx, "process-batch",
 		trace.WithAttributes(spanAttrs...),
@@ -88,6 +88,8 @@ func (p *Processor) runJob(
 	eventWatcher, err := p.clients.Event.ECConsumerGetChannel(ctx, jobInfo.JobID)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "event watcher failed")
 		// re-enqueue the job to the queue so this job can be picked up later by another worker
 		// best-effort
 		if task != nil {

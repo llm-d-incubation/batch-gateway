@@ -87,6 +87,15 @@ var (
 	planBuildDuration             *prometheus.HistogramVec
 	modelInflightRequests         *prometheus.GaugeVec
 	modelRequestExecutionDuration *prometheus.HistogramVec
+	fileUploadRetriesTotal        *prometheus.CounterVec
+)
+
+// FileType labels for file upload metrics.
+type FileType string
+
+const (
+	FileTypeOutput FileType = "output"
+	FileTypeError  FileType = "error"
 )
 
 func InitMetrics(cfg config.ProcessorConfig) error {
@@ -193,7 +202,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 	// duration of queue wait time
 	jobQueueWaitDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "job_queue_wait_duration",
+			Name: "job_queue_wait_duration_seconds",
 			Help: "Time spent in the priority queue before being picked up",
 			Buckets: prometheus.ExponentialBuckets(
 				cfg.QueueTimeBucket.BucketStart,
@@ -201,6 +210,15 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.QueueTimeBucket.BucketCount,
 			),
 		}, []string{"tenantID"},
+	)
+
+	// upload retries by file type (output / error)
+	fileUploadRetriesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "file_upload_retries_total",
+			Help: "Total number of file upload retry attempts by file type",
+		},
+		[]string{"file_type"},
 	)
 
 	// metrics to register
@@ -216,6 +234,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		planBuildDuration,
 		modelInflightRequests,
 		modelRequestExecutionDuration,
+		fileUploadRetriesTotal,
 	}
 
 	for _, metric := range metricsToRegister {
@@ -290,4 +309,9 @@ func DecModelInflightRequests(model string) {
 // RecordModelRequestExecutionDuration observes phase 2 per-request execution duration by model.
 func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
 	modelRequestExecutionDuration.WithLabelValues(model).Observe(duration.Seconds())
+}
+
+// RecordFileUploadRetry increments the upload retry counter for a given file type.
+func RecordFileUploadRetry(fileType FileType) {
+	fileUploadRetriesTotal.WithLabelValues(string(fileType)).Inc()
 }

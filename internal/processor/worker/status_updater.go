@@ -121,16 +121,24 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	return nil
 }
 
-// UpdateCompletedStatus transitions the job to completed and sets the output file ID.
+// UpdateCompletedStatus transitions the job to completed and sets the output and error file IDs.
+// Per the OpenAI batch spec, both IDs are optional: outputFileID is empty when all requests
+// failed, and errorFileID is empty when no requests failed.
 func (s *StatusUpdater) UpdateCompletedStatus(
 	ctx context.Context,
 	dbJob *db.BatchItem,
 	counts *openai.BatchRequestCounts,
 	outputFileID string,
+	errorFileID string,
 ) error {
 	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusCompleted, counts, nil,
 		func(info *openai.BatchStatusInfo) {
-			info.OutputFileID = outputFileID
+			if outputFileID != "" {
+				info.OutputFileID = outputFileID
+			}
+			if errorFileID != "" {
+				info.ErrorFileID = errorFileID
+			}
 		},
 	)
 }

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -251,7 +250,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "test-batch")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -298,7 +297,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "test-batch")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
@@ -336,7 +335,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -374,7 +373,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -401,7 +400,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 
 	badEntry := planEntry{Offset: 99999, Length: 10}
 	ctx := testLoggerCtx()
-	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil, "test-batch")
+	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil)
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
 	}
@@ -438,7 +437,6 @@ func TestProcessModel_Success(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
@@ -447,8 +445,11 @@ func TestProcessModel_Success(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "test-batch")
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -489,7 +490,6 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 	cancelReq.Store(true)
 
@@ -499,8 +499,11 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "test-batch")
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -530,7 +533,6 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
@@ -539,8 +541,11 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "")
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -576,7 +581,6 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
@@ -587,9 +591,12 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "")
+		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	}()
 
 	<-started
@@ -802,6 +809,163 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 }
 
 // =====================================================================
+// Tests: error file separation
+// =====================================================================
+
+// TestExecuteJob_SeparatesSuccessAndErrors verifies that successful responses
+// are written to output.jsonl and failed responses are written to error.jsonl.
+func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	var callCount atomic.Int32
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			if callCount.Add(1)%2 == 1 {
+				return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+			}
+			return nil, &inference.ClientError{Category: inference.ErrCategoryServer, Message: "mock error"}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	cancelReq := &atomic.Bool{}
+
+	ctx := testLoggerCtx()
+	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	if err != nil {
+		t.Fatalf("executeJob error: %v", err)
+	}
+	if counts.Completed != 1 || counts.Failed != 1 {
+		t.Fatalf("counts: completed=%d failed=%d, want completed=1 failed=1", counts.Completed, counts.Failed)
+	}
+
+	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outputLines := readNonEmptyJSONLLines(t, outputPath)
+	if len(outputLines) != 1 {
+		t.Fatalf("output.jsonl lines = %d, want 1", len(outputLines))
+	}
+	var outLine outputLine
+	if err := json.Unmarshal(outputLines[0], &outLine); err != nil {
+		t.Fatalf("unmarshal output line: %v", err)
+	}
+	if outLine.Response == nil || outLine.Error != nil {
+		t.Fatalf("output line: want response set and error nil, got response=%v error=%v", outLine.Response, outLine.Error)
+	}
+
+	errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	errorLines := readNonEmptyJSONLLines(t, errorPath)
+	if len(errorLines) != 1 {
+		t.Fatalf("error.jsonl lines = %d, want 1", len(errorLines))
+	}
+	var errLine outputLine
+	if err := json.Unmarshal(errorLines[0], &errLine); err != nil {
+		t.Fatalf("unmarshal error line: %v", err)
+	}
+	if errLine.Error == nil || errLine.Response != nil {
+		t.Fatalf("error line: want error set and response nil, got response=%v error=%v", errLine.Response, errLine.Error)
+	}
+}
+
+// TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted verifies that when the output
+// file is empty (all requests failed), output_file_id is omitted per the OpenAI spec.
+func TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DefaultOutputExpirationSeconds = 86400
+	cfg.UploadRetry = config.RetryConfig{
+		MaxRetries:     0,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     1 * time.Millisecond,
+	}
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "finalize-empty-output"
+	tenantID := "tenant-1"
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+
+	jobDir, _ := env.p.jobRootDir(jobID, tenantID)
+	os.MkdirAll(jobDir, 0o755)
+	outputPath, _ := env.p.jobOutputFilePath(jobID, tenantID)
+	os.WriteFile(outputPath, []byte{}, 0o644)
+	errorPath, _ := env.p.jobErrorFilePath(jobID, tenantID)
+	os.WriteFile(errorPath, []byte(`{"id":"batch_req_1","custom_id":"r1","error":{"code":"server_error","message":"fail"}}`+"\n"), 0o644)
+
+	dbJob := seedDBJob(t, env.dbClient, jobID)
+	counts := &openai.BatchRequestCounts{Total: 1, Completed: 0, Failed: 1}
+
+	ctx := testLoggerCtx()
+	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+		t.Fatalf("finalizeJob error: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var statusInfo openai.BatchStatusInfo
+	json.Unmarshal(items[0].Status, &statusInfo)
+	if statusInfo.OutputFileID != "" {
+		t.Errorf("OutputFileID = %q, want empty (output file was empty)", statusInfo.OutputFileID)
+	}
+	if statusInfo.ErrorFileID == "" {
+		t.Errorf("ErrorFileID should be set when error file has content")
+	}
+}
+
+// TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted verifies that when the error
+// file is empty (no requests failed), error_file_id is omitted per the OpenAI spec.
+func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DefaultOutputExpirationSeconds = 86400
+	cfg.UploadRetry = config.RetryConfig{
+		MaxRetries:     0,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     1 * time.Millisecond,
+	}
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "finalize-empty-error"
+	tenantID := "tenant-1"
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+
+	jobDir, _ := env.p.jobRootDir(jobID, tenantID)
+	os.MkdirAll(jobDir, 0o755)
+	outputPath, _ := env.p.jobOutputFilePath(jobID, tenantID)
+	os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"r1","response":{"status_code":200}}`+"\n"), 0o644)
+	errorPath, _ := env.p.jobErrorFilePath(jobID, tenantID)
+	os.WriteFile(errorPath, []byte{}, 0o644)
+
+	dbJob := seedDBJob(t, env.dbClient, jobID)
+	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
+
+	ctx := testLoggerCtx()
+	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+		t.Fatalf("finalizeJob error: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var statusInfo openai.BatchStatusInfo
+	json.Unmarshal(items[0].Status, &statusInfo)
+	if statusInfo.OutputFileID == "" {
+		t.Errorf("OutputFileID should be set when output file has content")
+	}
+	if statusInfo.ErrorFileID != "" {
+		t.Errorf("ErrorFileID = %q, want empty (error file was empty)", statusInfo.ErrorFileID)
+	}
+}
+
+// =====================================================================
 // Tests: handleJobError (routing branches)
 // =====================================================================
 
@@ -938,7 +1102,7 @@ func TestCleanupJobArtifacts_RemovesDirectory(t *testing.T) {
 }
 
 // =====================================================================
-// Tests: storeOutputFileRecord error path
+// Tests: storeFileRecord error path
 // =====================================================================
 
 func TestStoreOutputFileRecord_DBError(t *testing.T) {
@@ -949,7 +1113,7 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	p := NewProcessor(cfg, &clientset.Clientset{FileDB: failDB})
 
 	ctx := testLoggerCtx()
-	err := p.storeOutputFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})
+	err := p.storeFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})
 	if err == nil {
 		t.Fatalf("expected error from DB failure")
 	}
@@ -975,4 +1139,20 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("ReadFile(%s): %v", path, err)
 	}
 	return b
+}
+
+// readNonEmptyJSONLLines reads a JSONL file and returns non-empty lines as byte slices.
+func readNonEmptyJSONLLines(t *testing.T, path string) [][]byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	var lines [][]byte
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }

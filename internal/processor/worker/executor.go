@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,7 +33,6 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -46,6 +46,29 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
+
+// outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
+// A single instance is created per job and shared across model goroutines.
+type outputWriters struct {
+	output   *bufio.Writer
+	outputMu sync.Mutex
+	errors   *bufio.Writer
+	errorsMu sync.Mutex
+}
+
+// write writes line to the error file if isError is true, otherwise to the output file.
+func (w *outputWriters) write(line []byte, isError bool) error {
+	if isError {
+		w.errorsMu.Lock()
+		_, err := w.errors.Write(line)
+		w.errorsMu.Unlock()
+		return err
+	}
+	w.outputMu.Lock()
+	_, err := w.output.Write(line)
+	w.outputMu.Unlock()
+	return err
+}
 
 // outputLine represents a single line in the output JSONL file following the OpenAI batch output format.
 type outputLine struct {
@@ -93,8 +116,8 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 }
 
 // executeJob performs phase 2: reads plan files per model, sends inference
-// requests concurrently (one goroutine per model), and writes results to the
-// output JSONL file. Returns request counts for finalization.
+// requests concurrently (one goroutine per model), and writes results to
+// output.jsonl (successes) and error.jsonl (failures). Returns request counts for finalization.
 func (p *Processor) executeJob(
 	ctx context.Context,
 	updater *StatusUpdater,
@@ -134,7 +157,20 @@ func (p *Processor) executeJob(
 	}
 	defer outputFile.Close()
 
-	writer := bufio.NewWriterSize(outputFile, 1024*1024)
+	errorFilePath, err := p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	errorFile, err := os.OpenFile(errorFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create error file: %w", err)
+	}
+	defer errorFile.Close()
+
+	writers := &outputWriters{
+		output: bufio.NewWriterSize(outputFile, 1024*1024),
+		errors: bufio.NewWriterSize(errorFile, 1024*1024),
+	}
 
 	plansDir, err := p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 	if err != nil {
@@ -143,7 +179,6 @@ func (p *Processor) executeJob(
 
 	// one goroutine per model; concurrency within each model is bounded
 	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit)
-	var writerMu sync.Mutex
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
 
@@ -164,10 +199,17 @@ func (p *Processor) executeJob(
 		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
 	}
 
-	// jobInfo.JobID holds the batch ID (e.g. "batch_<uuid>")
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		go func(safeModelID, modelID string) {
-			err := p.processModel(execCtx, inputFile, plansDir, safeModelID, modelID, writer, &writerMu, cancelRequested, progress, passThroughHeaders, jobInfo.JobID)
+			err := p.processModel(
+				execCtx,
+				inputFile,
+				plansDir, safeModelID, modelID,
+				writers,
+				cancelRequested,
+				progress,
+				passThroughHeaders,
+			)
 			if err != nil {
 				execCancel()
 			}
@@ -194,8 +236,11 @@ func (p *Processor) executeJob(
 		return nil, firstErr
 	}
 
-	if err := writer.Flush(); err != nil {
+	if err := writers.output.Flush(); err != nil {
 		return nil, fmt.Errorf("failed to flush output file: %w", err)
+	}
+	if err := writers.errors.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush error file: %w", err)
 	}
 
 	counts := progress.counts()
@@ -220,12 +265,10 @@ func (p *Processor) processModel(
 	ctx context.Context,
 	inputFile *os.File,
 	plansDir, safeModelID, modelID string,
-	writer *bufio.Writer,
-	writerMu *sync.Mutex,
+	writers *outputWriters,
 	cancelRequested *atomic.Bool,
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
-	batchID string,
 ) error {
 	logger := klog.FromContext(ctx).WithValues("model", modelID)
 	ctx = klog.NewContext(ctx, logger)
@@ -273,7 +316,7 @@ dispatch:
 			defer modelSem.Release()
 			defer p.globalSem.Release()
 
-			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders, batchID)
+			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
 			if execErr != nil {
 				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
 				errOnce.Do(func() { firstErr = execErr })
@@ -290,12 +333,15 @@ dispatch:
 			}
 			lineBytes = append(lineBytes, '\n')
 
-			writerMu.Lock()
-			_, writeErr := writer.Write(lineBytes)
-			writerMu.Unlock()
-			if writeErr != nil {
-				logger.Error(writeErr, "Failed to write output line", "offset", entry.Offset)
-				errOnce.Do(func() { firstErr = fmt.Errorf("failed to write output line: %w", writeErr) })
+			// Write to error file if the result has an error, otherwise to output file.
+			isError := result.Error != nil
+			if writeErr := writers.write(lineBytes, isError); writeErr != nil {
+				kind := "output"
+				if isError {
+					kind = "error"
+				}
+				logger.Error(writeErr, "Failed to write line", "kind", kind, "offset", entry.Offset)
+				errOnce.Do(func() { firstErr = fmt.Errorf("failed to write %s line: %w", kind, writeErr) })
 			}
 		}(entry)
 	}
@@ -318,7 +364,6 @@ func (p *Processor) executeOneRequest(
 	entry planEntry,
 	modelID string,
 	passThroughHeaders map[string]string,
-	batchID string,
 ) (*outputLine, error) {
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
@@ -358,9 +403,6 @@ func (p *Processor) executeOneRequest(
 	metrics.IncModelInflightRequests(modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
 
-	// Add batch.id to the current span so the otelhttp transport child span can be correlated
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrBatchID, batchID))
-
 	inferClient := p.clients.Inference.ClientFor(modelID)
 	inferResp, inferErr := inferClient.Generate(ctx, inferReq)
 
@@ -376,7 +418,7 @@ func (p *Processor) executeOneRequest(
 	// response handling by case
 	if inferErr != nil {
 		// error is returned by the inference client
-		logger.V(logging.TRACE).Info("Inference request failed", "error", inferErr.Message)
+		logger.V(logging.DEBUG).Info("Inference request failed", "error", inferErr.Message)
 		result.Error = &outputError{
 			Code:    string(inferErr.Category),
 			Message: inferErr.Message,
@@ -417,8 +459,8 @@ func (p *Processor) executeOneRequest(
 	return result, nil
 }
 
-// finalizeJob performs phase 3: uploads the output file to file storage,
-// creates a file record in the database, and updates job status to completed.
+// finalizeJob performs phase 3: uploads output and error files to shared storage,
+// creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
 	ctx context.Context,
 	updater *StatusUpdater,
@@ -434,48 +476,110 @@ func (p *Processor) finalizeJob(
 		return fmt.Errorf("failed to update job status to finalizing: %w", err)
 	}
 
-	outputFileID := fmt.Sprintf("file_%s", uuid.NewString())
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrOutputFileID, outputFileID))
-	outputFileName := fmt.Sprintf("batch_output_%s.jsonl", jobInfo.JobID)
-
-	fileSize, err := p.uploadOutputFile(ctx, jobInfo, outputFileName)
+	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
+	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
+	// requests failed. We skip uploading and recording empty files accordingly.
+	var outputFileID string
+	outputFileName := jobOutputStorageName(jobInfo.JobID)
+	outputFileSize, err := p.uploadOutputFile(ctx, jobInfo, outputFileName)
 	if err != nil {
 		return err
 	}
+	if outputFileSize > 0 {
+		outputFileID = ucom.NewFileID()
+		uotel.SetAttr(ctx, attribute.String(uotel.AttrOutputFileID, outputFileID))
+		if err := p.storeFileRecord(ctx, outputFileID, outputFileName, jobInfo.TenantID, outputFileSize, dbJob.Tags); err != nil {
+			return err
+		}
+	}
 
-	if err := p.storeOutputFileRecord(ctx, outputFileID, outputFileName, jobInfo.TenantID, fileSize, dbJob.Tags); err != nil {
+	var errorFileID string
+	errorFileName := jobErrorStorageName(jobInfo.JobID)
+	errorFileSize, err := p.uploadErrorFile(ctx, jobInfo, errorFileName)
+	if err != nil {
 		return err
+	}
+	if errorFileSize > 0 {
+		errorFileID = ucom.NewFileID()
+		uotel.SetAttr(ctx, attribute.String(uotel.AttrErrorFileID, errorFileID))
+		if err := p.storeFileRecord(ctx, errorFileID, errorFileName, jobInfo.TenantID, errorFileSize, dbJob.Tags); err != nil {
+			return err
+		}
 	}
 
 	// finalizing → completed
-	if err := updater.UpdateCompletedStatus(ctx, dbJob, requestCounts, outputFileID); err != nil {
+	if err := updater.UpdateCompletedStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
 		return fmt.Errorf("failed to update job status to completed: %w", err)
 	}
 
-	logger.V(logging.INFO).Info("Phase 3: finalization completed", "outputFileID", outputFileID)
+	uotel.SetAttr(ctx,
+		attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
+		attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
+		attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
+	)
+
+	logger.V(logging.INFO).Info("Phase 3: finalization completed", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
 }
 
 // uploadOutputFile uploads the local output file to shared storage with retry.
+// Returns the file size; returns 0 without error if the file is empty (all requests failed).
+// Per the OpenAI batch spec, output_file_id is optional and may be omitted when there are no
+// successful requests.
 func (p *Processor) uploadOutputFile(
 	ctx context.Context,
 	jobInfo *batch_types.JobInfo,
-	outputFileName string,
+	fileName string,
 ) (int64, error) {
-	logger := klog.FromContext(ctx)
-
-	outputFilePath, err := p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	filePath, err := p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	if err != nil {
 		return 0, err
 	}
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeOutput)
+}
 
-	outputFile, err := os.Open(outputFilePath)
+// uploadErrorFile uploads the local error file to shared storage with retry.
+// Returns the file size; returns 0 without error if the file is empty (no errors occurred).
+// Per the OpenAI batch spec, error_file_id is optional and may be omitted when no requests failed.
+func (p *Processor) uploadErrorFile(
+	ctx context.Context,
+	jobInfo *batch_types.JobInfo,
+	fileName string,
+) (int64, error) {
+	filePath, err := p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to open output file for upload: %w", err)
+		return 0, err
 	}
-	defer outputFile.Close()
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeError)
+}
 
-	folderName, err := ucom.GetFolderNameByTenantID(jobInfo.TenantID)
+// uploadJobFile uploads a local file to shared storage with retry.
+// Returns the file size; returns 0 without error if the file does not exist or is empty.
+func (p *Processor) uploadJobFile(
+	ctx context.Context,
+	filePath, fileName, tenantID string,
+	fileType metrics.FileType,
+) (int64, error) {
+	logger := klog.FromContext(ctx)
+
+	stat, err := os.Stat(filePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to stat file %s: %w", filePath, err)
+	}
+	if stat.Size() == 0 {
+		return 0, nil
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open file %s for upload: %w", filePath, err)
+	}
+	defer f.Close()
+
+	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get folder name: %w", err)
 	}
@@ -483,11 +587,15 @@ func (p *Processor) uploadOutputFile(
 	retryCfg := p.cfg.UploadRetry
 	maxAttempts := retryCfg.MaxRetries + 1
 
-	fileMeta, err := p.clients.File.Store(ctx, outputFileName, folderName, 0, 0, outputFile)
+	// TODO: distinguish retryable (network/storage transient) vs non-retryable (auth, permission)
+	// errors and skip retries for the latter. Deferred until we have more storage backends
+	// or see real non-transient failures in production.
+	fileMeta, err := p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
 	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
+		metrics.RecordFileUploadRetry(fileType)
 		backoff := min(retryCfg.InitialBackoff*(1<<(attempt-1)), retryCfg.MaxBackoff)
-		logger.V(logging.WARNING).Info("Retrying output file upload",
-			"attempt", attempt+1, "maxAttempts", maxAttempts, "backoff", backoff, "error", err)
+		logger.V(logging.WARNING).Info("Retrying file upload",
+			"file", fileName, "attempt", attempt+1, "maxAttempts", maxAttempts, "backoff", backoff, "error", err)
 
 		select {
 		case <-ctx.Done():
@@ -495,22 +603,23 @@ func (p *Processor) uploadOutputFile(
 		case <-time.After(backoff):
 		}
 
-		if _, seekErr := outputFile.Seek(0, io.SeekStart); seekErr != nil {
-			return 0, fmt.Errorf("failed to seek output file for retry: %w", seekErr)
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			return 0, fmt.Errorf("failed to seek file %s for retry: %w", fileName, seekErr)
 		}
-		fileMeta, err = p.clients.File.Store(ctx, outputFileName, folderName, 0, 0, outputFile)
+		fileMeta, err = p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("failed to upload output file after %d attempts: %w", maxAttempts, err)
+		return 0, fmt.Errorf("failed to upload file %s after %d attempts: %w", fileName, maxAttempts, err)
 	}
 
 	return fileMeta.Size, nil
 }
 
-// storeOutputFileRecord creates a file metadata record in the database.
+// storeFileRecord creates a file metadata record in the database.
+// Used for both output and error files.
 // If the batch has a user-provided output_expires_after_seconds tag, it takes
 // precedence over the config default (DefaultOutputExpirationSeconds).
-func (p *Processor) storeOutputFileRecord(
+func (p *Processor) storeFileRecord(
 	ctx context.Context,
 	fileID, fileName, tenantID string,
 	size int64,
@@ -536,12 +645,12 @@ func (p *Processor) storeOutputFileRecord(
 	}
 
 	if err := p.clients.FileDB.DBStore(ctx, fileItem); err != nil {
-		return fmt.Errorf("failed to store output file record: %w", err)
+		return fmt.Errorf("failed to store file record: %w", err)
 	}
 	return nil
 }
 
-// resolveOutputExpiration returns the ExpiresAt timestamp for an output file.
+// resolveOutputExpiration returns the ExpiresAt timestamp for an output or error file.
 // Priority: user-provided output_expires_after_seconds tag > config default.
 // Returns 0 (no expiration) if neither is set.
 func (p *Processor) resolveOutputExpiration(now int64, batchTags db.Tags) int64 {
