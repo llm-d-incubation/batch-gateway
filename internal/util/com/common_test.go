@@ -61,10 +61,10 @@ func TestRandString(t *testing.T) {
 
 func TestGetFolderNameByTenantID(t *testing.T) {
 	tests := []struct {
-		name      string
-		tenantID  string
-		wantErr   bool
-		wantLen   int
+		name       string
+		tenantID   string
+		wantErr    bool
+		wantLen    int
 		wantPrefix string
 	}{
 		{
@@ -80,10 +80,10 @@ func TestGetFolderNameByTenantID(t *testing.T) {
 			wantErr:  true,
 		},
 		{
-			name:      "deterministic: same input same output",
-			tenantID:  "tenant-xyz",
-			wantErr:   false,
-			wantLen:   63,
+			name:       "deterministic: same input same output",
+			tenantID:   "tenant-xyz",
+			wantErr:    false,
+			wantLen:    63,
 			wantPrefix: "t-",
 		},
 	}
