@@ -98,6 +98,9 @@ func otelInstrumentHandler(spanName string, next http.HandlerFunc) http.HandlerF
 	}
 }
 
+// Compile-time check: otelStatusWriter implements StatusRecorder.
+var _ StatusRecorder = (*otelStatusWriter)(nil)
+
 // otelStatusWriter is a minimal StatusRecorder used only when no upstream
 // wrapper (e.g. request middleware) is present.
 type otelStatusWriter struct {

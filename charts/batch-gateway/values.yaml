@@ -13,7 +13,7 @@ global:
   appSecretName: "batch-gateway-secrets"
 
   # Database backend type: "redis", or "postgresql"
-  databaseType: "redis"
+  databaseType: "postgresql"
 
   # OpenTelemetry configuration
   otel:

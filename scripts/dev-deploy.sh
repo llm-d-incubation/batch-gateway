@@ -161,22 +161,18 @@ install_postgresql() {
 create_secret() {
     step "Creating secret '${APP_SECRET_NAME}'..."
 
-    if kubectl get secret "${APP_SECRET_NAME}" -n "${NAMESPACE}" &>/dev/null; then
-        log "Secret '${APP_SECRET_NAME}' already exists. Skipping."
-        return
-    fi
-
     local redis_url="redis://${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379/0"
-    local postgresql_url="postgresql://postgres:${POSTGRESQL_PASSWORD}@${POSTGRESQL_RELEASE}-postgresql.${NAMESPACE}.svc.cluster.local:5432/postgres"
+    local postgresql_url="postgresql://postgres:${POSTGRESQL_PASSWORD}@${POSTGRESQL_RELEASE}.${NAMESPACE}.svc.cluster.local:5432/postgres"
 
     kubectl create secret generic "${APP_SECRET_NAME}" \
         --namespace "${NAMESPACE}" \
         --from-literal=redis-url="${redis_url}" \
         --from-literal=postgresql-url="${postgresql_url}" \
         --from-literal=inference-api-key="${INFERENCE_API_KEY}" \
-        --from-literal=s3-secret-access-key="${S3_SECRET_ACCESS_KEY}"
+        --from-literal=s3-secret-access-key="${S3_SECRET_ACCESS_KEY}" \
+        --dry-run=client -o yaml | kubectl apply -f -
 
-    log "Secret '${APP_SECRET_NAME}' created."
+    log "Secret '${APP_SECRET_NAME}' applied."
 }
 
 # ── Images ────────────────────────────────────────────────────────────────────
@@ -443,6 +439,7 @@ install_batch_gateway() {
         --set "global.otel.endpoint=http://${JAEGER_NAME}.${NAMESPACE}.svc.cluster.local:4317"
         --set "global.otel.insecure=true"
         --set "global.otel.redisTracing=true"
+        --set "global.databaseType=postgresql"
         --namespace "${NAMESPACE}"
     )
 

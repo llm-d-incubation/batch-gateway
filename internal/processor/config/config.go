@@ -23,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	"gopkg.in/yaml.v3"
@@ -53,8 +54,11 @@ type ProcessorConfig struct {
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
 
-	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
+	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
 	DatabaseType string `yaml:"database_type"`
+
+	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
+	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
 
 	Addr        string `yaml:"addr"`
 	SSLCertFile string `yaml:"ssl_cert_file"`

@@ -39,7 +39,7 @@ type pgxPool interface {
 // PostgreSQLConfig holds the configuration for a PostgreSQL connection.
 type PostgreSQLConfig struct {
 	// Url is a PostgreSQL connection string (e.g., "postgres://user:pass@host:5432/dbname?sslmode=disable").
-	Url string
+	Url string `yaml:"-"`
 }
 
 // Validate checks that the required configuration fields are set.
