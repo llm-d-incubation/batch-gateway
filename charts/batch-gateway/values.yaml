@@ -138,7 +138,7 @@ apiserver:
   config:
     host: ""
     port: "8000"
-    tenantHeader: "X-MaaS-User"
+    tenantHeader: "X-MaaS-Username"
     readHeaderTimeoutSeconds: 10
     readTimeoutSeconds: 900
     writeTimeoutSeconds: 120
