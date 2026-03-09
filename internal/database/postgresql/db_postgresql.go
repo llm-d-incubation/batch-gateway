@@ -21,7 +21,9 @@ package postgresql
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,6 +42,8 @@ type pgxPool interface {
 type PostgreSQLConfig struct {
 	// Url is a PostgreSQL connection string (e.g., "postgres://user:pass@host:5432/dbname?sslmode=disable").
 	Url string `yaml:"-"`
+	// EnableTracing enables OpenTelemetry tracing for all PostgreSQL operations.
+	EnableTracing bool
 }
 
 // Validate checks that the required configuration fields are set.
@@ -48,6 +52,46 @@ func (c *PostgreSQLConfig) Validate() error {
 		return fmt.Errorf("url is required")
 	}
 	return nil
+}
+
+// shortSpanName extracts "verb_table" from a SQL statement,
+// e.g. "select_file_items" instead of the full query text.
+func shortSpanName(sql string) string {
+	tokens := strings.Fields(sql)
+	if len(tokens) == 0 {
+		return "db_query"
+	}
+	verb := strings.ToLower(tokens[0])
+	// Find the table name based on SQL pattern:
+	//   SELECT ... FROM <table>
+	//   INSERT INTO <table>
+	//   UPDATE <table> SET ...
+	//   DELETE FROM <table>
+	switch verb {
+	case "select", "delete":
+		if table := tokenAfter(tokens, "FROM"); table != "" {
+			return verb + "_" + table
+		}
+	case "insert":
+		if table := tokenAfter(tokens, "INTO"); table != "" {
+			return verb + "_" + table
+		}
+	case "update":
+		if len(tokens) > 1 {
+			return verb + "_" + tokens[1]
+		}
+	}
+	return verb
+}
+
+// tokenAfter returns the token immediately following keyword (case-insensitive).
+func tokenAfter(tokens []string, keyword string) string {
+	for i, t := range tokens {
+		if strings.EqualFold(t, keyword) && i+1 < len(tokens) {
+			return tokens[i+1]
+		}
+	}
+	return ""
 }
 
 // newPool creates a new pgxpool.Pool from a PostgreSQLConfig.
@@ -59,7 +103,17 @@ func newPool(ctx context.Context, config *PostgreSQLConfig) (pgxPool, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	pool, err := pgxpool.New(ctx, config.Url)
+	poolConfig, err := pgxpool.ParseConfig(config.Url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse connection string: %w", err)
+	}
+	if config.EnableTracing {
+		poolConfig.ConnConfig.Tracer = otelpgx.NewTracer(
+			otelpgx.WithTrimSQLInSpanName(),
+			otelpgx.WithSpanNameFunc(shortSpanName),
+		)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}

@@ -291,6 +291,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
+	cfg.PostgreSQLCfg.EnableTracing = cfg.OTel.PostgresqlTracing
 
 	clients, err := clientset.NewClientset(
 		ctx,

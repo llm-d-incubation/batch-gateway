@@ -93,7 +93,8 @@ type ProcessorConfig struct {
 
 	// OTel holds OpenTelemetry-related settings.
 	OTel struct {
-		RedisTracing bool `yaml:"redis_tracing"`
+		RedisTracing      bool `yaml:"redis_tracing"`
+		PostgresqlTracing bool `yaml:"postgresql_tracing"`
 	} `yaml:"otel"`
 
 	// FileClient holds configuration for the shared file storage client (fs or s3).
