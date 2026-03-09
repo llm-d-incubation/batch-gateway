@@ -295,7 +295,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	clients, err := clientset.NewClientset(
 		ctx,
 		cfg.DatabaseType,
-		nil,
+		&cfg.PostgreSQLCfg,
 		redisCfg,
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,

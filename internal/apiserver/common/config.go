@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	"gopkg.in/yaml.v3"
@@ -123,8 +124,11 @@ type ServerConfig struct {
 		S3Config s3client.Config `yaml:"s3"`
 	} `yaml:"file_client"`
 
-	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql" (not yet implemented).
+	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
 	DatabaseType string `yaml:"database_type"`
+
+	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
+	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
 
 	// OTel holds OpenTelemetry-related settings.
 	OTel struct {

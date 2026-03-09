@@ -57,7 +57,7 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 	clients, err := clientset.NewClientset(
 		ctx,
 		config.DatabaseType,
-		nil,
+		&config.PostgreSQLCfg,
 		redisCfg,
 		config.FileClientCfg.Type,
 		&config.FileClientCfg.FSConfig,
