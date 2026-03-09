@@ -54,6 +54,8 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 		EnableTracing: config.OTel.RedisTracing,
 	}
 
+	config.PostgreSQLCfg.EnableTracing = config.OTel.PostgresqlTracing
+
 	clients, err := clientset.NewClientset(
 		ctx,
 		config.DatabaseType,

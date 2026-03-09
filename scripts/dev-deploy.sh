@@ -439,6 +439,7 @@ install_batch_gateway() {
         --set "global.otel.endpoint=http://${JAEGER_NAME}.${NAMESPACE}.svc.cluster.local:4317"
         --set "global.otel.insecure=true"
         --set "global.otel.redisTracing=true"
+        --set "global.otel.postgresqlTracing=true"
         --set "global.databaseType=postgresql"
         --namespace "${NAMESPACE}"
     )

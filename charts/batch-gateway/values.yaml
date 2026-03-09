@@ -25,6 +25,8 @@ global:
     # Enable per-command Redis tracing spans. Can produce high span volume
     # for batch workloads — leave disabled unless actively debugging Redis.
     redisTracing: false
+    # Enable per-query PostgreSQL tracing spans via otelpgx.
+    postgresqlTracing: false
 
   # File client configuration
   fileClient:

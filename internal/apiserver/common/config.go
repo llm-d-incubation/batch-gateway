@@ -132,7 +132,8 @@ type ServerConfig struct {
 
 	// OTel holds OpenTelemetry-related settings.
 	OTel struct {
-		RedisTracing bool `yaml:"redis_tracing"`
+		RedisTracing      bool `yaml:"redis_tracing"`
+		PostgresqlTracing bool `yaml:"postgresql_tracing"`
 	} `yaml:"otel"`
 }
 
