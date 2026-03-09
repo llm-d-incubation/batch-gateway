@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -251,7 +250,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "test-batch")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -298,7 +297,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "test-batch")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
@@ -336,7 +335,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -374,7 +373,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx()
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil, "")
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -401,7 +400,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 
 	badEntry := planEntry{Offset: 99999, Length: 10}
 	ctx := testLoggerCtx()
-	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil, "test-batch")
+	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil)
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
 	}
@@ -438,7 +437,6 @@ func TestProcessModel_Success(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
@@ -447,8 +445,11 @@ func TestProcessModel_Success(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "test-batch")
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -489,7 +490,6 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 	cancelReq.Store(true)
 
@@ -499,8 +499,11 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "test-batch")
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -530,7 +533,6 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
@@ -539,8 +541,11 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "")
+	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -576,7 +581,6 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	var writerMu sync.Mutex
 	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
@@ -587,9 +591,12 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 
+	var errBuf bytes.Buffer
+	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writer, &writerMu, cancelReq, progress, nil, "")
+		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	}()
 
 	<-started
@@ -938,7 +945,7 @@ func TestCleanupJobArtifacts_RemovesDirectory(t *testing.T) {
 }
 
 // =====================================================================
-// Tests: storeOutputFileRecord error path
+// Tests: storeFileRecord error path
 // =====================================================================
 
 func TestStoreOutputFileRecord_DBError(t *testing.T) {
@@ -949,7 +956,7 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	p := NewProcessor(cfg, &clientset.Clientset{FileDB: failDB})
 
 	ctx := testLoggerCtx()
-	err := p.storeOutputFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})
+	err := p.storeFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})
 	if err == nil {
 		t.Fatalf("expected error from DB failure")
 	}

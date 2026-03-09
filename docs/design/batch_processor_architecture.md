@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 2
--   **Last Updated**: 2026-03-03
+-   **Revision**: 3
+-   **Last Updated**: 2026-03-05
 
 -------------------------------------------------------------------
 
@@ -150,11 +150,15 @@ Unsupported features must return OpenAI-compatible error responses.
       ↓
     [ Finalize ]
       ↓
-    Writing channel finalizes the output file
+    Flush output.jsonl and error.jsonl
       ↓
-    Upload output file
+    Upload output.jsonl to shared storage (skipped if empty — all requests failed)
       ↓
-    File cleanup (plan files, metadata file, input file)
+    Upload error.jsonl to shared storage (skipped if empty — no requests failed)
+      ↓
+    Create file records in DB for non-empty files; set output_file_id / error_file_id on job
+      ↓
+    File cleanup (plan files, metadata file, input/output/error files)
 ```
 -------------------------------------------------------------------
 
@@ -164,7 +168,7 @@ Allowed transitions:
 -   `validating` (initial state: set when a batch job is created)
 -   `validating → in_progress` (after polling from the queue)
 -   `in_progress → finalizing` (after all plans drained)
--   `finalizing → completed` (after uploading output file)
+-   `finalizing → completed` (after uploading output and error files)
 -   `* → failed` (job is unable to process)
 -   `* → expired` (SLO exceeded)
 -   `in_progress → cancelling` (after user's cancellation signal received)
@@ -203,7 +207,9 @@ Directory layout:
 ```
 jobs/
 └── <job_id>/
-    ├── input.jsonl
+    ├── input.jsonl        # downloaded from shared storage; read-only during Phase 2
+    ├── output.jsonl       # written during Phase 2; contains successful responses
+    ├── error.jsonl        # written during Phase 2; contains failed responses
     ├── model_map.json
     └── plans/
         ├── <safe_model_id_1>.plan
@@ -461,9 +467,10 @@ API key resolution order: explicit `api_key_name` → default `inference-api-key
 
 #### ResultWriter
 
--   Write success/failure
+-   Write successful responses to `output.jsonl`
+-   Write failed responses to `error.jsonl`
 -   Update metrics
--   Finalize job
+-   Finalize job (upload non-empty files, set `output_file_id` / `error_file_id` on job record)
 
 -------------------------------------------------------------------
 ### Failure Handling
@@ -476,7 +483,30 @@ API key resolution order: explicit `api_key_name` → default `inference-api-key
 
 -------------------------------------------------------------------
 ### Observability
-#### Metrics (Already Implemented)
+
+#### Tracing (OpenTelemetry)
+
+A single `"process-batch"` span covers the full job lifecycle (Phase 1 → Phase 2 → Phase 3). The following span attributes are recorded:
+
+| Attribute | Type | Set at | Description |
+|---|---|---|---|
+| `batch.id` | string | span start | Batch ID |
+| `tenant.id` | string | span start | Tenant ID |
+| `file.id` | string | span start | Input file ID |
+| `batch.output_file.id` | string | Phase 3 finalize | Output file ID (omitted if all requests failed) |
+| `batch.error_file.id` | string | Phase 3 finalize | Error file ID (omitted if no requests failed) |
+| `batch.request.total` | int64 | Phase 3 finalize | Total request count |
+| `batch.request.completed` | int64 | Phase 3 finalize | Successfully completed request count |
+| `batch.request.failed` | int64 | Phase 3 finalize | Failed request count |
+
+Errors at each phase are recorded via `span.RecordError()` and `span.SetStatus(codes.Error, ...)`.
+
+Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provider).
+
+-------------------------------------------------------------------
+
+#### Metrics
+
 **Job-Level Metrics**
 
 - `jobs_processed_total{result,reason}` (counter)
@@ -497,7 +527,7 @@ API key resolution order: explicit `api_key_name` → default `inference-api-key
 - `job_processing_duration_seconds{tenantID,size_bucket}` (histogram)
   Measures total job processing duration (end-to-end, including ingestion and execution).
 
-- `job_queue_wait_duration{tenantID}` (histogram)
+- `job_queue_wait_duration_seconds{tenantID}` (histogram)
   Measures how long a job waited in the priority queue before being picked up.
 
 **Worker Utilization Metrics**
@@ -508,34 +538,32 @@ API key resolution order: explicit `api_key_name` → default `inference-api-key
 - `active_workers` (gauge)
   Current number of workers actively processing jobs.
 
-**Error Metrics**
-
-- `job_errors_by_model_total{model}` (counter)
-  Counts job processing errors grouped by model.
-
-
-#### Metrics (Planned for MVP: please share your opinion on this)
-
-The following metrics improve visibility into scheduling behavior, concurrency control, and phase-level performance.
+- `processor_inflight_requests` (gauge)
+  Global number of in-flight inference requests across all workers (bounded by `GlobalConcurrency`).
+  Primary saturation signal for scheduler/executor health.
 
 - `processor_max_inflight_concurrency` (gauge)
   Configured `GlobalConcurrency` value. Used with `processor_inflight_requests` to compute utilization.
 
-- `processor_inflight_requests` (gauge)
-  Global number of in-flight inference requests across all workers (bounded by `GlobalConcurrency`).
-  This is the primary saturation signal for scheduler/executor health and is kept intentionally
-  even when per-model metrics are present.
-
 - `model_inflight_requests{model}` (gauge)
   Per-model in-flight request count (bounded by `PerModelMaxConcurrency`).
-  This is a decomposition metric for in-flight requests status which enables control over request per model
 
+**Phase-Level Duration Metrics**
 
 - `plan_build_duration_seconds{tenantID,size_bucket}` (histogram)
   Measures Phase 1 ingestion and plan build duration.
 
 - `model_request_execution_duration_seconds{model}` (histogram)
   Measures per-request execution duration during Phase 2.
+
+**Error and Retry Metrics**
+
+- `request_errors_by_model_total{model}` (counter)
+  Counts inference request errors grouped by model.
+
+- `file_upload_retries_total{file_type}` (counter)
+  Counts file upload retry attempts by file type (`output` or `error`).
+  Useful for detecting storage instability.
 
 #### Metrics (Deferred / Not in MVP)
 

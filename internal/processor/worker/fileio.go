@@ -30,12 +30,27 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	// folder names
+	jobsDirName  = "jobs"
+	plansDirName = "plans"
+
+	// local job artifact file names
+	inputFileName  = "input.jsonl"
+	outputFileName = "output.jsonl"
+	errorFileName  = "error.jsonl"
+
+	// remote storage file name format strings
+	outputStorageNameFmt = "batch_output_%s.jsonl"
+	errorStorageNameFmt  = "batch_error_%s.jsonl"
+)
+
 func (p *Processor) jobRootDir(jobID, tenantID string) (string, error) {
 	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		return "", fmt.Errorf("failed to sanitize tenant id for job path: %w", err)
 	}
-	return filepath.Join(p.cfg.WorkDir, folderName, "jobs", jobID), nil
+	return filepath.Join(p.cfg.WorkDir, folderName, jobsDirName, jobID), nil
 }
 
 func (p *Processor) jobInputFilePath(jobID, tenantID string) (string, error) {
@@ -43,7 +58,7 @@ func (p *Processor) jobInputFilePath(jobID, tenantID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(jobRootDir, "input.jsonl"), nil
+	return filepath.Join(jobRootDir, inputFileName), nil
 }
 
 func (p *Processor) jobOutputFilePath(jobID, tenantID string) (string, error) {
@@ -51,7 +66,25 @@ func (p *Processor) jobOutputFilePath(jobID, tenantID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(jobRootDir, "output.jsonl"), nil
+	return filepath.Join(jobRootDir, outputFileName), nil
+}
+
+func (p *Processor) jobErrorFilePath(jobID, tenantID string) (string, error) {
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(jobRootDir, errorFileName), nil
+}
+
+// jobOutputStorageName returns the filename used when uploading the output file to shared storage.
+func jobOutputStorageName(jobID string) string {
+	return fmt.Sprintf(outputStorageNameFmt, jobID)
+}
+
+// jobErrorStorageName returns the filename used when uploading the error file to shared storage.
+func jobErrorStorageName(jobID string) string {
+	return fmt.Sprintf(errorStorageNameFmt, jobID)
 }
 
 func (p *Processor) jobPlansDir(jobID, tenantID string) (string, error) {
@@ -59,7 +92,7 @@ func (p *Processor) jobPlansDir(jobID, tenantID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(jobRootDir, "plans"), nil
+	return filepath.Join(jobRootDir, plansDirName), nil
 }
 
 // createLocalInputFile creates or truncates the local input file for a job.
