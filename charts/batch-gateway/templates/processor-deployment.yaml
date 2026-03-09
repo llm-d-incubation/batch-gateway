@@ -64,11 +64,6 @@ spec:
         - name: workdir
           mountPath: {{ .Values.processor.config.workDir }}
         {{- include "batch-gateway.filesStorage.volumeMount" . | nindent 8 }}
-        {{- if .Values.processor.tls.enabled }}
-        - name: tls
-          mountPath: /etc/tls
-          readOnly: true
-        {{- end }}
         {{- with .Values.processor.volumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -90,15 +85,6 @@ spec:
           sizeLimit: {{ .Values.processor.workDirVolume.sizeLimit | quote }}
           {{- end }}
       {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
-      {{- if .Values.processor.tls.enabled }}
-      - name: tls
-        secret:
-          {{- if .Values.processor.tls.secretName }}
-          secretName: {{ .Values.processor.tls.secretName }}
-          {{- else }}
-          secretName: {{ include "batch-gateway.processor.fullname" . }}-tls
-          {{- end }}
-      {{- end }}
       {{- if .Values.global.appSecretName }}
       - name: secrets
         projected:

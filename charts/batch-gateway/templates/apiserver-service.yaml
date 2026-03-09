@@ -15,7 +15,11 @@ spec:
     - port: {{ .Values.apiserver.service.port }}
       targetPort: http
       protocol: TCP
-      name: http
+      name: {{ if .Values.apiserver.tls.enabled }}https{{ else }}http{{ end }}
+    - port: {{ .Values.apiserver.config.observabilityPort }}
+      targetPort: observability
+      protocol: TCP
+      name: observability
   selector:
     {{- include "batch-gateway.apiserver.selectorLabels" . | nindent 4 }}
 {{- end }}

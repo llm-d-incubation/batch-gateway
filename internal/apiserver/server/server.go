@@ -42,7 +42,8 @@ type Server struct {
 	logger      klog.Logger
 	config      *common.ServerConfig
 	serverReady *atomic.Bool
-	handler     http.Handler
+	apiHandler  http.Handler
+	obsHandler  http.Handler
 	clients     *clientset.Clientset
 }
 
@@ -88,48 +89,58 @@ func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	// build HTTP handlers
-	mux := http.NewServeMux()
+	// API mux: business endpoints only
+	apiMux := http.NewServeMux()
+	fileHandler := file.NewFileAPIHandler(config, clients)
+	batchHandler := batch.NewBatchAPIHandler(config, clients)
+	for _, h := range []common.ApiHandler{fileHandler, batchHandler} {
+		common.RegisterHandler(apiMux, h)
+	}
+
+	// apply middlewares to the API handler
+	var apiHandler http.Handler = apiMux
+	apiHandler = middleware.SecurityHeadersMiddleware(apiHandler)
+	apiHandler = middleware.RequestMiddleware(config)(apiHandler)
+	apiHandler = middleware.RecoveryMiddleware(apiHandler)
+
+	// Observability mux: health, readiness, metrics (always plain HTTP)
+	obsMux := http.NewServeMux()
 	healthHandler := health.NewHealthApiHandler()
 	readinessHandler := readiness.NewReadinessApiHandler(serverReady)
 	metricsHandler := metrics.NewMetricsApiHandler()
-	fileHandler := file.NewFileAPIHandler(config, clients)
-	batchHandler := batch.NewBatchAPIHandler(config, clients)
-
-	handlers := []common.ApiHandler{
-		healthHandler,
-		readinessHandler,
-		metricsHandler,
-		fileHandler,
-		batchHandler,
+	for _, h := range []common.ApiHandler{healthHandler, readinessHandler, metricsHandler} {
+		common.RegisterHandler(obsMux, h)
 	}
-	for _, c := range handlers {
-		common.RegisterHandler(mux, c)
-	}
-
-	// register middlewares
-	var handler http.Handler = mux
-	//handler = middleware.BodySizeLimitMiddleware(handler) //  Limit request body size
-	//handler = middleware.AuthorizationMiddleware(handler) //  Check permissions
-	//handler = middleware.AuthenticationMiddleware(handler) // Verify API key/JWT
-	//handler = middleware.RateLimitMiddleware(handler)      // Early Rejection
-	handler = middleware.SecurityHeadersMiddleware(handler) // Add security headers
-	handler = middleware.RequestMiddleware(config)(handler) // 2nd Outermost, request monitoring with tenant support
-	handler = middleware.RecoveryMiddleware(handler)        // Outermost - catches ALL panics
 
 	return &Server{
 		config:      config,
 		logger:      logger,
 		serverReady: serverReady,
-		handler:     handler,
+		apiHandler:  apiHandler,
+		obsHandler:  obsMux,
 		clients:     clients,
 	}, nil
 }
 
-// Start the HTTP server.
+// Start the API server and the observability server.
 func (s *Server) Start(ctx context.Context) error {
 	logger := s.logger
 
+	// --- Observability server (always plain HTTP) ---
+	obsAddr := s.config.Host + ":" + s.config.ObservabilityPort
+	obsServer := &http.Server{
+		Addr:              obsAddr,
+		Handler:           s.obsHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		logger.Info("starting observability server", "addr", obsAddr)
+		if err := obsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error(err, "observability server failed")
+		}
+	}()
+
+	// --- API server ---
 	ln, err := net.Listen("tcp", s.config.Host+":"+s.config.Port)
 	if err != nil {
 		logger.Error(err, "failed to start")
@@ -138,7 +149,7 @@ func (s *Server) Start(ctx context.Context) error {
 	defer ln.Close()
 
 	httpserver := &http.Server{
-		Handler:           s.handler,
+		Handler:           s.apiHandler,
 		ReadHeaderTimeout: time.Duration(s.config.GetReadHeaderTimeoutSeconds()) * time.Second,
 		ReadTimeout:       time.Duration(s.config.GetReadTimeoutSeconds()) * time.Second,
 		WriteTimeout:      time.Duration(s.config.GetWriteTimeoutSeconds()) * time.Second,
@@ -155,16 +166,14 @@ func (s *Server) Start(ctx context.Context) error {
 		httpserver.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
-			// CipherSuites omitted - use Go's secure defaults
-			// This allows TLS 1.3 to use its own cipher suites
 		}
-		s.logger.Info("server TLS configured", "minVersion", "TLS 1.2")
+		s.logger.Info("API server TLS configured", "minVersion", "TLS 1.2")
 	} else if s.config.SSLCertFile != "" || s.config.SSLKeyFile != "" {
 		err := fmt.Errorf("both tls-cert-file and tls-private-key-file must be provided to enable TLS")
 		return err
 	}
 
-	logger.Info("starting", "addr", ln.Addr().String())
+	logger.Info("starting API server", "addr", ln.Addr().String())
 
 	// Start serving in a goroutine
 	serveDone := make(chan error, 1)
@@ -204,11 +213,15 @@ func (s *Server) Start(ctx context.Context) error {
 		s.serverReady.Store(false)
 		logger.Info("shutting down", "reason", ctx.Err())
 
-		// Gracefully shutdown the server
+		// Gracefully shutdown both servers
 		shutdownCtx, cancelFn := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancelFn()
+
+		if err := obsServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error(err, "failed to gracefully shutdown observability server")
+		}
 		if err := httpserver.Shutdown(shutdownCtx); err != nil {
-			logger.Error(err, "failed to gracefully shutdown")
+			logger.Error(err, "failed to gracefully shutdown API server")
 		}
 
 		// Wait for server goroutine to finish with timeout

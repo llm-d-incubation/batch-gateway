@@ -90,34 +90,6 @@ func TestNewConfig_Defaults(t *testing.T) {
 	}
 }
 
-func TestProcessorConfig_SSLEnabled(t *testing.T) {
-	c := NewConfig()
-
-	c.SSLCertFile = ""
-	c.SSLKeyFile = ""
-	if c.SSLEnabled() {
-		t.Fatalf("SSLEnabled() = true, want false when both empty")
-	}
-
-	c.SSLCertFile = "/tmp/cert"
-	c.SSLKeyFile = ""
-	if c.SSLEnabled() {
-		t.Fatalf("SSLEnabled() = true, want false when key empty")
-	}
-
-	c.SSLCertFile = ""
-	c.SSLKeyFile = "/tmp/key"
-	if c.SSLEnabled() {
-		t.Fatalf("SSLEnabled() = true, want false when cert empty")
-	}
-
-	c.SSLCertFile = "/tmp/cert"
-	c.SSLKeyFile = "/tmp/key"
-	if !c.SSLEnabled() {
-		t.Fatalf("SSLEnabled() = false, want true when both set")
-	}
-}
-
 func TestProcessorConfig_Validate_WorkDirEmpty(t *testing.T) {
 	c := NewConfig()
 	c.WorkDir = ""
@@ -148,77 +120,6 @@ func TestProcessorConfig_Validate_MissingDefaultGateway(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatalf("Validate() expected error when model_gateways.default is missing, got nil")
-	}
-}
-
-func TestProcessorConfig_Validate_SSLDisabled_DoesNotRequireCertFiles(t *testing.T) {
-	c := NewConfig()
-	c.DatabaseType = "mock"
-	c.SSLCertFile = ""
-	c.SSLKeyFile = ""
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate() unexpected error when SSL disabled: %v", err)
-	}
-}
-
-func TestProcessorConfig_Validate_SSLEnabled_RequiresExistingFiles(t *testing.T) {
-	dir := t.TempDir()
-
-	certPath := filepath.Join(dir, "cert.pem")
-	keyPath := filepath.Join(dir, "key.pem")
-
-	if err := os.WriteFile(certPath, []byte("dummy"), 0o600); err != nil {
-		t.Fatalf("failed to write cert: %v", err)
-	}
-	if err := os.WriteFile(keyPath, []byte("dummy"), 0o600); err != nil {
-		t.Fatalf("failed to write key: %v", err)
-	}
-
-	c := NewConfig()
-	c.DatabaseType = "mock"
-	c.SSLCertFile = certPath
-	c.SSLKeyFile = keyPath
-
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate() unexpected error with existing cert/key: %v", err)
-	}
-}
-
-func TestProcessorConfig_Validate_SSLEnabled_MissingCertOrKey(t *testing.T) {
-	dir := t.TempDir()
-	certPath := filepath.Join(dir, "cert.pem")
-	keyPath := filepath.Join(dir, "key.pem")
-
-	c := NewConfig()
-	c.SSLCertFile = certPath
-	c.SSLKeyFile = keyPath
-
-	// not existing > error
-	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error when cert/key missing, got nil")
-	}
-
-	// only cert file > error
-	if err := os.WriteFile(certPath, []byte("dummy"), 0o600); err != nil {
-		t.Fatalf("failed to write cert: %v", err)
-	}
-	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error when key missing, got nil")
-	}
-}
-
-func TestProcessorConfig_Validate_SSLPartialConfigRejected(t *testing.T) {
-	c := NewConfig()
-	c.SSLCertFile = "/tmp/only-cert.pem"
-	c.SSLKeyFile = ""
-	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error when only ssl_cert_file is set, got nil")
-	}
-
-	c.SSLCertFile = ""
-	c.SSLKeyFile = "/tmp/only-key.pem"
-	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error when only ssl_key_file is set, got nil")
 	}
 }
 

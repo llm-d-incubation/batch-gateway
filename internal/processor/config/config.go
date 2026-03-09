@@ -62,9 +62,7 @@ type ProcessorConfig struct {
 	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
 	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
 
-	Addr        string `yaml:"addr"`
-	SSLCertFile string `yaml:"ssl_cert_file"`
-	SSLKeyFile  string `yaml:"ssl_key_file"`
+	Addr string `yaml:"addr"`
 	// TerminateOnObservabilityFailure controls whether observability server failures should terminate the processor.
 	// false: best-effort (default), true: fatal.
 	TerminateOnObservabilityFailure bool `yaml:"terminate_on_observability_failure"`
@@ -143,10 +141,6 @@ type BucketConfig struct {
 	BucketStart  float64 `yaml:"bucket_start"`
 	BucketFactor float64 `yaml:"bucket_factor"`
 	BucketCount  int     `yaml:"bucket_count"`
-}
-
-func (pc *ProcessorConfig) SSLEnabled() bool {
-	return pc.SSLCertFile != "" && pc.SSLKeyFile != ""
 }
 
 // LoadFromYaml loads the configuration from a YAML file.
@@ -292,18 +286,6 @@ func (c *ProcessorConfig) Validate() error {
 			if _, err := os.Stat(gw.TLSClientKeyFile); err != nil {
 				return fmt.Errorf("model_gateways[%s].tls_client_key_file: %w", model, err)
 			}
-		}
-	}
-
-	if (c.SSLCertFile == "") != (c.SSLKeyFile == "") {
-		return fmt.Errorf("ssl_cert_file and ssl_key_file must both be set or both be empty")
-	}
-	if c.SSLEnabled() {
-		if _, err := os.Stat(c.SSLCertFile); err != nil {
-			return err
-		}
-		if _, err := os.Stat(c.SSLKeyFile); err != nil {
-			return err
 		}
 	}
 
