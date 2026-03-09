@@ -26,29 +26,37 @@ shutdown_timeout: "30s"
 # Work directory for processor
 work_dir: "/var/lib/batch-gateway/processor"
 
-# Inference Client Configuration
-inference_config:
-  # Base URL of the inference gateway (llm-d or other OpenAI-compatible endpoint)
-  gateway_url: "http://localhost:8000"
-
-  # Request timeout for individual inference requests
-  request_timeout: "5m"
-
-  # Retry configuration for failed requests
-  max_retries: 3
-  initial_backoff: "1s"
-  max_backoff: "60s"
-
-  # TLS configuration (optional)
-  # Skip TLS certificate verification (INSECURE - only for testing with self-signed certs)
-  tls_insecure_skip_verify: false
-
-  # Custom CA certificate for private/corporate CAs
-  # tls_ca_cert_file: "/path/to/ca-cert.pem"
-
-  # Client certificate and key for mutual TLS (mTLS)
-  # tls_client_cert_file: "/path/to/client-cert.pem"
-  # tls_client_key_file: "/path/to/client-key.pem"
+# Model-specific inference gateway configuration.
+# Reserved key "default" is required and acts as the fallback for all models.
+# Lookup order: model_gateways[model] -> model_gateways["default"].
+# api_key_name is a key name in /etc/.secrets/; when omitted, the default
+# inference-api-key secret is used.
+model_gateways:
+  "default":
+    url: "http://localhost:8000"
+    request_timeout: "5m"
+    max_retries: 3
+    initial_backoff: "1s"
+    max_backoff: "60s"
+    tls_insecure_skip_verify: false
+    # tls_ca_cert_file: "/path/to/ca-cert.pem"
+    # tls_client_cert_file: "/path/to/client-cert.pem"
+    # tls_client_key_file: "/path/to/client-key.pem"
+  # Per-model entries (optional). Each entry must be fully specified —
+  # all HTTP fields are required and are NOT inherited from "default".
+  # "llama-3":
+  #   url: "http://gateway-a:8000"
+  #   request_timeout: "5m"
+  #   max_retries: 3
+  #   initial_backoff: "1s"
+  #   max_backoff: "60s"
+  # "mistral":
+  #   url: "http://gateway-b:8000"
+  #   api_key_name: "gateway-b-api-key"
+  #   request_timeout: "2m"
+  #   max_retries: 1
+  #   initial_backoff: "1s"
+  #   max_backoff: "30s"
 
 # Default TTL for output/error files in seconds (0 = no expiration).
 # Used as fallback when the user does not provide output_expires_after in POST /v1/batches.

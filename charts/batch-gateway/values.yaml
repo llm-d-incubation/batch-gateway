@@ -262,16 +262,34 @@ processor:
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
-    inferenceConfig:
-      gatewayUrl: "http://localhost:8000"
-      requestTimeout: "5m"
-      maxRetries: 3
-      initialBackoff: "1s"
-      maxBackoff: "60s"
-      tlsInsecureSkipVerify: false
-      tlsCaCertFile: ""
-      tlsClientCertFile: ""
-      tlsClientKeyFile: ""
+    # modelGateways.default is required and acts as fallback for all models.
+    # Lookup order: modelGateways[model] -> modelGateways["default"].
+    # Each model name maps to exactly one gateway config (one entry per model).
+    # apiKeyName is a key name in the app secret (mounted at /etc/.secrets/).
+    # When omitted, the default inference-api-key is used.
+    # Per-model entries must be fully specified — HTTP fields are NOT inherited from "default".
+    modelGateways:
+      "default":
+        url: "http://localhost:8000"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"
+        tlsInsecureSkipVerify: false
+      # Per-model entries (optional, all HTTP fields required):
+      # "llama-3":
+      #   url: "http://gateway-a:8000"
+      #   requestTimeout: "5m"
+      #   maxRetries: 3
+      #   initialBackoff: "1s"
+      #   maxBackoff: "60s"
+      # "mistral":
+      #   url: "http://gateway-b:8000"
+      #   apiKeyName: "gateway-b-api-key"
+      #   requestTimeout: "2m"
+      #   maxRetries: 1
+      #   initialBackoff: "1s"
+      #   maxBackoff: "30s"
     uploadRetry:
       maxRetries: 3
       initialBackoff: "1s"

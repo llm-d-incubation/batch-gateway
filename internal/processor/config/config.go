@@ -26,6 +26,8 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
+	inference "github.com/llm-d-incubation/batch-gateway/internal/inference"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,8 +75,10 @@ type ProcessorConfig struct {
 	// WorkDir is the work directory for processor
 	WorkDir string `yaml:"work_dir"`
 
-	// Inference Config
-	InferenceConfig InferenceConfig `yaml:"inference_config"`
+	// ModelGateways maps model names to gateway/inference settings.
+	// Reserved key "default" is required and acts as fallback for all models.
+	// Lookup order: ModelGateways[model] -> ModelGateways["default"].
+	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
 	// UploadRetry controls retry behaviour when uploading output files to shared storage.
 	UploadRetry RetryConfig `yaml:"upload_retry"`
@@ -106,33 +110,32 @@ type RetryConfig struct {
 	MaxBackoff     time.Duration `yaml:"max_backoff"`
 }
 
-type InferenceConfig struct {
-	// GatewayURL is the base URL of the inference gateway (llm-d or GAIE)
-	GatewayURL string `yaml:"gateway_url"`
+// DefaultModelGatewayKey is the reserved key in ModelGateways that acts as
+// the fallback gateway for any model without an explicit mapping.
+const DefaultModelGatewayKey = "default"
 
-	// RequestTimeout is the timeout for individual inference requests
+// ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
+// model (or the default fallback). Every entry in model_gateways must be
+// self-contained — there is no inheritance from the "default" entry.
+// api_key_name is the key name under /etc/.secrets/; empty means use the
+// default inference-api-key secret.
+//
+// TODO: If per-model partial overrides (inherit unset fields from "default")
+// are needed in the future, introduce a separate ModelOverrideConfig type with
+// pointer fields and a merge step in BuildGatewayResolver.
+type ModelGatewayConfig struct {
+	URL        string `yaml:"url"`
+	APIKeyName string `yaml:"api_key_name"`
+
 	RequestTimeout time.Duration `yaml:"request_timeout"`
-
-	// MaxRetries is the maximum number of retry attempts for failed requests
-	MaxRetries int `yaml:"max_retries"`
-
-	// InitialBackoff is the initial backoff duration for retries
+	MaxRetries     int           `yaml:"max_retries"`
 	InitialBackoff time.Duration `yaml:"initial_backoff"`
+	MaxBackoff     time.Duration `yaml:"max_backoff"`
 
-	// MaxBackoff is the maximum backoff duration for retries
-	MaxBackoff time.Duration `yaml:"max_backoff"`
-
-	// TLSInsecureSkipVerify skips TLS certificate verification (INSECURE, only for testing)
-	TLSInsecureSkipVerify bool `yaml:"tls_insecure_skip_verify"`
-
-	// TLSCACertFile is the path to custom CA certificate file (for private CAs)
-	TLSCACertFile string `yaml:"tls_ca_cert_file"`
-
-	// TLSClientCertFile is the path to client certificate file (for mTLS)
-	TLSClientCertFile string `yaml:"tls_client_cert_file"`
-
-	// TLSClientKeyFile is the path to client private key file (for mTLS)
-	TLSClientKeyFile string `yaml:"tls_client_key_file"`
+	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify"`
+	TLSCACertFile         string `yaml:"tls_ca_cert_file,omitempty"`
+	TLSClientCertFile     string `yaml:"tls_client_cert_file,omitempty"`
+	TLSClientKeyFile      string `yaml:"tls_client_key_file,omitempty"`
 }
 
 type BucketConfig struct {
@@ -193,13 +196,14 @@ func NewConfig() *ProcessorConfig {
 		}{
 			Type: "mock",
 		},
-		InferenceConfig: InferenceConfig{
-			GatewayURL:            "http://localhost:8000",
-			RequestTimeout:        5 * time.Minute,
-			MaxRetries:            3,
-			InitialBackoff:        1 * time.Second,
-			MaxBackoff:            60 * time.Second,
-			TLSInsecureSkipVerify: false,
+		ModelGateways: map[string]ModelGatewayConfig{
+			DefaultModelGatewayKey: {
+				URL:            "http://localhost:8000",
+				RequestTimeout: 5 * time.Minute,
+				MaxRetries:     3,
+				InitialBackoff: 1 * time.Second,
+				MaxBackoff:     60 * time.Second,
+			},
 		},
 		UploadRetry: RetryConfig{
 			MaxRetries:     3,
@@ -250,23 +254,44 @@ func (c *ProcessorConfig) Validate() error {
 		return fmt.Errorf("process_time_bucket must satisfy: bucket_start > 0, bucket_factor > 1, bucket_count > 0")
 	}
 
-	if c.InferenceConfig.GatewayURL == "" {
-		return fmt.Errorf("inference_config.gateway_url cannot be empty")
+	if _, ok := c.ModelGateways[DefaultModelGatewayKey]; !ok {
+		return fmt.Errorf("model_gateways.default is required")
 	}
-	if c.InferenceConfig.RequestTimeout <= 0 {
-		return fmt.Errorf("inference_config.request_timeout must be > 0")
-	}
-	if c.InferenceConfig.MaxRetries < 0 {
-		return fmt.Errorf("inference_config.max_retries must be >= 0")
-	}
-	if c.InferenceConfig.InitialBackoff <= 0 {
-		return fmt.Errorf("inference_config.initial_backoff must be > 0")
-	}
-	if c.InferenceConfig.MaxBackoff <= 0 {
-		return fmt.Errorf("inference_config.max_backoff must be > 0")
-	}
-	if c.InferenceConfig.MaxBackoff < c.InferenceConfig.InitialBackoff {
-		return fmt.Errorf("inference_config.max_backoff must be >= inference_config.initial_backoff")
+	for model, gw := range c.ModelGateways {
+		if gw.URL == "" {
+			return fmt.Errorf("model_gateways[%s].url cannot be empty", model)
+		}
+		if gw.RequestTimeout <= 0 {
+			return fmt.Errorf("model_gateways[%s].request_timeout must be > 0", model)
+		}
+		if gw.MaxRetries < 0 {
+			return fmt.Errorf("model_gateways[%s].max_retries must be >= 0", model)
+		}
+		if gw.InitialBackoff <= 0 {
+			return fmt.Errorf("model_gateways[%s].initial_backoff must be > 0", model)
+		}
+		if gw.MaxBackoff <= 0 {
+			return fmt.Errorf("model_gateways[%s].max_backoff must be > 0", model)
+		}
+		if gw.MaxBackoff < gw.InitialBackoff {
+			return fmt.Errorf("model_gateways[%s].max_backoff must be >= initial_backoff", model)
+		}
+		if (gw.TLSClientCertFile == "") != (gw.TLSClientKeyFile == "") {
+			return fmt.Errorf("model_gateways[%s]: tls_client_cert_file and tls_client_key_file must both be set or both be empty", model)
+		}
+		if gw.TLSCACertFile != "" {
+			if _, err := os.Stat(gw.TLSCACertFile); err != nil {
+				return fmt.Errorf("model_gateways[%s].tls_ca_cert_file: %w", model, err)
+			}
+		}
+		if gw.TLSClientCertFile != "" {
+			if _, err := os.Stat(gw.TLSClientCertFile); err != nil {
+				return fmt.Errorf("model_gateways[%s].tls_client_cert_file: %w", model, err)
+			}
+			if _, err := os.Stat(gw.TLSClientKeyFile); err != nil {
+				return fmt.Errorf("model_gateways[%s].tls_client_key_file: %w", model, err)
+			}
+		}
 	}
 
 	if (c.SSLCertFile == "") != (c.SSLKeyFile == "") {
@@ -277,23 +302,6 @@ func (c *ProcessorConfig) Validate() error {
 			return err
 		}
 		if _, err := os.Stat(c.SSLKeyFile); err != nil {
-			return err
-		}
-	}
-
-	if (c.InferenceConfig.TLSClientCertFile == "") != (c.InferenceConfig.TLSClientKeyFile == "") {
-		return fmt.Errorf("inference_config.tls_client_cert_file and inference_config.tls_client_key_file must both be set or both be empty")
-	}
-	if c.InferenceConfig.TLSCACertFile != "" {
-		if _, err := os.Stat(c.InferenceConfig.TLSCACertFile); err != nil {
-			return err
-		}
-	}
-	if c.InferenceConfig.TLSClientCertFile != "" {
-		if _, err := os.Stat(c.InferenceConfig.TLSClientCertFile); err != nil {
-			return err
-		}
-		if _, err := os.Stat(c.InferenceConfig.TLSClientKeyFile); err != nil {
 			return err
 		}
 	}
@@ -316,4 +324,47 @@ func (c *ProcessorConfig) Validate() error {
 	}
 
 	return nil
+}
+
+// ResolveModelGateways resolves API keys for all model gateways and returns a
+// fully-populated GatewayClientConfig map ready to pass to clientset.NewClientset.
+// Each entry is self-contained (no field inheritance between entries).
+// Falls back to the mounted inference-api-key secret if the default gateway
+// has no explicit API key configured.
+func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]inference.GatewayClientConfig, error) {
+	resolved := make(map[string]inference.GatewayClientConfig, len(gateways))
+	for model, gw := range gateways {
+		apiKey := ""
+		if gw.APIKeyName != "" {
+			key, err := ucom.ReadSecretFile(gw.APIKeyName)
+			if err != nil {
+				return nil, fmt.Errorf("read API key for model %q: %w", model, err)
+			}
+			apiKey = key
+		}
+		resolved[model] = inference.GatewayClientConfig{
+			URL:                   gw.URL,
+			APIKey:                apiKey,
+			Timeout:               gw.RequestTimeout,
+			MaxRetries:            gw.MaxRetries,
+			InitialBackoff:        gw.InitialBackoff,
+			MaxBackoff:            gw.MaxBackoff,
+			TLSInsecureSkipVerify: gw.TLSInsecureSkipVerify,
+			TLSCACertFile:         gw.TLSCACertFile,
+			TLSClientCertFile:     gw.TLSClientCertFile,
+			TLSClientKeyFile:      gw.TLSClientKeyFile,
+		}
+	}
+
+	// Apply the default API key fallback if no explicit key is configured.
+	if defaultGW, ok := resolved[DefaultModelGatewayKey]; ok && defaultGW.APIKey == "" {
+		apiKey, err := ucom.ReadSecretFile(ucom.SecretKeyInferenceAPI)
+		if err != nil {
+			return nil, fmt.Errorf("read default inference API key: %w", err)
+		}
+		defaultGW.APIKey = apiKey
+		resolved[DefaultModelGatewayKey] = defaultGW
+	}
+
+	return resolved, nil
 }

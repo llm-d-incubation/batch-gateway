@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -28,7 +29,6 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
@@ -287,17 +287,11 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		EnableTracing: cfg.OTel.RedisTracing,
 	}
 
-	inferenceCfg := &inference.HTTPClientConfig{
-		BaseURL:               cfg.InferenceConfig.GatewayURL,
-		Timeout:               cfg.InferenceConfig.RequestTimeout,
-		MaxRetries:            cfg.InferenceConfig.MaxRetries,
-		InitialBackoff:        cfg.InferenceConfig.InitialBackoff,
-		MaxBackoff:            cfg.InferenceConfig.MaxBackoff,
-		TLSInsecureSkipVerify: cfg.InferenceConfig.TLSInsecureSkipVerify,
-		TLSCACertFile:         cfg.InferenceConfig.TLSCACertFile,
-		TLSClientCertFile:     cfg.InferenceConfig.TLSClientCertFile,
-		TLSClientKeyFile:      cfg.InferenceConfig.TLSClientKeyFile,
+	modelGatewaysConfigs, err := config.ResolveModelGateways(cfg.ModelGateways)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
+
 	clients, err := clientset.NewClientset(
 		ctx,
 		cfg.DatabaseType,
@@ -306,7 +300,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
-		inferenceCfg,
+		modelGatewaysConfigs,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")
@@ -314,7 +308,8 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	}
 
 	logger.V(logging.INFO).Info("Processor clients initialized",
-		"inferenceURL", cfg.InferenceConfig.GatewayURL,
+		"defaultInferenceURL", cfg.ModelGateways[config.DefaultModelGatewayKey].URL,
+		"numModelOverrides", len(cfg.ModelGateways)-1,
 		"fileClientType", cfg.FileClientCfg.Type)
 
 	return clients, nil

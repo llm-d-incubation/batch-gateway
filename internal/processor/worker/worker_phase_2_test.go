@@ -133,7 +133,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Queue:     pqClient,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		Inference: inferClient,
+		Inference: inference.NewSingleClientResolver(inferClient),
 	})
 	p.poller = NewPoller(pqClient, dbClient)
 

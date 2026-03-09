@@ -51,15 +51,20 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.DatabaseType != "redis" {
 		t.Fatalf("DatabaseType = %q, want %q", c.DatabaseType, "redis")
 	}
-	// inference config spot-check
-	if c.InferenceConfig.GatewayURL != "http://localhost:8000" {
-		t.Fatalf("GatewayURL = %q, want %q", c.InferenceConfig.GatewayURL, "http://localhost:8000")
+
+	// default gateway spot-check
+	defaultGW, ok := c.ModelGateways[DefaultModelGatewayKey]
+	if !ok {
+		t.Fatalf("ModelGateways missing %q key", DefaultModelGatewayKey)
 	}
-	if c.InferenceConfig.RequestTimeout != 5*time.Minute {
-		t.Fatalf("RequestTimeout = %v, want %v", c.InferenceConfig.RequestTimeout, 5*time.Minute)
+	if defaultGW.URL != "http://localhost:8000" {
+		t.Fatalf("default URL = %q, want %q", defaultGW.URL, "http://localhost:8000")
 	}
-	if c.InferenceConfig.MaxRetries != 3 {
-		t.Fatalf("MaxRetries = %d, want %d", c.InferenceConfig.MaxRetries, 3)
+	if defaultGW.RequestTimeout != 5*time.Minute {
+		t.Fatalf("default RequestTimeout = %v, want %v", defaultGW.RequestTimeout, 5*time.Minute)
+	}
+	if defaultGW.MaxRetries != 3 {
+		t.Fatalf("default MaxRetries = %d, want 3", defaultGW.MaxRetries)
 	}
 
 	// upload retry spot-check
@@ -136,12 +141,21 @@ func TestProcessorConfig_Validate_TaskWaitTimeMustBeShorterThanPollInterval(t *t
 	}
 }
 
+func TestProcessorConfig_Validate_MissingDefaultGateway(t *testing.T) {
+	c := NewConfig()
+	c.ModelGateways = map[string]ModelGatewayConfig{
+		"llama-3": {URL: "http://gateway-a:8000"},
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatalf("Validate() expected error when model_gateways.default is missing, got nil")
+	}
+}
+
 func TestProcessorConfig_Validate_SSLDisabled_DoesNotRequireCertFiles(t *testing.T) {
 	c := NewConfig()
 	c.DatabaseType = "mock"
 	c.SSLCertFile = ""
 	c.SSLKeyFile = ""
-	// WorkDir is not empty (default)
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate() unexpected error when SSL disabled: %v", err)
 	}
@@ -153,7 +167,6 @@ func TestProcessorConfig_Validate_SSLEnabled_RequiresExistingFiles(t *testing.T)
 	certPath := filepath.Join(dir, "cert.pem")
 	keyPath := filepath.Join(dir, "key.pem")
 
-	// dummy file generation
 	if err := os.WriteFile(certPath, []byte("dummy"), 0o600); err != nil {
 		t.Fatalf("failed to write cert: %v", err)
 	}
@@ -209,16 +222,20 @@ func TestProcessorConfig_Validate_SSLPartialConfigRejected(t *testing.T) {
 	}
 }
 
-func TestProcessorConfig_Validate_InferenceTLSPartialConfigRejected(t *testing.T) {
+func TestProcessorConfig_Validate_GatewayTLSPartialConfigRejected(t *testing.T) {
 	c := NewConfig()
-	c.InferenceConfig.TLSClientCertFile = "/tmp/client-cert.pem"
-	c.InferenceConfig.TLSClientKeyFile = ""
+	gw := c.ModelGateways[DefaultModelGatewayKey]
+	gw.TLSClientCertFile = "/tmp/client-cert.pem"
+	gw.TLSClientKeyFile = ""
+	c.ModelGateways[DefaultModelGatewayKey] = gw
 	if err := c.Validate(); err == nil {
 		t.Fatalf("Validate() expected error when only tls_client_cert_file is set, got nil")
 	}
 
-	c.InferenceConfig.TLSClientCertFile = ""
-	c.InferenceConfig.TLSClientKeyFile = "/tmp/client-key.pem"
+	gw2 := c.ModelGateways[DefaultModelGatewayKey]
+	gw2.TLSClientCertFile = ""
+	gw2.TLSClientKeyFile = "/tmp/client-key.pem"
+	c.ModelGateways[DefaultModelGatewayKey] = gw2
 	if err := c.Validate(); err == nil {
 		t.Fatalf("Validate() expected error when only tls_client_key_file is set, got nil")
 	}
@@ -250,7 +267,9 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 	}
 
 	c = NewConfig()
-	c.InferenceConfig.RequestTimeout = 0
+	gw := c.ModelGateways[DefaultModelGatewayKey]
+	gw.RequestTimeout = 0
+	c.ModelGateways[DefaultModelGatewayKey] = gw
 	if err := c.Validate(); err == nil {
 		t.Fatalf("Validate() expected error for request_timeout <= 0, got nil")
 	}
@@ -260,7 +279,6 @@ func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.yaml")
 
-	// time.Duration check yaml
 	yamlData := []byte(`
 poll_interval: 2s
 task_wait_time: 500ms
@@ -269,13 +287,14 @@ global_concurrency: 50
 per_model_max_concurrency: 5
 work_dir: "` + dir + `/work"
 addr: ":1234"
-inference_config:
-  gateway_url: "http://example:8000"
-  request_timeout: 30s
-  max_retries: 9
-  initial_backoff: 250ms
-  max_backoff: 10s
-  tls_insecure_skip_verify: true
+model_gateways:
+  "default":
+    url: "http://example:8000"
+    request_timeout: 30s
+    max_retries: 9
+    initial_backoff: 250ms
+    max_backoff: 10s
+    tls_insecure_skip_verify: true
 upload_retry:
   max_retries: 5
   initial_backoff: 500ms
@@ -315,23 +334,27 @@ progress_ttl_seconds: 3600
 		t.Fatalf("Addr = %q, want %q", c.Addr, ":1234")
 	}
 
-	if c.InferenceConfig.GatewayURL != "http://example:8000" {
-		t.Fatalf("GatewayURL = %q, want %q", c.InferenceConfig.GatewayURL, "http://example:8000")
+	defaultGW, ok := c.ModelGateways[DefaultModelGatewayKey]
+	if !ok {
+		t.Fatalf("ModelGateways missing %q key after YAML load", DefaultModelGatewayKey)
 	}
-	if c.InferenceConfig.RequestTimeout != 30*time.Second {
-		t.Fatalf("RequestTimeout = %v, want %v", c.InferenceConfig.RequestTimeout, 30*time.Second)
+	if defaultGW.URL != "http://example:8000" {
+		t.Fatalf("default URL = %q, want %q", defaultGW.URL, "http://example:8000")
 	}
-	if c.InferenceConfig.MaxRetries != 9 {
-		t.Fatalf("MaxRetries = %d, want %d", c.InferenceConfig.MaxRetries, 9)
+	if defaultGW.RequestTimeout != 30*time.Second {
+		t.Fatalf("default RequestTimeout = %v, want 30s", defaultGW.RequestTimeout)
 	}
-	if c.InferenceConfig.InitialBackoff != 250*time.Millisecond {
-		t.Fatalf("InitialBackoff = %v, want %v", c.InferenceConfig.InitialBackoff, 250*time.Millisecond)
+	if defaultGW.MaxRetries != 9 {
+		t.Fatalf("default MaxRetries = %d, want 9", defaultGW.MaxRetries)
 	}
-	if c.InferenceConfig.MaxBackoff != 10*time.Second {
-		t.Fatalf("MaxBackoff = %v, want %v", c.InferenceConfig.MaxBackoff, 10*time.Second)
+	if defaultGW.InitialBackoff != 250*time.Millisecond {
+		t.Fatalf("default InitialBackoff = %v, want 250ms", defaultGW.InitialBackoff)
 	}
-	if !c.InferenceConfig.TLSInsecureSkipVerify {
-		t.Fatalf("TLSInsecureSkipVerify = false, want true")
+	if defaultGW.MaxBackoff != 10*time.Second {
+		t.Fatalf("default MaxBackoff = %v, want 10s", defaultGW.MaxBackoff)
+	}
+	if !defaultGW.TLSInsecureSkipVerify {
+		t.Fatalf("default TLSInsecureSkipVerify = false, want true")
 	}
 
 	if c.UploadRetry.MaxRetries != 5 {

@@ -22,16 +22,28 @@ data:
 
     database_type: {{ .Values.global.databaseType | quote }}
 
-    inference_config:
-      gateway_url: {{ .Values.processor.config.inferenceConfig.gatewayUrl | quote }}
-      request_timeout: {{ .Values.processor.config.inferenceConfig.requestTimeout | quote }}
-      max_retries: {{ .Values.processor.config.inferenceConfig.maxRetries }}
-      initial_backoff: {{ .Values.processor.config.inferenceConfig.initialBackoff | quote }}
-      max_backoff: {{ .Values.processor.config.inferenceConfig.maxBackoff | quote }}
-      tls_insecure_skip_verify: {{ .Values.processor.config.inferenceConfig.tlsInsecureSkipVerify }}
-      tls_ca_cert_file: {{ .Values.processor.config.inferenceConfig.tlsCaCertFile | default "" | quote }}
-      tls_client_cert_file: {{ .Values.processor.config.inferenceConfig.tlsClientCertFile | default "" | quote }}
-      tls_client_key_file: {{ .Values.processor.config.inferenceConfig.tlsClientKeyFile | default "" | quote }}
+    model_gateways:
+      {{- range $model, $cfg := .Values.processor.config.modelGateways }}
+      {{ $model | quote }}:
+        url: {{ $cfg.url | quote }}
+        request_timeout: {{ $cfg.requestTimeout | quote }}
+        max_retries: {{ $cfg.maxRetries }}
+        initial_backoff: {{ $cfg.initialBackoff | quote }}
+        max_backoff: {{ $cfg.maxBackoff | quote }}
+        tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify }}
+        {{- if $cfg.apiKeyName }}
+        api_key_name: {{ $cfg.apiKeyName | quote }}
+        {{- end }}
+        {{- if $cfg.tlsCaCertFile }}
+        tls_ca_cert_file: {{ $cfg.tlsCaCertFile | quote }}
+        {{- end }}
+        {{- if $cfg.tlsClientCertFile }}
+        tls_client_cert_file: {{ $cfg.tlsClientCertFile | quote }}
+        {{- end }}
+        {{- if $cfg.tlsClientKeyFile }}
+        tls_client_key_file: {{ $cfg.tlsClientKeyFile | quote }}
+        {{- end }}
+      {{- end }}
 
     upload_retry:
       max_retries: {{ .Values.processor.config.uploadRetry.maxRetries }}

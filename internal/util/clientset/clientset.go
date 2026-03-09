@@ -44,7 +44,7 @@ type Clientset struct {
 	Queue     dbapi.BatchPriorityQueueClient
 	Event     dbapi.BatchEventChannelClient
 	Status    dbapi.BatchStatusClient
-	Inference inference.Client
+	Inference *inference.GatewayResolver
 }
 
 // NewClientset creates all clients.
@@ -56,7 +56,7 @@ func NewClientset(
 	fileClientType string,
 	fsCfg *fsclient.Config,
 	s3Cfg *s3client.Config,
-	inferenceCfg *inference.HTTPClientConfig,
+	modelGatewaysConfigs map[string]inference.GatewayClientConfig,
 ) (*Clientset, error) {
 
 	logger := klog.FromContext(ctx)
@@ -170,21 +170,14 @@ func NewClientset(
 		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, postgresql)", dbType)
 	}
 
-	// build inference client
-	if inferenceCfg != nil {
-		if inferenceCfg.APIKey == "" {
-			apiKey, err := ucom.ReadSecretFile(ucom.SecretKeyInferenceAPI)
-			if err != nil {
-				return nil, err
-			}
-			inferenceCfg.APIKey = apiKey
-		}
-		ic, err := inference.NewHTTPClient(*inferenceCfg)
+	// build inference client(s)
+	if modelGatewaysConfigs != nil {
+		resolver, err := inference.NewGatewayResolver(modelGatewaysConfigs)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create inference client: %w", err)
+			return nil, fmt.Errorf("failed to create inference client(s): %w", err)
 		}
-		logger.Info("Inference client created")
-		cs.Inference = ic
+		logger.Info("Inference client(s) created")
+		cs.Inference = resolver
 	}
 
 	return cs, nil

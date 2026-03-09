@@ -432,7 +432,7 @@ install_batch_gateway() {
         --set "processor.image.tag=${DEV_VERSION}"
         --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
         --set "global.appSecretName=${APP_SECRET_NAME}"
-        --set "processor.config.inferenceConfig.gatewayUrl=${vllm_sim_url}"
+        --set "processor.config.modelGateways.default.url=${vllm_sim_url}"
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
