@@ -72,7 +72,6 @@ type GatewayResolver struct {
 	modelClients  map[string]Client
 }
 
-
 // NewGatewayResolver creates a GatewayResolver from a map of model-to-gateway
 // configs. The reserved key "default" is required and becomes the fallback client
 // for models without an explicit entry. Every entry must be fully self-contained.
