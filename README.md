@@ -50,37 +50,44 @@ The system is designed to facilitate efficient processing of batch workloads in 
 #### Components
 
 1. **API Server** ([`batch-gateway-apiserver`](cmd/apiserver))
-   - Handles REST API requests for batch job submission, status queries, and file management
-   - Manages job metadata in PostgreSQL and job queue in Redis
+   - Handles REST API requests for batch job submission, management and tracking, as well as file management
    - Exposes OpenAI-compatible `/v1/batches` and `/v1/files` endpoints
-   - Provides authentication, validation, and rate limiting
 
 2. **Batch Processor** ([`batch-gateway-processor`](cmd/batch-processor))
-   - Polls priority queue for pending batch jobs
-   - Executes two-phase processing pipeline:
-     - **Phase 1 (Ingestion)**: Streams input files, builds per-model execution plans sorted by prefix hash
-     - **Phase 2 (Execution)**: Dispatches requests using per-model goroutines with semaphore-based concurrency control
-   - Writes results to output files and updates job status
-   - Supports configurable worker pools for parallel job processing
+   - Pulls a batch job from a priority queue, and gets its associated file of inference requests
+   - Pre-processes the batch file and builds per-model execution plans
+   - Sends downstream individual inference requests from the batch file, with per-model and global concurrency control
+   - Writes results to an output file
+   - Updates job status
+   - Listens to job events (e.g. cancellation) during job processing
 
 3. **Data Layer**
-   - **PostgreSQL**: Job and file metadata storage
-   - **Redis**: Priority queue for job scheduling and event channels for job control
-   - **Object Storage**: File storage (S3-compatible or local filesystem)
+   - Manages batch input and output files, batch jobs' and files' metadata, priority queue, events and status mechanisms
+   - Supports pluggable backends.
+   - Backends available out of the box:
+     - Job and file metadata storage: `PostgreSQL`
+     - Priority queue, event channels, and status updates: `Redis`
+     - File storage: `S3`, `filesystem`
+
+4. **Batch Dispatcher**
+   - Implements intelligent flow control to balance batch and interactive workloads
+   - Monitors downstream inference system metrics (e.g. queue depth, latency, utilization)
+   - Dynamically adjusts dispatch flow of batch requests based on downstream system load, to minimize interference with interactive requests while meeting batch jobs SLOs.
+   - Provides backpressure mechanisms to prevent overwhelming downstream inference engines
 
 #### Processing Flow
 
 ```text
 User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
                          ↓
-                   Priority Queue
+                  Priority Queue
                          ↓
-                  Batch Processor (polls jobs)
+                  Batch Processor (pulls jobs)
                          ↓
               Phase 1: Ingestion & Plan Building
-                  - Stream input file
+                  - Obtain input file
                   - Parse model IDs and system prompts
-                  - Build per-model plans (sorted by prefix hash)
+                  - Build per-model plans
                   - Write plans to local disk
                          ↓
               Phase 2: Scheduling & Execution
@@ -90,9 +97,9 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
                   - Send to inference gateway
                   - Write results to output file
                          ↓
-                   Upload Results to S3
+                  Upload Results to S3
                          ↓
-                  Update Job Status in PostgreSQL
+                  Update Job Status
 ```
 
 ### Scheduler Architecture
