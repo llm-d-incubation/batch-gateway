@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -69,15 +70,17 @@ func TestGatewayResolver_ClientFor_DefaultFallback(t *testing.T) {
 func TestNewGatewayResolver_SharesClientsForSameURL(t *testing.T) {
 	srv := newTestServer(t, nil)
 	defer srv.Close()
+	srvOther := newTestServer(t, nil)
+	defer srvOther.Close()
 
-	baseCfg := HTTPClientConfig{BaseURL: srv.URL}
-	modelGateways := map[string]GatewayEndpoint{
+	modelGateways := map[string]GatewayClientConfig{
+		"default": {URL: srv.URL},
 		"model-a": {URL: srv.URL},
 		"model-b": {URL: srv.URL},
-		"model-c": {URL: "test-base-url"},
+		"model-c": {URL: srvOther.URL},
 	}
 
-	r, err := NewGatewayResolver(baseCfg, modelGateways)
+	r, err := NewGatewayResolver(modelGateways)
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -104,12 +107,12 @@ func TestNewGatewayResolver_DifferentURLs(t *testing.T) {
 	srvB := newTestServer(t, nil)
 	defer srvB.Close()
 
-	baseCfg := HTTPClientConfig{BaseURL: srvA.URL}
-	modelGateways := map[string]GatewayEndpoint{
+	modelGateways := map[string]GatewayClientConfig{
+		"default": {URL: srvA.URL},
 		"model-b": {URL: srvB.URL},
 	}
 
-	r, err := NewGatewayResolver(baseCfg, modelGateways)
+	r, err := NewGatewayResolver(modelGateways)
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -122,20 +125,14 @@ func TestNewGatewayResolver_DifferentURLs(t *testing.T) {
 	}
 }
 
-func TestNewGatewayResolver_NilModelGateways(t *testing.T) {
-	srv := newTestServer(t, nil)
-	defer srv.Close()
-
-	baseCfg := HTTPClientConfig{BaseURL: srv.URL}
-
-	r, err := NewGatewayResolver(baseCfg, nil)
-	if err != nil {
-		t.Fatalf("NewGatewayResolver: %v", err)
+func TestNewGatewayResolver_MissingDefault_ReturnsError(t *testing.T) {
+	modelGateways := map[string]GatewayClientConfig{
+		"llama-3": {URL: "http://gateway-a:8000"},
 	}
 
-	c := r.ClientFor("any-model")
-	if c == nil {
-		t.Fatal("expected non-nil default client")
+	_, err := NewGatewayResolver(modelGateways)
+	if err == nil {
+		t.Fatal("expected error when \"default\" key is missing, got nil")
 	}
 }
 
@@ -145,14 +142,14 @@ func TestNewGatewayResolver_PerGatewayAPIKey(t *testing.T) {
 	srvB := newTestServer(t, nil)
 	defer srvB.Close()
 
-	baseCfg := HTTPClientConfig{BaseURL: srvA.URL, APIKey: "default-key"}
-	modelGateways := map[string]GatewayEndpoint{
+	modelGateways := map[string]GatewayClientConfig{
+		"default": {URL: srvA.URL, APIKey: "default-key"},
 		"model-a": {URL: srvB.URL, APIKey: "key-a"},
 		"model-b": {URL: srvB.URL, APIKey: "key-b"},
 		"model-c": {URL: srvB.URL, APIKey: "key-a"},
 	}
 
-	r, err := NewGatewayResolver(baseCfg, modelGateways)
+	r, err := NewGatewayResolver(modelGateways)
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -176,16 +173,18 @@ func TestNewGatewayResolver_PerGatewayAPIKey(t *testing.T) {
 	}
 }
 
-func TestNewGatewayResolver_SameURLInheritsDefaultKey(t *testing.T) {
+func TestNewGatewayResolver_SameURLDifferentKey_DifferentClients(t *testing.T) {
 	srv := newTestServer(t, nil)
 	defer srv.Close()
 
-	baseCfg := HTTPClientConfig{BaseURL: srv.URL, APIKey: "default-key"}
-	modelGateways := map[string]GatewayEndpoint{
-		"model-a": {URL: srv.URL},
+	// With no field inheritance, model-a has an empty APIKey while default has "default-key".
+	// Different clientKeys → separate client instances.
+	modelGateways := map[string]GatewayClientConfig{
+		"default": {URL: srv.URL, APIKey: "default-key", Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
+		"model-a": {URL: srv.URL, Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
 	}
 
-	r, err := NewGatewayResolver(baseCfg, modelGateways)
+	r, err := NewGatewayResolver(modelGateways)
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -193,8 +192,8 @@ func TestNewGatewayResolver_SameURLInheritsDefaultKey(t *testing.T) {
 	cA := r.ClientFor("model-a")
 	cDefault := r.ClientFor("unknown")
 
-	// same URL + inherited API key → should share default client
-	if cA != cDefault {
-		t.Fatal("expected model with same URL and no API key override to share default client")
+	// Different API keys → different client instances.
+	if cA == cDefault {
+		t.Fatal("expected model with no API key and default with a key to use different clients")
 	}
 }

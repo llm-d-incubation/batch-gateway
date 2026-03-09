@@ -429,24 +429,35 @@ Approaches:
 -   Return result
 
 ###### Multi-Gateway Routing
-The processor supports routing requests to different inference gateway endpoints based on the model name. Configuration uses a **default + override** pattern with optional per-gateway API keys:
+The processor supports routing requests to different inference gateway endpoints based on the model name. Configuration is a flat `model_gateways` map at the top level. The reserved key `"default"` is required and acts as the fallback for any model without an explicit entry:
 
 ```yaml
-inference_config:
-  gateway_url: "http://gateway-a:8000"       # default for all models
-  model_gateways:                             # optional per-model overrides
-    "llama-3":
-      url: "http://gateway-a:8000"
-    "mistral":
-      url: "http://gateway-b:8000"
-      api_key_name: "gateway-b-api-key"       # key name in /etc/.secrets/
+model_gateways:
+  "default":
+    url: "http://gateway-a:8000"
+    request_timeout: "5m"
+    max_retries: 3
+    initial_backoff: "1s"
+    max_backoff: "60s"
+    api_key_name: "default-api-key"   # key name in /etc/.secrets/
+  "mistral":
+    url: "http://gateway-b:8000"
+    api_key_name: "gateway-b-api-key"   # key name in /etc/.secrets/
+    request_timeout: "2m"
+    max_retries: 1
+    initial_backoff: "1s"
+    max_backoff: "30s"
 ```
 
-**Lookup order:** `model_gateways[model]` -> `gateway_url` (fallback).
+**Lookup order:** `model_gateways[model]` → `model_gateways["default"]` (fallback).
 
-Each entry in `model_gateways` has a `url` and an optional `api_key_name`. The `api_key_name` is a key name within the mounted app secret (`/etc/.secrets/`). API key resolution follows the same fallback chain as other secrets: per-gateway key → default `inference-api-key` → no auth.
+Each entry is fully self-contained. The required fields are `url`, `request_timeout`, `max_retries`, `initial_backoff`, and `max_backoff`. There is no field inheritance between entries — per-model entries must specify all HTTP settings explicitly. The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`). TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
 
-`GatewayResolver` (in `internal/inference/gateway_resolver.go`) manages the client pool. Clients sharing the same URL **and** API key reuse a single `HTTPClient` instance to reuse connection pools. When `model_gateways` is empty or absent, all models use `gateway_url` (backward compatible).
+API key resolution order: explicit `api_key_name` → default `inference-api-key` secret (read from default `api_key_name`) → no auth.
+
+> **Note:** Per-model partial overrides (inheriting unset fields from `"default"`) are not currently supported. If needed in the future, a separate `ModelOverrideConfig` type with pointer fields and a merge step can be introduced. See the `TODO` comment in `ModelGatewayConfig`.
+
+`GatewayResolver` (in `internal/inference/gateway_resolver.go`) manages the client pool. Clients with identical settings (URL, API key, and all HTTP/TLS fields) share a single `HTTPClient` instance to reuse connection pools.
 
 #### ResultWriter
 

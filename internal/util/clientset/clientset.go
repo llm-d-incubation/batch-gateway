@@ -56,8 +56,7 @@ func NewClientset(
 	fileClientType string,
 	fsCfg *fsclient.Config,
 	s3Cfg *s3client.Config,
-	inferenceHTTPCfg *inference.HTTPClientConfig,
-	modelGateways map[string]inference.GatewayEndpoint,
+	modelGatewaysConfigs map[string]inference.GatewayClientConfig,
 ) (*Clientset, error) {
 
 	logger := klog.FromContext(ctx)
@@ -158,20 +157,13 @@ func NewClientset(
 	}
 
 	// build inference client(s)
-	if inferenceHTTPCfg != nil {
-		if inferenceHTTPCfg.APIKey == "" {
-			apiKey, err := ucom.ReadSecretFile(ucom.SecretKeyInferenceAPI)
-			if err != nil {
-				return nil, err
-			}
-			inferenceHTTPCfg.APIKey = apiKey
-		}
-		modelGatewaysResolver, err := inference.NewGatewayResolver(*inferenceHTTPCfg, modelGateways)
+	if modelGatewaysConfigs != nil {
+		resolver, err := inference.NewGatewayResolver(modelGatewaysConfigs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create inference client(s): %w", err)
 		}
-		logger.Info("Inference client(s) created", "numModelOverrides", len(modelGateways))
-		cs.Inference = modelGatewaysResolver
+		logger.Info("Inference client(s) created")
+		cs.Inference = resolver
 	}
 
 	return cs, nil
