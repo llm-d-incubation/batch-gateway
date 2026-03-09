@@ -320,7 +320,28 @@ See configuration example in `cmd/batch-processor/config.yaml`.
 
 ### Metrics
 
-The processor exposes Prometheus metrics on port 9090:
+#### API Server
+
+The API server exposes the following Prometheus metrics:
+
+**Request Metrics:**
+
+- `http_requests_total{method,path,status}` - Total HTTP requests by method, path, and status code.
+- `http_request_duration_seconds{method,path}` - HTTP request latency histogram.
+
+**Batch Job Metrics:**
+
+- `batch_jobs_created_total{tenant_id}` - Total batch jobs created by tenant.
+- `batch_jobs_by_status{status,tenant_id}` - Current count of jobs by status.
+
+**File Metrics:**
+
+- `files_uploaded_total{tenant_id,purpose}` - Total files uploaded by tenant and purpose.
+- `file_upload_size_bytes{tenant_id}` - File upload size histogram.
+
+#### Processor
+
+The processor exposes the following Prometheus metrics:
 
 **Job-Level Metrics:**
 
