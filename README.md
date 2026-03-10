@@ -272,24 +272,24 @@ curl -X POST http://localhost:8000/v1/files \
   -F "file=@batch_requests.jsonl" \
   -F "purpose=batch"
 
-# Response: {"id": "file-abc123", ...}
+# Response: {"id": "file_abc123", ...}
 
 # 2. Create batch job
 curl -X POST http://localhost:8000/v1/batches \
   -H "Content-Type: application/json" \
   -d '{
-    "input_file_id": "file-abc123",
+    "input_file_id": "file_abc123",
     "endpoint": "/v1/chat/completions",
     "completion_window": "24h"
   }'
 
-# Response: {"id": "batch-xyz789", "status": "validating", ...}
+# Response: {"id": "batch_xyz789", "status": "validating", ...}
 ```
 
 ### Check Job Status
 
 ```bash
-curl http://localhost:8000/v1/batches/batch-xyz789
+curl http://localhost:8000/v1/batches/batch_xyz789
 
 # Response includes status: validating, in_progress, finalizing, completed, failed, expired, cancelled
 ```
@@ -298,7 +298,7 @@ curl http://localhost:8000/v1/batches/batch-xyz789
 
 ```bash
 # Get output file ID from batch status
-curl http://localhost:8000/v1/batches/batch-xyz789 | jq -r '.output_file_id'
+curl http://localhost:8000/v1/batches/batch_xyz789 | jq -r '.output_file_id'
 
 # Download results
 curl http://localhost:8000/v1/files/file-output123/content > results.jsonl
@@ -327,17 +327,8 @@ The API server exposes the following Prometheus metrics:
 **Request Metrics:**
 
 - `http_requests_total{method,path,status}` (Counter) - Total HTTP requests by method, path, and status code.
-- `http_request_duration_seconds{method,path}` (Histogram) - HTTP request latency histogram.
-
-**Batch Job Metrics:**
-
-- `batch_jobs_created_total{tenant_id}` (Counter) - Total batch jobs created by tenant.
-- `batch_jobs_by_status{status,tenant_id}` (Gauge) - Current count of jobs by status.
-
-**File Metrics:**
-
-- `files_uploaded_total{tenant_id,purpose}` (Counter) - Total files uploaded by tenant and purpose.
-- `file_upload_size_bytes{tenant_id}` (Histogram) - File upload size histogram.
+- `http_request_duration_seconds{method,path,status}` (Histogram) - HTTP request latency histogram.
+- `http_requests_in_flight{method,path,status}` (Gauge) - Current number of HTTP requests being processed by the api server.
 
 #### Processor
 
@@ -348,24 +339,30 @@ The processor exposes the following Prometheus metrics:
 - `jobs_processed_total{result,reason}` (Counter) - Total jobs processed by result.
 - `job_processing_duration_seconds{tenantID,size_bucket}` (Histogram) - Job processing duration histogram.
 - `job_queue_wait_duration{tenantID}` (Histogram) - Time jobs spend in queue.
+- `plan_build_duration_seconds{tenantID,size_bucket}` (Histogram) - Duration of phase 1 ingestion and plan build in seconds
 
 **Worker Metrics:**
 
 - `total_workers` (Gauge) - Configured worker pool size.
 - `active_workers` (Gauge) - Currently active workers.
 - `processor_inflight_requests` (Gauge) - Global in-flight request count.
+- `processor_max_inflight_concurrency` (Gauge) - Configured maximum number of concurrent in-flight inference requests.
+
+**Model Metrics:**
+
 - `model_inflight_requests{model}` (Gauge) - Per-model in-flight requests.
+- `model_request_execution_duration_seconds{model}` (Histogram) - Per-request execution phase duration in seconds by model.
 
 **Error Metrics:**
 
-- `job_errors_by_model_total{model}` (Counter) - Errors grouped by model.
+- `request_errors_by_model_total{model}` (Counter) - Total number of request errors by model
 
 ### Health Checks
 
 **API Server:**
 
 - Health: `GET /health` (port 8000).
-- Readiness: `GET /readyz` (port 8000).
+- Readiness: `GET /ready` (port 8000).
 
 **Processor:**
 
