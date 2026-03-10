@@ -1,6 +1,6 @@
 # Batch Processor Design
 
--   **Revision**: 3
+-   **Revision**: 4
 -   **Last Updated**: 2026-03-05
 
 -------------------------------------------------------------------
@@ -101,6 +101,8 @@ Unsupported features must return OpenAI-compatible error responses.
 -------------------------------------------------------------------
 **TODO:**
 -   Worker Crash Recovery: If a worker crashes during `in_progress`, the job is retried from scratch upon re-queueing. Partial plan files and input artifacts are treated as temporary and discarded. Resume-from-checkpoint is not supported in MVP.
+-   Cancellation Partial Results: OpenAI waits for in-flight requests to complete (up to 10 minutes) before transitioning to `cancelled`, implying partial results may be preserved. Current implementation discards all results on cancellation without uploading. This should be aligned with the expired path (upload completed results before setting status to `cancelled`).
+-   Failure Partial Results: Similarly, when a job fails mid-Phase 2 due to a systemic error, completed requests may already be written to the output buffer. Current implementation discards these without uploading. To preserve them, `executeJob` would need to flush and return partial counts on the failure path, and `handleFailed` would need to upload before transitioning to `failed` (mirroring `handleExpired`). Note: failures in Phase 1 or during status transitions have no partial output to preserve.
 --------------------------------------------------------------------
 ### High-Level Architecture
 #### Processor and Worker
@@ -138,16 +140,16 @@ Unsupported features must return OpenAI-compatible error responses.
       ↓
         - Scheduler dispatches requests subject to concurrency limits. Execution is performed concurrently using bounded goroutines.
             ↓
-        - Plan file Read: Get the request line
-            ↓
-        - Parse the line
-            ↓
-        - Validate the line
-            ↓
-        - Send the request using inference client
-            ↓
-        - Send the received response to the writing channel
-      ↓
+        - Plan file Read: Get the request line         ←──────────────────────────────────┐
+            ↓                                                                             │
+        - Parse the line                                                  SLO deadline fires mid-dispatch
+            ↓                                                         (context.WithDeadline cancels execCtx)
+        - Validate the line                                                               │
+            ↓                                                                             │
+        - Send the request using inference client                 Drain undispatched entries to error.jsonl
+            ↓                                                          as "batch_expired"; flush writers
+        - Send the received response to the writing channel            Upload partial output.jsonl / error.jsonl
+      ↓ (all requests dispatched and completed)              → status: in_progress → expired   [TERMINAL]
     [ Finalize ]
       ↓
     Flush output.jsonl and error.jsonl
@@ -170,7 +172,8 @@ Allowed transitions:
 -   `in_progress → finalizing` (after all plans drained)
 -   `finalizing → completed` (after uploading output and error files)
 -   `* → failed` (job is unable to process)
--   `* → expired` (SLO exceeded)
+-   `validating → expired` (SLO already exceeded before execution starts — skipped at dequeue)
+-   `in_progress → expired` (SLO exceeded during execution — partial results preserved)
 -   `in_progress → cancelling` (after user's cancellation signal received)
 -   `cancelling → cancelled` (after user-initiated cancellation is completed)
 
@@ -475,7 +478,40 @@ API key resolution order: explicit `api_key_name` → default `inference-api-key
 -------------------------------------------------------------------
 ### Failure Handling
 
--   SLO expiration → expired
+#### SLO Expiration
+
+The `completion_window` field on a batch job defines the deadline by which the job must complete. This is stored as `expires_at` (Unix timestamp) and used as the SLO enforcement boundary.
+
+**Behavior follows the OpenAI Batch API spec:**
+
+> *"Batches that do not complete in time eventually move to an `expired` state; unfinished requests within that batch are cancelled, and any responses to completed requests are made available via the batch's output file."*
+> — [OpenAI Batch API: Batch expiration](https://platform.openai.com/docs/guides/batch#batch-expiration)
+
+Concretely:
+
+-   Requests that completed before expiration → written to `output.jsonl`, preserved in output file
+-   Requests that did not execute before expiration → written to `error.jsonl` with error code `batch_expired`:
+    ```jsonl
+    {"id": "batch_req_...", "custom_id": "...", "response": null, "error": {"code": "batch_expired", "message": "This request could not be executed before the completion window expired."}}
+    ```
+-   Job status → `expired` with `expired_at` timestamp set
+
+**Implementation:**
+
+SLO is enforced via `context.WithDeadline(ctx, slo)` on the job execution context. When the deadline fires:
+1.  New request dispatch stops — semaphore acquisition fails on the expired context, breaking the dispatch loop
+2.  In-flight inference requests that are mid-flight have their context cancelled; they are written to the error file with whatever error the inference client returns (not `batch_expired`)
+3.  Requests that were never dispatched (pending in the plan but not yet started) are written to the error file as `batch_expired`
+4.  Requests that already completed successfully remain in the output file — this is the key difference from user-initiated cancellation, which discards all partial results
+
+The job then transitions directly `in_progress → expired` (no `finalizing` transient state).
+
+**Why not configurable?**
+
+An earlier design considered making expiration behavior configurable (continue vs. stop on SLO breach). This was dropped in favor of strict OpenAI spec alignment: the `expired` state and its semantics are well-defined in the OpenAI API, and diverging from them would break client expectations. Partial results are always preserved.
+
+---
+
 -   Worker crash during plan build → incomplete `.tmp` files discarded
 -   Atomic rename ensures plan integrity
 -   Inference failure handled per request
@@ -493,11 +529,11 @@ A single `"process-batch"` span covers the full job lifecycle (Phase 1 → Phase
 | `batch.id` | string | span start | Batch ID |
 | `tenant.id` | string | span start | Tenant ID |
 | `file.id` | string | span start | Input file ID |
-| `batch.output_file.id` | string | Phase 3 finalize | Output file ID (omitted if all requests failed) |
-| `batch.error_file.id` | string | Phase 3 finalize | Error file ID (omitted if no requests failed) |
-| `batch.request.total` | int64 | Phase 3 finalize | Total request count |
-| `batch.request.completed` | int64 | Phase 3 finalize | Successfully completed request count |
-| `batch.request.failed` | int64 | Phase 3 finalize | Failed request count |
+| `batch.output_file.id` | string | Phase 3 finalize (completed) or expiry | Output file ID; not set on cancel or fail (no file upload) |
+| `batch.error_file.id` | string | Phase 3 finalize (completed) or expiry | Error file ID; not set on cancel or fail (no file upload) |
+| `batch.request.total` | int64 | Phase 3 finalize (completed) or expiry | Total request count; not set on cancel or fail |
+| `batch.request.completed` | int64 | Phase 3 finalize (completed) or expiry | Successfully completed request count; not set on cancel or fail |
+| `batch.request.failed` | int64 | Phase 3 finalize (completed) or expiry | Failed request count; not set on cancel or fail |
 
 Errors at each phase are recorded via `span.RecordError()` and `span.SetStatus(codes.Error, ...)`.
 
@@ -515,14 +551,16 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   - `failed`
   - `skipped`
   - `re_enqueued`
+  - `expired`
 
   Reasons include:
   - `system_error`
   - `db_transient`
   - `db_inconsistency`
   - `not_runnable_state`
-  - `expired`
-  - `none`
+  - `expired_dequeue` — SLO already exceeded before execution started
+  - `expired_execution` — SLO deadline fired during Phase 2; partial results preserved
+  - `none` — no additional reason beyond the result (e.g. success, cancelled)
 
 - `job_processing_duration_seconds{tenantID,size_bucket}` (histogram)
   Measures total job processing duration (end-to-end, including ingestion and execution).

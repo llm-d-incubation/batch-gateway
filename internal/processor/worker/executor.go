@@ -47,6 +47,11 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
 
+// ErrExpired is returned by executeJob when the job's SLO deadline fires during execution.
+// Partial results (completed requests in output file, unexecuted requests in error file as
+// "batch_expired") are preserved. The caller is responsible for finalizing with expired status.
+var ErrExpired = errors.New("batch SLO expired")
+
 // outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
 // A single instance is created per job and shared across model goroutines.
 type outputWriters struct {
@@ -118,8 +123,13 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // executeJob performs phase 2: reads plan files per model, sends inference
 // requests concurrently (one goroutine per model), and writes results to
 // output.jsonl (successes) and error.jsonl (failures). Returns request counts for finalization.
+//
+// sloCtx carries the SLO deadline; equals ctx when no SLO is set. When the deadline fires,
+// dispatch stops, undispatched requests are drained to the error file as "batch_expired", and
+// ErrExpired is returned alongside partial counts. The caller should finalize with expired status.
 func (p *Processor) executeJob(
 	ctx context.Context,
+	sloCtx context.Context,
 	updater *StatusUpdater,
 	jobInfo *batch_types.JobInfo,
 	cancelRequested *atomic.Bool,
@@ -178,8 +188,9 @@ func (p *Processor) executeJob(
 	}
 
 	// one goroutine per model; concurrency within each model is bounded
-	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit)
-	execCtx, execCancel := context.WithCancel(ctx)
+	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit).
+	// execCtx is derived from sloCtx so the SLO deadline propagates to all dispatch loops.
+	execCtx, execCancel := context.WithCancel(sloCtx)
 	defer execCancel()
 
 	progress := &executionProgress{
@@ -227,10 +238,21 @@ func (p *Processor) executeJob(
 	if firstErr != nil {
 		// prefer parent-context / user-cancel errors for correct routing in handleJobError
 		if ctx.Err() != nil {
-			return nil, ctx.Err() // parent-context error
+			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
 		}
 		if cancelRequested.Load() {
-			return nil, ErrCancelled // user-cancel error
+			return nil, ErrCancelled // user-initiated cancel
+		}
+		// SLO deadline exceeded: execCtx fired from sloCtx deadline.
+		// processModel already drained undispatched entries to error file; flush and return partial counts.
+		if execCtx.Err() == context.DeadlineExceeded {
+			// best-effort: flush the output and error files
+			_ = writers.output.Flush()
+			_ = writers.errors.Flush()
+			counts := progress.counts()
+			logger.V(logging.INFO).Info("Phase 2: SLO expired, returning partial counts",
+				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
+			return counts, ErrExpired
 		}
 		// process error from model goroutines
 		return nil, firstErr
@@ -287,13 +309,14 @@ func (p *Processor) processModel(
 	}
 
 	var (
-		wg       sync.WaitGroup
-		errOnce  sync.Once
-		firstErr error
+		wg              sync.WaitGroup
+		errOnce         sync.Once
+		firstErr        error
+		dispatchedCount int
 	)
 
 dispatch:
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if err := checkCancellation(ctx, cancelRequested); err != nil {
 			errOnce.Do(func() { firstErr = err })
 			break
@@ -310,6 +333,7 @@ dispatch:
 			break dispatch
 		}
 
+		dispatchedCount = i + 1
 		wg.Add(1)
 		go func(entry planEntry) {
 			defer wg.Done()
@@ -348,12 +372,79 @@ dispatch:
 
 	wg.Wait()
 
+	// If the SLO deadline fired (not a user cancel), drain undispatched entries to the error file
+	// as "batch_expired" so partial results are preserved per OpenAI batch spec.
+	if ctx.Err() == context.DeadlineExceeded && !cancelRequested.Load() {
+		undispatched := entries[dispatchedCount:]
+		if len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
+			p.drainUndispatchedAsExpired(ctx, inputFile, undispatched, writers, progress)
+		}
+	}
+
 	if firstErr == nil && ctx.Err() != nil {
 		firstErr = ctx.Err()
 	}
 
 	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", firstErr != nil)
 	return firstErr
+}
+
+// drainUndispatchedAsExpired writes plan entries that were never dispatched to the error file
+// with error code "batch_expired". Called after the SLO deadline fires mid-execution.
+func (p *Processor) drainUndispatchedAsExpired(
+	ctx context.Context,
+	inputFile *os.File,
+	entries []planEntry,
+	writers *outputWriters,
+	progress *executionProgress,
+) {
+	logger := klog.FromContext(ctx)
+
+	// Allocate a single read buffer sized to the largest entry to avoid per-entry allocations.
+	var maxLen uint32
+	for _, e := range entries {
+		if e.Length > maxLen {
+			maxLen = e.Length
+		}
+	}
+	buf := make([]byte, maxLen)
+
+	for _, entry := range entries {
+		// Read the input line to extract custom_id; best-effort (empty string if unreadable).
+		customID := ""
+		if _, err := inputFile.ReadAt(buf[:entry.Length], entry.Offset); err == nil {
+			var req batch_types.Request
+			if err := json.Unmarshal(bytes.TrimSuffix(buf[:entry.Length], []byte{'\n'}), &req); err == nil {
+				customID = req.CustomID
+			}
+		}
+
+		line := &outputLine{
+			ID:       fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			CustomID: customID,
+			Error: &outputError{
+				Code:    "batch_expired",
+				Message: "This request could not be executed before the completion window expired.",
+			},
+		}
+
+		lineBytes, err := json.Marshal(line)
+		if err != nil {
+			logger.Error(err, "Failed to marshal batch_expired entry", "offset", entry.Offset)
+			continue
+		}
+		lineBytes = append(lineBytes, '\n')
+
+		writers.errorsMu.Lock()
+		_, writeErr := writers.errors.Write(lineBytes)
+		writers.errorsMu.Unlock()
+		if writeErr != nil {
+			logger.Error(writeErr, "Failed to write batch_expired entry", "offset", entry.Offset)
+		}
+
+		progress.record(ctx, false)
+	}
 }
 
 // executeOneRequest reads a single input line from the input file at the given plan entry offset,
@@ -459,6 +550,44 @@ func (p *Processor) executeOneRequest(
 	return result, nil
 }
 
+// uploadFileAndStoreFileRecord uploads a job output or error file to shared storage and creates a file
+// record in the database. Returns the assigned file ID, or an empty string if the file is empty.
+// isOutput distinguishes output files (true) from error files (false) for upload and metrics.
+func (p *Processor) uploadFileAndStoreFileRecord(
+	ctx context.Context,
+	jobInfo *batch_types.JobInfo,
+	dbJob *db.BatchItem,
+	isOutput bool,
+) (string, error) {
+	var fileName string
+	var fileSize int64
+	var err error
+	var attrKey string
+
+	if isOutput {
+		fileName = jobOutputStorageName(jobInfo.JobID)
+		fileSize, err = p.uploadOutputFile(ctx, jobInfo, fileName)
+		attrKey = uotel.AttrOutputFileID
+	} else {
+		fileName = jobErrorStorageName(jobInfo.JobID)
+		fileSize, err = p.uploadErrorFile(ctx, jobInfo, fileName)
+		attrKey = uotel.AttrErrorFileID
+	}
+	if err != nil {
+		return "", err
+	}
+	if fileSize == 0 {
+		return "", nil
+	}
+
+	fileID := ucom.NewFileID()
+	uotel.SetAttr(ctx, attribute.String(attrKey, fileID))
+	if err := p.storeFileRecord(ctx, fileID, fileName, jobInfo.TenantID, fileSize, dbJob.Tags); err != nil {
+		return "", err
+	}
+	return fileID, nil
+}
+
 // finalizeJob performs phase 3: uploads output and error files to shared storage,
 // creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
@@ -479,32 +608,14 @@ func (p *Processor) finalizeJob(
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
-	var outputFileID string
-	outputFileName := jobOutputStorageName(jobInfo.JobID)
-	outputFileSize, err := p.uploadOutputFile(ctx, jobInfo, outputFileName)
+	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, true)
 	if err != nil {
 		return err
-	}
-	if outputFileSize > 0 {
-		outputFileID = ucom.NewFileID()
-		uotel.SetAttr(ctx, attribute.String(uotel.AttrOutputFileID, outputFileID))
-		if err := p.storeFileRecord(ctx, outputFileID, outputFileName, jobInfo.TenantID, outputFileSize, dbJob.Tags); err != nil {
-			return err
-		}
 	}
 
-	var errorFileID string
-	errorFileName := jobErrorStorageName(jobInfo.JobID)
-	errorFileSize, err := p.uploadErrorFile(ctx, jobInfo, errorFileName)
+	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, false)
 	if err != nil {
 		return err
-	}
-	if errorFileSize > 0 {
-		errorFileID = ucom.NewFileID()
-		uotel.SetAttr(ctx, attribute.String(uotel.AttrErrorFileID, errorFileID))
-		if err := p.storeFileRecord(ctx, errorFileID, errorFileName, jobInfo.TenantID, errorFileSize, dbJob.Tags); err != nil {
-			return err
-		}
 	}
 
 	// finalizing → completed

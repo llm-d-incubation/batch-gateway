@@ -142,3 +142,25 @@ func (s *StatusUpdater) UpdateCompletedStatus(
 		},
 	)
 }
+
+// UpdateExpiredStatus transitions the job directly to expired and sets partial output and error file IDs.
+// Per the OpenAI batch spec, completed requests are preserved in the output file and unexecuted
+// requests are recorded in the error file with code "batch_expired". Both file IDs are optional.
+func (s *StatusUpdater) UpdateExpiredStatus(
+	ctx context.Context,
+	dbJob *db.BatchItem,
+	counts *openai.BatchRequestCounts,
+	outputFileID string,
+	errorFileID string,
+) error {
+	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusExpired, counts, nil,
+		func(info *openai.BatchStatusInfo) {
+			if outputFileID != "" {
+				info.OutputFileID = outputFileID
+			}
+			if errorFileID != "" {
+				info.ErrorFileID = errorFileID
+			}
+		},
+	)
+}

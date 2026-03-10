@@ -626,7 +626,7 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
 
-	_, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
@@ -721,7 +721,7 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}

@@ -200,7 +200,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 			// do not need to delete the task from the queue.
 			// ignore the job and continue polling
 			p.releaseForNextPoll()
-			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonExpired)
+			metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredDequeue)
 			continue
 		}
 
