@@ -650,6 +650,327 @@ func TestRedisDSClient(t *testing.T) {
 		}
 	})
 
+	t.Run("Event exchange operations - Negative cases", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Send empty events array.
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), []db_api.BatchEvent{})
+		if err == nil {
+			t.Fatalf("Expected error when sending empty events array")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for empty events, got %d", len(sentIDs))
+		}
+
+		// Send event with empty ID.
+		invalidEvent1 := []db_api.BatchEvent{
+			{
+				ID:   "",
+				Type: db_api.BatchEventCancel,
+				TTL:  1000,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent1)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with empty ID")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with invalid Type (negative).
+		invalidEvent2 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventType(-1),
+				TTL:  1000,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent2)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with negative Type")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with invalid Type (>= BatchEventMaxVal).
+		invalidEvent3 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventMaxVal,
+				TTL:  1000,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent3)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with Type >= BatchEventMaxVal")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with TTL = 0.
+		invalidEvent4 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventCancel,
+				TTL:  0,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent4)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with TTL=0")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with negative TTL.
+		invalidEvent5 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventCancel,
+				TTL:  -100,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent5)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with negative TTL")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+	})
+
+	t.Run("Event exchange operations - Edge case: all event types", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Test all event types (Cancel, Pause, Resume).
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+
+		allEventTypes := []db_api.BatchEvent{
+			{ID: ID, Type: db_api.BatchEventCancel, TTL: 1000},
+			{ID: ID, Type: db_api.BatchEventPause, TTL: 1000},
+			{ID: ID, Type: db_api.BatchEventResume, TTL: 1000},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), allEventTypes)
+		if err != nil {
+			t.Fatalf("Failed to send all event types: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("Expected 1 sent ID, got %d", len(sentIDs))
+		}
+
+		// Receive all event types.
+		for _, expectedEvent := range allEventTypes {
+			select {
+			case receivedEvent := <-ec.Events:
+				isSameEvent(t, &expectedEvent, &receivedEvent)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Timeout waiting for event type %d", expectedEvent.Type)
+			}
+		}
+		ec.CloseFn() // Close immediately after use
+	})
+
+	t.Run("Event exchange operations - Edge case: pre-created events", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Send events before creating consumer channel.
+		ID := uuid.New().String()
+		earlyEvents := []db_api.BatchEvent{
+			{ID: ID, Type: db_api.BatchEventCancel, TTL: 1000},
+			{ID: ID, Type: db_api.BatchEventPause, TTL: 1000},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), earlyEvents)
+		if err != nil {
+			t.Fatalf("Failed to send early events: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("Expected 1 sent ID for early events, got %d", len(sentIDs))
+		}
+
+		// Create consumer channel after events were sent.
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel after sending events: %v", err)
+		}
+
+		// Should receive events that were sent before channel creation.
+		for _, expectedEvent := range earlyEvents {
+			select {
+			case receivedEvent := <-ec.Events:
+				isSameEvent(t, &expectedEvent, &receivedEvent)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Timeout waiting for early event type %d", expectedEvent.Type)
+			}
+		}
+		ec.CloseFn() // Close immediately after use
+	})
+
+	t.Run("Event exchange operations - Edge case: multi-ID routing", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Send multiple events to different IDs.
+		ID3 := uuid.New().String()
+		ID4 := uuid.New().String()
+		ec3, err := exchClient.ECConsumerGetChannel(context.Background(), ID3)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel for ID3: %v", err)
+		}
+
+		ec4, err := exchClient.ECConsumerGetChannel(context.Background(), ID4)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel for ID4: %v", err)
+		}
+
+		multiIDEvents := []db_api.BatchEvent{
+			{ID: ID3, Type: db_api.BatchEventCancel, TTL: 1000},
+			{ID: ID4, Type: db_api.BatchEventPause, TTL: 1000},
+			{ID: ID3, Type: db_api.BatchEventResume, TTL: 1000},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), multiIDEvents)
+		if err != nil {
+			t.Fatalf("Failed to send events to multiple IDs: %v", err)
+		}
+		if len(sentIDs) != 2 {
+			t.Fatalf("Expected 2 sent IDs (ID3 and ID4), got %d", len(sentIDs))
+		}
+
+		// Verify events are routed to correct channels.
+		receivedID3 := 0
+		receivedID4 := 0
+		for i := 0; i < 3; i++ {
+			select {
+			case event := <-ec3.Events:
+				if event.ID != ID3 {
+					t.Fatalf("Expected event for ID3, got %s", event.ID)
+				}
+				receivedID3++
+			case event := <-ec4.Events:
+				if event.ID != ID4 {
+					t.Fatalf("Expected event for ID4, got %s", event.ID)
+				}
+				receivedID4++
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Timeout waiting for events")
+			}
+		}
+		if receivedID3 != 2 {
+			t.Fatalf("Expected 2 events for ID3, got %d", receivedID3)
+		}
+		if receivedID4 != 1 {
+			t.Fatalf("Expected 1 event for ID4, got %d", receivedID4)
+		}
+		ec3.CloseFn() // Close immediately after use
+		ec4.CloseFn() // Close immediately after use
+	})
+
+	t.Run("Event exchange operations - Edge case: idempotent close", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Test closing consumer channel multiple times (should be idempotent).
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+		ec.CloseFn()
+		ec.CloseFn() // Second close should not panic.
+		ec.CloseFn() // Third close should not panic.
+	})
+
+	t.Run("Event exchange operations - Edge case: large event set", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Test sending large number of events.
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+
+		nEvents := 50
+		largeEventSet := make([]db_api.BatchEvent, nEvents)
+		for i := 0; i < nEvents; i++ {
+			largeEventSet[i] = db_api.BatchEvent{
+				ID:   ID,
+				Type: db_api.BatchEventType(i % 3), // Cycle through Cancel, Pause, Resume
+				TTL:  1000,
+			}
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), largeEventSet)
+		if err != nil {
+			t.Fatalf("Failed to send large event set: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("Expected 1 sent ID for large event set, got %d", len(sentIDs))
+		}
+
+		// Receive all events.
+		for i := 0; i < nEvents; i++ {
+			select {
+			case event := <-ec.Events:
+				if event.ID != ID {
+					t.Fatalf("Expected event for ID, got %s", event.ID)
+				}
+				expectedType := db_api.BatchEventType(i % 3)
+				if event.Type != expectedType {
+					t.Fatalf("Expected event type %d, got %d", expectedType, event.Type)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Timeout waiting for event %d/%d", i+1, nEvents)
+			}
+		}
+		ec.CloseFn() // Close immediately after use
+	})
+
 	t.Run("Status exchange operations", func(t *testing.T) {
 		t.Parallel()
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
