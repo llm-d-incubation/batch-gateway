@@ -194,6 +194,7 @@ spec:
   type: ClusterIP
 ```
 
+
 ### 2.7 Install InferencePools and EPP
 
 Deploy one InferencePool per model via the GAIE Helm chart. The InferencePool name must match the model name (used for authorization):
