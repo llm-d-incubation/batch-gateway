@@ -60,29 +60,32 @@ const (
 )
 
 var (
+	//go:embed redis_common.lua
+	commonLua string
+
 	//go:embed redis_store.lua
 	storeLua         string
 	redisScriptStore = goredis.NewScript(storeLua)
 
 	//go:embed redis_get_by_ids.lua
 	getByIDsLua         string
-	redisScriptGetByIDs = goredis.NewScript(getByIDsLua)
+	redisScriptGetByIDs = goredis.NewScript(commonLua + "\n" + getByIDsLua)
 
 	//go:embed redis_get_by_tags.lua
 	getByTagsLua         string
-	redisScriptGetByTags = goredis.NewScript(getByTagsLua)
+	redisScriptGetByTags = goredis.NewScript(commonLua + "\n" + getByTagsLua)
 
 	//go:embed redis_get_by_expiry.lua
 	getByExpiryLua         string
-	redisScriptGetByExpiry = goredis.NewScript(getByExpiryLua)
+	redisScriptGetByExpiry = goredis.NewScript(commonLua + "\n" + getByExpiryLua)
 
 	//go:embed redis_get_by_purpose.lua
 	getByPurposeLua         string
-	redisScriptGetByPurpose = goredis.NewScript(getByPurposeLua)
+	redisScriptGetByPurpose = goredis.NewScript(commonLua + "\n" + getByPurposeLua)
 
 	//go:embed redis_get_by_tenant.lua
 	getByTenantLua         string
-	redisScriptGetByTenant = goredis.NewScript(getByTenantLua)
+	redisScriptGetByTenant = goredis.NewScript(commonLua + "\n" + getByTenantLua)
 
 	_ db_api.BatchDBClient            = (*BatchDBClientRedis)(nil)
 	_ db_api.FileDBClient             = (*FileDBClientRedis)(nil)

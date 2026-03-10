@@ -17,6 +17,7 @@
 -- Parse inputs.
 local keys = KEYS
 local tenantID = ARGV[1]
+local includeSpec = ARGV[2]
 
 -- Check inputs.
 local result = {}
@@ -24,18 +25,28 @@ if #keys == 0 then
 	return {tonumber(0), result}
 end
 
+-- Pre-compute boolean to avoid string comparison in loop.
+local shouldFilterSpec = (includeSpec == "false")
+local needTenantFilter = (tenantID ~= nil and tenantID ~= '')
+
 -- Iterate over the IDs.
 for _, key in ipairs(keys) do
 	-- Get the key's contents.
 	local contents = redis.call('HGETALL', key)
-	-- HGETALL returns a flat array: [field1, value1, field2, value2, ...]. Convert to a map.
-	local hash = {}
-	for i = 1, #contents, 2 do
-		hash[contents[i]] = contents[i + 1]
-	end
-	-- Check inclusion condition.
-	if (#contents > 0) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
-		table.insert(result, contents)
+	if #contents > 0 then
+		-- Remove spec field if needed.
+		if shouldFilterSpec then
+			contents = remove_spec_field(contents)
+		end
+		-- Check tenant filter if needed.
+		if needTenantFilter then
+			local hash = contents_to_hash(contents)
+			if tenantID == hash["tenantID"] then
+				table.insert(result, contents)
+			end
+		else
+			table.insert(result, contents)
+		end
 	end
 end
 
