@@ -449,7 +449,7 @@ func TestProcessModel_Success(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -596,7 +596,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+		done <- env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	}()
 
 	<-started
@@ -727,6 +727,71 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	}
 }
 
+// TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
+// passed before execution begins, all requests are drained to error.jsonl as "batch_expired"
+// and ErrExpired is returned with correct counts.
+func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	cancelReq := &atomic.Bool{}
+
+	ctx := testLoggerCtx()
+	// SLO deadline already in the past — all requests must be drained as batch_expired.
+	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
+	defer cancel()
+
+	counts, err := env.p.executeJob(ctx, sloCtx, env.updater, jobInfo, cancelReq)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("expected ErrExpired, got: %v", err)
+	}
+	if counts == nil {
+		t.Fatal("expected non-nil counts")
+	}
+	if counts.Total != 3 {
+		t.Fatalf("Total = %d, want 3", counts.Total)
+	}
+	if counts.Failed != 3 {
+		t.Fatalf("Failed = %d, want 3 (all drained as batch_expired)", counts.Failed)
+	}
+	if counts.Completed != 0 {
+		t.Fatalf("Completed = %d, want 0", counts.Completed)
+	}
+
+	// All entries must appear in error.jsonl as batch_expired.
+	errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	lines := readNonEmptyJSONLLines(t, errorPath)
+	if len(lines) != 3 {
+		t.Fatalf("error.jsonl lines = %d, want 3", len(lines))
+	}
+	for _, line := range lines {
+		var out struct {
+			Error *struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(line, &out); err != nil {
+			t.Fatalf("unmarshal error line: %v", err)
+		}
+		if out.Error == nil || out.Error.Code != "batch_expired" {
+			t.Fatalf("expected error.code = batch_expired, got: %v", out.Error)
+		}
+	}
+
+	// output.jsonl must be empty (no requests completed).
+	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outputLines := readNonEmptyJSONLLines(t, outputPath)
+	if len(outputLines) != 0 {
+		t.Fatalf("output.jsonl lines = %d, want 0", len(outputLines))
+	}
+}
+
 // =====================================================================
 // Tests: finalizeJob
 // =====================================================================
@@ -836,7 +901,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}

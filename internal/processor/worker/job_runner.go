@@ -232,12 +232,12 @@ func (p *Processor) handleExpired(
 	logger.V(logging.INFO).Info("Job SLO expired mid-execution, uploading partial results")
 
 	// Upload partial results best-effort: errors are logged but do not block the expired status update.
-	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, true)
+	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to upload output file for expired job")
 	}
 
-	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, false)
+	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to upload error file for expired job")
 	}

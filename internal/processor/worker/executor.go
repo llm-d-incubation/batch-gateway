@@ -214,6 +214,7 @@ func (p *Processor) executeJob(
 		go func(safeModelID, modelID string) {
 			err := p.processModel(
 				execCtx,
+				sloCtx,
 				inputFile,
 				plansDir, safeModelID, modelID,
 				writers,
@@ -243,9 +244,11 @@ func (p *Processor) executeJob(
 		if cancelRequested.Load() {
 			return nil, ErrCancelled // user-initiated cancel
 		}
-		// SLO deadline exceeded: execCtx fired from sloCtx deadline.
+		// SLO deadline exceeded: sloCtx deadline fired during execution.
 		// processModel already drained undispatched entries to error file; flush and return partial counts.
-		if execCtx.Err() == context.DeadlineExceeded {
+		// Use sloCtx.Err() rather than execCtx.Err(): execCtx may have been cancelled by a goroutine
+		// via execCancel() before the sloCtx deadline propagated, setting execCtx.Err() = Canceled.
+		if sloCtx.Err() == context.DeadlineExceeded {
 			// best-effort: flush the output and error files
 			_ = writers.output.Flush()
 			_ = writers.errors.Flush()
@@ -285,6 +288,7 @@ func (p *Processor) executeJob(
 // (execCancel), which stops dispatch across all models.
 func (p *Processor) processModel(
 	ctx context.Context,
+	sloCtx context.Context,
 	inputFile *os.File,
 	plansDir, safeModelID, modelID string,
 	writers *outputWriters,
@@ -374,7 +378,9 @@ dispatch:
 
 	// If the SLO deadline fired (not a user cancel), drain undispatched entries to the error file
 	// as "batch_expired" so partial results are preserved per OpenAI batch spec.
-	if ctx.Err() == context.DeadlineExceeded && !cancelRequested.Load() {
+	// Use sloCtx.Err() rather than ctx.Err(): ctx (execCtx) may report Canceled if execCancel()
+	// was called by another goroutine before the sloCtx deadline propagated.
+	if sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load() {
 		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
@@ -436,13 +442,13 @@ func (p *Processor) drainUndispatchedAsExpired(
 		}
 		lineBytes = append(lineBytes, '\n')
 
-		writers.errorsMu.Lock()
-		_, writeErr := writers.errors.Write(lineBytes)
-		writers.errorsMu.Unlock()
-		if writeErr != nil {
+		if writeErr := writers.write(lineBytes, true); writeErr != nil {
 			logger.Error(writeErr, "Failed to write batch_expired entry", "offset", entry.Offset)
 		}
 
+		// ctx is cancelled here (SLO deadline fired), so the Redis progress update inside
+		// record() will fail silently. The atomic counter still increments correctly and
+		// the final counts are committed by UpdateExpiredStatus after drain completes.
 		progress.record(ctx, false)
 	}
 }
@@ -552,19 +558,19 @@ func (p *Processor) executeOneRequest(
 
 // uploadFileAndStoreFileRecord uploads a job output or error file to shared storage and creates a file
 // record in the database. Returns the assigned file ID, or an empty string if the file is empty.
-// isOutput distinguishes output files (true) from error files (false) for upload and metrics.
+// fileType distinguishes output files from error files for upload, metrics, and tracing.
 func (p *Processor) uploadFileAndStoreFileRecord(
 	ctx context.Context,
 	jobInfo *batch_types.JobInfo,
 	dbJob *db.BatchItem,
-	isOutput bool,
+	fileType metrics.FileType,
 ) (string, error) {
 	var fileName string
 	var fileSize int64
 	var err error
 	var attrKey string
 
-	if isOutput {
+	if fileType == metrics.FileTypeOutput {
 		fileName = jobOutputStorageName(jobInfo.JobID)
 		fileSize, err = p.uploadOutputFile(ctx, jobInfo, fileName)
 		attrKey = uotel.AttrOutputFileID
@@ -608,12 +614,12 @@ func (p *Processor) finalizeJob(
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
-	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, true)
+	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
 	if err != nil {
 		return err
 	}
 
-	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, false)
+	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
 	if err != nil {
 		return err
 	}
