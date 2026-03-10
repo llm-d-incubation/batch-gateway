@@ -28,29 +28,33 @@ const (
 	// -- Result --
 	// ResultSuccess: Job reached a terminal state treated as success by policy (completed; cancelled is treated as success because it is user-initiated).
 	// ResultFailed: Job is failed and updated to failed status in the db
-	// ResultSkipped: Job was not processed by this worker (e.g. already terminal, not runnable, expired, data inconsistency)
+	// ResultSkipped: Job was not processed by this worker (e.g. already terminal, not runnable, data inconsistency)
 	// ResultReEnqueued: Job was re-enqueued for retry due to transient backend/system issues
+	// ResultExpired: Job exceeded SLO deadline (either at dequeue time or mid-execution)
 
 	// Result labels
 	ResultSuccess    = "success"
 	ResultFailed     = "failed"
 	ResultSkipped    = "skipped"
 	ResultReEnqueued = "re_enqueued"
+	ResultExpired    = "expired" // job exceeded SLO deadline (dequeue-time or mid-execution)
 
 	// -- Reason --
-	// - If expired, reason is expired
-	// - If data inconsistency, use db_inconsistency
-	// - If retryable backend error, use db_transient
-	// - If not runnable, reason is not runnable state
-	// - Otherwise, fall back to system_error
+	// - If expired at dequeue time, use ReasonExpiredDequeue
+	// - If expired mid-execution, use ReasonExpiredExecution
+	// - If data inconsistency, use ReasonDBInconsistency
+	// - If retryable backend error, use ReasonDBTransient
+	// - If not runnable, use ReasonNotRunnableState
+	// - Otherwise, fall back to ReasonSystemError
 
 	// Reason labels
 	ReasonSystemError      = "system_error"       // unexpected internal errors (panic, serialization failure, invariant violation)
 	ReasonDBTransient      = "db_transient"       // temporary backend/storage error; safe to retry
 	ReasonDBInconsistency  = "db_inconsistency"   // PQ item exists but DB item missing or corrupted
 	ReasonNotRunnableState = "not_runnable_state" // job status is not runnable by processor policy
-	ReasonExpired          = "expired"            // job exceeded SLO deadline
-	ReasonNone             = "none"               // job completed successfully
+	ReasonExpiredDequeue   = "expired_dequeue"    // SLO already exceeded before execution started; skipped at dequeue
+	ReasonExpiredExecution = "expired_execution"  // SLO deadline fired during Phase 2; partial results preserved
+	ReasonNone             = "none"               // no additional reason beyond the result (e.g. success, cancelled)
 
 	// size bucket labels
 	Bucket100   = "100"   // less than 100 lines

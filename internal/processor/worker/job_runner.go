@@ -84,6 +84,14 @@ func (p *Processor) runJob(
 
 	jobStart := time.Now()
 
+	// If an SLO deadline is set, create a child context that cancels when the deadline fires.
+	// This context is passed to executeJob to bound dispatch and trigger expiration handling.
+	sloCtx, sloCancel := ctx, func() {}
+	if !task.SLO.IsZero() {
+		sloCtx, sloCancel = context.WithDeadline(ctx, task.SLO)
+	}
+	defer sloCancel()
+
 	// event watcher for cancel event
 	eventWatcher, err := p.clients.Event.ECConsumerGetChannel(ctx, jobInfo.JobID)
 	if err != nil {
@@ -132,11 +140,20 @@ func (p *Processor) runJob(
 	}
 
 	// phase 2: execute inference requests
-	requestCounts, err := p.executeJob(ctx, updater, jobInfo, &cancelRequested)
+	requestCounts, err := p.executeJob(ctx, sloCtx, updater, jobInfo, &cancelRequested)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "execution failed")
-		p.handleJobError(ctx, err, jobItem, updater, task)
+		if errors.Is(err, ErrExpired) {
+			if expiredErr := p.handleExpired(ctx, updater, jobItem, jobInfo, requestCounts); expiredErr != nil {
+				logger.V(logging.ERROR).Error(expiredErr, "Failed to finalize expired job")
+				span.RecordError(expiredErr)
+				span.SetStatus(codes.Error, "expired finalization failed")
+			}
+			metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+		} else {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "execution failed")
+			p.handleJobError(ctx, err, jobItem, updater, task)
+		}
 		return
 	}
 
@@ -175,8 +192,9 @@ func (p *Processor) handleJobError(
 		}
 
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-		// context canceled or deadline exceeded
-		// re-enqueue the job to the queue so this job can be picked up later by another worker
+		// Parent context was cancelled or deadline exceeded (e.g. pod shutdown).
+		// Re-enqueue so another worker can pick it up.
+		// Note: SLO expiry returns ErrExpired, which is handled before this function is called.
 		if task != nil {
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
 			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
@@ -196,6 +214,53 @@ func (p *Processor) handleJobError(
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
 	}
+}
+
+// handleExpired finalizes a job whose SLO deadline fired during execution.
+// Partial results are preserved: completed requests remain in the output file,
+// and unexecuted requests were already written to the error file as "batch_expired"
+// by drainUndispatchedAsExpired. This function uploads both files and transitions
+// the job directly to expired status (in_progress → expired).
+func (p *Processor) handleExpired(
+	ctx context.Context,
+	updater *StatusUpdater,
+	dbJob *db.BatchItem,
+	jobInfo *batch_types.JobInfo,
+	requestCounts *openai.BatchRequestCounts,
+) error {
+	logger := klog.FromContext(ctx)
+	logger.V(logging.INFO).Info("Job SLO expired mid-execution, uploading partial results")
+
+	// Upload partial results best-effort: errors are logged but do not block the expired status update.
+	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to upload output file for expired job")
+	}
+
+	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to upload error file for expired job")
+	}
+
+	// cleanup local artifacts (best-effort)
+	p.cleanupJobArtifacts(ctx, dbJob.ID, dbJob.TenantID)
+
+	if err := updater.UpdateExpiredStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to update status to expired")
+		return err
+	}
+
+	if requestCounts != nil {
+		uotel.SetAttr(ctx,
+			attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
+			attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
+			attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
+		)
+	}
+
+	metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredExecution)
+	logger.V(logging.INFO).Info("Job expired handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
+	return nil
 }
 
 func (p *Processor) handleFailed(

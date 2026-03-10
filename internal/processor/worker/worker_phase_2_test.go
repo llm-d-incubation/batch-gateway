@@ -449,7 +449,7 @@ func TestProcessModel_Success(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx()
-	err := env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -596,7 +596,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+		done <- env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	}()
 
 	<-started
@@ -626,7 +626,7 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
 
-	_, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
@@ -721,9 +721,58 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
+	}
+}
+
+// TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
+// passed before Phase 2 begins, executeJob returns ErrExpired immediately with the total
+// request count and no output/error files are written (early-exit fast path).
+func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	cancelReq := &atomic.Bool{}
+
+	ctx := testLoggerCtx()
+	// SLO deadline already in the past: early check fires before any files are opened.
+	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
+	defer cancel()
+
+	counts, err := env.p.executeJob(ctx, sloCtx, env.updater, jobInfo, cancelReq)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("expected ErrExpired, got: %v", err)
+	}
+	if counts == nil {
+		t.Fatal("expected non-nil counts")
+	}
+	// Early exit: total is known from the model map, but no requests were dispatched or drained.
+	if counts.Total != 3 {
+		t.Fatalf("Total = %d, want 3", counts.Total)
+	}
+	if counts.Completed != 0 {
+		t.Fatalf("Completed = %d, want 0", counts.Completed)
+	}
+	if counts.Failed != 0 {
+		t.Fatalf("Failed = %d, want 0 (no drain on early exit)", counts.Failed)
+	}
+
+	// No output or error files are written on early exit: files are only opened after the SLO check.
+	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	if _, statErr := os.Stat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("output.jsonl should not exist on early SLO exit, got stat err: %v", statErr)
+	}
+	if _, statErr := os.Stat(errorPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("error.jsonl should not exist on early SLO exit, got stat err: %v", statErr)
 	}
 }
 
@@ -836,7 +885,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}

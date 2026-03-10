@@ -47,6 +47,15 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
 
+// ErrExpired is returned by executeJob when the job's SLO deadline fires during execution.
+// Partial results (completed requests in output file, unexecuted requests in error file as
+// "batch_expired") are preserved. The caller is responsible for finalizing with expired status.
+var ErrExpired = errors.New("batch SLO expired")
+
+// errCodeBatchExpired is the error code written to the error file for requests that could not
+// be executed before the job's completion window expired, per the OpenAI Batch API spec.
+const errCodeBatchExpired = "batch_expired"
+
 // outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
 // A single instance is created per job and shared across model goroutines.
 type outputWriters struct {
@@ -118,8 +127,13 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // executeJob performs phase 2: reads plan files per model, sends inference
 // requests concurrently (one goroutine per model), and writes results to
 // output.jsonl (successes) and error.jsonl (failures). Returns request counts for finalization.
+//
+// sloCtx carries the SLO deadline; equals ctx when no SLO is set. When the deadline fires,
+// dispatch stops, undispatched requests are drained to the error file as "batch_expired", and
+// ErrExpired is returned alongside partial counts. The caller should finalize with expired status.
 func (p *Processor) executeJob(
 	ctx context.Context,
+	sloCtx context.Context,
 	updater *StatusUpdater,
 	jobInfo *batch_types.JobInfo,
 	cancelRequested *atomic.Bool,
@@ -135,6 +149,15 @@ func (p *Processor) executeJob(
 	modelMap, err := readModelMap(jobRootDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read model map: %w", err)
+	}
+
+	// Early SLO check: if the deadline already fired before Phase 2 begins (e.g. SLO expired
+	// during Phase 1 plan build), skip dispatch entirely. No output/error files are written
+	// since no requests were executed. handleExpired will transition the job to expired status.
+	if sloCtx.Err() == context.DeadlineExceeded {
+		logger.V(logging.INFO).Info("SLO already expired at Phase 2 start, skipping dispatch",
+			"total", modelMap.LineCount)
+		return &openai.BatchRequestCounts{Total: modelMap.LineCount}, ErrExpired
 	}
 
 	inputFilePath, err := p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
@@ -178,8 +201,9 @@ func (p *Processor) executeJob(
 	}
 
 	// one goroutine per model; concurrency within each model is bounded
-	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit)
-	execCtx, execCancel := context.WithCancel(ctx)
+	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit).
+	// execCtx is derived from sloCtx so the SLO deadline propagates to all dispatch loops.
+	execCtx, execCancel := context.WithCancel(sloCtx)
 	defer execCancel()
 
 	progress := &executionProgress{
@@ -203,6 +227,7 @@ func (p *Processor) executeJob(
 		go func(safeModelID, modelID string) {
 			err := p.processModel(
 				execCtx,
+				sloCtx,
 				inputFile,
 				plansDir, safeModelID, modelID,
 				writers,
@@ -227,10 +252,23 @@ func (p *Processor) executeJob(
 	if firstErr != nil {
 		// prefer parent-context / user-cancel errors for correct routing in handleJobError
 		if ctx.Err() != nil {
-			return nil, ctx.Err() // parent-context error
+			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
 		}
 		if cancelRequested.Load() {
-			return nil, ErrCancelled // user-cancel error
+			return nil, ErrCancelled // user-initiated cancel
+		}
+		// SLO deadline exceeded: sloCtx deadline fired during execution.
+		// processModel already drained undispatched entries to error file; flush and return partial counts.
+		// Use sloCtx.Err() rather than execCtx.Err(): execCtx may have been cancelled by a goroutine
+		// via execCancel() before the sloCtx deadline propagated, setting execCtx.Err() = Canceled.
+		if sloCtx.Err() == context.DeadlineExceeded {
+			// best-effort: flush the output and error files
+			_ = writers.output.Flush()
+			_ = writers.errors.Flush()
+			counts := progress.counts()
+			logger.V(logging.INFO).Info("Phase 2: SLO expired, returning partial counts",
+				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
+			return counts, ErrExpired
 		}
 		// process error from model goroutines
 		return nil, firstErr
@@ -263,6 +301,7 @@ func (p *Processor) executeJob(
 // (execCancel), which stops dispatch across all models.
 func (p *Processor) processModel(
 	ctx context.Context,
+	sloCtx context.Context,
 	inputFile *os.File,
 	plansDir, safeModelID, modelID string,
 	writers *outputWriters,
@@ -287,14 +326,15 @@ func (p *Processor) processModel(
 	}
 
 	var (
-		wg       sync.WaitGroup
-		errOnce  sync.Once
-		firstErr error
+		wg              sync.WaitGroup
+		errOnce         sync.Once
+		firstErr        error
+		dispatchedCount int
 	)
 
 dispatch:
-	for _, entry := range entries {
-		if err := checkCancellation(ctx, cancelRequested); err != nil {
+	for i, entry := range entries {
+		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
 			errOnce.Do(func() { firstErr = err })
 			break
 		}
@@ -310,6 +350,7 @@ dispatch:
 			break dispatch
 		}
 
+		dispatchedCount = i + 1
 		wg.Add(1)
 		go func(entry planEntry) {
 			defer wg.Done()
@@ -348,12 +389,83 @@ dispatch:
 
 	wg.Wait()
 
+	// If the SLO deadline fired (not a user cancel), drain undispatched entries to the error file
+	// as "batch_expired" so partial results are preserved per OpenAI batch spec.
+	// Use sloCtx.Err() rather than ctx.Err(): ctx (execCtx) may report Canceled if execCancel()
+	// was called by another goroutine before the sloCtx deadline propagated.
+	if sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load() {
+		undispatched := entries[dispatchedCount:]
+		if len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
+			p.drainUndispatchedAsExpired(ctx, inputFile, undispatched, writers, progress)
+		}
+	}
+
 	if firstErr == nil && ctx.Err() != nil {
 		firstErr = ctx.Err()
 	}
 
 	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", firstErr != nil)
 	return firstErr
+}
+
+// drainUndispatchedAsExpired writes plan entries that were never dispatched to the error file
+// with error code "batch_expired". Called after the SLO deadline fires mid-execution.
+func (p *Processor) drainUndispatchedAsExpired(
+	ctx context.Context,
+	inputFile *os.File,
+	entries []planEntry,
+	writers *outputWriters,
+	progress *executionProgress,
+) {
+	logger := klog.FromContext(ctx)
+
+	// Allocate a single read buffer sized to the largest entry to avoid per-entry allocations.
+	var maxLen uint32
+	for _, e := range entries {
+		if e.Length > maxLen {
+			maxLen = e.Length
+		}
+	}
+	buf := make([]byte, maxLen)
+
+	for _, entry := range entries {
+		// Read the input line to extract custom_id; best-effort (empty string if unreadable).
+		customID := ""
+		if _, err := inputFile.ReadAt(buf[:entry.Length], entry.Offset); err == nil {
+			var req batch_types.Request
+			if err := json.Unmarshal(bytes.TrimSuffix(buf[:entry.Length], []byte{'\n'}), &req); err == nil {
+				customID = req.CustomID
+			}
+		}
+
+		requestID := uuid.NewString()
+
+		line := &outputLine{
+			ID:       newBatchRequestID(requestID),
+			CustomID: customID,
+			Error: &outputError{
+				Code:    errCodeBatchExpired,
+				Message: "This request could not be executed before the completion window expired.",
+			},
+		}
+
+		lineBytes, err := json.Marshal(line)
+		if err != nil {
+			logger.Error(err, "Failed to marshal batch_expired entry", "offset", entry.Offset)
+			continue
+		}
+		lineBytes = append(lineBytes, '\n')
+
+		if writeErr := writers.write(lineBytes, true); writeErr != nil {
+			logger.Error(writeErr, "Failed to write batch_expired entry", "offset", entry.Offset)
+		}
+
+		// ctx is cancelled here (SLO deadline fired), so the Redis progress update inside
+		// record() will fail silently. The atomic counter still increments correctly and
+		// the final counts are committed by UpdateExpiredStatus after drain completes.
+		progress.record(ctx, false)
+	}
 }
 
 // executeOneRequest reads a single input line from the input file at the given plan entry offset,
@@ -374,12 +486,15 @@ func (p *Processor) executeOneRequest(
 	// trim the newline character from the request line
 	trimmed := bytes.TrimSuffix(buf, []byte{'\n'})
 
+	// generate a new request ID
+	requestID := uuid.NewString()
+
 	// parse the request line into a batch_types.Request object
 	var req batch_types.Request
 	if err := json.Unmarshal(trimmed, &req); err != nil {
 		klog.FromContext(ctx).Error(err, "failed to parse request line, recording as error")
 		return &outputLine{
-			ID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			ID: newBatchRequestID(requestID),
 			Error: &outputError{
 				Code:    string(inference.ErrCategoryParse),
 				Message: fmt.Sprintf("failed to parse request line: %v", err),
@@ -387,12 +502,11 @@ func (p *Processor) executeOneRequest(
 		}, nil
 	}
 
-	requestID := uuid.NewString()
 	// model id, job id and tenant id are already set in the context
 	logger := klog.FromContext(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
 	inferReq := &inference.GenerateRequest{
-		RequestID: requestID,
+		RequestID: newBatchRequestID(requestID),
 		Endpoint:  req.URL,
 		Params:    req.Body,
 		Headers:   passThroughHeaders,
@@ -411,7 +525,7 @@ func (p *Processor) executeOneRequest(
 	metrics.RecordModelRequestExecutionDuration(time.Since(start), modelID)
 
 	result := &outputLine{
-		ID:       fmt.Sprintf("batch_req_%s", uuid.NewString()),
+		ID:       newBatchRequestID(requestID),
 		CustomID: req.CustomID,
 	}
 
@@ -459,6 +573,44 @@ func (p *Processor) executeOneRequest(
 	return result, nil
 }
 
+// uploadFileAndStoreFileRecord uploads a job output or error file to shared storage and creates a file
+// record in the database. Returns the assigned file ID, or an empty string if the file is empty.
+// fileType distinguishes output files from error files for upload, metrics, and tracing.
+func (p *Processor) uploadFileAndStoreFileRecord(
+	ctx context.Context,
+	jobInfo *batch_types.JobInfo,
+	dbJob *db.BatchItem,
+	fileType metrics.FileType,
+) (string, error) {
+	var fileName string
+	var fileSize int64
+	var err error
+	var attrKey string
+
+	if fileType == metrics.FileTypeOutput {
+		fileName = jobOutputStorageName(jobInfo.JobID)
+		fileSize, err = p.uploadOutputFile(ctx, jobInfo, fileName)
+		attrKey = uotel.AttrOutputFileID
+	} else {
+		fileName = jobErrorStorageName(jobInfo.JobID)
+		fileSize, err = p.uploadErrorFile(ctx, jobInfo, fileName)
+		attrKey = uotel.AttrErrorFileID
+	}
+	if err != nil {
+		return "", err
+	}
+	if fileSize == 0 {
+		return "", nil
+	}
+
+	fileID := ucom.NewFileID()
+	uotel.SetAttr(ctx, attribute.String(attrKey, fileID))
+	if err := p.storeFileRecord(ctx, fileID, fileName, jobInfo.TenantID, fileSize, dbJob.Tags); err != nil {
+		return "", err
+	}
+	return fileID, nil
+}
+
 // finalizeJob performs phase 3: uploads output and error files to shared storage,
 // creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
@@ -479,32 +631,14 @@ func (p *Processor) finalizeJob(
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
-	var outputFileID string
-	outputFileName := jobOutputStorageName(jobInfo.JobID)
-	outputFileSize, err := p.uploadOutputFile(ctx, jobInfo, outputFileName)
+	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
 	if err != nil {
 		return err
-	}
-	if outputFileSize > 0 {
-		outputFileID = ucom.NewFileID()
-		uotel.SetAttr(ctx, attribute.String(uotel.AttrOutputFileID, outputFileID))
-		if err := p.storeFileRecord(ctx, outputFileID, outputFileName, jobInfo.TenantID, outputFileSize, dbJob.Tags); err != nil {
-			return err
-		}
 	}
 
-	var errorFileID string
-	errorFileName := jobErrorStorageName(jobInfo.JobID)
-	errorFileSize, err := p.uploadErrorFile(ctx, jobInfo, errorFileName)
+	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
 	if err != nil {
 		return err
-	}
-	if errorFileSize > 0 {
-		errorFileID = ucom.NewFileID()
-		uotel.SetAttr(ctx, attribute.String(uotel.AttrErrorFileID, errorFileID))
-		if err := p.storeFileRecord(ctx, errorFileID, errorFileName, jobInfo.TenantID, errorFileSize, dbJob.Tags); err != nil {
-			return err
-		}
 	}
 
 	// finalizing → completed
@@ -648,6 +782,13 @@ func (p *Processor) storeFileRecord(
 		return fmt.Errorf("failed to store file record: %w", err)
 	}
 	return nil
+}
+
+// newBatchRequestID formats requestID into the "batch_req_<uuid>" form required by the
+// OpenAI Batch API for output/error line IDs. When used in executeOneRequest, the same
+// requestID is also passed to the inference client so the two can be correlated in logs.
+func newBatchRequestID(requestID string) string {
+	return fmt.Sprintf("batch_req_%s", requestID)
 }
 
 // resolveOutputExpiration returns the ExpiresAt timestamp for an output or error file.
