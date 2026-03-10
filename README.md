@@ -126,6 +126,8 @@ batch-gateway/
 │   │   ├── common/               # Shared handler utilities
 │   │   ├── health/               # Health check handler
 │   │   ├── middleware/           # HTTP middleware
+│   │   ├── readiness/            # Readiness handler
+│   │   ├── metrics/              # Metrics mechanism
 │   │   └── server/               # Server initialization
 │   ├── processor/                # Batch processor implementation
 │   │   ├── worker/               # Worker pool, planning, and execution
@@ -321,7 +323,7 @@ See configuration example in `cmd/batch-processor/config.yaml`.
 ### Metrics
 
 The batch gateway components expose Prometheus metrics for monitoring.
-For a complete list of available metrics, see [METRICS.md](METRICS.md).
+For a complete list of available metrics, see [docs/guides/metrics.md](docs/guides/metrics.md).
 
 ### Health Checks
 

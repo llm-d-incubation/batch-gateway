@@ -1,5 +1,8 @@
 # Metrics
 
+**Revision:** 1.0
+**Last Modified:** 2026-03-10
+
 ## API Server
 
 The API server exposes the following Prometheus metrics:
