@@ -320,7 +320,7 @@ See configuration example in `cmd/batch-processor/config.yaml`.
 
 ### Metrics
 
-The batch gateway components expose Prometheus metrics for monitoring.  
+The batch gateway components expose Prometheus metrics for monitoring.
 For a complete list of available metrics, see [METRICS.md](METRICS.md).
 
 ### Health Checks
