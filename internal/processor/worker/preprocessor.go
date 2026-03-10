@@ -99,7 +99,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 	for {
 		// cancellation checks
-		if err := checkCancellation(ctx, cancelRequested); err != nil {
+		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
 			if err == ErrCancelled {
 				logger.V(logging.INFO).Info("preProcess: cancel requested")
 			}
@@ -167,7 +167,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	return nil
 }
 
-func checkCancellation(ctx context.Context, cancelRequested *atomic.Bool) error {
+// checkAbortCondition returns a non-nil error if dispatch should stop: either the context
+// is done (cancelled, deadline exceeded, or SLO deadline) or an explicit cancel was requested.
+func checkAbortCondition(ctx context.Context, cancelRequested *atomic.Bool) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

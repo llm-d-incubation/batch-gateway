@@ -52,6 +52,10 @@ import (
 // "batch_expired") are preserved. The caller is responsible for finalizing with expired status.
 var ErrExpired = errors.New("batch SLO expired")
 
+// errCodeBatchExpired is the error code written to the error file for requests that could not
+// be executed before the job's completion window expired, per the OpenAI Batch API spec.
+const errCodeBatchExpired = "batch_expired"
+
 // outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
 // A single instance is created per job and shared across model goroutines.
 type outputWriters struct {
@@ -145,6 +149,15 @@ func (p *Processor) executeJob(
 	modelMap, err := readModelMap(jobRootDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read model map: %w", err)
+	}
+
+	// Early SLO check: if the deadline already fired before Phase 2 begins (e.g. SLO expired
+	// during Phase 1 plan build), skip dispatch entirely. No output/error files are written
+	// since no requests were executed. handleExpired will transition the job to expired status.
+	if sloCtx.Err() == context.DeadlineExceeded {
+		logger.V(logging.INFO).Info("SLO already expired at Phase 2 start, skipping dispatch",
+			"total", modelMap.LineCount)
+		return &openai.BatchRequestCounts{Total: modelMap.LineCount}, ErrExpired
 	}
 
 	inputFilePath, err := p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
@@ -321,7 +334,7 @@ func (p *Processor) processModel(
 
 dispatch:
 	for i, entry := range entries {
-		if err := checkCancellation(ctx, cancelRequested); err != nil {
+		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
 			errOnce.Do(func() { firstErr = err })
 			break
 		}
@@ -426,11 +439,13 @@ func (p *Processor) drainUndispatchedAsExpired(
 			}
 		}
 
+		requestID := uuid.NewString()
+
 		line := &outputLine{
-			ID:       fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			ID:       newBatchRequestID(requestID),
 			CustomID: customID,
 			Error: &outputError{
-				Code:    "batch_expired",
+				Code:    errCodeBatchExpired,
 				Message: "This request could not be executed before the completion window expired.",
 			},
 		}
@@ -471,12 +486,15 @@ func (p *Processor) executeOneRequest(
 	// trim the newline character from the request line
 	trimmed := bytes.TrimSuffix(buf, []byte{'\n'})
 
+	// generate a new request ID
+	requestID := uuid.NewString()
+
 	// parse the request line into a batch_types.Request object
 	var req batch_types.Request
 	if err := json.Unmarshal(trimmed, &req); err != nil {
 		klog.FromContext(ctx).Error(err, "failed to parse request line, recording as error")
 		return &outputLine{
-			ID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			ID: newBatchRequestID(requestID),
 			Error: &outputError{
 				Code:    string(inference.ErrCategoryParse),
 				Message: fmt.Sprintf("failed to parse request line: %v", err),
@@ -484,12 +502,11 @@ func (p *Processor) executeOneRequest(
 		}, nil
 	}
 
-	requestID := uuid.NewString()
 	// model id, job id and tenant id are already set in the context
 	logger := klog.FromContext(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
 	inferReq := &inference.GenerateRequest{
-		RequestID: requestID,
+		RequestID: newBatchRequestID(requestID),
 		Endpoint:  req.URL,
 		Params:    req.Body,
 		Headers:   passThroughHeaders,
@@ -508,7 +525,7 @@ func (p *Processor) executeOneRequest(
 	metrics.RecordModelRequestExecutionDuration(time.Since(start), modelID)
 
 	result := &outputLine{
-		ID:       fmt.Sprintf("batch_req_%s", uuid.NewString()),
+		ID:       newBatchRequestID(requestID),
 		CustomID: req.CustomID,
 	}
 
@@ -765,6 +782,13 @@ func (p *Processor) storeFileRecord(
 		return fmt.Errorf("failed to store file record: %w", err)
 	}
 	return nil
+}
+
+// newBatchRequestID formats requestID into the "batch_req_<uuid>" form required by the
+// OpenAI Batch API for output/error line IDs. When used in executeOneRequest, the same
+// requestID is also passed to the inference client so the two can be correlated in logs.
+func newBatchRequestID(requestID string) string {
+	return fmt.Sprintf("batch_req_%s", requestID)
 }
 
 // resolveOutputExpiration returns the ExpiresAt timestamp for an output or error file.
