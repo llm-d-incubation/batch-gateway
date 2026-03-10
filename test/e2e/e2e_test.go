@@ -17,6 +17,7 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,14 +34,24 @@ import (
 )
 
 var (
-	baseURL      = getEnvOrDefault("TEST_BASE_URL", "http://localhost:8000")
-	jaegerURL    = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
-	tenantHeader = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
-	tenantID     = getEnvOrDefault("TEST_TENANT_ID", "default")
-	namespace    = getEnvOrDefault("TEST_NAMESPACE", "default")
-	helmRelease  = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
+	apiserverURL    = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
+	apiserverObsURL = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
+	processorObsURL = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9090")
+	jaegerURL       = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
+	tenantHeader    = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
+	tenantID        = getEnvOrDefault("TEST_TENANT_ID", "default")
+	namespace       = getEnvOrDefault("TEST_NAMESPACE", "default")
+	helmRelease     = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// httpClient is used for direct HTTP calls; skips TLS verification for self-signed certs.
+	httpClient = &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev/test only
+		},
+		Timeout: 10 * time.Second,
+	}
 
 	// kubectlAvailable is set once at TestE2E startup; when false,
 	// verifications that require kubectl (e.g. log grepping) are skipped.
@@ -75,9 +86,10 @@ func newClient() *openai.Client {
 
 func newClientForTenant(tenant string) *openai.Client {
 	c := openai.NewClient(
-		option.WithBaseURL(baseURL+"/v1/"),
+		option.WithBaseURL(apiserverURL+"/v1/"),
 		option.WithAPIKey("unused"),
 		option.WithHeader(tenantHeader, tenant),
+		option.WithHTTPClient(httpClient),
 	)
 	return &c
 }
@@ -552,61 +564,76 @@ func doTestOtelTraces(t *testing.T) {
 	t.Logf("Jaeger returned %d trace(s) for service batch-gateway", len(result.Data))
 }
 
+// doTestObservabilityEndpoints verifies that the observability endpoints
+// (/health, /ready, /metrics) are reachable over plain HTTP at the given base URL.
+func doTestObservabilityEndpoints(t *testing.T, obsURL string) {
+	t.Helper()
+
+	for _, endpoint := range []string{"/health", "/ready", "/metrics"} {
+		t.Run(endpoint, func(t *testing.T) {
+			resp, err := http.Get(obsURL + endpoint)
+			if err != nil {
+				t.Fatalf("GET %s failed: %v", endpoint, err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("expected 200 from %s, got %d", endpoint, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// ── Setup ────────────────────────────────────────────────────────────────
+
+func waitForReady(t *testing.T, url string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		resp, err := http.Get(url + "/ready")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("not ready after %v: %v (%s)", timeout, err, url)
+			}
+			t.Fatalf("not ready after %v (status %d) (%s)", timeout, resp.StatusCode, url)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────
 
 func TestE2E(t *testing.T) {
-	// Check K8s cluster connectivity
 	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
-		t.Logf("kubectl cluster-info failed, kubectl based verifications will be skipped: %v\n%s", err, out)
+		t.Logf("kubectl not available, some checks will be skipped: %v\n%s", err, out)
 	} else {
 		kubectlAvailable = true
 	}
 
-	const readyTimeout = 30 * time.Second
-	readyDeadline := time.Now().Add(readyTimeout)
-	for {
-		resp, err := http.Get(baseURL + "/ready")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		if time.Now().After(readyDeadline) {
-			if err != nil {
-				t.Fatalf("server not ready after %v: %v; ensure the API server is running at %s", readyTimeout, err, baseURL)
-			}
-			t.Fatalf("server not ready after %v (status %d); ensure the API server is running at %s", readyTimeout, resp.StatusCode, baseURL)
-		}
-		time.Sleep(time.Second)
-	}
-
-	t.Run("Health", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/health")
-		if err != nil {
-			t.Fatalf("GET /health failed: %v", err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("expected 200 from /health, got %d", resp.StatusCode)
-		}
-	})
+	waitForReady(t, apiserverObsURL, 30*time.Second)
 
 	t.Run("Files", func(t *testing.T) {
-		t.Run("Lifecycle", func(t *testing.T) { doTestFileLifecycle(t) })
+		t.Run("Lifecycle", doTestFileLifecycle)
 	})
 
 	t.Run("Batches", func(t *testing.T) {
-		t.Run("Lifecycle", func(t *testing.T) { doTestBatchLifecycle(t) })
-		t.Run("Cancel", func(t *testing.T) { doTestBatchCancel(t) })
-		t.Run("PassThroughHeaders", func(t *testing.T) { doTestPassThroughHeaders(t) })
+		t.Run("Lifecycle", doTestBatchLifecycle)
+		t.Run("Cancel", doTestBatchCancel)
+		t.Run("PassThroughHeaders", doTestPassThroughHeaders)
 	})
 
 	t.Run("MultiTenant", func(t *testing.T) {
-		t.Run("Isolation", func(t *testing.T) { doTestMultiTenantIsolation(t) })
+		t.Run("Isolation", doTestMultiTenantIsolation)
 	})
 
 	t.Run("Observability", func(t *testing.T) {
-		t.Run("OtelTraces", func(t *testing.T) { doTestOtelTraces(t) })
+		t.Run("APIServer", func(t *testing.T) { doTestObservabilityEndpoints(t, apiserverObsURL) })
+		t.Run("Processor", func(t *testing.T) { doTestObservabilityEndpoints(t, processorObsURL) })
+		t.Run("OtelTraces", doTestOtelTraces)
 	})
 }

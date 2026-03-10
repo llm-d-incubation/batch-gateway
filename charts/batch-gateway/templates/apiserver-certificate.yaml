@@ -10,8 +10,8 @@ spec:
   issuerRef:
     name: {{ .Values.apiserver.tls.certManager.issuerName }}
     kind: {{ .Values.apiserver.tls.certManager.issuerKind }}
+  {{- with .Values.apiserver.tls.certManager.dnsNames }}
   dnsNames:
-    {{- range .Values.apiserver.ingress.hosts }}
-    - {{ .host }}
-    {{- end }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}

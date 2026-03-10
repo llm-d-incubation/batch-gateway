@@ -101,7 +101,7 @@ apiserver:
   livenessProbe:
     httpGet:
       path: /health
-      port: http
+      port: observability
     initialDelaySeconds: 15
     periodSeconds: 20
     timeoutSeconds: 5
@@ -110,7 +110,7 @@ apiserver:
   readinessProbe:
     httpGet:
       path: /ready
-      port: http
+      port: observability
     initialDelaySeconds: 5
     periodSeconds: 10
     timeoutSeconds: 5
@@ -140,6 +140,7 @@ apiserver:
   config:
     host: ""
     port: "8000"
+    observabilityPort: "8081"
     tenantHeader: "X-MaaS-Username"
     readHeaderTimeoutSeconds: 10
     readTimeoutSeconds: 900
@@ -157,12 +158,11 @@ apiserver:
   tls:
     enabled: false
     secretName: ""
-    cert: ""
-    key: ""
     certManager:
       enabled: false
       issuerName: ""
       issuerKind: ClusterIssuer
+      dnsNames: []
 
   # Logging configuration
   logging:
@@ -298,13 +298,6 @@ processor:
       maxBackoff: "10s"
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
-
-  # TLS/SSL Configuration
-  tls:
-    enabled: false
-    secretName: ""
-    cert: ""
-    key: ""
 
   # Logging configuration
   logging:
