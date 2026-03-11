@@ -219,6 +219,9 @@ func (p *Processor) executeJob(
 	}
 
 	for safeModelID, modelID := range modelMap.SafeToModel {
+		// Ordering guarantee: processModel returns → execCancel → errCh send.
+		// This ensures the first real error reaches errCh before any context.Canceled
+		// from other models whose contexts were cancelled by execCancel.
 		go func(safeModelID, modelID string) {
 			err := p.processModel(
 				execCtx,
@@ -306,7 +309,7 @@ func (p *Processor) executeJob(
 // Semaphore acquisition order: local (per-model) before global (shared).
 // This prevents starving other models — blocking on global only wastes a local slot.
 //
-// Error strategy in this function: when a goroutine encounters a fatal error, firstErr is captured
+// Error strategy in this function: when a goroutine encounters a fatal error, modelErr is captured
 // via errOnce but the context is NOT cancelled within this function. Already-dispatched
 // goroutines run to completion. Context cancellation is propagated at the executeJob level
 // (execCancel), which stops dispatch across all models.
@@ -339,14 +342,14 @@ func (p *Processor) processModel(
 	var (
 		wg              sync.WaitGroup
 		errOnce         sync.Once
-		firstErr        error
+		modelErr        error
 		dispatchedCount int
 	)
 
 dispatch:
 	for i, entry := range entries {
 		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
-			errOnce.Do(func() { firstErr = err })
+			errOnce.Do(func() { modelErr = err })
 			break
 		}
 
@@ -371,7 +374,7 @@ dispatch:
 			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
 			if execErr != nil {
 				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
-				errOnce.Do(func() { firstErr = execErr })
+				errOnce.Do(func() { modelErr = execErr })
 				return
 			}
 
@@ -388,7 +391,7 @@ dispatch:
 			lineBytes, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
 				logger.Error(marshalErr, "Failed to marshal output line", "offset", entry.Offset)
-				errOnce.Do(func() { firstErr = fmt.Errorf("failed to marshal output line: %w", marshalErr) })
+				errOnce.Do(func() { modelErr = fmt.Errorf("failed to marshal output line: %w", marshalErr) })
 				return
 			}
 			lineBytes = append(lineBytes, '\n')
@@ -401,7 +404,7 @@ dispatch:
 					kind = "error"
 				}
 				logger.Error(writeErr, "Failed to write line", "kind", kind, "offset", entry.Offset)
-				errOnce.Do(func() { firstErr = fmt.Errorf("failed to write %s line: %w", kind, writeErr) })
+				errOnce.Do(func() { modelErr = fmt.Errorf("failed to write %s line: %w", kind, writeErr) })
 			}
 		}(entry)
 	}
@@ -433,7 +436,7 @@ dispatch:
 				"This request was not executed because the batch was cancelled.")
 		}
 
-	case firstErr != nil:
+	case modelErr != nil:
 		// System error in a model goroutine — record remaining requests as failed.
 		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
@@ -444,12 +447,12 @@ dispatch:
 		}
 	}
 
-	if firstErr == nil && ctx.Err() != nil {
-		firstErr = ctx.Err()
+	if modelErr == nil && ctx.Err() != nil {
+		modelErr = ctx.Err()
 	}
 
-	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", firstErr != nil)
-	return firstErr
+	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", modelErr != nil)
+	return modelErr
 }
 
 // drainUnprocessedRequests records undispatched requests in the error file when a job terminates
