@@ -133,7 +133,7 @@ func (p *Processor) runJob(
 		logger.V(logging.ERROR).Error(err, "Failed to update status to in_progress")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "status transition failed")
-		if failErr := p.handleFailed(ctx, jobItem, updater, nil); failErr != nil {
+		if failErr := p.handleFailed(ctx, updater, jobItem, nil); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
 		return
@@ -176,7 +176,7 @@ func (p *Processor) runJob(
 		span.SetStatus(codes.Error, "finalize failed")
 		// Upload retries already exhausted inside finalizeJob — don't re-attempt upload.
 		// Pass requestCounts so they are recorded in the failed status.
-		if failErr := p.handleFailed(ctx, jobItem, updater, requestCounts); failErr != nil {
+		if failErr := p.handleFailed(ctx, updater, jobItem, requestCounts); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
 		return
@@ -217,7 +217,7 @@ func (p *Processor) handleJobError(
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
 			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
 				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
-				if failErr := p.handleFailed(bgCtx, jobItem, updater, nil); failErr != nil {
+				if failErr := p.handleFailed(bgCtx, updater, jobItem, nil); failErr != nil {
 					logger.V(logging.ERROR).Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
@@ -232,7 +232,7 @@ func (p *Processor) handleJobError(
 				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event with partial output")
 			}
 		} else {
-			if failErr := p.handleFailed(ctx, jobItem, updater, nil); failErr != nil {
+			if failErr := p.handleFailed(ctx, updater, jobItem, nil); failErr != nil {
 				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 			}
 		}
@@ -328,8 +328,8 @@ func (p *Processor) handleFailedWithPartial(
 // and re-enqueue failures (infrastructure-level issue). requestCounts is recorded in DB when non-nil.
 func (p *Processor) handleFailed(
 	ctx context.Context,
-	jobItem *db.BatchItem,
 	updater *StatusUpdater,
+	jobItem *db.BatchItem,
 	requestCounts *openai.BatchRequestCounts,
 ) error {
 	logger := klog.FromContext(ctx)
