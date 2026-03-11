@@ -51,6 +51,24 @@ VolumeMount for shared file storage. Only rendered when type is "fs".
 {{- end }}
 {{- end }}
 
+{{/* ========== TLS Validation Helper ========== */}}
+
+{{/*
+Validate TLS configuration for a component.
+Ensures exactly one TLS mode is active: secretName or certManager.
+Usage: {{ include "batch-gateway.validateTLS" (dict "tls" .Values.apiserver.tls "component" "apiserver") }}
+*/}}
+{{- define "batch-gateway.validateTLS" -}}
+{{- if .tls.enabled -}}
+  {{- if and .tls.secretName .tls.certManager.enabled -}}
+    {{- fail (printf "%s.tls: secretName and certManager are mutually exclusive — set only one" .component) -}}
+  {{- end -}}
+  {{- if not (or .tls.secretName .tls.certManager.enabled) -}}
+    {{- fail (printf "%s.tls: enabled but neither secretName nor certManager is configured" .component) -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* ========== API Server Helpers ========== */}}
 
 {{/*

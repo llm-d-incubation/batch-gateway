@@ -101,11 +101,12 @@ func (f *FileAPIConfig) GetMaxLineCount() int64 {
 }
 
 type ServerConfig struct {
-	Host         string `yaml:"host"`
-	Port         string `yaml:"port"`
-	SSLCertFile  string `yaml:"ssl_cert_file"`
-	SSLKeyFile   string `yaml:"ssl_key_file"`
-	TenantHeader string `yaml:"tenant_header"`
+	Host              string `yaml:"host"`
+	Port              string `yaml:"port"`
+	ObservabilityPort string `yaml:"observability_port"`
+	SSLCertFile       string `yaml:"ssl_cert_file"`
+	SSLKeyFile        string `yaml:"ssl_key_file"`
+	TenantHeader      string `yaml:"tenant_header"`
 
 	// HTTP server timeout configurations (in seconds)
 	ReadHeaderTimeoutSeconds int64 `yaml:"read_header_timeout_seconds"`
@@ -204,6 +205,9 @@ func (c *ServerConfig) loadFromFile(path string) error {
 }
 
 func (c *ServerConfig) applyDefaults() {
+	if c.ObservabilityPort == "" {
+		c.ObservabilityPort = "8081"
+	}
 	if c.DatabaseType == "" {
 		c.DatabaseType = "redis"
 	}

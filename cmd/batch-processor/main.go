@@ -37,7 +37,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 )
 
 func main() {
@@ -204,25 +203,14 @@ func startObservabilityServer(
 		})
 
 		server := &http.Server{
-			Addr:    cfg.Addr,
-			Handler: m,
+			Addr:              cfg.Addr,
+			Handler:           m,
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 
-		if cfg.SSLEnabled() {
-			tlsConfig, err := tls.GetTlsConfig(tls.LOAD_TYPE_SERVER, false, cfg.SSLCertFile, cfg.SSLKeyFile, "")
-			if err != nil {
-				reportFatal(err)
-				return
-			}
-			server.TLSConfig = tlsConfig
-			logger.V(logging.INFO).Info("Observability server TLS configured")
-		}
-
-		// http server shutdown when context cancels or server is closed
 		go func() {
 			<-ctx.Done()
 			logger.V(logging.INFO).Info("Shutting down observability server")
-			// fresh ctx for http server shutdown
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := server.Shutdown(shutdownCtx); err != nil {
@@ -230,15 +218,9 @@ func startObservabilityServer(
 			}
 		}()
 
-		logger.V(logging.INFO).Info("Start observability server", "addr", cfg.Addr, "tls", cfg.SSLEnabled())
+		logger.V(logging.INFO).Info("Start observability server", "addr", cfg.Addr)
 
-		var err error
-		if cfg.SSLEnabled() {
-			// Cert/key are loaded into server.TLSConfig above.
-			err = server.ListenAndServeTLS("", "")
-		} else {
-			err = server.ListenAndServe()
-		}
+		err := server.ListenAndServe()
 
 		if err != nil && err != http.ErrServerClosed {
 			logger.Error(err, "Observability server failed")

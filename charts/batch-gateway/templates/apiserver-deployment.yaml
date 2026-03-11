@@ -1,4 +1,5 @@
 {{- if .Values.apiserver.enabled -}}
+{{- include "batch-gateway.validateTLS" (dict "tls" .Values.apiserver.tls "component" "apiserver") -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,6 +51,9 @@ spec:
         - name: http
           containerPort: {{ .Values.apiserver.config.port }}
           protocol: TCP
+        - name: observability
+          containerPort: {{ .Values.apiserver.config.observabilityPort }}
+          protocol: TCP
         livenessProbe:
           {{- toYaml .Values.apiserver.livenessProbe | nindent 12 }}
         readinessProbe:
@@ -84,8 +88,6 @@ spec:
         secret:
           {{- if .Values.apiserver.tls.secretName }}
           secretName: {{ .Values.apiserver.tls.secretName }}
-          {{- else if .Values.apiserver.tls.certManager.enabled }}
-          secretName: {{ include "batch-gateway.apiserver.fullname" . }}-tls
           {{- else }}
           secretName: {{ include "batch-gateway.apiserver.fullname" . }}-tls
           {{- end }}

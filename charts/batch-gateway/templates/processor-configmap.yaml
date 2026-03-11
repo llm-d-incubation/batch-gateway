@@ -77,8 +77,4 @@ data:
     otel:
       redis_tracing: {{ .Values.global.otel.redisTracing }}
       postgresql_tracing: {{ .Values.global.otel.postgresqlTracing }}
-    {{- if .Values.processor.tls.enabled }}
-    ssl_cert_file: "/etc/tls/tls.crt"
-    ssl_key_file: "/etc/tls/tls.key"
-    {{- end }}
 {{- end }}

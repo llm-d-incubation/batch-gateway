@@ -19,12 +19,15 @@ HELM_RELEASE="${HELM_RELEASE:-batch-gateway}"
 NAMESPACE="${NAMESPACE:-default}"
 DEV_VERSION="${DEV_VERSION:-0.0.1}"
 LOCAL_PORT="${LOCAL_PORT:-8000}"
+LOCAL_OBS_PORT="${LOCAL_OBS_PORT:-8081}"
+LOCAL_PROCESSOR_PORT="${LOCAL_PROCESSOR_PORT:-9090}"
 JAEGER_PORT="${JAEGER_PORT:-16686}"
 REDIS_RELEASE="redis"
 POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-dummy-s3-secret-access-key}"
+TLS_SECRET_NAME="${TLS_SECRET_NAME:-${HELM_RELEASE}-tls}"
 APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
 FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
 JAEGER_NAME="${JAEGER_NAME:-jaeger}"
@@ -173,6 +176,30 @@ create_secret() {
         --dry-run=client -o yaml | kubectl apply -f -
 
     log "Secret '${APP_SECRET_NAME}' applied."
+}
+
+create_tls_secret() {
+    step "Creating self-signed TLS certificate for apiserver..."
+
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    trap "rm -rf ${tmp_dir}" RETURN
+
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "${tmp_dir}/tls.key" \
+        -out "${tmp_dir}/tls.crt" \
+        -days 365 \
+        -subj "/CN=batch-gateway-apiserver" \
+        -addext "subjectAltName=DNS:${HELM_RELEASE}-apiserver,DNS:${HELM_RELEASE}-apiserver.${NAMESPACE}.svc.cluster.local,DNS:localhost,IP:127.0.0.1" \
+        2>/dev/null
+
+    kubectl create secret tls "${TLS_SECRET_NAME}" \
+        --namespace "${NAMESPACE}" \
+        --cert="${tmp_dir}/tls.crt" \
+        --key="${tmp_dir}/tls.key" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    log "TLS secret '${TLS_SECRET_NAME}' applied."
 }
 
 # ── Images ────────────────────────────────────────────────────────────────────
@@ -436,6 +463,8 @@ install_batch_gateway() {
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
+        --set "apiserver.tls.enabled=true"
+        --set "apiserver.tls.secretName=${TLS_SECRET_NAME}"
         --set "global.otel.endpoint=http://${JAEGER_NAME}.${NAMESPACE}.svc.cluster.local:4317"
         --set "global.otel.insecure=true"
         --set "global.otel.redisTracing=true"
@@ -487,24 +516,46 @@ wait_for_deployment() {
 
 start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
-    step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 -n ${NAMESPACE}..."
 
-    kubectl port-forward "${svc}" "${LOCAL_PORT}:8000" -n "${NAMESPACE}" &
+    step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE}..."
+    kubectl port-forward "${svc}" "${LOCAL_PORT}:8000" "${LOCAL_OBS_PORT}:8081" -n "${NAMESPACE}" &
     local pf_pid=$!
     disown "${pf_pid}"
-
     log "Port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
-    log "Waiting for http://localhost:${LOCAL_PORT}/health ..."
+
+    log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
 
     for i in $(seq 1 30); do
-        if curl -sf "http://localhost:${LOCAL_PORT}/health" >/dev/null 2>&1; then
-            log "API server is ready at http://localhost:${LOCAL_PORT}"
+        if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
+            log "API server is ready at https://localhost:${LOCAL_PORT}"
             return 0
         fi
         sleep 1
     done
 
     die "Timed out waiting for API server to become ready"
+}
+
+start_processor_port_forward() {
+    local deploy="deployment/${HELM_RELEASE}-processor"
+
+    step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE}..."
+    kubectl port-forward "${deploy}" "${LOCAL_PROCESSOR_PORT}:9090" -n "${NAMESPACE}" &
+    local pf_pid=$!
+    disown "${pf_pid}"
+    log "Processor port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
+
+    log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/health ..."
+
+    for i in $(seq 1 30); do
+        if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/health" >/dev/null 2>&1; then
+            log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
+            return 0
+        fi
+        sleep 1
+    done
+
+    die "Timed out waiting for Processor to become ready"
 }
 
 start_jaeger_port_forward() {
@@ -520,7 +571,8 @@ start_jaeger_port_forward() {
 }
 
 print_usage() {
-    local base="http://localhost:${LOCAL_PORT}"
+    local base="https://localhost:${LOCAL_PORT}"
+    local curl_flags="-k"  # skip TLS verification for self-signed cert
 
     echo ""
     echo "  ╔══════════════════════════════════════════════════════════════╗"
@@ -533,7 +585,7 @@ print_usage() {
     echo ""
     echo "  2. Upload a batch input file (JSONL):"
     echo ""
-    echo "       curl -s -X POST ${base}/v1/files \\"
+    echo "       curl ${curl_flags} -s -X POST ${base}/v1/files \\"
     echo "         -F 'file=@/path/to/requests.jsonl' \\"
     echo "         -F 'purpose=batch'"
     echo ""
@@ -542,7 +594,7 @@ print_usage() {
     echo ""
     echo "  3. Create a batch (replace FILE_ID with the id from step 2):"
     echo ""
-    echo "       curl -s -X POST ${base}/v1/batches \\"
+    echo "       curl ${curl_flags} -s -X POST ${base}/v1/batches \\"
     echo "         -H 'Content-Type: application/json' \\"
     echo "         -d '{\"input_file_id\":\"FILE_ID\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}'"
     echo ""
@@ -559,7 +611,7 @@ print_usage() {
     echo "       helm uninstall ${POSTGRESQL_RELEASE} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${JAEGER_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_NAME} -n ${NAMESPACE}"
-    echo "       kubectl delete secret ${APP_SECRET_NAME} -n ${NAMESPACE}"
+    echo "       kubectl delete secret ${APP_SECRET_NAME} ${TLS_SECRET_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete pvc ${FILES_PVC_NAME} -n ${NAMESPACE}"
     echo ""
     if [ "${USE_KIND}" = true ]; then
@@ -583,6 +635,7 @@ main() {
     install_redis
     install_postgresql
     create_secret
+    create_tls_secret
     create_pvc
     load_images
     install_jaeger
@@ -591,6 +644,7 @@ main() {
     verify_deployment
     print_usage
     start_apiserver_port_forward
+    start_processor_port_forward
     start_jaeger_port_forward
 
     log "Deployment complete!"

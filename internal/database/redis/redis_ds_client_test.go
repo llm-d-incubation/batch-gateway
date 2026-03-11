@@ -21,6 +21,7 @@ package redis_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"maps"
 	"os"
 	"sync"
@@ -649,6 +650,328 @@ func TestRedisDSClient(t *testing.T) {
 		}
 	})
 
+	t.Run("Event exchange operations - Negative cases", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Send empty events array.
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), []db_api.BatchEvent{})
+		if err == nil {
+			t.Fatalf("Expected error when sending empty events array")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for empty events, got %d", len(sentIDs))
+		}
+
+		// Send event with empty ID.
+		invalidEvent1 := []db_api.BatchEvent{
+			{
+				ID:   "",
+				Type: db_api.BatchEventCancel,
+				TTL:  1000,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent1)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with empty ID")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with invalid Type (negative).
+		invalidEvent2 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventType(-1),
+				TTL:  1000,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent2)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with negative Type")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with invalid Type (>= BatchEventMaxVal).
+		invalidEvent3 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventMaxVal,
+				TTL:  1000,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent3)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with Type >= BatchEventMaxVal")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with TTL = 0.
+		invalidEvent4 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventCancel,
+				TTL:  0,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent4)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with TTL=0")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+
+		// Send event with negative TTL.
+		invalidEvent5 := []db_api.BatchEvent{
+			{
+				ID:   uuid.New().String(),
+				Type: db_api.BatchEventCancel,
+				TTL:  -100,
+			},
+		}
+		sentIDs, err = exchClient.ECProducerSendEvents(context.Background(), invalidEvent5)
+		if err == nil {
+			t.Fatalf("Expected error when sending event with negative TTL")
+		}
+		if len(sentIDs) != 0 {
+			t.Fatalf("Expected 0 sent IDs for invalid event, got %d", len(sentIDs))
+		}
+	})
+
+	t.Run("Event exchange operations - Edge case: all event types", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Test all event types (Cancel, Pause, Resume).
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+
+		allEventTypes := []db_api.BatchEvent{
+			{ID: ID, Type: db_api.BatchEventCancel, TTL: 1000},
+			{ID: ID, Type: db_api.BatchEventPause, TTL: 1000},
+			{ID: ID, Type: db_api.BatchEventResume, TTL: 1000},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), allEventTypes)
+		if err != nil {
+			t.Fatalf("Failed to send all event types: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("Expected 1 sent ID, got %d", len(sentIDs))
+		}
+
+		// Receive all event types.
+		for _, expectedEvent := range allEventTypes {
+			select {
+			case receivedEvent := <-ec.Events:
+				isSameEvent(t, &expectedEvent, &receivedEvent)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Timeout waiting for event type %d", expectedEvent.Type)
+			}
+		}
+		ec.CloseFn() // Close immediately after use
+	})
+
+	t.Run("Event exchange operations - Edge case: pre-created events", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Send events before creating consumer channel.
+		ID := uuid.New().String()
+		earlyEvents := []db_api.BatchEvent{
+			{ID: ID, Type: db_api.BatchEventCancel, TTL: 1000},
+			{ID: ID, Type: db_api.BatchEventPause, TTL: 1000},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), earlyEvents)
+		if err != nil {
+			t.Fatalf("Failed to send early events: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("Expected 1 sent ID for early events, got %d", len(sentIDs))
+		}
+
+		// Create consumer channel after events were sent.
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel after sending events: %v", err)
+		}
+
+		// Should receive events that were sent before channel creation.
+		for _, expectedEvent := range earlyEvents {
+			select {
+			case receivedEvent := <-ec.Events:
+				isSameEvent(t, &expectedEvent, &receivedEvent)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Timeout waiting for early event type %d", expectedEvent.Type)
+			}
+		}
+		ec.CloseFn() // Close immediately after use
+	})
+
+	t.Run("Event exchange operations - Edge case: multi-ID routing", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Send multiple events to different IDs.
+		ID3 := uuid.New().String()
+		ID4 := uuid.New().String()
+		ec3, err := exchClient.ECConsumerGetChannel(context.Background(), ID3)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel for ID3: %v", err)
+		}
+
+		ec4, err := exchClient.ECConsumerGetChannel(context.Background(), ID4)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel for ID4: %v", err)
+		}
+
+		multiIDEvents := []db_api.BatchEvent{
+			{ID: ID3, Type: db_api.BatchEventCancel, TTL: 1000},
+			{ID: ID4, Type: db_api.BatchEventPause, TTL: 1000},
+			{ID: ID3, Type: db_api.BatchEventResume, TTL: 1000},
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), multiIDEvents)
+		if err != nil {
+			t.Fatalf("Failed to send events to multiple IDs: %v", err)
+		}
+		if len(sentIDs) != 2 {
+			t.Fatalf("Expected 2 sent IDs (ID3 and ID4), got %d", len(sentIDs))
+		}
+
+		// Verify events are routed to correct channels.
+		receivedID3 := 0
+		receivedID4 := 0
+		for i := 0; i < 3; i++ {
+			select {
+			case event := <-ec3.Events:
+				if event.ID != ID3 {
+					t.Fatalf("Expected event for ID3, got %s", event.ID)
+				}
+				receivedID3++
+			case event := <-ec4.Events:
+				if event.ID != ID4 {
+					t.Fatalf("Expected event for ID4, got %s", event.ID)
+				}
+				receivedID4++
+			case <-time.After(2 * time.Second):
+				t.Fatalf("Timeout waiting for events")
+			}
+		}
+		if receivedID3 != 2 {
+			t.Fatalf("Expected 2 events for ID3, got %d", receivedID3)
+		}
+		if receivedID4 != 1 {
+			t.Fatalf("Expected 1 event for ID4, got %d", receivedID4)
+		}
+		ec3.CloseFn() // Close immediately after use
+		ec4.CloseFn() // Close immediately after use
+	})
+
+	t.Run("Event exchange operations - Edge case: idempotent close", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Test closing consumer channel multiple times (should be idempotent).
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+		ec.CloseFn()
+		ec.CloseFn() // Second close should not panic.
+		ec.CloseFn() // Third close should not panic.
+	})
+
+	t.Run("Event exchange operations - Edge case: large event set", func(t *testing.T) {
+		t.Parallel()
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Test sending large number of events.
+		ID := uuid.New().String()
+		ec, err := exchClient.ECConsumerGetChannel(context.Background(), ID)
+		if err != nil {
+			t.Fatalf("Failed to get event consumer channel: %v", err)
+		}
+
+		nEvents := 50
+		largeEventSet := make([]db_api.BatchEvent, nEvents)
+		for i := 0; i < nEvents; i++ {
+			largeEventSet[i] = db_api.BatchEvent{
+				ID:   ID,
+				Type: db_api.BatchEventType(i % 3), // Cycle through Cancel, Pause, Resume
+				TTL:  1000,
+			}
+		}
+		sentIDs, err := exchClient.ECProducerSendEvents(context.Background(), largeEventSet)
+		if err != nil {
+			t.Fatalf("Failed to send large event set: %v", err)
+		}
+		if len(sentIDs) != 1 {
+			t.Fatalf("Expected 1 sent ID for large event set, got %d", len(sentIDs))
+		}
+
+		// Receive all events.
+		for i := 0; i < nEvents; i++ {
+			select {
+			case event := <-ec.Events:
+				if event.ID != ID {
+					t.Fatalf("Expected event for ID, got %s", event.ID)
+				}
+				expectedType := db_api.BatchEventType(i % 3)
+				if event.Type != expectedType {
+					t.Fatalf("Expected event type %d, got %d", expectedType, event.Type)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Timeout waiting for event %d/%d", i+1, nEvents)
+			}
+		}
+		ec.CloseFn() // Close immediately after use
+	})
+
 	t.Run("Status exchange operations", func(t *testing.T) {
 		t.Parallel()
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
@@ -707,7 +1030,6 @@ func TestRedisDSClient(t *testing.T) {
 	})
 
 	t.Run("Queue exchange operations", func(t *testing.T) {
-		t.Parallel()
 		if minirds != nil {
 			t.Skip("Miniredis model")
 		}
@@ -770,6 +1092,632 @@ func TestRedisDSClient(t *testing.T) {
 				t.Fatalf("Invalid delete count %d", nDel)
 			}
 		}
+	})
+
+	t.Run("Queue exchange operations - Negative cases", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Enqueue with nil item.
+		err := exchClient.PQEnqueue(context.Background(), nil)
+		if err == nil {
+			t.Fatalf("Expected error when enqueuing nil item")
+		}
+
+		// Enqueue with empty ID.
+		invalidItem := &db_api.BatchJobPriority{
+			ID:  "",
+			SLO: time.Now().Add(time.Hour),
+			TTL: 1000,
+		}
+		err = exchClient.PQEnqueue(context.Background(), invalidItem)
+		if err == nil {
+			t.Fatalf("Expected error when enqueuing item with empty ID")
+		}
+
+		// Enqueue with zero SLO.
+		invalidItem2 := &db_api.BatchJobPriority{
+			ID:  uuid.New().String(),
+			SLO: time.Time{},
+			TTL: 1000,
+		}
+		err = exchClient.PQEnqueue(context.Background(), invalidItem2)
+		if err == nil {
+			t.Fatalf("Expected error when enqueuing item with zero SLO")
+		}
+
+		// Delete with nil item.
+		nDel, err := exchClient.PQDelete(context.Background(), nil)
+		if err == nil {
+			t.Fatalf("Expected error when deleting nil item")
+		}
+		if nDel != 0 {
+			t.Fatalf("Expected 0 deleted items for nil item, got %d", nDel)
+		}
+
+		// Delete with empty ID.
+		invalidDeleteItem := &db_api.BatchJobPriority{
+			ID:  "",
+			SLO: time.Now().Add(time.Hour),
+		}
+		nDel, err = exchClient.PQDelete(context.Background(), invalidDeleteItem)
+		if err == nil {
+			t.Fatalf("Expected error when deleting item with empty ID")
+		}
+		if nDel != 0 {
+			t.Fatalf("Expected 0 deleted items for invalid item, got %d", nDel)
+		}
+
+		// Delete non-existent item.
+		nonExistentItem := &db_api.BatchJobPriority{
+			ID:  uuid.New().String(),
+			SLO: time.Now().Add(time.Hour),
+		}
+		nDel, err = exchClient.PQDelete(context.Background(), nonExistentItem)
+		if err != nil {
+			t.Fatalf("Delete of non-existent item should not error: %v", err)
+		}
+		if nDel != 0 {
+			t.Fatalf("Expected 0 deleted items for non-existent item, got %d", nDel)
+		}
+
+		// Dequeue from empty queue with timeout.
+		items, err := exchClient.PQDequeue(context.Background(), 1*time.Second, 10)
+		if err != nil {
+			t.Fatalf("Dequeue from empty queue should not error: %v", err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("Expected no items from empty queue, got %d", len(items))
+		}
+	})
+
+	t.Run("Queue exchange operations - Edge cases", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Enqueue items with identical SLO values.
+		slo := time.Now().Add(time.Hour)
+		nIdentical := 5
+		itemsIdentical := make([]*db_api.BatchJobPriority, 0, nIdentical)
+		for i := 0; i < nIdentical; i++ {
+			item := &db_api.BatchJobPriority{
+				ID:   uuid.New().String(),
+				SLO:  slo,
+				TTL:  1000,
+				Data: []byte(fmt.Sprintf("data-%d", i)),
+			}
+			err := exchClient.PQEnqueue(context.Background(), item)
+			if err != nil {
+				t.Fatalf("Failed to enqueue item with identical SLO: %v", err)
+			}
+			itemsIdentical = append(itemsIdentical, item)
+		}
+
+		// Dequeue all items with identical SLO.
+		items, err := exchClient.PQDequeue(context.Background(), 1*time.Second, nIdentical)
+		if err != nil {
+			t.Fatalf("Failed to dequeue items: %v", err)
+		}
+		if len(items) != nIdentical {
+			t.Fatalf("Expected %d items, got %d", nIdentical, len(items))
+		}
+
+		// Enqueue items and dequeue with maxItems exceeding queue size.
+		nItems := 3
+		itemsSmall := make([]*db_api.BatchJobPriority, 0, nItems)
+		for i := 0; i < nItems; i++ {
+			item := &db_api.BatchJobPriority{
+				ID:   uuid.New().String(),
+				SLO:  time.Now().Add(time.Hour),
+				TTL:  1000,
+				Data: []byte(fmt.Sprintf("small-%d", i)),
+			}
+			err := exchClient.PQEnqueue(context.Background(), item)
+			if err != nil {
+				t.Fatalf("Failed to enqueue item: %v", err)
+			}
+			itemsSmall = append(itemsSmall, item)
+		}
+
+		// Dequeue with maxItems larger than queue size.
+		items, err = exchClient.PQDequeue(context.Background(), 1*time.Second, 100)
+		if err != nil {
+			t.Fatalf("Failed to dequeue items: %v", err)
+		}
+		if len(items) != nItems {
+			t.Fatalf("Expected %d items (all available), got %d", nItems, len(items))
+		}
+
+		// Test with large data payload.
+		largeData := make([]byte, 1024*100) // 100KB
+		for i := range largeData {
+			largeData[i] = byte(i % 256)
+		}
+		largeItem := &db_api.BatchJobPriority{
+			ID:   uuid.New().String(),
+			SLO:  time.Now().Add(time.Hour),
+			TTL:  1000,
+			Data: largeData,
+		}
+		err = exchClient.PQEnqueue(context.Background(), largeItem)
+		if err != nil {
+			t.Fatalf("Failed to enqueue item with large data: %v", err)
+		}
+
+		// Dequeue and verify large data.
+		items, err = exchClient.PQDequeue(context.Background(), 1*time.Second, 1)
+		if err != nil {
+			t.Fatalf("Failed to dequeue large item: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(items))
+		}
+		if !bytes.Equal(items[0].Data, largeData) {
+			t.Fatalf("Large data mismatch")
+		}
+
+		// Test dequeue with maxItems=0 - should error.
+		item := &db_api.BatchJobPriority{
+			ID:   uuid.New().String(),
+			SLO:  time.Now().Add(time.Hour),
+			TTL:  1000,
+			Data: []byte("test"),
+		}
+		exchClient.PQEnqueue(context.Background(), item)
+		items, err = exchClient.PQDequeue(context.Background(), 1*time.Second, 0)
+		if err == nil {
+			t.Fatalf("Dequeue with maxItems=0 should error")
+		}
+
+		// Cleanup remaining items if any.
+		exchClient.PQDequeue(context.Background(), 1*time.Second, 100)
+	})
+
+	t.Run("includeStatic parameter - Batch", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store batch with spec.
+		batchID := uuid.New().String()
+		spec := []byte("important spec data")
+		batch := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       batchID,
+				TenantID: "Tnt1",
+				Expiry:   time.Now().Add(time.Hour).Unix(),
+				Tags:     map[string]string{tagKey1: tagVal1},
+			},
+			BaseContents: db_api.BaseContents{
+				Spec:   spec,
+				Status: []byte("status"),
+			},
+		}
+		err := batchClient.DBStore(context.Background(), batch)
+		if err != nil {
+			t.Fatalf("Failed to store batch: %v", err)
+		}
+
+		// Get with includeStatic=true.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{batchID},
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get batch: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(resItems))
+		}
+		if !bytes.Equal(resItems[0].Spec, spec) {
+			t.Fatalf("Spec should be included when includeStatic=true")
+		}
+
+		// Get with includeStatic=false.
+		resItems, _, _, err = batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{batchID},
+				},
+			}, false, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get batch: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(resItems))
+		}
+		if len(resItems[0].Spec) != 0 {
+			t.Fatalf("Spec should be excluded when includeStatic=false, got: %v", resItems[0].Spec)
+		}
+		// Status should still be present.
+		if len(resItems[0].Status) == 0 {
+			t.Fatalf("Status should still be present")
+		}
+
+		// Cleanup.
+		batchClient.DBDelete(context.Background(), []string{batchID})
+	})
+
+	t.Run("includeStatic parameter - File", func(t *testing.T) {
+		t.Parallel()
+		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store file with spec.
+		fileID := uuid.New().String()
+		spec := []byte("important spec data")
+		file := &db_api.FileItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       fileID,
+				TenantID: "Tnt1",
+				Expiry:   time.Now().Add(time.Hour).Unix(),
+				Tags:     map[string]string{tagKey1: tagVal1},
+			},
+			Purpose: "test",
+			BaseContents: db_api.BaseContents{
+				Spec:   spec,
+				Status: []byte("status"),
+			},
+		}
+		err := fileClient.DBStore(context.Background(), file)
+		if err != nil {
+			t.Fatalf("Failed to store file: %v", err)
+		}
+
+		// Get with includeStatic=true.
+		resItems, _, _, err := fileClient.DBGet(context.Background(),
+			&db_api.FileQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{fileID},
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get file: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(resItems))
+		}
+		if !bytes.Equal(resItems[0].Spec, spec) {
+			t.Fatalf("Spec should be included when includeStatic=true")
+		}
+
+		// Get with includeStatic=false.
+		resItems, _, _, err = fileClient.DBGet(context.Background(),
+			&db_api.FileQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{fileID},
+				},
+			}, false, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get file: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(resItems))
+		}
+		if len(resItems[0].Spec) != 0 {
+			t.Fatalf("Spec should be excluded when includeStatic=false, got: %v", resItems[0].Spec)
+		}
+
+		// Cleanup.
+		fileClient.DBDelete(context.Background(), []string{fileID})
+	})
+
+	t.Run("Negative cases - Batch", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store with empty ID should fail validation.
+		invalidBatch := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID: "",
+			},
+			BaseContents: db_api.BaseContents{
+				Spec:   []byte("spec"),
+				Status: []byte("status"),
+			},
+		}
+		err := batchClient.DBStore(context.Background(), invalidBatch)
+		if err == nil {
+			t.Fatalf("Expected error when storing batch with empty ID")
+		}
+
+		// Get with non-existent IDs.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{"non-existent-id-1", "non-existent-id-2"},
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Get should not error for non-existent IDs: %v", err)
+		}
+		if len(resItems) != 0 {
+			t.Fatalf("Expected 0 items for non-existent IDs, got %d", len(resItems))
+		}
+
+		// Get with empty query.
+		resItems, _, _, err = batchClient.DBGet(context.Background(), nil, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Get should handle nil query gracefully: %v", err)
+		}
+		if len(resItems) != 0 {
+			t.Fatalf("Expected 0 items for nil query, got %d", len(resItems))
+		}
+
+		// Get with empty IDs list.
+		resItems, _, expectMore, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{},
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Get should handle empty IDs list: %v", err)
+		}
+		if len(resItems) != 0 || expectMore {
+			t.Fatalf("Expected 0 items and no more for empty IDs")
+		}
+
+		// Update non-existent item.
+		nonExistentBatch := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       "non-existent-update-id",
+				TenantID: "Tnt1",
+			},
+			BaseContents: db_api.BaseContents{
+				Status: []byte("updated"),
+			},
+		}
+		err = batchClient.DBUpdate(context.Background(), nonExistentBatch)
+		if err != nil {
+			t.Fatalf("Update of non-existent item should not error: %v", err)
+		}
+		// Cleanup: delete the key created by the update.
+		batchClient.DBDelete(context.Background(), []string{"non-existent-update-id"})
+
+		// Update with empty ID should fail validation.
+		invalidUpdate := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID: "",
+			},
+		}
+		err = batchClient.DBUpdate(context.Background(), invalidUpdate)
+		if err == nil {
+			t.Fatalf("Expected error when updating batch with empty ID")
+		}
+
+		// Delete non-existent items.
+		deletedIDs, err := batchClient.DBDelete(context.Background(), []string{"non-existent-1", "non-existent-2"})
+		if err != nil {
+			t.Fatalf("Delete should not error for non-existent IDs: %v", err)
+		}
+		if len(deletedIDs) != 0 {
+			t.Fatalf("Expected 0 deleted IDs, got %d", len(deletedIDs))
+		}
+
+		// Delete with empty IDs list.
+		deletedIDs, err = batchClient.DBDelete(context.Background(), []string{})
+		if err != nil {
+			t.Fatalf("Delete should handle empty IDs list: %v", err)
+		}
+		if len(deletedIDs) != 0 {
+			t.Fatalf("Expected 0 deleted IDs for empty list, got %d", len(deletedIDs))
+		}
+	})
+
+	t.Run("Negative cases - File", func(t *testing.T) {
+		t.Parallel()
+		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store with empty ID should fail validation.
+		invalidFile := &db_api.FileItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID: "",
+			},
+			Purpose: "test",
+		}
+		err := fileClient.DBStore(context.Background(), invalidFile)
+		if err == nil {
+			t.Fatalf("Expected error when storing file with empty ID")
+		}
+
+		// Get by purpose with empty string.
+		resItems, _, _, err := fileClient.DBGet(context.Background(),
+			&db_api.FileQuery{
+				Purpose: "",
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Get should handle empty purpose: %v", err)
+		}
+		if len(resItems) != 0 {
+			t.Fatalf("Expected 0 items for empty purpose, got %d", len(resItems))
+		}
+	})
+
+	t.Run("Edge cases - Empty fields", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store batch with empty spec and status.
+		batchID := uuid.New().String()
+		batch := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       batchID,
+				TenantID: "Tnt1",
+				Expiry:   0,
+				Tags:     map[string]string{},
+			},
+			BaseContents: db_api.BaseContents{
+				Spec:   []byte{},
+				Status: []byte{},
+			},
+		}
+		err := batchClient.DBStore(context.Background(), batch)
+		if err != nil {
+			t.Fatalf("Failed to store batch with empty fields: %v", err)
+		}
+
+		// Retrieve and verify.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{batchID},
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get batch: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(resItems))
+		}
+		if resItems[0].Expiry != 0 {
+			t.Fatalf("Expected expiry 0, got %d", resItems[0].Expiry)
+		}
+		if len(resItems[0].Tags) != 0 {
+			t.Fatalf("Expected empty tags, got %v", resItems[0].Tags)
+		}
+
+		// Cleanup.
+		batchClient.DBDelete(context.Background(), []string{batchID})
+	})
+
+	t.Run("Edge cases - Update with empty fields", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store batch.
+		batchID := uuid.New().String()
+		batch := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       batchID,
+				TenantID: "Tnt1",
+				Tags:     map[string]string{tagKey1: tagVal1},
+			},
+			BaseContents: db_api.BaseContents{
+				Spec:   []byte("spec"),
+				Status: []byte("status"),
+			},
+		}
+		err := batchClient.DBStore(context.Background(), batch)
+		if err != nil {
+			t.Fatalf("Failed to store batch: %v", err)
+		}
+
+		// Update with empty status and tags - should do nothing.
+		updateBatch := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:   batchID,
+				Tags: map[string]string{},
+			},
+			BaseContents: db_api.BaseContents{
+				Status: []byte{},
+			},
+		}
+		err = batchClient.DBUpdate(context.Background(), updateBatch)
+		if err != nil {
+			t.Fatalf("Failed to update batch: %v", err)
+		}
+
+		// Verify original values unchanged.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs: []string{batchID},
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get batch: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(resItems))
+		}
+		if !bytes.Equal(resItems[0].Status, []byte("status")) {
+			t.Fatalf("Status should be unchanged")
+		}
+
+		// Cleanup.
+		batchClient.DBDelete(context.Background(), []string{batchID})
+	})
+
+	t.Run("Get by IDs with tenant filter", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			baseClient.Close()
+		})
+
+		// Store batches with different tenants.
+		batch1ID := uuid.New().String()
+		batch1 := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       batch1ID,
+				TenantID: "TenantA",
+			},
+			BaseContents: db_api.BaseContents{
+				Status: []byte("status1"),
+			},
+		}
+		batch2ID := uuid.New().String()
+		batch2 := &db_api.BatchItem{
+			BaseIndexes: db_api.BaseIndexes{
+				ID:       batch2ID,
+				TenantID: "TenantB",
+			},
+			BaseContents: db_api.BaseContents{
+				Status: []byte("status2"),
+			},
+		}
+		batchClient.DBStore(context.Background(), batch1)
+		batchClient.DBStore(context.Background(), batch2)
+
+		// Get by IDs with tenant filter.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					IDs:      []string{batch1ID, batch2ID},
+					TenantID: "TenantA",
+				},
+			}, true, 0, 10)
+		if err != nil {
+			t.Fatalf("Failed to get batches: %v", err)
+		}
+		if len(resItems) != 1 {
+			t.Fatalf("Expected 1 item with TenantA, got %d", len(resItems))
+		}
+		if resItems[0].ID != batch1ID {
+			t.Fatalf("Expected batch1, got %s", resItems[0].ID)
+		}
+
+		// Cleanup.
+		batchClient.DBDelete(context.Background(), []string{batch1ID, batch2ID})
 	})
 }
 

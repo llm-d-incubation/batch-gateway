@@ -10,6 +10,7 @@ data:
     # API Server configuration
     host: {{ .Values.apiserver.config.host | quote }}
     port: {{ .Values.apiserver.config.port | quote }}
+    observability_port: {{ .Values.apiserver.config.observabilityPort | quote }}
     {{- if .Values.apiserver.config.tenantHeader }}
     tenant_header: {{ .Values.apiserver.config.tenantHeader | quote }}
     {{- end }}

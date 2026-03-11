@@ -223,7 +223,7 @@ func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, lo
 }
 
 func (c *DSClientRedis) dbGet(
-	ctx context.Context, itemType, logPref string, start, limit int,
+	ctx context.Context, itemType, logPref string, start, limit int, includeStatic bool,
 	IDs []string, tagSelectors db_api.Tags, tagsLogicalCond db_api.LogicalCond,
 	expired bool, tenantID, purpose string) (res []any, err error) {
 
@@ -231,6 +231,7 @@ func (c *DSClientRedis) dbGet(
 		ctx = context.Background()
 	}
 	logger := klog.FromContext(ctx)
+	includeSpec := strconv.FormatBool(includeStatic)
 
 	if len(IDs) > 0 {
 
@@ -241,7 +242,7 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
-			keys, tenantID).Slice()
+			keys, tenantID, includeSpec).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -259,7 +260,7 @@ func (c *DSClientRedis) dbGet(
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
-			ctags, cond, getKeyPatternForStore(itemType), start, limit, tenantID).Slice()
+			ctags, cond, getKeyPatternForStore(itemType), start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -272,7 +273,7 @@ func (c *DSClientRedis) dbGet(
 		defer ccancel()
 		res, err = redisScriptGetByExpiry.Run(cctx, c.redisClient,
 			[]string{}, curTimestamp, getKeyPatternForStore(itemType),
-			start, limit, tenantID).Slice()
+			start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -284,7 +285,7 @@ func (c *DSClientRedis) dbGet(
 		defer ccancel()
 		res, err = redisScriptGetByPurpose.Run(cctx, c.redisClient,
 			[]string{}, purpose, getKeyPatternForStore(itemType),
-			start, limit, tenantID).Slice()
+			start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -296,7 +297,7 @@ func (c *DSClientRedis) dbGet(
 		defer ccancel()
 		res, err = redisScriptGetByTenant.Run(cctx, c.redisClient,
 			[]string{}, tenantID, getKeyPatternForStore(itemType),
-			start, limit).Slice()
+			start, limit, includeSpec).Slice()
 		if err != nil {
 			logger.Error(err, logPref+": script failed")
 			return
@@ -322,13 +323,13 @@ func (c *BatchDBClientRedis) DBGet(
 	}
 
 	var res []any
-	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit,
+	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit, includeStatic,
 		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
 	if err != nil {
 		return
 	}
 	if res != nil {
-		cursor, expectMore, items, err = processGetScriptResultBatch(res, includeStatic)
+		cursor, expectMore, items, err = processGetScriptResultBatch(res)
 		if err != nil {
 			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
 			return
@@ -354,13 +355,13 @@ func (c *FileDBClientRedis) DBGet(
 	}
 
 	var res []any
-	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", start, limit,
+	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", start, limit, includeStatic,
 		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, query.Purpose)
 	if err != nil {
 		return
 	}
 	if res != nil {
-		cursor, expectMore, items, err = processGetScriptResultFile(res, includeStatic)
+		cursor, expectMore, items, err = processGetScriptResultFile(res)
 		if err != nil {
 			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
 			return
@@ -371,7 +372,7 @@ func (c *FileDBClientRedis) DBGet(
 	return
 }
 
-func processGetScriptResultBatch(res []any, includeStatic bool) (
+func processGetScriptResultBatch(res []any) (
 	cursor int, expectMore bool, items []*db_api.BatchItem, err error) {
 
 	if len(res) != 2 {
@@ -390,7 +391,7 @@ func processGetScriptResultBatch(res []any, includeStatic bool) (
 	}
 	items = make([]*db_api.BatchItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		item, err := batchItemFromHget(resItem.([]any), includeStatic)
+		item, err := batchItemFromHget(resItem.([]any))
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -404,7 +405,7 @@ func processGetScriptResultBatch(res []any, includeStatic bool) (
 	return
 }
 
-func processGetScriptResultFile(res []any, includeStatic bool) (
+func processGetScriptResultFile(res []any) (
 	cursor int, expectMore bool, items []*db_api.FileItem, err error) {
 
 	if len(res) != 2 {
@@ -423,7 +424,7 @@ func processGetScriptResultFile(res []any, includeStatic bool) (
 	}
 	items = make([]*db_api.FileItem, 0, len(resItems))
 	for _, resItem := range resItems {
-		item, err := fileItemFromHget(resItem.([]any), includeStatic)
+		item, err := fileItemFromHget(resItem.([]any))
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -478,9 +479,9 @@ func convertTags(tags map[string]string) (ctags []string) {
 	return
 }
 
-func batchItemFromHget(vals []any, includeStatic bool) (item *db_api.BatchItem, err error) {
+func batchItemFromHget(vals []any) (item *db_api.BatchItem, err error) {
 
-	ID, tenantID, expiry, tags, _, status, spec, err := itemFromHget(vals, includeStatic)
+	ID, tenantID, expiry, tags, _, status, spec, err := itemFromHget(vals)
 	if err != nil {
 		return nil, err
 	}
@@ -501,9 +502,9 @@ func batchItemFromHget(vals []any, includeStatic bool) (item *db_api.BatchItem, 
 	return
 }
 
-func fileItemFromHget(vals []any, includeStatic bool) (item *db_api.FileItem, err error) {
+func fileItemFromHget(vals []any) (item *db_api.FileItem, err error) {
 
-	ID, tenantID, expiry, tags, purpose, status, spec, err := itemFromHget(vals, includeStatic)
+	ID, tenantID, expiry, tags, purpose, status, spec, err := itemFromHget(vals)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +526,7 @@ func fileItemFromHget(vals []any, includeStatic bool) (item *db_api.FileItem, er
 	return
 }
 
-func itemFromHget(vals []any, includeStatic bool) (
+func itemFromHget(vals []any) (
 	ID, tenantID string, expiry int64, tags db_api.Tags,
 	purpose string, status, spec []byte, err error) {
 
@@ -586,10 +587,8 @@ func itemFromHget(vals []any, includeStatic bool) (
 	}
 
 	// Extract spec.
-	if includeStatic {
-		if specStr := hash["spec"]; len(specStr) > 0 {
-			spec = []byte(specStr)
-		}
+	if specStr := hash["spec"]; len(specStr) > 0 {
+		spec = []byte(specStr)
 	}
 
 	return
