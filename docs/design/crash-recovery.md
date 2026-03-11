@@ -35,7 +35,7 @@ Recovery requires four additions to the system:
 
 3. **Startup recovery in the processor.** A recovery step runs at processor startup, before the polling loop begins. It scans the local `workdir` for leftover job artifacts from a previous execution. If any are found, the processor performs phase-aware recovery (see below) — uploading completed output if possible, or re-enqueuing the job for reprocessing — then cleans up stale files before proceeding with normal operation.
 
-4. **Orphan detection in batch-gc (→ batch-reconciler).** The batch-gc process already performs periodic DB scans for maintenance. It is extended to detect orphaned jobs: it queries the DB for all non-terminal jobs, then cross-references them against the in-process job sets in Redis. Any non-terminal job that no alive processor claims is considered orphaned. The reconciler recovers these by resetting them to `validating` and re-enqueuing them for reprocessing. Since the process now handles both garbage collection and crash recovery, it is renamed from `batch-gc` to `batch-reconciler` to reflect its broader scope.
+4. **Orphan detection in batch-gc (→ batch-reconciler).** The batch-gc process already performs periodic DB scans for maintenance. It is extended to detect orphaned jobs: it checks heartbeat TTL keys to determine which processors are alive, queries the DB for all non-terminal jobs, then cross-references them against the in-process job sets in Redis. Any non-terminal job that no alive processor claims is considered orphaned. The reconciler recovers these by resetting them to `validating` and re-enqueuing them for reprocessing. Since the process now handles both garbage collection and crash recovery, it is renamed from `batch-gc` to `batch-reconciler` to reflect its broader scope.
 
 ---
 
@@ -56,17 +56,17 @@ A `version` field on each job acts as a fencing token:
 
 ## Crashed Job Detection
 
-### Mechanism: Redis Processor Registry + Health Check
+### Mechanism: Redis Processor Registry + TTL Heartbeat
 
-This design uses a processor-level registry in Redis combined with active health checking to determine whether a processor is alive.
+This design uses a processor-level registry in Redis combined with TTL-based heartbeat to determine whether a processor is alive.
 
 ### How It Works
 
-1. **Processor registration**: When a processor pod starts, it registers itself in a Redis set (e.g., `SADD "batch:processors" "processor-A:9090"`). The processor ID is derived from the pod hostname (`os.Hostname()`) and the listening port.
-2. **Graceful deregistration**: On graceful shutdown, the processor removes itself (`SREM "batch:processors" "processor-A:9090"`) and deletes its job set (`DEL "batch:processor-A:jobs"`).
-3. **Crash leaves stale entries**: If the processor crashes (OOM, node eviction), its registry entry and job set remain in Redis.
+1. **Processor registration**: When a processor pod starts, it registers itself in a Redis set (`SADD "batch:processors" "processor-A:9090"`) and starts a background heartbeat goroutine that periodically renews a TTL key (`SET "batch:processor-A:heartbeat" 1 EX 30` every 10s). The processor ID is derived from the pod hostname (`os.Hostname()`) and the listening port.
+2. **Graceful deregistration**: On graceful shutdown, the processor stops its heartbeat goroutine, deletes its job set (`DEL "batch:processor-A:jobs"`), and removes itself from the registry (`SREM "batch:processors" "processor-A:9090"`). The heartbeat key is not explicitly deleted; it expires naturally via TTL.
+3. **Crash leaves stale entries**: If the processor crashes (OOM, node eviction), its registry entry and job set remain in Redis. The heartbeat key expires automatically after TTL (30s), signaling that the processor is dead.
 4. **In-process job tracking via Redis**: When a processor dequeues a job, it adds the job ID (`SADD "batch:processor-A:jobs" "job-1"`). When a job completes or is released, it removes it (`SREM`). The reconciler reads these sets to determine which jobs are actively being processed.
-5. **Scanner (in batch-reconciler)**: Periodically scans for crashed jobs by health-checking registered processors and cross-referencing their Redis job sets with non-terminal jobs in the DB.
+5. **Scanner (in batch-reconciler)**: Periodically checks heartbeat keys for registered processors and cross-references their Redis job sets with non-terminal jobs in the DB.
 
 ### Scanner Location
 
@@ -81,8 +81,7 @@ The crash scanner runs inside the `batch-reconciler` process (formerly `batch-gc
 
 The batch-reconciler process needs additional dependencies:
 - A queue client (`PQEnqueue`, `PQExists`) for re-enqueuing and checking orphaned jobs
-- A Redis client for reading the processor registry and job sets
-- An HTTP client for health-checking processor endpoints
+- A Redis client for reading the processor registry, heartbeat keys, and job sets
 
 ```
 batch-reconciler process:
@@ -98,60 +97,55 @@ The two loops operate on different concerns and do not conflict: the crash scann
 1. SMEMBERS "batch:processors"
    → ["A:9090", "B:9090", "C:9090", "D:9090"]
 
-2. Health-check each registered processor (GET /health)
-   → A: no response (confirmed dead — suspected last scan, still failing)
-   → B: 200 OK
-   → C: 200 OK
-   → D: no response (newly suspected — first failure, skip this scan)
+2. Check heartbeat key for each registered processor (EXISTS "batch:processor-X:heartbeat")
+   → A: missing (dead — heartbeat TTL expired)
+   → B: exists (alive)
+   → C: exists (alive)
+   → D: missing (dead — heartbeat TTL expired)
 
 3. Read in-process jobs from Redis sets for all processors:
-   Confirmed dead: SMEMBERS "batch:processor-A:jobs" → [job-1, job-2]  (orphaned)
-   Alive:          SMEMBERS "batch:processor-B:jobs" → [job-3, job-4]  (active)
-   Alive:          SMEMBERS "batch:processor-C:jobs" → [job-5]         (active)
-   Suspected:      SMEMBERS "batch:processor-D:jobs" → [job-7]         (skip this scan)
+   Dead:  SMEMBERS "batch:processor-A:jobs" → [job-1, job-2]  (orphaned)
+   Alive: SMEMBERS "batch:processor-B:jobs" → [job-3, job-4]  (active)
+   Alive: SMEMBERS "batch:processor-C:jobs" → [job-5]         (active)
+   Dead:  SMEMBERS "batch:processor-D:jobs" → [job-7]         (orphaned)
 
-4. Confirmed dead processors' jobs are orphaned: [job-1, job-2]
-   Suspected processors' jobs are skipped: [job-7] (wait for next scan to confirm)
+4. Dead processors' jobs are orphaned: [job-1, job-2, job-7]
 
 5. DB scan: SELECT id FROM jobs WHERE status IN non-terminal statuses
    → [job-1, job-2, job-3, job-4, job-5, job-6, job-7]
 
-6. Jobs not in any processor's set (alive, dead, or suspected): {job-6}
+6. Jobs not in any processor's set (alive or dead): {job-6}
    → Check priority queue: is job-6 still in the queue?
      - Yes: not yet dequeued, waiting to be processed → skip
      - No: dequeued but lost (crashed between dequeue and SADD) → orphaned
 
 7. Recover orphaned jobs:
    - `cancelling` → conditional update to `cancelled` (no re-enqueue)
+   - version >= max_retries → conditional update to `failed` (no re-enqueue)
    - All other statuses → conditional update to `validating` + re-enqueue
 
 8. Cleanup dead processor entries:
-   DEL "batch:processor-A:jobs"    ← set
+   DEL "batch:processor-A:heartbeat"
+   DEL "batch:processor-A:jobs"
    SREM "batch:processors" "A:9090"
+   DEL "batch:processor-D:heartbeat"
+   DEL "batch:processor-D:jobs"
+   SREM "batch:processors" "D:9090"
 ```
 
 ### Scanner Logic (Pseudocode)
 
 ```
-// persistent state across scans:
-suspected_dead = set()    // processors that failed health check on previous scan
-
 every scan_interval:
   registered = SMEMBERS "batch:processors"
 
-  alive_processors    = []
-  confirmed_dead      = []
-  newly_suspected     = []
+  alive_processors = []
+  dead_processors  = []
   for each processor in registered:
-    if health_check(processor, retries=3):
+    if EXISTS "batch:processor-{id}:heartbeat":
       alive_processors.append(processor)
-      suspected_dead.remove(processor)    // recovered, clear suspicion
-    else if processor in suspected_dead:
-      confirmed_dead.append(processor)    // failed twice → truly dead
-      suspected_dead.remove(processor)
     else:
-      newly_suspected.append(processor)   // first failure → suspect only
-      suspected_dead.add(processor)
+      dead_processors.append(processor)
 
   // collect in-process jobs from Redis sets
   alive_jobs = set()
@@ -159,13 +153,8 @@ every scan_interval:
     jobs = SMEMBERS "batch:processor-{id}:jobs"
     alive_jobs.add_all(jobs)
 
-  suspected_jobs = set()
-  for each processor in newly_suspected:
-    jobs = SMEMBERS "batch:processor-{id}:jobs"
-    suspected_jobs.add_all(jobs)
-
   orphaned_from_dead = set()
-  for each processor in confirmed_dead:
+  for each processor in dead_processors:
     jobs = SMEMBERS "batch:processor-{id}:jobs"
     orphaned_from_dead.add_all(jobs)
 
@@ -178,10 +167,8 @@ every scan_interval:
       continue                    // expired — leave for GC to delete
     if job.id in alive_jobs:
       continue                    // actively being processed
-    if job.id in suspected_jobs:
-      continue                    // processor suspected dead, wait for next scan to confirm
     if job.id in orphaned_from_dead:
-      // known orphan from confirmed dead processor — recover below
+      // known orphan from dead processor — recover below
     else if PQExists(job.id):
       continue                    // still in queue, waiting to be dequeued
     else:                        // not in any set AND not in queue → lost between dequeue and SADD
@@ -191,15 +178,20 @@ every scan_interval:
       conditional update: status → 'cancelled' (WHERE version = job.version)
       // version mismatch → processor restarted and already handling it (rare, safety net)
     else:
+      if job.version >= max_retries:
+        conditional update: status → 'failed' (WHERE version = job.version)
+        record metric (max_retries_exceeded)
+        continue
       conditional update: status → 'validating', version+1 (WHERE version = job.version)
       if update succeeded:
         re-enqueue via PQEnqueue
       // version mismatch → processor restarted and already handling it (rare, safety net)
     record log + metric
 
-  // cleanup confirmed dead processor entries only
-  for each processor in confirmed_dead:
-    DEL "batch:processor-{id}:jobs"    ← set
+  // cleanup dead processor entries
+  for each processor in dead_processors:
+    DEL "batch:processor-{id}:heartbeat"
+    DEL "batch:processor-{id}:jobs"
     SREM "batch:processors" processor
     record log + metric
 ```
@@ -208,19 +200,28 @@ every scan_interval:
 
 A job that was just dequeued may not yet appear in the processor's Redis set (race between BZMPOP and SADD). This window is extremely small (sub-millisecond, within the same goroutine). If the reconciler happens to scan during this window, it would see the job as orphaned and re-enqueue it. This is harmless: the original processor's next conditional status update would fail due to version mismatch (fencing), and the job would be processed correctly via the queue. No grace period is needed.
 
-### Health Check Reliability
+### TTL Heartbeat Reliability
 
-To avoid false positives from transient failures or container restarts:
+The TTL is set to 3× the heartbeat interval (e.g., heartbeat every 10s, TTL 30s). This gives the processor two missed beats before it is considered dead — enough to ride out transient slowdowns or garbage collection pauses.
 
-- The scanner retries health checks (e.g., 3 attempts with short backoff) within a single scan.
-- If all retries fail, the processor is marked as **suspected dead** — but its entries are NOT cleaned up yet.
-- On the **next scan cycle**, if the processor still fails health checks, it is confirmed dead. Only then does the scanner recover its jobs and clean up its Redis entries.
+When a container restarts within the same pod, the heartbeat key expires after TTL. But the processor starts its heartbeat goroutine immediately on boot — typically within seconds, well before the scanner's next cycle (1 min interval). Even if the scanner runs during this brief window:
 
-This two-phase detection prevents premature cleanup of a processor that is merely restarting. A container restart typically completes in seconds, well within the scan interval (1 min). Without this, a race is possible: the reconciler deletes a processor's registry entry after the processor has already re-registered on restart, causing the processor to silently disappear from the registry.
+- If the heartbeat key still exists from before the crash → processor appears alive → no action taken, correct.
+- If the key expired and the new heartbeat hasn't started yet → processor appears dead → scanner re-enqueues jobs. The restarting processor's startup recovery will encounter version mismatches on these jobs (fencing) and back off gracefully.
+
+No two-phase detection or in-memory state is needed. The TTL handles the grace period naturally.
+
+### Max Retry
+
+If a job repeatedly causes crashes (e.g., OOM), re-enqueuing it creates an infinite loop. The `version` field doubles as a retry counter: each recovery increments it. When `version >= max_retries`, the scanner marks the job as `failed` instead of re-enqueuing.
+
+The processor's startup recovery applies the same check: if `version >= max_retries`, the job is marked as `failed` and cleaned up instead of re-enqueued.
+
+`max_retries` is a configurable value (default: 3).
 
 ### Known Limitations
 
-**Stuck goroutine** (processor alive, single worker hung): The processor passes health checks, so the reconciler considers its jobs active. Detection relies on SLO expiry as a backstop.
+**Stuck goroutine** (processor alive, single worker hung): The processor's heartbeat goroutine continues to renew the TTL, so the scanner considers it alive. Detection relies on SLO expiry as a backstop.
 
 ---
 
@@ -273,14 +274,18 @@ Recovery sequence (runs at startup, before polling loop):
         Upload partial output if present. If update fails → reconciler already
         transitioned to `cancelled` (reconciler never re-enqueues `cancelling` jobs,
         see scanner logic) → clean up files. (rare, safety net)
-      - `validating`, `in_progress`: conditional update to `validating`, version+1
-        (WHERE version = current_version) + PQEnqueue.
-        If update fails → reconciler already re-enqueued → clean up files. (rare, safety net)
+      - `validating`, `in_progress`:
+        If version >= max_retries → conditional update to `failed`
+          (WHERE version = current_version) → clean up files.
+        Else → conditional update to `validating`, version+1
+          (WHERE version = current_version) + PQEnqueue.
+        If update fails → reconciler already handled it → clean up files. (rare, safety net)
 3. Register in Redis (SADD "batch:processors")   ← idempotent; re-registers if reconciler
                                                     cleaned up the entry during restart window
-4. Remove jobs transitioned to terminal in step 2d from Redis set (SREM)
-5. Clean up all remaining stale job directories
-6. Enter polling loop
+4. Start heartbeat goroutine (SET "batch:processor-X:heartbeat" 1 EX 30, every 10s)
+5. Remove jobs transitioned to terminal in step 2d from Redis set (SREM)
+6. Clean up all remaining stale job directories
+7. Enter polling loop
 ```
 
 Step 2a before step 3 ensures that discovered jobs are in the Redis set before the processor becomes visible to the reconciler. This prevents the reconciler from considering these jobs as orphaned during recovery.
@@ -321,6 +326,8 @@ No existing interface covers processor-level registry or per-processor job track
 - `RegisterProcessor(ctx, processorID) error` — add processor to registry (`SADD "batch:processors"`)
 - `UnregisterProcessor(ctx, processorID) error` — remove processor from registry (`SREM "batch:processors"`)
 - `ListProcessors(ctx) ([]string, error)` — list all registered processors (`SMEMBERS "batch:processors"`)
+- `SetHeartbeat(ctx, processorID, ttl) error` — set or renew heartbeat key (`SET "batch:processor-{id}:heartbeat" 1 EX ttl`). Returns error if `ttl <= 0` (heartbeat without TTL would never expire, making crash detection impossible).
+- `IsAlive(ctx, processorID) (bool, error)` — check if heartbeat key exists (`EXISTS "batch:processor-{id}:heartbeat"`)
 - `AddJob(ctx, processorID, jobID) error` — add job to processor's set (`SADD "batch:processor-{id}:jobs"`)
 - `RemoveJob(ctx, processorID, jobID) error` — remove job from set (`SREM`)
 - `ListJobs(ctx, processorID) ([]string, error)` — list all jobs for a processor (`SMEMBERS`)
@@ -336,14 +343,14 @@ Redis-only; no PostgreSQL/Mock implementation needed (processor registry is ephe
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `batch_startup_recovery_total` | Counter | `status`, `result` | Jobs discovered during startup recovery. `status`: job status at discovery (`validating`, `in_progress`, `finalizing`, `cancelling`). `result`: outcome (`recovered`, `claim_failed`, `cleanup`). |
+| `batch_startup_recovery_total` | Counter | `status`, `result` | Jobs discovered during startup recovery. `status`: job status at discovery (`validating`, `in_progress`, `finalizing`, `cancelling`). `result`: outcome (`recovered`, `claim_failed`, `cleanup`, `failed_max_retries`). |
 
 ### Reconciler Scan Metrics
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `batch_orphaned_jobs_detected_total` | Counter | `status` | Orphaned jobs detected per scan, by status at detection. |
-| `batch_orphaned_jobs_recovered_total` | Counter | `action` | Orphaned jobs recovered, by action taken (`re_enqueued`, `cancelled`). |
+| `batch_orphaned_jobs_recovered_total` | Counter | `action` | Orphaned jobs recovered, by action taken (`re_enqueued`, `cancelled`, `failed_max_retries`). |
 | `batch_dead_processors_cleaned_total` | Counter | | Dead processor entries removed from Redis. |
 | `batch_reconciler_scan_duration_seconds` | Histogram | | Time taken per reconciler crash scan cycle. |
 
@@ -388,23 +395,23 @@ Use version-conditioned status updates so that a stale worker stops processing w
 
 ### PR 3: Processor Registry + In-Process Job Tracking (Redis)
 
-Define `BatchProcessorRegistryClient` interface and Redis implementation. Register/deregister processor on startup/shutdown. Track in-process jobs via Redis set. Includes startup recovery logic for container restarts.
+Define `BatchProcessorRegistryClient` interface and Redis implementation. Register/deregister processor on startup/shutdown. TTL heartbeat goroutine for liveness detection. Track in-process jobs via Redis set. Includes startup recovery logic for container restarts.
 
 **Files affected:**
 - `internal/database/api/database.go` — new `BatchProcessorRegistryClient` interface
-- `internal/database/redis/` — Redis implementation of the interface
-- `cmd/batch-processor/main.go` — registry calls on start/shutdown
+- `internal/database/redis/` — Redis implementation of the interface (registry, heartbeat, job sets)
+- `cmd/batch-processor/main.go` — registry calls on start/shutdown, heartbeat goroutine lifecycle
 - `internal/processor/worker/worker.go` — job tracking on dequeue/completion, startup recovery logic
-- `internal/processor/config/config.go` — processor ID config
+- `internal/processor/config/config.go` — processor ID config, heartbeat interval/TTL config
 
 ### PR 4: Crashed Job Scanner
 
-Add crash scanner loop to batch-reconciler. Health-check registered processors, read Redis job sets, cross-reference with DB, recover orphaned jobs. Includes renaming `batch-gc` → `batch-reconciler`.
+Add crash scanner loop to batch-reconciler. Check heartbeat TTL keys for processor liveness, read Redis job sets, cross-reference with DB, recover orphaned jobs (with max retry). Includes renaming `batch-gc` → `batch-reconciler`.
 
 **Depends on:** PR #28 (batch-gc baseline), PR 1 (version field for fencing), PR 3 (registry + job tracking)
 
 **Files affected:**
 - `internal/gc/` — new scanner module
-- `cmd/batch-reconciler/main.go` — Redis client, HTTP client, queue client initialization (renamed from `cmd/batch-gc/`)
-- `internal/gc/config/config.go` — scanner config (interval, health check retries)
-- `charts/batch-gateway/` — scanner config in gc values
+- `cmd/batch-reconciler/main.go` — Redis client, queue client initialization (renamed from `cmd/batch-gc/`)
+- `internal/gc/config/config.go` — scanner config (interval, max retries)
+- `charts/batch-gateway/` — scanner config in reconciler values
