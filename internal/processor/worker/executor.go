@@ -246,7 +246,12 @@ func (p *Processor) executeJob(
 			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
 		}
 		if cancelRequested.Load() {
-			return progress.counts(), ErrCancelled // user-initiated cancel
+			_ = writers.output.Flush()
+			_ = writers.errors.Flush()
+			counts := progress.counts()
+			logger.V(logging.INFO).Info("Phase 2: cancelled, returning partial counts",
+				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
+			return counts, ErrCancelled
 		}
 		// SLO deadline exceeded: sloCtx deadline fired during execution.
 		// processModel already drained undispatched entries to error file; flush and return partial counts.
@@ -394,8 +399,7 @@ dispatch:
 
 	wg.Wait()
 
-	// If the SLO deadline fired (not a user cancel), drain undispatched entries to the error file
-	// as "batch_expired" so partial results are preserved per OpenAI batch spec.
+	// Drain undispatched entries to the error file based on the termination reason.
 	// Use sloCtx.Err() rather than ctx.Err(): ctx (execCtx) may report Canceled if execCancel()
 	// was called by another goroutine before the sloCtx deadline propagated.
 	if sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load() {
@@ -405,6 +409,14 @@ dispatch:
 			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchExpired,
 				"This request could not be executed before the completion window expired.")
+		}
+	} else if cancelRequested.Load() {
+		undispatched := entries[dispatchedCount:]
+		if len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("Cancelled: draining undispatched entries", "count", len(undispatched))
+			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchCancelled,
+				"This request was not executed because the batch was cancelled.")
 		}
 	}
 

@@ -142,14 +142,26 @@ func (p *Processor) runJob(
 	// phase 2: execute inference requests
 	requestCounts, err := p.executeJob(ctx, sloCtx, updater, jobInfo, &cancelRequested)
 	if err != nil {
-		if errors.Is(err, ErrExpired) {
+		switch {
+		case errors.Is(err, ErrExpired):
 			if expiredErr := p.handleExpired(ctx, updater, jobItem, jobInfo, requestCounts); expiredErr != nil {
 				logger.V(logging.ERROR).Error(expiredErr, "Failed to finalize expired job")
 				span.RecordError(expiredErr)
 				span.SetStatus(codes.Error, "expired finalization failed")
 			}
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
-		} else {
+
+		case errors.Is(err, ErrCancelled):
+			if cancelErr := p.handleCancelled(ctx, updater, jobItem, jobInfo, requestCounts); cancelErr != nil {
+				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
+				span.RecordError(cancelErr)
+				span.SetStatus(codes.Error, "cancelled finalization failed")
+			}
+			if requestCounts != nil {
+				metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+			}
+
+		default:
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "execution failed")
 			p.handleJobError(ctx, err, requestCounts, jobItem, updater, task)
@@ -188,7 +200,8 @@ func (p *Processor) handleJobError(
 
 	switch {
 	case errors.Is(err, ErrCancelled):
-		if cancelErr := p.handleCancelled(ctx, jobItem, updater, requestCounts); cancelErr != nil {
+		// Phase 1 cancel: no output files exist yet
+		if cancelErr := p.handleCancelled(ctx, updater, jobItem, nil, nil); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
 

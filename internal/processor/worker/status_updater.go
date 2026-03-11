@@ -143,6 +143,27 @@ func (s *StatusUpdater) UpdateCompletedStatus(
 	)
 }
 
+// UpdateCancelledStatus transitions a cancelled job and sets partial output and error file IDs.
+// counts may be nil when the job was cancelled before execution (Phase 1).
+func (s *StatusUpdater) UpdateCancelledStatus(
+	ctx context.Context,
+	dbJob *db.BatchItem,
+	counts *openai.BatchRequestCounts,
+	outputFileID string,
+	errorFileID string,
+) error {
+	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusCancelled, counts, nil,
+		func(info *openai.BatchStatusInfo) {
+			if outputFileID != "" {
+				info.OutputFileID = outputFileID
+			}
+			if errorFileID != "" {
+				info.ErrorFileID = errorFileID
+			}
+		},
+	)
+}
+
 // UpdateExpiredStatus transitions the job directly to expired and sets partial output and error file IDs.
 // Per the OpenAI batch spec, completed requests are preserved in the output file and unexecuted
 // requests are recorded in the error file with code "batch_expired". Both file IDs are optional.

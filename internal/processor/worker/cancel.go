@@ -21,12 +21,15 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 func (p *Processor) watchCancel(
@@ -74,25 +77,43 @@ func (p *Processor) watchCancel(
 	}
 }
 
+// handleCancelled finalizes a user-cancelled job.
+// When called after executeJob (Phase 2), requestCounts and jobInfo are non-nil and partial
+// results are uploaded. When called before executeJob (Phase 1), both are nil and only
+// cleanup + status transition is performed.
 func (p *Processor) handleCancelled(
 	ctx context.Context,
-	jobItem *db.BatchItem,
 	updater *StatusUpdater,
+	jobItem *db.BatchItem,
+	jobInfo *batch_types.JobInfo,
 	requestCounts *openai.BatchRequestCounts,
 ) error {
 	logger := klog.FromContext(ctx)
 
-	// cleanup local artifacts (best-effort)
+	var outputFileID, errorFileID string
+	if requestCounts != nil && jobInfo != nil {
+		// upload partial results
+		logger.V(logging.INFO).Info("Job cancelled mid-execution, uploading partial results")
+		outputFileID, errorFileID = p.uploadPartialResults(ctx, jobInfo, jobItem)
+	}
+
 	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
 
-	// update persistent status -> cancelled
-	if err := updater.UpdatePersistentStatus(ctx, jobItem, openai.BatchStatusCancelled, requestCounts, nil); err != nil {
+	if err := updater.UpdateCancelledStatus(ctx, jobItem, requestCounts, outputFileID, errorFileID); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update status to cancelled")
 		return err
 	}
 
-	// cancelled is user-initiated terminal completion (success)
+	if requestCounts != nil {
+		uotel.SetAttr(ctx,
+			attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
+			attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
+			attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
+		)
+	}
+
+	// record processed metrics as success because we successfully finished user-initiated cancellation
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
-	logger.V(logging.INFO).Info("Job cancelled handled")
+	logger.V(logging.INFO).Info("Job cancelled handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
 }
