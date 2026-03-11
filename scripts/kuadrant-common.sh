@@ -329,7 +329,8 @@ EOF
 # ── Application Install Functions ─────────────────────────────────────────────
 
 # deploy_vllm_sim <deploy-name> <model-name>
-# Deploys a vllm-sim instance with the given name serving the given model
+# Deploys a vllm-sim (llm-d-inference-sim) instance for demo purposes.
+# For production, replace with actual vLLM (e.g. vllm/vllm-openai:latest).
 deploy_vllm_sim() {
     local deploy_name="$1"
     local model_name="$2"
@@ -433,8 +434,11 @@ deploy_inferencepool() {
 }
 
 
+# NOTE: This deploys a simplified nginx stub for demo purposes only.
+# It proxies batch requests to the LLM route to demonstrate Kuadrant integration
+# (auth, rate limiting, routing). For production, replace with the actual batch-gateway service.
 install_batch_inference() {
-    step "Installing batch inference service '${BATCH_INFERENCE_SERVICE}'..."
+    step "Installing batch inference service '${BATCH_INFERENCE_SERVICE}' (demo stub)..."
 
     if kubectl get deployment "${BATCH_INFERENCE_SERVICE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
         log "Batch inference service '${BATCH_INFERENCE_SERVICE}' already exists. Skipping."

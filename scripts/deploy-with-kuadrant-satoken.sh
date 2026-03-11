@@ -141,6 +141,8 @@ spec:
         kubernetesTokenReview:
           audiences:
           - https://kubernetes.default.svc
+    # Assumes SA is in a tier-* namespace (e.g. tier-gold, tier-free).
+    # If SA is not in a tier-* namespace, filter returns empty and [0] will error.
     response:
       success:
         filters:
@@ -434,7 +436,7 @@ cmd_test() {
 
     echo ""
     log "LLM free tier: $llm_success successful, $llm_limited rate-limited"
-    if [ "$llm_limited" -ge 1 ]; then
+    if [ "$llm_limited" -ge 3 ]; then
         pass_test "Test 6: Token rate limiting is working"
     else
         fail_test "Test 6: No rate limiting triggered"

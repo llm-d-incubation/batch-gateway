@@ -1,6 +1,6 @@
 # Batch Inference Integration with Kuadrant
 
-This doc demonstrates how to integrate batch inference with Kuadrant, GAIE, and Istio.
+This doc demonstrates how to integrate batch inference with Kuadrant, GAIE, and Istio on any Kubernetes or OpenShift cluster. For the MaaS/ODH-specific integration, see [maas-integration.md](maas-integration.md).
 
 ## 1. Architecture
 
@@ -88,7 +88,8 @@ Follow the [Kuadrant Guide](https://docs.kuadrant.io/1.3.x/install-helm/) to ins
 
 ### 2.5 Create Gateway
 
-```yaml
+```bash
+kubectl apply -f - <<EOF
 # Single entry point for all traffic
 # Istio will provision an Envoy proxy pod in the istio-ingress namespace
 # kuadrant.io/gateway label enables Kuadrant policy attachment
@@ -108,13 +109,15 @@ spec:
     allowedRoutes:
       namespaces:
         from: All   # Accept HTTPRoutes from all namespaces
+EOF
 ```
 
 ### 2.6 Install Model Servers (vLLM)
 
 Deploy one vLLM instance per model.
 
-```yaml
+```bash
+kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -192,8 +195,8 @@ spec:
     port: 8000
     targetPort: 8000
   type: ClusterIP
+EOF
 ```
-
 
 ### 2.7 Install InferencePools and EPP
 
@@ -241,7 +244,8 @@ helm install gold-model \
 
 Create HTTPRoute to route LLM inference requests to InferencePools.
 
-```yaml
+```bash
+kubectl apply -f - <<EOF
 # Routes /{ns}/{model}/v1/* to the corresponding InferencePool
 # URL rewrite strips the /{ns}/{model} prefix before forwarding to vLLM
 # Each model has 3 rules: /v1/completions, /v1/chat/completions, and a catch-all
@@ -341,17 +345,19 @@ spec:
     - group: inference.networking.k8s.io
       kind: InferencePool
       name: gold-model
+EOF
 ```
 
 ### 2.9 Install Batch Inference Service
 
-Follow the [guide](https://github.com/llm-d-incubation/batch-gateway) to install Batch Inference Service
+Follow the [guide](../../README.md) to install Batch Inference Service
 
 ### 2.10 Create Batch HTTPRoute
 
 Create HTTPRoute to route batch requests to batch inference service.
 
-```yaml
+```bash
+kubectl apply -f - <<EOF
 # Routes batch API requests (/v1/batches, /v1/files) to the batch inference service
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -373,6 +379,7 @@ spec:
     backendRefs:
     - name: batch-inference
       port: 80
+EOF
 ```
 
 ## 3. Rate Limiting
@@ -388,7 +395,8 @@ Kuadrant provides two types of rate limiting policies. Both support `counters` f
 
 Apply token-based rate limiting on the llm-route. Unlike RateLimitPolicy which counts HTTP requests, TokenRateLimitPolicy counts **LLM tokens** consumed in inference responses, providing more accurate cost control for AI workloads.
 
-```yaml
+```bash
+kubectl apply -f - <<EOF
 # Token-based rate limiting on llm-route
 # Counts LLM tokens consumed in inference responses
 # Tier is extracted by AuthPolicy and available as auth.identity.tier
@@ -415,13 +423,15 @@ spec:
         window: 1m
       when:
       - predicate: "auth.identity.tier == 'free'"
+EOF
 ```
 
 ### 3.2 Request-based Rate Limiting for Batch API
 
 Apply request-count based rate limiting on the batch-route. This counts each HTTP request regardless of payload, suitable for APIs where request frequency matters more than payload size.
 
-```yaml
+```bash
+kubectl apply -f - <<EOF
 # Request-count based rate limiting on batch-route
 # Counts each HTTP request regardless of payload
 # Tier is extracted by AuthPolicy and available as auth.identity.tier
@@ -448,6 +458,7 @@ spec:
         window: 10s
       when:
       - predicate: "auth.identity.tier == 'free'"
+EOF
 ```
 
 ## 4. Authentication & Authorization
@@ -467,6 +478,8 @@ All three solutions share the same rate limiting policies (Section 3). They diff
 Uses Kuadrant [API Key](https://docs.kuadrant.io/latest/authorino/docs/user-guides/api-key-authentication/) Secrets for authentication and [OPA Rego](https://docs.kuadrant.io/latest/authorino/docs/user-guides/opa-authorization/) for model authorization. Works on any Kubernetes cluster.
 
 #### 4.1.1 Prerequisites
+
+> **Security**: The API keys below are demo values. For production, generate strong random keys (e.g. `openssl rand -hex 32`).
 
 Each API key is a Kubernetes Secret with `tier` and `models` annotations:
 

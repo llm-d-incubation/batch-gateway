@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/kuadrant-common.sh"
 
 # ── API Key Configuration ─────────────────────────────────────────────────────
+# WARNING: Default keys are for demo only. For production, override via env vars:
+#   API_KEY_GOLD="$(openssl rand -hex 32)" API_KEY_FREE="$(openssl rand -hex 32)" ./deploy-with-kuadrant-apikey.sh install
 API_KEY_GOLD="${API_KEY_GOLD:-gold-key-12345}"
 API_KEY_FREE="${API_KEY_FREE:-free-key-67890}"
 
@@ -352,7 +354,7 @@ cmd_test() {
 
     echo ""
     log "LLM free tier: $llm_success successful, $llm_limited rate-limited"
-    if [ "$llm_limited" -ge 1 ]; then
+    if [ "$llm_limited" -ge 3 ]; then
         pass_test "Test 6: Token rate limiting is working"
     else
         fail_test "Test 6: No rate limiting triggered"

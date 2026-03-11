@@ -181,6 +181,8 @@ spec:
         kubernetesTokenReview:
           audiences:
           - https://kubernetes.default.svc
+    # Assumes user is in a tier-* OpenShift group (e.g. tier-gold, tier-free).
+    # If user is not in a tier-* group, filter returns empty and [0] will error.
     response:
       success:
         filters:
@@ -304,9 +306,12 @@ cmd_install() {
     echo "  ╚═══════════════════════════════════════════════════════╝"
     echo ""
 
-    # Check OpenShift
+    # Check OpenShift and python3
     if ! command -v oc &>/dev/null; then
         die "This script requires OpenShift (oc command). Use deploy-with-kuadrant-satoken.sh for standard K8s."
+    fi
+    if ! command -v python3 &>/dev/null; then
+        die "This script requires python3 for JSON manipulation."
     fi
 
     common_install
@@ -489,7 +494,7 @@ cmd_test() {
 
     echo ""
     log "LLM free user: $llm_success successful, $llm_limited rate-limited"
-    if [ "$llm_limited" -ge 1 ]; then
+    if [ "$llm_limited" -ge 3 ]; then
         pass_test "Test 6: Token rate limiting is working"
     else
         fail_test "Test 6: No rate limiting triggered"
