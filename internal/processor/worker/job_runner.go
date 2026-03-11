@@ -217,10 +217,34 @@ func (p *Processor) handleJobError(
 	}
 }
 
+// uploadPartialResults uploads whatever output/error files exist locally to shared storage.
+// Returns file IDs (empty string if the file was empty or upload failed).
+// Errors are logged but not propagated — partial upload is best-effort.
+func (p *Processor) uploadPartialResults(
+	ctx context.Context,
+	jobInfo *batch_types.JobInfo,
+	dbJob *db.BatchItem,
+) (outputFileID string, errorFileID string) {
+	logger := klog.FromContext(ctx)
+
+	var err error
+	outputFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to upload output file (best-effort)")
+	}
+
+	errorFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
+	if err != nil {
+		logger.V(logging.ERROR).Error(err, "Failed to upload error file (best-effort)")
+	}
+
+	return outputFileID, errorFileID
+}
+
 // handleExpired finalizes a job whose SLO deadline fired during execution.
 // Partial results are preserved: completed requests remain in the output file,
 // and unexecuted requests were already written to the error file as "batch_expired"
-// by drainUndispatchedAsExpired. This function uploads both files and transitions
+// by drainUnprocessedRequests. This function uploads both files and transitions
 // the job directly to expired status (in_progress → expired).
 func (p *Processor) handleExpired(
 	ctx context.Context,
@@ -232,18 +256,8 @@ func (p *Processor) handleExpired(
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Job SLO expired mid-execution, uploading partial results")
 
-	// Upload partial results best-effort: errors are logged but do not block the expired status update.
-	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
-	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to upload output file for expired job")
-	}
+	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbJob)
 
-	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
-	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to upload error file for expired job")
-	}
-
-	// cleanup local artifacts (best-effort)
 	p.cleanupJobArtifacts(ctx, dbJob.ID, dbJob.TenantID)
 
 	if err := updater.UpdateExpiredStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {

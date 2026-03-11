@@ -47,15 +47,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
 
-// ErrExpired is returned by executeJob when the job's SLO deadline fires during execution.
-// Partial results (completed requests in output file, unexecuted requests in error file as
-// "batch_expired") are preserved. The caller is responsible for finalizing with expired status.
-var ErrExpired = errors.New("batch SLO expired")
-
-// errCodeBatchExpired is the error code written to the error file for requests that could not
-// be executed before the job's completion window expired, per the OpenAI Batch API spec.
-const errCodeBatchExpired = "batch_expired"
-
 // outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
 // A single instance is created per job and shared across model goroutines.
 type outputWriters struct {
@@ -411,7 +402,9 @@ dispatch:
 		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
-			p.drainUndispatchedAsExpired(ctx, inputFile, undispatched, writers, progress)
+			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchExpired,
+				"This request could not be executed before the completion window expired.")
 		}
 	}
 
@@ -423,14 +416,18 @@ dispatch:
 	return firstErr
 }
 
-// drainUndispatchedAsExpired writes plan entries that were never dispatched to the error file
-// with error code "batch_expired". Called after the SLO deadline fires mid-execution.
-func (p *Processor) drainUndispatchedAsExpired(
+// drainUnprocessedRequests records undispatched requests in the error file when a job terminates
+// mid-execution (SLO expiry, cancellation, or systemic failure). For each plan entry, it reads
+// the original request from input.jsonl to extract the custom_id, then writes an error line with
+// the given error code and message.
+func (p *Processor) drainUnprocessedRequests(
 	ctx context.Context,
 	inputFile *os.File,
 	entries []planEntry,
 	writers *outputWriters,
 	progress *executionProgress,
+	errCode string,
+	errMessage string,
 ) {
 	logger := klog.FromContext(ctx)
 
@@ -444,7 +441,6 @@ func (p *Processor) drainUndispatchedAsExpired(
 	buf := make([]byte, maxLen)
 
 	for _, entry := range entries {
-		// Read the input line to extract custom_id; best-effort (empty string if unreadable).
 		customID := ""
 		if _, err := inputFile.ReadAt(buf[:entry.Length], entry.Offset); err == nil {
 			var req batch_types.Request
@@ -459,25 +455,25 @@ func (p *Processor) drainUndispatchedAsExpired(
 			ID:       newBatchRequestID(requestID),
 			CustomID: customID,
 			Error: &outputError{
-				Code:    errCodeBatchExpired,
-				Message: "This request could not be executed before the completion window expired.",
+				Code:    errCode,
+				Message: errMessage,
 			},
 		}
 
 		lineBytes, err := json.Marshal(line)
 		if err != nil {
-			logger.Error(err, "Failed to marshal batch_expired entry", "offset", entry.Offset)
+			logger.Error(err, "Failed to marshal drain entry", "errCode", errCode, "offset", entry.Offset)
 			continue
 		}
 		lineBytes = append(lineBytes, '\n')
 
 		if writeErr := writers.write(lineBytes, true); writeErr != nil {
-			logger.Error(writeErr, "Failed to write batch_expired entry", "offset", entry.Offset)
+			logger.Error(writeErr, "Failed to write drain entry", "errCode", errCode, "offset", entry.Offset)
 		}
 
-		// ctx is cancelled here (SLO deadline fired), so the Redis progress update inside
-		// record() will fail silently. The atomic counter still increments correctly and
-		// the final counts are committed by UpdateExpiredStatus after drain completes.
+		// Context may be cancelled here (e.g. SLO deadline fired), so the Redis progress
+		// update inside record() may fail silently. The atomic counter still increments
+		// correctly and the final counts are committed by the terminal status update.
 		progress.record(ctx, false)
 	}
 }

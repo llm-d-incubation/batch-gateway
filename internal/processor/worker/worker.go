@@ -19,7 +19,6 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -47,8 +46,6 @@ type Processor struct {
 	poller  *Poller
 	updater *StatusUpdater
 }
-
-var ErrCancelled = errors.New("batch job cancelled")
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
