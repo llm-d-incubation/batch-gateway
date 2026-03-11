@@ -651,6 +651,7 @@ func TestRedisDSClient(t *testing.T) {
 	})
 
 	t.Run("Event exchange operations - Negative cases", func(t *testing.T) {
+		t.Parallel()
 		if minirds != nil {
 			t.Skip("Miniredis model")
 		}

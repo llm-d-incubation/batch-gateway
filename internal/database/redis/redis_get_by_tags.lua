@@ -39,10 +39,6 @@ local scan_out = redis.call('SCAN', cursor, 'TYPE', 'hash', 'MATCH', pattern, 'C
 for _, key in ipairs(scan_out[2]) do
 	-- Get the key's contents.
 	local contents = redis.call('HGETALL', key)
-	-- Remove spec field if needed.
-	if shouldFilterSpec then
-		contents = remove_spec_field(contents)
-	end
 	-- Create a map of the contents.
 	local hash = contents_to_hash(contents)
 	-- Search for the tags.
@@ -57,6 +53,11 @@ for _, key in ipairs(scan_out[2]) do
 	end
 	-- Check inclusion condition.
 	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
+		-- Remove spec field if needed.
+		if shouldFilterSpec then
+			contents = remove_spec_field(contents)
+		end
+		-- Add the item to the result.
 		table.insert(result, contents)
 	end
 end
