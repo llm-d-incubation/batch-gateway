@@ -115,12 +115,12 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
 	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
-	err := p.handleFailed(testLoggerCtx(), &db.BatchItem{
+	err := p.handleFailed(testLoggerCtx(), updater, &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{
 			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
 		},
-	}, updater, nil)
+	}, nil)
 	if !errors.Is(err, updateErr) {
 		t.Fatalf("expected update error, got %v", err)
 	}

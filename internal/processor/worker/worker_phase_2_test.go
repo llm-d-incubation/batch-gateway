@@ -1161,6 +1161,166 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 }
 
 // =====================================================================
+// Tests: handleCancelled / handleFailedWithPartial / handleFailed
+// with partial output
+// =====================================================================
+
+// createPartialOutputFiles creates dummy output.jsonl and error.jsonl under the job dir
+// so uploadPartialResults can find and upload them.
+func createPartialOutputFiles(t *testing.T, p *Processor, jobID, tenantID string) {
+	t.Helper()
+	jobDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath := filepath.Join(jobDir, "output.jsonl")
+	errorPath := filepath.Join(jobDir, "error.jsonl")
+	if err := os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"req-1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile output: %v", err)
+	}
+	if err := os.WriteFile(errorPath, []byte(`{"id":"batch_req_2","custom_id":"req-2","error":{"code":"batch_cancelled","message":"cancelled"}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+}
+
+func TestHandleCancelled_Phase2_UploadsPartialOutput(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-cancel-partial"
+	tenantID := "tenant__tenantA"
+	dbJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusCancelling})},
+	}
+	if err := env.dbClient.DBStore(context.Background(), dbJob); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	createPartialOutputFiles(t, env.p, jobID, tenantID)
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
+
+	ctx := testLoggerCtx()
+	if err := env.p.handleCancelled(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+		t.Fatalf("handleCancelled: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusCancelled {
+		t.Fatalf("status = %s, want cancelled", got.Status)
+	}
+	if got.RequestCounts.Total != 5 || got.RequestCounts.Completed != 3 || got.RequestCounts.Failed != 2 {
+		t.Fatalf("request_counts = %+v, want {5,3,2}", got.RequestCounts)
+	}
+	if got.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set")
+	}
+	if got.ErrorFileID == "" {
+		t.Fatal("expected error_file_id to be set")
+	}
+}
+
+func TestHandleFailedWithPartial_Phase2_UploadsPartialOutput(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-fail-partial"
+	tenantID := "tenant__tenantA"
+	dbJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := env.dbClient.DBStore(context.Background(), dbJob); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	createPartialOutputFiles(t, env.p, jobID, tenantID)
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 10, Completed: 7, Failed: 3}
+
+	ctx := testLoggerCtx()
+	if err := env.p.handleFailedWithPartial(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+		t.Fatalf("handleFailedWithPartial: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.RequestCounts.Total != 10 || got.RequestCounts.Completed != 7 || got.RequestCounts.Failed != 3 {
+		t.Fatalf("request_counts = %+v, want {10,7,3}", got.RequestCounts)
+	}
+	if got.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set")
+	}
+	if got.ErrorFileID == "" {
+		t.Fatal("expected error_file_id to be set")
+	}
+}
+
+func TestHandleFailed_Phase3_RecordsCountsOnly(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-fail-phase3"
+	dbJob := seedDBJob(t, env.dbClient, jobID)
+
+	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}
+
+	ctx := testLoggerCtx()
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts); err != nil {
+		t.Fatalf("handleFailed: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.RequestCounts.Total != 8 || got.RequestCounts.Completed != 8 || got.RequestCounts.Failed != 0 {
+		t.Fatalf("request_counts = %+v, want {8,8,0}", got.RequestCounts)
+	}
+	if got.OutputFileID != "" {
+		t.Fatalf("expected empty output_file_id, got %s", got.OutputFileID)
+	}
+	if got.ErrorFileID != "" {
+		t.Fatalf("expected empty error_file_id, got %s", got.ErrorFileID)
+	}
+}
+
+// =====================================================================
 // Tests: cleanupJobArtifacts
 // =====================================================================
 
