@@ -266,8 +266,13 @@ func (p *Processor) executeJob(
 				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 			return counts, ErrExpired
 		}
-		// process error from model goroutines
-		return nil, firstErr
+		// System error from model goroutines — flush partial results.
+		_ = writers.output.Flush()
+		_ = writers.errors.Flush()
+		counts := progress.counts()
+		logger.V(logging.INFO).Info("Phase 2: system error, returning partial counts",
+			"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
+		return counts, firstErr
 	}
 
 	if err := writers.output.Flush(); err != nil {
@@ -400,9 +405,12 @@ dispatch:
 	wg.Wait()
 
 	// Drain undispatched entries to the error file based on the termination reason.
+	// Priority: SLO expiry > user cancel > system error.
 	// Use sloCtx.Err() rather than ctx.Err(): ctx (execCtx) may report Canceled if execCancel()
 	// was called by another goroutine before the sloCtx deadline propagated.
-	if sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load() {
+	switch {
+	case sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load():
+		// SLO deadline fired during dispatch — record remaining requests as expired.
 		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
@@ -410,13 +418,25 @@ dispatch:
 				batch_types.ErrCodeBatchExpired,
 				"This request could not be executed before the completion window expired.")
 		}
-	} else if cancelRequested.Load() {
+
+	case cancelRequested.Load():
+		// User-initiated cancel — record remaining requests as cancelled.
 		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Cancelled: draining undispatched entries", "count", len(undispatched))
 			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchCancelled,
 				"This request was not executed because the batch was cancelled.")
+		}
+
+	case firstErr != nil:
+		// System error in a model goroutine — record remaining requests as failed.
+		undispatched := entries[dispatchedCount:]
+		if len(undispatched) > 0 {
+			logger.V(logging.INFO).Info("Fatal error: draining undispatched entries", "count", len(undispatched))
+			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchFailed,
+				"This request was not executed because the batch encountered a system error.")
 		}
 	}
 

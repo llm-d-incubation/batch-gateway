@@ -1058,7 +1058,7 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, ErrCancelled, nil, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, ErrCancelled, dbJob, env.updater, nil, nil, nil)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-cancel"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1081,7 +1081,7 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-ctx"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, context.Canceled, nil, dbJob, env.updater, task)
+	env.p.handleJobError(ctx, context.Canceled, dbJob, env.updater, task, nil, nil)
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1102,7 +1102,7 @@ func TestHandleJobError_DeadlineExceeded_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-deadline"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, context.DeadlineExceeded, nil, dbJob, env.updater, task)
+	env.p.handleJobError(ctx, context.DeadlineExceeded, dbJob, env.updater, task, nil, nil)
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1123,7 +1123,7 @@ func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
 
 	ctx := testLoggerCtx()
 	// task is nil — should not panic, and job status should remain unchanged
-	env.p.handleJobError(ctx, context.Canceled, nil, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, context.Canceled, dbJob, env.updater, nil, nil, nil)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-ctx-nil"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1147,7 +1147,7 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, errors.New("some error"), nil, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, errors.New("some error"), dbJob, env.updater, nil, nil, nil)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {

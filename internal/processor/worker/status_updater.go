@@ -45,7 +45,9 @@ func NewStatusUpdater(db db.BatchDBClient, status db.BatchStatusClient, progress
 	}
 }
 
-// UpdateProgressCounts: frequent light payload update for request counts
+// UpdateProgressCounts pushes request counts to the volatile status store (e.g. Redis).
+// This is NOT a persistent DB update — it is a lightweight, frequent update used to power
+// real-time progress polling. The data expires after progressTTLSec.
 func (s *StatusUpdater) UpdateProgressCounts(
 	ctx context.Context,
 	jobID string,
@@ -64,9 +66,9 @@ func (s *StatusUpdater) UpdateProgressCounts(
 	return nil
 }
 
-// UpdatePersistentStatus updates the persistent status of the job in DB.
+// UpdatePersistentStatus writes the job status to the persistent database (e.g. PostgreSQL).
+// Unlike UpdateProgressCounts, this is the authoritative, durable record of job state.
 // Optional modifiers are applied to the status info before marshaling.
-// tenant ID(tenantId) and job ID(jobId) should be in the logger in the context
 func (s *StatusUpdater) UpdatePersistentStatus(
 	ctx context.Context,
 	dbJob *db.BatchItem,
@@ -90,6 +92,8 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		return err
 	}
 
+	// Build base status first (status, timestamps, counts), then apply modifiers
+	// to set additional fields (e.g. file IDs) that aren't part of the standard transition.
 	updated, err := batch_utils.BuildUpdatedStatusInfo(&original, newStatus, counts, slo)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to build updated batch status")
@@ -121,7 +125,20 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	return nil
 }
 
-// UpdateCompletedStatus transitions the job to completed and sets the output and error file IDs.
+// withFileIDs returns a modifier that sets output and error file IDs on the status info.
+// Empty IDs are skipped (per the OpenAI batch spec, both are optional).
+func withFileIDs(outputFileID, errorFileID string) func(*openai.BatchStatusInfo) {
+	return func(info *openai.BatchStatusInfo) {
+		if outputFileID != "" {
+			info.OutputFileID = outputFileID
+		}
+		if errorFileID != "" {
+			info.ErrorFileID = errorFileID
+		}
+	}
+}
+
+// UpdateCompletedStatus transitions the job to completed status and records file IDs.
 // Per the OpenAI batch spec, both IDs are optional: outputFileID is empty when all requests
 // failed, and errorFileID is empty when no requests failed.
 func (s *StatusUpdater) UpdateCompletedStatus(
@@ -132,18 +149,25 @@ func (s *StatusUpdater) UpdateCompletedStatus(
 	errorFileID string,
 ) error {
 	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusCompleted, counts, nil,
-		func(info *openai.BatchStatusInfo) {
-			if outputFileID != "" {
-				info.OutputFileID = outputFileID
-			}
-			if errorFileID != "" {
-				info.ErrorFileID = errorFileID
-			}
-		},
+		withFileIDs(outputFileID, errorFileID),
 	)
 }
 
-// UpdateCancelledStatus transitions a cancelled job and sets partial output and error file IDs.
+// UpdateFailedStatus transitions the job to failed status and records partial file IDs when available.
+// counts may be nil when the job failed before execution (Phase 1).
+func (s *StatusUpdater) UpdateFailedStatus(
+	ctx context.Context,
+	dbJob *db.BatchItem,
+	counts *openai.BatchRequestCounts,
+	outputFileID string,
+	errorFileID string,
+) error {
+	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFailed, counts, nil,
+		withFileIDs(outputFileID, errorFileID),
+	)
+}
+
+// UpdateCancelledStatus transitions the job to cancelled status and records partial file IDs.
 // counts may be nil when the job was cancelled before execution (Phase 1).
 func (s *StatusUpdater) UpdateCancelledStatus(
 	ctx context.Context,
@@ -153,18 +177,11 @@ func (s *StatusUpdater) UpdateCancelledStatus(
 	errorFileID string,
 ) error {
 	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusCancelled, counts, nil,
-		func(info *openai.BatchStatusInfo) {
-			if outputFileID != "" {
-				info.OutputFileID = outputFileID
-			}
-			if errorFileID != "" {
-				info.ErrorFileID = errorFileID
-			}
-		},
+		withFileIDs(outputFileID, errorFileID),
 	)
 }
 
-// UpdateExpiredStatus transitions the job directly to expired and sets partial output and error file IDs.
+// UpdateExpiredStatus transitions the job to expired status and records partial file IDs.
 // Per the OpenAI batch spec, completed requests are preserved in the output file and unexecuted
 // requests are recorded in the error file with code "batch_expired". Both file IDs are optional.
 func (s *StatusUpdater) UpdateExpiredStatus(
@@ -175,13 +192,6 @@ func (s *StatusUpdater) UpdateExpiredStatus(
 	errorFileID string,
 ) error {
 	return s.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusExpired, counts, nil,
-		func(info *openai.BatchStatusInfo) {
-			if outputFileID != "" {
-				info.OutputFileID = outputFileID
-			}
-			if errorFileID != "" {
-				info.ErrorFileID = errorFileID
-			}
-		},
+		withFileIDs(outputFileID, errorFileID),
 	)
 }
