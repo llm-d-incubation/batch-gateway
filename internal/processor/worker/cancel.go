@@ -21,7 +21,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"go.opentelemetry.io/otel/attribute"
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -29,7 +28,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 func (p *Processor) watchCancel(
@@ -104,13 +102,7 @@ func (p *Processor) handleCancelled(
 		return err
 	}
 
-	if requestCounts != nil {
-		uotel.SetAttr(ctx,
-			attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
-			attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
-			attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
-		)
-	}
+	setRequestCountAttrs(ctx, requestCounts)
 
 	// record processed metrics as success because we successfully finished user-initiated cancellation
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)

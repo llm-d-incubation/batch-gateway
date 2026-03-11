@@ -117,11 +117,15 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 
 // executeJob performs phase 2: reads plan files per model, sends inference
 // requests concurrently (one goroutine per model), and writes results to
-// output.jsonl (successes) and error.jsonl (failures). Returns request counts for finalization.
+// output.jsonl (successes) and error.jsonl (failures).
 //
-// sloCtx carries the SLO deadline; equals ctx when no SLO is set. When the deadline fires,
-// dispatch stops, undispatched requests are drained to the error file as "batch_expired", and
-// ErrExpired is returned alongside partial counts. The caller should finalize with expired status.
+// On success, returns (counts, nil). On interruption or error, undispatched requests are
+// drained to the error file with the appropriate code, writers are flushed, and partial counts
+// are returned alongside the sentinel/cause error:
+//   - SLO expired:    (counts, ErrExpired)    — drain as batch_expired
+//   - User cancel:    (counts, ErrCancelled)  — drain as batch_cancelled
+//   - System error:   (counts, firstErr)      — drain as batch_failed
+//   - Pod shutdown:   (nil, ctx.Err())        — no flush, caller re-enqueues
 func (p *Processor) executeJob(
 	ctx context.Context,
 	sloCtx context.Context,
@@ -688,11 +692,7 @@ func (p *Processor) finalizeJob(
 		return fmt.Errorf("failed to update job status to completed: %w", err)
 	}
 
-	uotel.SetAttr(ctx,
-		attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
-		attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
-		attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
-	)
+	setRequestCountAttrs(ctx, requestCounts)
 
 	logger.V(logging.INFO).Info("Phase 3: finalization completed", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil

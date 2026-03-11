@@ -287,13 +287,7 @@ func (p *Processor) handleExpired(
 		return err
 	}
 
-	if requestCounts != nil {
-		uotel.SetAttr(ctx,
-			attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
-			attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
-			attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
-		)
-	}
+	setRequestCountAttrs(ctx, requestCounts)
 
 	metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredExecution)
 	logger.V(logging.INFO).Info("Job expired handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
@@ -322,13 +316,7 @@ func (p *Processor) handleFailedWithPartial(
 		return err
 	}
 
-	if requestCounts != nil {
-		uotel.SetAttr(ctx,
-			attribute.Int64(uotel.AttrRequestTotal, requestCounts.Total),
-			attribute.Int64(uotel.AttrRequestCompleted, requestCounts.Completed),
-			attribute.Int64(uotel.AttrRequestFailed, requestCounts.Failed),
-		)
-	}
+	setRequestCountAttrs(ctx, requestCounts)
 
 	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 	logger.V(logging.INFO).Info("Job failed handled with partial output", "outputFileID", outputFileID, "errorFileID", errorFileID)
@@ -353,7 +341,20 @@ func (p *Processor) handleFailed(
 		return err
 	}
 
+	setRequestCountAttrs(ctx, requestCounts)
+
 	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 	logger.V(logging.INFO).Info("Job failed handled")
 	return nil
+}
+
+func setRequestCountAttrs(ctx context.Context, counts *openai.BatchRequestCounts) {
+	if counts == nil {
+		return
+	}
+	uotel.SetAttr(ctx,
+		attribute.Int64(uotel.AttrRequestTotal, counts.Total),
+		attribute.Int64(uotel.AttrRequestCompleted, counts.Completed),
+		attribute.Int64(uotel.AttrRequestFailed, counts.Failed),
+	)
 }
