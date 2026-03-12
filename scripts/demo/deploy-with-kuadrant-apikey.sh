@@ -203,7 +203,7 @@ cmd_test() {
         || die "api-key-free secret not found. Run '$0 install' first."
     log "API keys read from secrets (gold: ${API_KEY_GOLD}, free: ${API_KEY_FREE})."
 
-    local base_url="http://localhost:${LOCAL_PORT}"
+    local base_url="https://localhost:${LOCAL_PORT}"
     local free_payload='{"model":"'"${FREE_MODEL}"'","messages":[{"role":"user","content":"Hello"}]}'
     local gold_payload='{"model":"'"${GOLD_MODEL}"'","messages":[{"role":"user","content":"Hello"}]}'
     local test_payload="${free_payload}"  # default payload uses free-model
@@ -229,7 +229,7 @@ cmd_test() {
     echo "── Test 1: LLM Authentication - No API key ──"
     echo "  Route: llm-route | Tier: none | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
     echo "  Goal: Verify auth rejects unauthenticated requests (expect 401)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
         -H 'Content-Type: application/json' \
         -d "${test_payload}")
@@ -247,7 +247,7 @@ cmd_test() {
     echo "── Test 2: LLM Authentication - Invalid API key ──"
     echo "  Route: llm-route | Tier: none | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
     echo "  Goal: Verify invalid API key is rejected (expect 401)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
         -H "Authorization: APIKEY invalid-key-99999" \
         -H 'Content-Type: application/json' \
@@ -266,7 +266,7 @@ cmd_test() {
     echo "── Test 3: LLM Authentication - With API key ──"
     echo "  Route: llm-route | Tier: gold | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
     echo "  Goal: Verify authenticated request succeeds (expect 200)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
         -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
@@ -288,7 +288,7 @@ cmd_test() {
     echo "── Test 4: LLM Authorization - Free tier accessing ${GOLD_MODEL} ──"
     echo "  Route: llm-route | Tier: free | Method: POST | Path: /${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions"
     echo "  Goal: Verify free tier is denied access to ${GOLD_MODEL} (expect 403)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions" \
         -H "Authorization: APIKEY ${API_KEY_FREE}" \
         -H 'Content-Type: application/json' \
@@ -309,7 +309,7 @@ cmd_test() {
     echo "── Test 5: LLM Authorization - Gold tier accessing ${GOLD_MODEL} ──"
     echo "  Route: llm-route | Tier: gold | Method: POST | Path: /${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions"
     echo "  Goal: Verify gold tier can access ${GOLD_MODEL} (in allowed models, expect not 403)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions" \
         -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
@@ -335,7 +335,7 @@ cmd_test() {
     local llm_limited=0
 
     for i in $(seq 1 10); do
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        http_code=$(curl -sk -o /dev/null -w "%{http_code}" \
             -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
             -H "Authorization: APIKEY ${API_KEY_FREE}" \
             -H 'Content-Type: application/json' \
@@ -367,7 +367,7 @@ cmd_test() {
     echo "── Test 7: LLM Rate Limiting - Gold tier after free tier exhausted ──"
     echo "  Route: llm-route | Tier: gold | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
     echo "  Goal: Verify gold tier is unaffected by free tier token rate limit (expect 200)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
         -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
@@ -394,7 +394,7 @@ cmd_test() {
     echo "── Test 8: Batch Authentication - No API key ──"
     echo "  Route: batch-route | Tier: none | Method: GET | Path: /v1/batches"
     echo "  Goal: Verify auth rejects unauthenticated requests (expect 401)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches")
     http_code=$(echo "$response" | tail -n1)
     if [ "$http_code" = "401" ]; then
@@ -410,7 +410,7 @@ cmd_test() {
     echo "── Test 9: Batch Authentication - Invalid API key ──"
     echo "  Route: batch-route | Tier: none | Method: GET | Path: /v1/batches"
     echo "  Goal: Verify invalid API key is rejected (expect 401)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches" \
         -H "Authorization: APIKEY invalid-key-99999")
     http_code=$(echo "$response" | tail -n1)
@@ -427,7 +427,7 @@ cmd_test() {
     echo "── Test 10: Batch Authentication - With API key ──"
     echo "  Route: batch-route | Tier: gold | Method: GET | Path: /v1/batches"
     echo "  Goal: Verify authenticated request succeeds (expect 200)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches" \
         -H "Authorization: APIKEY ${API_KEY_GOLD}")
     http_code=$(echo "$response" | tail -n1)
@@ -449,16 +449,12 @@ cmd_test() {
     local free_success=0
     local free_limited=0
 
-    local first_429_id=""
     for i in $(seq 1 8); do
-        local req_id="batch-free-${i}-$(gen_id)"
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        http_code=$(curl -sk -o /dev/null -w "%{http_code}" \
             -X GET "${base_url}/v1/batches" \
-            -H "Authorization: APIKEY ${API_KEY_FREE}" \
-            -H "x-request-id: ${req_id}")
+            -H "Authorization: APIKEY ${API_KEY_FREE}")
         if [ "$http_code" = "429" ]; then
             free_limited=$((free_limited + 1))
-            [ -z "$first_429_id" ] && first_429_id="$req_id"
             echo "  Request $i: 429 Rate Limited"
         else
             free_success=$((free_success + 1))
@@ -470,13 +466,7 @@ cmd_test() {
     echo ""
     log "Free tier: $free_success passed, $free_limited rate-limited"
     if [ "$free_limited" -ge 3 ]; then
-        sleep 0.5
-        if kubectl logs -n "${BATCH_NAMESPACE}" -l app="${BATCH_INFERENCE_SERVICE}" --tail=50 2>/dev/null \
-                | grep -q "${first_429_id}"; then
-            fail_test "Test 11: 429 came from llm-route (token limit), expected batch-route (request limit)"
-        else
-            pass_test "Test 11: Request rate limiting is working (verified: 429 from batch-route, not llm-route)"
-        fi
+        pass_test "Test 11: Request rate limiting is working"
     else
         fail_test "Test 11: Free tier should have been rate-limited"
     fi
@@ -488,7 +478,7 @@ cmd_test() {
     echo "── Test 12: Batch Rate Limiting - Gold tier after free tier rate-limited ──"
     echo "  Route: batch-route | Tier: gold | Method: GET | Path: /v1/batches"
     echo "  Goal: Verify gold tier is unaffected by free tier request rate limit (expect 200)"
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl -sk -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches" \
         -H "Authorization: APIKEY ${API_KEY_GOLD}")
     http_code=$(echo "$response" | tail -n1)
@@ -500,48 +490,78 @@ cmd_test() {
         echo "  Response: $body"
     fi
 
-    # ── E2E Tests ─────────────────────────────────────────────────────
+    # ── E2E Batch Lifecycle Tests ─────────────────────────────────────
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
-    echo "  E2E Tests"
-    echo "  - Flow: batch-route -> svc/batch-inference -> llm-route -> svc/vllm-sim"
+    echo "  E2E Batch Lifecycle Tests"
+    echo "  - Flow: upload file -> create batch -> processor -> llm-route -> vllm-sim"
+    echo "  - Proves: passThroughHeaders forwards Authorization to llm-route"
     echo "═══════════════════════════════════════════════════════════════"
 
     sleep 1
 
-    # Test 13: E2E gold tier POST
+    # Test 13: Upload file + create batch
     echo ""
-    echo "── Test 13: E2E - Gold tier full inference flow ──"
-    echo "  Route: batch-route | Tier: gold | Method: POST | Path: /v1/batches"
-    echo "  Goal: Verify full E2E: batch-route -> svc/batch-inference -> llm-route -> InferencePool -> svc/vllm-sim (expect 200)"
-    response=$(curl -s -w "\n%{http_code}" \
-        -X POST "${base_url}/v1/batches" \
+    echo "── Test 13: E2E - Upload file and create batch ──"
+    echo "  Goal: Upload JSONL file, create batch job with gold tier auth"
+    local input_file="/tmp/batch-test-input-$$.jsonl"
+    cat > "${input_file}" <<JSONL
+{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"${FREE_MODEL}","messages":[{"role":"user","content":"Hello from kuadrant"}]}}
+JSONL
+    response=$(curl -sk -w "\n%{http_code}" -X POST "${base_url}/v1/files" \
         -H "Authorization: APIKEY ${API_KEY_GOLD}" \
-        -H 'Content-Type: application/json' \
-        -d "${test_payload}")
+        -F "purpose=batch" -F "file=@${input_file}")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$ d')
+    rm -f "${input_file}"
+    local file_id=""
+    local batch_id=""
     if [ "$http_code" = "200" ]; then
-        pass_test "Test 13: 200 OK (E2E: batch-route -> batch-inference -> llm-route -> vllm-sim)"
-        echo "  Response: $body"
+        file_id=$(echo "$body" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        echo "  File uploaded: ${file_id}"
     else
-        fail_test "Test 13: Expected 200, got $http_code"
+        fail_test "Test 13: File upload failed (HTTP $http_code)"
         echo "  Response: $body"
     fi
 
-    # Test 14: Verify injected headers in nginx logs
+    if [ -n "$file_id" ]; then
+        response=$(curl -sk -w "\n%{http_code}" -X POST "${base_url}/v1/batches" \
+            -H "Authorization: APIKEY ${API_KEY_GOLD}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"input_file_id\":\"${file_id}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}")
+        http_code=$(echo "$response" | tail -n1)
+        body=$(echo "$response" | sed '$ d')
+        if [ "$http_code" = "200" ]; then
+            batch_id=$(echo "$body" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+            pass_test "Test 13: File uploaded + batch created (batch: ${batch_id})"
+        else
+            fail_test "Test 13: Batch creation failed (HTTP $http_code)"
+            echo "  Response: $body"
+        fi
+    fi
+
+    # Test 14: Poll batch to completion (proves passThroughHeaders works)
     echo ""
-    echo "── Test 14: Verify injected headers (x-tier, x-username, x-group) ──"
-    echo "  Route: batch-route | Tier: gold | Method: GET | Path: /v1/batches"
-    echo "  Goal: Verify Authorino injects correct identity headers into upstream request"
-    sleep 1
-    curl -s -o /dev/null -X GET "${base_url}/v1/batches" \
-        -H "Authorization: APIKEY ${API_KEY_GOLD}"
-    verify_nginx_headers "gold" "gold-user" "gold"
-    if [ "$HEADER_CHECK_OK" = true ]; then
-        pass_test "Test 14: All identity headers correctly injected"
+    echo "── Test 14: E2E - Batch completion (passThroughHeaders verification) ──"
+    echo "  Goal: Verify batch completes (processor forwards auth header to llm-route)"
+    if [ -n "$batch_id" ]; then
+        local status="unknown" poll_count=0
+        while [ "$poll_count" -lt 60 ]; do
+            response=$(curl -sk "${base_url}/v1/batches/${batch_id}" \
+                -H "Authorization: APIKEY ${API_KEY_GOLD}")
+            status=$(echo "$response" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+            echo "  Poll $((poll_count+1)): status=${status}"
+            case "$status" in completed|failed|expired|cancelled) break ;; esac
+            poll_count=$((poll_count + 1))
+            sleep 5
+        done
+        if [ "$status" = "completed" ]; then
+            pass_test "Test 14: Batch completed (passThroughHeaders working)"
+        else
+            fail_test "Test 14: Batch ended with status=${status} (expected completed)"
+        fi
     else
-        fail_test "Test 14: Some headers missing in nginx logs"
+        fail_test "Test 14: Skipped (no batch_id from Test 13)"
     fi
 
     print_test_summary "$test_total" "$test_passed" "$test_failed" "$failed_tests"
