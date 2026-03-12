@@ -72,10 +72,13 @@ func getEnvOrDefault(key, def string) string {
 	return def
 }
 
+// testModel is the model name used in batch input; configurable via TEST_MODEL env var.
+var testModel = getEnvOrDefault("TEST_MODEL", "sim-model")
+
 // testJSONL is a valid batch input file with two requests
 var testJSONL = strings.Join([]string{
-	`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"Hello"}]}}`,
-	`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"World"}]}}`,
+	fmt.Sprintf(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","messages":[{"role":"user","content":"Hello"}]}}`, testModel),
+	fmt.Sprintf(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","messages":[{"role":"user","content":"World"}]}}`, testModel),
 }, "\n")
 
 // slowJSONL uses high max_tokens so that each request takes a long time
