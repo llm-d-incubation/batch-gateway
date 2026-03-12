@@ -78,6 +78,7 @@ func (p *Processor) handleCancelled(
 	ctx context.Context,
 	jobItem *db.BatchItem,
 	updater *StatusUpdater,
+	requestCounts *openai.BatchRequestCounts,
 ) error {
 	logger := klog.FromContext(ctx)
 
@@ -85,7 +86,7 @@ func (p *Processor) handleCancelled(
 	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
 
 	// update persistent status -> cancelled
-	if err := updater.UpdatePersistentStatus(ctx, jobItem, openai.BatchStatusCancelled, nil, nil); err != nil {
+	if err := updater.UpdatePersistentStatus(ctx, jobItem, openai.BatchStatusCancelled, requestCounts, nil); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update status to cancelled")
 		return err
 	}

@@ -124,7 +124,7 @@ func (p *Processor) runJob(
 	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
-		p.handleJobError(ctx, err, jobItem, updater, task)
+		p.handleJobError(ctx, err, nil, jobItem, updater, task)
 		return
 	}
 
@@ -152,7 +152,7 @@ func (p *Processor) runJob(
 		} else {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "execution failed")
-			p.handleJobError(ctx, err, jobItem, updater, task)
+			p.handleJobError(ctx, err, requestCounts, jobItem, updater, task)
 		}
 		return
 	}
@@ -179,6 +179,7 @@ func (p *Processor) runJob(
 func (p *Processor) handleJobError(
 	ctx context.Context,
 	err error,
+	requestCounts *openai.BatchRequestCounts,
 	jobItem *db.BatchItem,
 	updater *StatusUpdater,
 	task *db.BatchJobPriority,
@@ -187,7 +188,7 @@ func (p *Processor) handleJobError(
 
 	switch {
 	case errors.Is(err, ErrCancelled):
-		if cancelErr := p.handleCancelled(ctx, jobItem, updater); cancelErr != nil {
+		if cancelErr := p.handleCancelled(ctx, jobItem, updater, requestCounts); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
 

@@ -727,6 +727,37 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	}
 }
 
+// TestExecuteJob_CancelFlagSetAfterAllRequestsComplete verifies that if the cancel flag is set
+// after all requests have already been dispatched and completed successfully (i.e.
+// checkAbortCondition never fired during dispatch), executeJob still returns ErrCancelled
+// rather than nil, preventing the job from being finalized as "completed".
+func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	cancelReq := &atomic.Bool{}
+
+	// The mock sets cancelRequested=true only after the inference call returns, simulating
+	// the race where the cancel event arrives while (or just after) the last request completes.
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			cancelReq.Store(true)
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	ctx := testLoggerCtx()
+	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	if !errors.Is(err, ErrCancelled) {
+		t.Fatalf("expected ErrCancelled when cancel flag set after all requests complete, got: %v", err)
+	}
+}
+
 // TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
 // passed before Phase 2 begins, executeJob returns ErrExpired immediately with the total
 // request count and no output/error files are written (early-exit fast path).
@@ -1027,7 +1058,7 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, ErrCancelled, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, ErrCancelled, nil, dbJob, env.updater, nil)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-cancel"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1050,7 +1081,7 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-ctx"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, context.Canceled, dbJob, env.updater, task)
+	env.p.handleJobError(ctx, context.Canceled, nil, dbJob, env.updater, task)
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1071,7 +1102,7 @@ func TestHandleJobError_DeadlineExceeded_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-deadline"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, context.DeadlineExceeded, dbJob, env.updater, task)
+	env.p.handleJobError(ctx, context.DeadlineExceeded, nil, dbJob, env.updater, task)
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1092,7 +1123,7 @@ func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
 
 	ctx := testLoggerCtx()
 	// task is nil — should not panic, and job status should remain unchanged
-	env.p.handleJobError(ctx, context.Canceled, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, context.Canceled, nil, dbJob, env.updater, nil)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-ctx-nil"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1116,7 +1147,7 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, errors.New("some error"), dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, errors.New("some error"), nil, dbJob, env.updater, nil)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {

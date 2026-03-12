@@ -255,7 +255,7 @@ func (p *Processor) executeJob(
 			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
 		}
 		if cancelRequested.Load() {
-			return nil, ErrCancelled // user-initiated cancel
+			return progress.counts(), ErrCancelled // user-initiated cancel
 		}
 		// SLO deadline exceeded: sloCtx deadline fired during execution.
 		// processModel already drained undispatched entries to error file; flush and return partial counts.
@@ -284,6 +284,12 @@ func (p *Processor) executeJob(
 	counts := progress.counts()
 	logger.V(logging.INFO).Info("Phase 2: execution completed",
 		"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
+
+	// Cancel may have arrived after all requests were already dispatched and completed normally
+	// (i.e. checkAbortCondition never fired). Honour the cancellation even in this case.
+	if cancelRequested.Load() {
+		return counts, ErrCancelled
+	}
 
 	return counts, nil
 }
@@ -361,6 +367,14 @@ dispatch:
 			if execErr != nil {
 				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
 				errOnce.Do(func() { firstErr = execErr })
+				return
+			}
+
+			// If cancel was requested while this request was in-flight, count it as
+			// failed and discard the result — cancelled requests are not written to
+			// the output file.
+			if cancelRequested.Load() {
+				progress.record(ctx, false)
 				return
 			}
 

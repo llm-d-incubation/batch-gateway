@@ -755,7 +755,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
-	if err := p.handleCancelled(ctx, jobItem, updater); err != nil {
+	if err := p.handleCancelled(ctx, jobItem, updater, nil); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
 	}
 
