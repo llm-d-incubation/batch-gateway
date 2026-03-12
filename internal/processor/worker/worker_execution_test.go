@@ -626,7 +626,7 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
 
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
@@ -721,7 +721,7 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -752,9 +752,59 @@ func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled when cancel flag set after all requests complete, got: %v", err)
+	}
+}
+
+// TestExecuteJob_InferCtxCancel_AbortsInflightRequests verifies that cancelling inferCtx
+// aborts in-flight inference requests. The mock blocks until it sees context cancellation,
+// simulating a long-running inference call that should be interrupted.
+func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	inferStarted := make(chan struct{})
+	mock := &mockInferenceClient{
+		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			close(inferStarted)
+			// Block until context is cancelled (simulates slow inference)
+			<-ctx.Done()
+			return nil, &inference.ClientError{
+				Category: inference.ErrCategoryServer,
+				Message:  "context cancelled",
+				RawError: ctx.Err(),
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	cancelReq := &atomic.Bool{}
+	ctx := testLoggerCtx()
+	inferCtx, inferCancelFn := context.WithCancel(ctx)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := env.p.executeJob(ctx, ctx, inferCtx, env.updater, jobInfo, cancelReq)
+		errCh <- err
+	}()
+
+	<-inferStarted
+	cancelReq.Store(true)
+	inferCancelFn()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrCancelled) {
+			t.Fatalf("expected ErrCancelled, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executeJob did not return within 5s after inferCtx cancellation")
 	}
 }
 
@@ -778,7 +828,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	counts, err := env.p.executeJob(ctx, sloCtx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got: %v", err)
 	}
@@ -916,7 +966,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}

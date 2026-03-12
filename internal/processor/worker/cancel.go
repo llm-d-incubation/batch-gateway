@@ -37,6 +37,7 @@ func (p *Processor) watchCancel(
 	jobItem *db.BatchItem,
 	cancelRequested *atomic.Bool,
 	cancellingOnce *sync.Once,
+	inferCancelFn func(),
 ) {
 	logger := klog.FromContext(ctx)
 	for {
@@ -56,6 +57,10 @@ func (p *Processor) watchCancel(
 
 				// signal
 				cancelRequested.Store(true)
+
+				// cancel the inference context to abort in-flight HTTP requests immediately,
+				// freeing downstream resources.
+				inferCancelFn()
 
 				// update status to cancelling
 				cancellingOnce.Do(func() {

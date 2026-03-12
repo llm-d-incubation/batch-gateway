@@ -603,7 +603,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	var cancellingOnce sync.Once
 
 	// Start watching cancel in background
-	go p.watchCancel(ctx, evCh, updater, jobItem, &cancelRequested, &cancellingOnce)
+	go p.watchCancel(ctx, evCh, updater, jobItem, &cancelRequested, &cancellingOnce, func() {})
 
 	// Send cancel twice; status update should still happen once due to sync.Once.
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
@@ -628,6 +628,76 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	if dbClient.StatusCalls(openai.BatchStatusCancelling) != 1 {
 		t.Fatalf("expected cancelling update exactly once, got=%d", dbClient.StatusCalls(openai.BatchStatusCancelling))
 	}
+}
+
+// TestWatchCancel_CancelsInferContext verifies that when a cancel event arrives,
+// watchCancel calls the inferCancelFn, which cancels the inference context so that
+// in-flight HTTP requests are aborted immediately.
+func TestWatchCancel_CancelsInferContext(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+	eventClient := mockdb.NewMockBatchEventChannelClient()
+
+	jobID := "job-cancel-infer-ctx"
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: "tenantA"},
+		BaseContents: db.BaseContents{
+			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
+
+	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
+	if err != nil {
+		t.Fatalf("ECConsumerGetChannel: %v", err)
+	}
+	defer evCh.CloseFn()
+
+	var cancelRequested atomic.Bool
+	var cancellingOnce sync.Once
+
+	inferCtx, inferCancelFn := context.WithCancel(ctx)
+
+	go p_watchCancelHelper(t, ctx, evCh, updater, jobItem, &cancelRequested, &cancellingOnce, inferCancelFn)
+
+	// Send cancel event
+	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
+		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
+	})
+
+	// Wait for inferCtx to be cancelled
+	select {
+	case <-inferCtx.Done():
+		// success — inferCancelFn was called
+	case <-time.After(2 * time.Second):
+		t.Fatal("inferCtx was not cancelled within 2s after cancel event")
+	}
+
+	if !cancelRequested.Load() {
+		t.Fatal("cancelRequested was not set")
+	}
+}
+
+// p_watchCancelHelper is a test helper that calls watchCancel on a fresh Processor.
+func p_watchCancelHelper(
+	t *testing.T,
+	ctx context.Context,
+	evCh *db.BatchEventsChan,
+	updater *StatusUpdater,
+	jobItem *db.BatchItem,
+	cancelRequested *atomic.Bool,
+	cancellingOnce *sync.Once,
+	inferCancelFn func(),
+) {
+	t.Helper()
+	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
+	p.watchCancel(ctx, evCh, updater, jobItem, cancelRequested, cancellingOnce, inferCancelFn)
 }
 
 func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {

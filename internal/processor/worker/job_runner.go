@@ -117,8 +117,14 @@ func (p *Processor) runJob(
 	var cancelRequested atomic.Bool
 	var cancellingOnce sync.Once
 
+	// inferCtx is cancelled when the user requests batch cancellation, propagating
+	// the signal to all in-flight inference HTTP requests so they abort promptly.
+	// It is derived from sloCtx so the SLO deadline is also respected.
+	inferCtx, inferCancelFn := context.WithCancel(sloCtx)
+	defer inferCancelFn()
+
 	// watch for cancel event
-	go p.watchCancel(ctx, eventWatcher, updater, jobItem, &cancelRequested, &cancellingOnce)
+	go p.watchCancel(ctx, eventWatcher, updater, jobItem, &cancelRequested, &cancellingOnce, inferCancelFn)
 
 	// ingestion: pre-process job
 	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
@@ -140,7 +146,7 @@ func (p *Processor) runJob(
 	}
 
 	// execution: execute inference requests
-	requestCounts, err := p.executeJob(ctx, sloCtx, updater, jobInfo, &cancelRequested)
+	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, updater, jobInfo, &cancelRequested)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrExpired):

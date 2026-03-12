@@ -77,6 +77,24 @@ func doTestBatchCancel(t *testing.T) {
 		t.Errorf("expected some requests to not complete after cancellation, but all %d completed",
 			finalBatch.RequestCounts.Total)
 	}
+
+	// Verify that in-flight inference requests were actually aborted by the inference client
+	// (context cancellation propagated through inferCtx → execCtx → HTTP request).
+	if testKubectlAvailable {
+		out, err := exec.Command("kubectl", "logs",
+			"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
+			"-n", testNamespace,
+			"--tail=500",
+		).CombinedOutput()
+		if err != nil {
+			t.Logf("kubectl logs failed (non-fatal): %v\n%s", err, out)
+		} else {
+			logs := string(out)
+			if !strings.Contains(logs, "Request cancelled for request_id") {
+				t.Errorf("expected processor logs to contain 'Request cancelled for request_id', indicating in-flight HTTP requests were aborted")
+			}
+		}
+	}
 }
 
 // doTestBatchLifecycle creates a fresh batch, verifies list and retrieve operations,

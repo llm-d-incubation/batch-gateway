@@ -117,7 +117,7 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 
 // executeJob performs execution: reads plan files per model, sends inference
 // requests concurrently (one goroutine per model), and writes results to
-// output.jsonl (successes) and error.jsonl (failures).
+// output.jsonl (successes) and error.jsonl (failures). Returns request counts for finalization.
 //
 // On success, returns (counts, nil). On interruption or error, undispatched requests are
 // drained to the error file with the appropriate code, writers are flushed, and partial counts
@@ -126,9 +126,19 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 //   - User cancel:    (counts, ErrCancelled)  — drain as batch_cancelled
 //   - System error:   (counts, firstErr)      — drain as batch_failed
 //   - Pod shutdown:   (nil, ctx.Err())        — no flush, caller re-enqueues
+
+// inferCtx is cancelled when the user requests batch cancellation. Cancelling it aborts all
+// in-flight inference HTTP requests immediately, freeing downstream resources (GPU slots, EPP
+// capacity). inferCtx is derived from sloCtx in the caller so the SLO deadline is also respected.
+//
+// TODO: Now that inferCtx propagates cancellation through the context tree, checkAbortCondition's
+// cancelRequested polling is partially redundant for stopping dispatch. Refactor so that context
+// cancellation is the sole dispatch-abort mechanism and cancelRequested is only used to distinguish
+// the cancellation reason (user cancel vs SLO vs pod shutdown) in the error-handling path.
 func (p *Processor) executeJob(
 	ctx context.Context,
 	sloCtx context.Context,
+	inferCtx context.Context,
 	updater *StatusUpdater,
 	jobInfo *batch_types.JobInfo,
 	cancelRequested *atomic.Bool,
@@ -197,8 +207,9 @@ func (p *Processor) executeJob(
 
 	// one goroutine per model; concurrency within each model is bounded
 	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit).
-	// execCtx is derived from sloCtx so the SLO deadline propagates to all dispatch loops.
-	execCtx, execCancel := context.WithCancel(sloCtx)
+	// execCtx is derived from inferCtx (which itself is derived from sloCtx) so both the SLO
+	// deadline and user-initiated cancellation propagate to all dispatch loops and inference calls.
+	execCtx, execCancel := context.WithCancel(inferCtx)
 	defer execCancel()
 
 	progress := &executionProgress{
