@@ -23,5 +23,5 @@ import "errors"
 // Exported for test access; not referenced outside the processor package.
 var (
 	ErrCancelled = errors.New("batch job cancelled") // user-initiated cancel
-	ErrExpired   = errors.New("batch SLO expired")   // SLO deadline fired during execution
+	ErrExpired   = errors.New("batch SLO expired")   // SLO deadline reached during execution
 )

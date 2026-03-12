@@ -415,6 +415,7 @@ dispatch:
 	// Priority: SLO expiry > user cancel > system error.
 	// Use sloCtx.Err() rather than ctx.Err(): ctx (execCtx) may report Canceled if execCancel()
 	// was called by another goroutine before the sloCtx deadline propagated.
+	// (Same rationale as the sloCtx check in executeJob.)
 	switch {
 	case sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load():
 		// SLO deadline fired during dispatch — record remaining requests as expired.
