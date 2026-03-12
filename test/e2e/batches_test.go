@@ -73,6 +73,13 @@ func doTestBatchCancel(t *testing.T) {
 		finalBatch.RequestCounts.Failed,
 		finalBatch.RequestCounts.Total)
 
+	if finalBatch.RequestCounts.Total != int64(len(strings.Split(strings.TrimSpace(slowJSONL), "\n"))) {
+		t.Errorf("Total = %d, want %d", finalBatch.RequestCounts.Total, len(strings.Split(strings.TrimSpace(slowJSONL), "\n")))
+	}
+	if finalBatch.RequestCounts.Completed+finalBatch.RequestCounts.Failed != finalBatch.RequestCounts.Total {
+		t.Errorf("Completed(%d) + Failed(%d) != Total(%d)",
+			finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
+	}
 	if finalBatch.RequestCounts.Completed >= finalBatch.RequestCounts.Total {
 		t.Errorf("expected some requests to not complete after cancellation, but all %d completed",
 			finalBatch.RequestCounts.Total)
