@@ -788,10 +788,14 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 	ctx := testLoggerCtx()
 	inferCtx, inferCancelFn := context.WithCancel(ctx)
 
-	errCh := make(chan error, 1)
+	type result struct {
+		counts *openai.BatchRequestCounts
+		err    error
+	}
+	resCh := make(chan result, 1)
 	go func() {
-		_, err := env.p.executeJob(ctx, ctx, inferCtx, env.updater, jobInfo, cancelReq)
-		errCh <- err
+		counts, err := env.p.executeJob(ctx, ctx, inferCtx, env.updater, jobInfo, cancelReq)
+		resCh <- result{counts, err}
 	}()
 
 	<-inferStarted
@@ -799,9 +803,21 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 	inferCancelFn()
 
 	select {
-	case err := <-errCh:
-		if !errors.Is(err, ErrCancelled) {
-			t.Fatalf("expected ErrCancelled, got: %v", err)
+	case res := <-resCh:
+		if !errors.Is(res.err, ErrCancelled) {
+			t.Fatalf("expected ErrCancelled, got: %v", res.err)
+		}
+		if res.counts == nil {
+			t.Fatal("expected non-nil counts")
+		}
+		if res.counts.Total != 1 {
+			t.Errorf("Total = %d, want 1", res.counts.Total)
+		}
+		if res.counts.Completed != 0 {
+			t.Errorf("Completed = %d, want 0 (request was aborted)", res.counts.Completed)
+		}
+		if res.counts.Failed != 1 {
+			t.Errorf("Failed = %d, want 1 (aborted request counted as failed)", res.counts.Failed)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("executeJob did not return within 5s after inferCtx cancellation")
