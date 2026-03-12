@@ -478,6 +478,12 @@ install_batch_gateway() {
     if helm status "${HELM_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
         log "Release '${HELM_RELEASE}' already exists. Upgrading..."
         helm upgrade "${HELM_RELEASE}" ./charts/batch-gateway "${helm_args[@]}"
+        # Force pod restart so the newly-loaded container images are picked up.
+        # helm upgrade alone won't recreate pods when only the image contents
+        # changed but the tag (e.g. 0.0.1) stayed the same.
+        kubectl rollout restart deployment \
+            -l "app.kubernetes.io/instance=${HELM_RELEASE}" \
+            -n "${NAMESPACE}"
     else
         helm install "${HELM_RELEASE}" ./charts/batch-gateway "${helm_args[@]}"
     fi
@@ -516,8 +522,23 @@ wait_for_deployment() {
     done
 }
 
+kill_stale_port_forwards() {
+    local ports=("$@")
+    for port in "${ports[@]}"; do
+        local pids
+        pids=$(lsof -ti "tcp:${port}" 2>/dev/null || true)
+        if [[ -n "${pids}" ]]; then
+            log "Killing stale port-forward on port ${port} (PIDs: ${pids})"
+            echo "${pids}" | xargs kill 2>/dev/null || true
+            sleep 1
+        fi
+    done
+}
+
 start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
+
+    kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
     step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE}..."
     kubectl port-forward "${svc}" "${LOCAL_PORT}:8000" "${LOCAL_OBS_PORT}:8081" -n "${NAMESPACE}" &
@@ -541,6 +562,8 @@ start_apiserver_port_forward() {
 start_processor_port_forward() {
     local deploy="deployment/${HELM_RELEASE}-processor"
 
+    kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
+
     step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE}..."
     kubectl port-forward "${deploy}" "${LOCAL_PROCESSOR_PORT}:9090" -n "${NAMESPACE}" &
     local pf_pid=$!
@@ -562,8 +585,10 @@ start_processor_port_forward() {
 
 start_jaeger_port_forward() {
     local svc="svc/${JAEGER_NAME}"
-    step "Starting port-forward: ${svc} ${JAEGER_PORT}:16686 -n ${NAMESPACE}..."
 
+    kill_stale_port_forwards "${JAEGER_PORT}"
+
+    step "Starting port-forward: ${svc} ${JAEGER_PORT}:16686 -n ${NAMESPACE}..."
     kubectl port-forward "${svc}" "${JAEGER_PORT}:16686" -n "${NAMESPACE}" &
     local pf_pid=$!
     disown "${pf_pid}"
