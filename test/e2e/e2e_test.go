@@ -78,6 +78,13 @@ var testJSONL = strings.Join([]string{
 	`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"World"}]}}`,
 }, "\n")
 
+// slowJSONL uses high max_tokens so that each request takes a long time
+// with the simulator's inter-token-latency, giving enough time to cancel.
+var slowJSONL = strings.Join([]string{
+	`{"custom_id":"slow-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me a very long story"}]}}`,
+	`{"custom_id":"slow-2","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me another very long story"}]}}`,
+}, "\n")
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 func newClient() *openai.Client {
@@ -146,21 +153,22 @@ func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) 
 	return batch.ID
 }
 
-// waitForBatchCompletion polls a batch by ID until it reaches a terminal state
-// and returns the final batch object. Fatals if the batch does not complete
-// within 5 minutes or the test deadline (whichever comes first).
-func waitForBatchCompletion(t *testing.T, batchID string) *openai.Batch {
+// waitForBatchStatus polls a batch by ID until its status is one of the
+// target statuses. It fatals if the timeout (or test deadline) is exceeded.
+func waitForBatchStatus(t *testing.T, batchID string, timeout time.Duration, targets ...openai.BatchStatus) *openai.Batch {
 	t.Helper()
 
 	client := newClient()
 
-	const (
-		pollInterval = 5 * time.Second
-		maxWait      = 5 * time.Minute
-	)
+	targetSet := make(map[openai.BatchStatus]bool, len(targets))
+	for _, s := range targets {
+		targetSet[s] = true
+	}
 
-	var finalBatch *openai.Batch
-	deadline := time.Now().Add(maxWait)
+	const pollInterval = 2 * time.Second
+
+	var lastBatch *openai.Batch
+	deadline := time.Now().Add(timeout)
 	if d, ok := t.Deadline(); ok && d.Before(deadline) {
 		deadline = d.Add(-5 * time.Second)
 	}
@@ -169,23 +177,30 @@ func waitForBatchCompletion(t *testing.T, batchID string) *openai.Batch {
 		if err != nil {
 			t.Fatalf("retrieve batch failed: %v", err)
 		}
-		finalBatch = b
+		lastBatch = b
 
 		t.Logf("batch %s status: %s (completed=%d, failed=%d)",
 			batchID, b.Status,
 			b.RequestCounts.Completed, b.RequestCounts.Failed)
 
-		switch b.Status {
-		case openai.BatchStatusCompleted, openai.BatchStatusFailed,
-			openai.BatchStatusExpired, openai.BatchStatusCancelled:
-			return finalBatch
+		if targetSet[b.Status] {
+			return b
 		}
 		time.Sleep(pollInterval)
 	}
 
-	t.Fatalf("batch %s did not reach a final state within %v (last status: %q)",
-		batchID, maxWait, finalBatch.Status)
+	t.Fatalf("batch %s did not reach status %v within %v (last status: %q)",
+		batchID, targets, timeout, lastBatch.Status)
 	return nil // unreachable
+}
+
+// waitForBatchCompletion polls a batch by ID until it reaches a terminal state.
+func waitForBatchCompletion(t *testing.T, batchID string) *openai.Batch {
+	t.Helper()
+	return waitForBatchStatus(t, batchID, 5*time.Minute,
+		openai.BatchStatusCompleted, openai.BatchStatusFailed,
+		openai.BatchStatusExpired, openai.BatchStatusCancelled,
+	)
 }
 
 func validateAndLogJSONL(t *testing.T, label string, content string) {
@@ -292,16 +307,46 @@ func doTestFileLifecycle(t *testing.T) {
 func doTestBatchCancel(t *testing.T) {
 	t.Helper()
 
-	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), testJSONL)
+	// Use slowJSONL so the simulator takes a long time per request,
+	// giving us a window to cancel while inference is in progress.
+	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), slowJSONL)
 	batchID := mustCreateBatch(t, fileID)
 
+	// Wait for the processor to pick up the batch and start inference.
+	waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
+
+	// Cancel the batch while inference is running.
 	batch, err := newClient().Batches.Cancel(context.Background(), batchID)
 	if err != nil {
 		t.Fatalf("cancel batch failed: %v", err)
 	}
+	t.Logf("cancel response status: %s", batch.Status)
 
-	if batch.Status != openai.BatchStatusCancelled && batch.Status != openai.BatchStatusCancelling {
-		t.Errorf("expected status to be cancelled or cancelling, got %q", batch.Status)
+	// The cancel response should be cancelling (batch is in_progress, so
+	// the apiserver sends a cancel event rather than directly cancelling).
+	if batch.Status != openai.BatchStatusCancelling {
+		t.Errorf("expected status %q immediately after cancel call, got %q",
+			openai.BatchStatusCancelling, batch.Status)
+	}
+
+	// Verify that the batch transitions through cancelling → cancelled.
+	waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelling)
+
+	finalBatch := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
+
+	t.Logf("batch %s cancelled successfully (completed=%d, failed=%d, total=%d)",
+		batchID,
+		finalBatch.RequestCounts.Completed,
+		finalBatch.RequestCounts.Failed,
+		finalBatch.RequestCounts.Total)
+
+	// Since we cancelled during inference, not all requests should have completed.
+	if finalBatch.RequestCounts.Completed >= finalBatch.RequestCounts.Total {
+		t.Errorf("expected some requests to not complete after cancellation, but all %d completed",
+			finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Failed == 0 {
+		t.Error("expected failed request count > 0 after cancellation during inference")
 	}
 }
 
@@ -570,7 +615,7 @@ func doTestObservabilityEndpoints(t *testing.T, obsURL string) {
 	t.Helper()
 
 	for _, endpoint := range []string{"/health", "/ready", "/metrics"} {
-		t.Run(endpoint, func(t *testing.T) {
+		t.Run(strings.TrimPrefix(endpoint, "/"), func(t *testing.T) {
 			resp, err := http.Get(obsURL + endpoint)
 			if err != nil {
 				t.Fatalf("GET %s failed: %v", endpoint, err)

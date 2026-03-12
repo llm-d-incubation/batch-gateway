@@ -404,6 +404,8 @@ spec:
         - ${VLLM_SIM_MODEL}
         - --port
         - "8000"
+        - --time-to-first-token=200ms
+        - --inter-token-latency=500ms
         - --v=5
         env:
         - name: POD_NAME
