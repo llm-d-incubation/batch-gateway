@@ -231,7 +231,7 @@ Deploy to a local Kind cluster for development:
 make dev-deploy
 ```
 
-For detailed instructions, see [Development Guide](docs/guides/DEVELOPMENT.md).
+For detailed instructions, see [Development Guide](docs/guides/development.md).
 
 #### Production Deployment
 
@@ -426,4 +426,4 @@ For help and support:
 
 - Open an issue on GitHub.
 - Review the [design documentation](docs/design/).
-- Check the [development guide](docs/guides/DEVELOPMENT.md).
+- Check the [development guide](docs/guides/development.md).

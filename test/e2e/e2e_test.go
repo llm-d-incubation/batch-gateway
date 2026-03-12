@@ -19,9 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -34,28 +32,38 @@ import (
 )
 
 var (
-	apiserverURL    = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
-	apiserverObsURL = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
-	processorObsURL = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9090")
-	jaegerURL       = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
-	tenantHeader    = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
-	tenantID        = getEnvOrDefault("TEST_TENANT_ID", "default")
-	namespace       = getEnvOrDefault("TEST_NAMESPACE", "default")
-	helmRelease     = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
+	testApiserverURL    = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
+	testApiserverObsURL = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
+	testProcessorObsURL = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9090")
+	testJaegerURL       = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
+	testTenantHeader    = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
+	testTenantID        = getEnvOrDefault("TEST_TENANT_ID", "default")
+	testNamespace       = getEnvOrDefault("TEST_NAMESPACE", "default")
+	testHelmRelease     = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
-	// httpClient is used for direct HTTP calls; skips TLS verification for self-signed certs.
-	httpClient = &http.Client{
+	// testModel is the model name used in batch input; configurable via TEST_MODEL env var.
+	testModel = getEnvOrDefault("TEST_MODEL", "sim-model")
+
+	// testJSONL is a valid batch input file with two requests.
+	// max_tokens is kept small to finish quickly with the simulator's 500ms inter-token-latency.
+	testJSONL = strings.Join([]string{
+		fmt.Sprintf(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello"}]}}`, testModel),
+		fmt.Sprintf(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"World"}]}}`, testModel),
+	}, "\n")
+
+	// testHTTPClient is used for direct HTTP calls; skips TLS verification for self-signed certs.
+	testHTTPClient = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev/test only
 		},
 		Timeout: 10 * time.Second,
 	}
 
-	// kubectlAvailable is set once at TestE2E startup; when false,
+	// testKubectlAvailable is set once at TestE2E startup; when false,
 	// verifications that require kubectl (e.g. log grepping) are skipped.
-	kubectlAvailable bool
+	testKubectlAvailable bool
 
 	// testPassThroughHeaders lists the headers configured in the apiserver's
 	// pass_through_headers setting (set via dev-deploy.sh).
@@ -65,6 +73,8 @@ var (
 	}
 )
 
+// ── Helpers ────────────────────────────────────────────────────────────
+
 func getEnvOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -72,34 +82,16 @@ func getEnvOrDefault(key, def string) string {
 	return def
 }
 
-// testModel is the model name used in batch input; configurable via TEST_MODEL env var.
-var testModel = getEnvOrDefault("TEST_MODEL", "sim-model")
-
-// testJSONL is a valid batch input file with two requests
-var testJSONL = strings.Join([]string{
-	fmt.Sprintf(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","messages":[{"role":"user","content":"Hello"}]}}`, testModel),
-	fmt.Sprintf(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","messages":[{"role":"user","content":"World"}]}}`, testModel),
-}, "\n")
-
-// slowJSONL uses high max_tokens so that each request takes a long time
-// with the simulator's inter-token-latency, giving enough time to cancel.
-var slowJSONL = strings.Join([]string{
-	`{"custom_id":"slow-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me a very long story"}]}}`,
-	`{"custom_id":"slow-2","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me another very long story"}]}}`,
-}, "\n")
-
-// ── Helpers ────────────────────────────────────────────────────────────
-
 func newClient() *openai.Client {
-	return newClientForTenant(tenantID)
+	return newClientForTenant(testTenantID)
 }
 
 func newClientForTenant(tenant string) *openai.Client {
 	c := openai.NewClient(
-		option.WithBaseURL(apiserverURL+"/v1/"),
+		option.WithBaseURL(testApiserverURL+"/v1/"),
 		option.WithAPIKey("unused"),
-		option.WithHeader(tenantHeader, tenant),
-		option.WithHTTPClient(httpClient),
+		option.WithHeader(testTenantHeader, tenant),
+		option.WithHTTPClient(testHTTPClient),
 	)
 	return &c
 }
@@ -156,8 +148,17 @@ func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) 
 	return batch.ID
 }
 
+// terminalBatchStatuses are statuses that a batch cannot transition out of.
+var terminalBatchStatuses = map[openai.BatchStatus]bool{
+	openai.BatchStatusCompleted: true,
+	openai.BatchStatusFailed:    true,
+	openai.BatchStatusExpired:   true,
+	openai.BatchStatusCancelled: true,
+}
+
 // waitForBatchStatus polls a batch by ID until its status is one of the
-// target statuses. It fatals if the timeout (or test deadline) is exceeded.
+// target statuses. It fatals if the batch reaches a terminal state that is
+// not one of the targets, or if the timeout (or test deadline) is exceeded.
 func waitForBatchStatus(t *testing.T, batchID string, timeout time.Duration, targets ...openai.BatchStatus) *openai.Batch {
 	t.Helper()
 
@@ -188,6 +189,10 @@ func waitForBatchStatus(t *testing.T, batchID string, timeout time.Duration, tar
 
 		if targetSet[b.Status] {
 			return b
+		}
+		if terminalBatchStatuses[b.Status] {
+			t.Fatalf("batch %s reached terminal status %q, will never become %v",
+				batchID, b.Status, targets)
 		}
 		time.Sleep(pollInterval)
 	}
@@ -232,405 +237,6 @@ func validateAndLogJSONL(t *testing.T, label string, content string) {
 	t.Logf("=== %s ===\n%s", label, strings.TrimSpace(pretty.String()))
 }
 
-// ── Files subtests ────────────────────────────────────────────────────────────
-
-// doTestFileLifecycle uploads a file, verifies list, retrieve, download, then deletes it.
-func doTestFileLifecycle(t *testing.T) {
-	t.Helper()
-
-	client := newClient()
-
-	// Create
-	filename := fmt.Sprintf("test-file-lifecycle-%s.jsonl", testRunID)
-	fileID := mustCreateFile(t, filename, testJSONL)
-
-	// List
-	page, err := client.Files.List(context.Background(), openai.FileListParams{})
-	if err != nil {
-		t.Fatalf("list files failed: %v", err)
-	}
-	t.Logf("list files: got %d items", len(page.Data))
-	/*
-		for _, f := range page.Data {
-			t.Logf("  file: id=%s name=%s purpose=%s", f.ID, f.Filename, f.Purpose)
-		}
-	*/
-
-	// Retrieve
-	got, err := client.Files.Get(context.Background(), fileID)
-	if err != nil {
-		t.Fatalf("retrieve file failed: %v", err)
-	}
-	if got.ID != fileID {
-		t.Errorf("expected ID %q, got %q", fileID, got.ID)
-	}
-	if got.Filename != filename {
-		t.Errorf("expected filename %q, got %q", filename, got.Filename)
-	}
-	if got.Purpose != openai.FileObjectPurposeBatch {
-		t.Errorf("expected purpose %q, got %q", openai.FileObjectPurposeBatch, got.Purpose)
-	}
-
-	// Download
-	resp, err := client.Files.Content(context.Background(), fileID)
-	if err != nil {
-		t.Fatalf("download file failed: %v", err)
-	}
-	content, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		t.Fatalf("failed to read file content: %v", err)
-	}
-	if strings.TrimSpace(string(content)) != strings.TrimSpace(testJSONL) {
-		t.Errorf("downloaded content does not match uploaded content\ngot:  %q\nwant: %q", string(content), testJSONL)
-	}
-
-	// Delete and verify a subsequent Get returns 404.
-	result, err := client.Files.Delete(context.Background(), fileID)
-	if err != nil {
-		t.Fatalf("delete file failed: %v", err)
-	}
-	if !result.Deleted {
-		t.Error("expected deleted to be true")
-	}
-
-	_, err = client.Files.Get(context.Background(), fileID)
-	if err == nil {
-		t.Error("expected error after deletion, got nil")
-	} else {
-		var apiErr *openai.Error
-		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
-			t.Errorf("expected 404 after deletion, got %d", apiErr.StatusCode)
-		}
-	}
-}
-
-// ── Batches subtests ──────────────────────────────────────────────────────────
-
-func doTestBatchCancel(t *testing.T) {
-	t.Helper()
-
-	// Use slowJSONL so the simulator takes a long time per request,
-	// giving us a window to cancel while inference is in progress.
-	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), slowJSONL)
-	batchID := mustCreateBatch(t, fileID)
-
-	// Wait for the processor to pick up the batch and start inference.
-	waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
-
-	// Cancel the batch while inference is running.
-	batch, err := newClient().Batches.Cancel(context.Background(), batchID)
-	if err != nil {
-		t.Fatalf("cancel batch failed: %v", err)
-	}
-	t.Logf("cancel response status: %s", batch.Status)
-
-	// The cancel response should be cancelling (batch is in_progress, so
-	// the apiserver sends a cancel event rather than directly cancelling).
-	if batch.Status != openai.BatchStatusCancelling {
-		t.Errorf("expected status %q immediately after cancel call, got %q",
-			openai.BatchStatusCancelling, batch.Status)
-	}
-
-	// Verify that the batch transitions through cancelling → cancelled.
-	waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelling)
-
-	finalBatch := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
-
-	t.Logf("batch %s cancelled successfully (completed=%d, failed=%d, total=%d)",
-		batchID,
-		finalBatch.RequestCounts.Completed,
-		finalBatch.RequestCounts.Failed,
-		finalBatch.RequestCounts.Total)
-
-	// Since we cancelled during inference, not all requests should have completed.
-	if finalBatch.RequestCounts.Completed >= finalBatch.RequestCounts.Total {
-		t.Errorf("expected some requests to not complete after cancellation, but all %d completed",
-			finalBatch.RequestCounts.Total)
-	}
-	if finalBatch.RequestCounts.Failed == 0 {
-		t.Error("expected failed request count > 0 after cancellation during inference")
-	}
-}
-
-// doTestBatchLifecycle creates a fresh batch, verifies list and retrieve operations,
-// polls until it reaches a terminal state, then asserts it completed successfully
-// and prints the output/error file contents.
-func doTestBatchLifecycle(t *testing.T) {
-	t.Helper()
-
-	client := newClient()
-
-	// Create
-	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-lifecycle-%s.jsonl", testRunID), testJSONL)
-	batchID := mustCreateBatch(t, fileID)
-
-	// List
-	page, err := client.Batches.List(context.Background(), openai.BatchListParams{})
-	if err != nil {
-		t.Fatalf("list batches failed: %v", err)
-	}
-	t.Logf("list batches: got %d items", len(page.Data))
-
-	// Retrieve
-	batch, err := client.Batches.Get(context.Background(), batchID)
-	if err != nil {
-		t.Fatalf("retrieve batch failed: %v", err)
-	}
-	if batch.ID != batchID {
-		t.Errorf("expected ID %q, got %q", batchID, batch.ID)
-	}
-	if batch.InputFileID != fileID {
-		t.Errorf("expected input_file_id %q, got %q", fileID, batch.InputFileID)
-	}
-	if batch.Endpoint != "/v1/chat/completions" {
-		t.Errorf("expected endpoint %q, got %q", "/v1/chat/completions", batch.Endpoint)
-	}
-	if batch.CompletionWindow != "24h" {
-		t.Errorf("expected completion_window %q, got %q", "24h", batch.CompletionWindow)
-	}
-
-	// Poll until completion
-	finalBatch := waitForBatchCompletion(t, batchID)
-
-	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
-	}
-
-	// Download and log output file
-	if finalBatch.OutputFileID != "" {
-		resp, err := client.Files.Content(context.Background(), finalBatch.OutputFileID)
-		if err != nil {
-			t.Fatalf("download output file failed: %v", err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		validateAndLogJSONL(t, "output file", string(body))
-	}
-
-	// Download and log error file (if any)
-	if finalBatch.ErrorFileID != "" {
-		resp, err := client.Files.Content(context.Background(), finalBatch.ErrorFileID)
-		if err != nil {
-			t.Fatalf("download error file failed: %v", err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		validateAndLogJSONL(t, "error file", string(body))
-	}
-}
-
-// doTestPassThroughHeaders creates a batch with pass-through headers, waits for
-// completion, then verifies the processor logged the expected header names.
-func doTestPassThroughHeaders(t *testing.T) {
-	t.Helper()
-
-	// Verify processor logs contain the pass-through header names
-	if !kubectlAvailable {
-		t.Skip("kubectl not available, skipping processor log verification")
-	}
-
-	// Create batch with pass-through headers
-	fileID := mustCreateFile(t, fmt.Sprintf("test-pass-through-headers-%s.jsonl", testRunID), testJSONL)
-
-	var headerOpts []option.RequestOption
-	for k, v := range testPassThroughHeaders {
-		headerOpts = append(headerOpts, option.WithHeader(k, v))
-	}
-
-	batchID := mustCreateBatch(t, fileID, headerOpts...)
-
-	finalBatch := waitForBatchCompletion(t, batchID)
-
-	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
-	}
-
-	out, err := exec.Command("kubectl", "logs",
-		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", helmRelease),
-		"-n", namespace,
-		"--tail=500",
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("kubectl logs failed: %v\n%s", err, out)
-	}
-
-	logs := string(out)
-	for headerName := range testPassThroughHeaders {
-		if !strings.Contains(logs, headerName) {
-			t.Errorf("expected processor logs to contain header name %q, but it was not found", headerName)
-		}
-	}
-}
-
-// ── Multi-tenant subtests ─────────────────────────────────────────────────────
-
-// doTestMultiTenantIsolation verifies that resources created by tenant A
-// are not visible to tenant B.
-func doTestMultiTenantIsolation(t *testing.T) {
-	t.Helper()
-
-	ctx := context.Background()
-	tenantA := fmt.Sprintf("tenant-a-%s", testRunID)
-	tenantB := fmt.Sprintf("tenant-b-%s", testRunID)
-	clientA := newClientForTenant(tenantA)
-	clientB := newClientForTenant(tenantB)
-
-	// ── Files isolation ──────────────────────────────────────────────────
-
-	// Tenant A creates a file
-	filenameA := fmt.Sprintf("tenant-a-file-%s.jsonl", testRunID)
-	fileA, err := clientA.Files.New(ctx, openai.FileNewParams{
-		File:    openai.File(strings.NewReader(testJSONL), filenameA, "application/jsonl"),
-		Purpose: openai.FilePurposeBatch,
-	})
-	if err != nil {
-		t.Fatalf("tenant A: create file failed: %v", err)
-	}
-	t.Logf("tenant A created file: %s", fileA.ID)
-
-	// Tenant B should not see tenant A's file
-	_, err = clientB.Files.Get(ctx, fileA.ID)
-	if err == nil {
-		t.Error("tenant B was able to retrieve tenant A's file; expected 404")
-	} else {
-		var apiErr *openai.Error
-		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
-			t.Errorf("expected 404 when tenant B accesses tenant A's file, got %d", apiErr.StatusCode)
-		}
-	}
-
-	// Tenant B's file list should not contain tenant A's file
-	pageB, err := clientB.Files.List(ctx, openai.FileListParams{})
-	if err != nil {
-		t.Fatalf("tenant B: list files failed: %v", err)
-	}
-	for _, f := range pageB.Data {
-		if f.ID == fileA.ID {
-			t.Error("tenant B's file list contains tenant A's file")
-		}
-	}
-
-	// ── Batches isolation ────────────────────────────────────────────────
-
-	// Tenant A creates a batch
-	batchA, err := clientA.Batches.New(ctx, openai.BatchNewParams{
-		InputFileID:      fileA.ID,
-		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
-		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
-	})
-	if err != nil {
-		t.Fatalf("tenant A: create batch failed: %v", err)
-	}
-	t.Logf("tenant A created batch: %s", batchA.ID)
-
-	// Tenant B should not see tenant A's batch
-	_, err = clientB.Batches.Get(ctx, batchA.ID)
-	if err == nil {
-		t.Error("tenant B was able to retrieve tenant A's batch; expected 404")
-	} else {
-		var apiErr *openai.Error
-		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
-			t.Errorf("expected 404 when tenant B accesses tenant A's batch, got %d", apiErr.StatusCode)
-		}
-	}
-
-	// Tenant B's batch list should not contain tenant A's batch
-	batchPageB, err := clientB.Batches.List(ctx, openai.BatchListParams{})
-	if err != nil {
-		t.Fatalf("tenant B: list batches failed: %v", err)
-	}
-	for _, b := range batchPageB.Data {
-		if b.ID == batchA.ID {
-			t.Error("tenant B's batch list contains tenant A's batch")
-		}
-	}
-
-	// Tenant B should not be able to cancel tenant A's batch
-	_, err = clientB.Batches.Cancel(ctx, batchA.ID)
-	if err == nil {
-		t.Error("tenant B was able to cancel tenant A's batch; expected 404")
-	} else {
-		var apiErr *openai.Error
-		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusNotFound {
-			t.Errorf("expected 404 when tenant B cancels tenant A's batch, got %d", apiErr.StatusCode)
-		}
-	}
-}
-
-// ── Observability subtests ────────────────────────────────────────────────────
-
-// doTestOtelTraces verifies that traces are exported to Jaeger after a batch
-// lifecycle. It queries the Jaeger query API for traces from the batch-gateway
-// service.
-func doTestOtelTraces(t *testing.T) {
-	t.Helper()
-
-	// Check Jaeger is reachable
-	jaegerClient := &http.Client{Timeout: 5 * time.Second}
-	checkResp, err := jaegerClient.Get(jaegerURL + "/")
-	if err != nil {
-		t.Skipf("Jaeger not reachable at %s, skipping OTel trace verification: %v", jaegerURL, err)
-	}
-	checkResp.Body.Close()
-
-	// Run a quick batch to generate traces
-	fileID := mustCreateFile(t, fmt.Sprintf("test-otel-%s.jsonl", testRunID), testJSONL)
-	batchID := mustCreateBatch(t, fileID)
-	finalBatch := waitForBatchCompletion(t, batchID)
-	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
-	}
-
-	// Give Jaeger a moment to index the traces
-	time.Sleep(3 * time.Second)
-
-	// Query Jaeger for traces from the batch-gateway service
-	jaegerQueryURL := fmt.Sprintf("%s/api/traces?service=batch-gateway&limit=1", jaegerURL)
-	resp, err := jaegerClient.Get(jaegerQueryURL)
-	if err != nil {
-		t.Fatalf("failed to query Jaeger API: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Jaeger API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Data []json.RawMessage `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode Jaeger response: %v", err)
-	}
-
-	if len(result.Data) == 0 {
-		t.Fatal("expected at least 1 trace from Jaeger, got 0")
-	}
-
-	t.Logf("Jaeger returned %d trace(s) for service batch-gateway", len(result.Data))
-}
-
-// doTestObservabilityEndpoints verifies that the observability endpoints
-// (/health, /ready, /metrics) are reachable over plain HTTP at the given base URL.
-func doTestObservabilityEndpoints(t *testing.T, obsURL string) {
-	t.Helper()
-
-	for _, endpoint := range []string{"/health", "/ready", "/metrics"} {
-		t.Run(strings.TrimPrefix(endpoint, "/"), func(t *testing.T) {
-			resp, err := http.Get(obsURL + endpoint)
-			if err != nil {
-				t.Fatalf("GET %s failed: %v", endpoint, err)
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Errorf("expected 200 from %s, got %d", endpoint, resp.StatusCode)
-			}
-		})
-	}
-}
-
 // ── Setup ────────────────────────────────────────────────────────────────
 
 func waitForReady(t *testing.T, url string, timeout time.Duration) {
@@ -660,28 +266,13 @@ func TestE2E(t *testing.T) {
 	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
 		t.Logf("kubectl not available, some checks will be skipped: %v\n%s", err, out)
 	} else {
-		kubectlAvailable = true
+		testKubectlAvailable = true
 	}
 
-	waitForReady(t, apiserverObsURL, 30*time.Second)
+	waitForReady(t, testApiserverObsURL, 30*time.Second)
 
-	t.Run("Files", func(t *testing.T) {
-		t.Run("Lifecycle", doTestFileLifecycle)
-	})
-
-	t.Run("Batches", func(t *testing.T) {
-		t.Run("Lifecycle", doTestBatchLifecycle)
-		t.Run("Cancel", doTestBatchCancel)
-		t.Run("PassThroughHeaders", doTestPassThroughHeaders)
-	})
-
-	t.Run("MultiTenant", func(t *testing.T) {
-		t.Run("Isolation", doTestMultiTenantIsolation)
-	})
-
-	t.Run("Observability", func(t *testing.T) {
-		t.Run("APIServer", func(t *testing.T) { doTestObservabilityEndpoints(t, apiserverObsURL) })
-		t.Run("Processor", func(t *testing.T) { doTestObservabilityEndpoints(t, processorObsURL) })
-		t.Run("OtelTraces", doTestOtelTraces)
-	})
+	t.Run("Files", testFiles)
+	t.Run("Batches", testBatches)
+	t.Run("MultiTenant", testMultiTenant)
+	t.Run("Observability", testObservability)
 }
