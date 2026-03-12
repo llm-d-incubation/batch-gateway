@@ -115,7 +115,7 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 	}
 }
 
-// executeJob performs phase 2: reads plan files per model, sends inference
+// executeJob performs execution: reads plan files per model, sends inference
 // requests concurrently (one goroutine per model), and writes results to
 // output.jsonl (successes) and error.jsonl (failures).
 //
@@ -134,7 +134,7 @@ func (p *Processor) executeJob(
 	cancelRequested *atomic.Bool,
 ) (*openai.BatchRequestCounts, error) {
 	logger := klog.FromContext(ctx)
-	logger.V(logging.INFO).Info("Starting Phase 2: executing job")
+	logger.V(logging.INFO).Info("Starting execution: executing job")
 
 	jobRootDir, err := p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
 	if err != nil {
@@ -146,11 +146,11 @@ func (p *Processor) executeJob(
 		return nil, fmt.Errorf("failed to read model map: %w", err)
 	}
 
-	// Early SLO check: if the deadline already fired before Phase 2 begins (e.g. SLO expired
-	// during Phase 1 plan build), skip dispatch entirely. No output/error files are written
+	// Early SLO check: if the deadline already fired before execution begins (e.g. SLO expired
+	// during ingestion), skip dispatch entirely. No output/error files are written
 	// since no requests were executed. handleExpired will transition the job to expired status.
 	if sloCtx.Err() == context.DeadlineExceeded {
-		logger.V(logging.INFO).Info("SLO already expired at Phase 2 start, skipping dispatch",
+		logger.V(logging.INFO).Info("SLO already expired at execution start, skipping dispatch",
 			"total", modelMap.LineCount)
 		return &openai.BatchRequestCounts{Total: modelMap.LineCount}, ErrExpired
 	}
@@ -256,7 +256,7 @@ func (p *Processor) executeJob(
 			_ = writers.output.Flush()
 			_ = writers.errors.Flush()
 			counts := progress.counts()
-			logger.V(logging.INFO).Info("Phase 2: cancelled, returning partial counts",
+			logger.V(logging.INFO).Info("Execution cancelled, returning partial counts",
 				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 			return counts, ErrCancelled
 		}
@@ -269,7 +269,7 @@ func (p *Processor) executeJob(
 			_ = writers.output.Flush()
 			_ = writers.errors.Flush()
 			counts := progress.counts()
-			logger.V(logging.INFO).Info("Phase 2: SLO expired, returning partial counts",
+			logger.V(logging.INFO).Info("Execution SLO expired, returning partial counts",
 				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 			return counts, ErrExpired
 		}
@@ -277,7 +277,7 @@ func (p *Processor) executeJob(
 		_ = writers.output.Flush()
 		_ = writers.errors.Flush()
 		counts := progress.counts()
-		logger.V(logging.INFO).Info("Phase 2: system error, returning partial counts",
+		logger.V(logging.INFO).Info("Execution system error, returning partial counts",
 			"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 		return counts, firstErr
 	}
@@ -290,7 +290,7 @@ func (p *Processor) executeJob(
 	}
 
 	counts := progress.counts()
-	logger.V(logging.INFO).Info("Phase 2: execution completed",
+	logger.V(logging.INFO).Info("Execution completed",
 		"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 
 	// Cancel may have arrived after all requests were already dispatched and completed normally
@@ -661,7 +661,7 @@ func (p *Processor) uploadFileAndStoreFileRecord(
 	return fileID, nil
 }
 
-// finalizeJob performs phase 3: uploads output and error files to shared storage,
+// finalizeJob performs finalization: uploads output and error files to shared storage,
 // creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
 	ctx context.Context,
@@ -671,7 +671,7 @@ func (p *Processor) finalizeJob(
 	requestCounts *openai.BatchRequestCounts,
 ) error {
 	logger := klog.FromContext(ctx)
-	logger.V(logging.INFO).Info("Starting Phase 3: finalizing job")
+	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
 	// in_progress → finalizing
 	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
@@ -698,7 +698,7 @@ func (p *Processor) finalizeJob(
 
 	setRequestCountAttrs(ctx, requestCounts)
 
-	logger.V(logging.INFO).Info("Phase 3: finalization completed", "outputFileID", outputFileID, "errorFileID", errorFileID)
+	logger.V(logging.INFO).Info("Finalization completed", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
 }
 

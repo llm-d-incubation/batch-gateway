@@ -76,8 +76,8 @@ func (p *Processor) watchCancel(
 }
 
 // handleCancelled finalizes a user-cancelled job.
-// When called after executeJob (Phase 2), requestCounts and jobInfo are non-nil and partial
-// results are uploaded. When called before executeJob (Phase 1), both are nil and only
+// When called after executeJob (execution), requestCounts and jobInfo are non-nil and partial
+// results are uploaded. When called before executeJob (ingestion), both are nil and only
 // cleanup + status transition is performed.
 func (p *Processor) handleCancelled(
 	ctx context.Context,

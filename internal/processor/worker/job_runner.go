@@ -120,7 +120,7 @@ func (p *Processor) runJob(
 	// watch for cancel event
 	go p.watchCancel(ctx, eventWatcher, updater, jobItem, &cancelRequested, &cancellingOnce)
 
-	// phase 1: pre-process job
+	// ingestion: pre-process job
 	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
@@ -139,7 +139,7 @@ func (p *Processor) runJob(
 		return
 	}
 
-	// phase 2: execute inference requests
+	// execution: execute inference requests
 	requestCounts, err := p.executeJob(ctx, sloCtx, updater, jobInfo, &cancelRequested)
 	if err != nil {
 		switch {
@@ -169,7 +169,7 @@ func (p *Processor) runJob(
 		return
 	}
 
-	// phase 3: finalize (upload output, update status to completed)
+	// finalization: upload output, update status to completed
 	if err := p.finalizeJob(ctx, updater, jobItem, jobInfo, requestCounts); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
 		span.RecordError(err)
@@ -189,8 +189,8 @@ func (p *Processor) runJob(
 	logger.V(logging.INFO).Info("Job completed successfully")
 }
 
-// handleJobError routes a phase error to the appropriate handler (cancel, re-enqueue, or fail).
-// requestCounts and jobInfo are non-nil only when the error originates from Phase 2 (executeJob).
+// handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).
+// requestCounts and jobInfo are non-nil only when the error originates from execution (executeJob).
 func (p *Processor) handleJobError(
 	ctx context.Context,
 	err error,
@@ -204,7 +204,7 @@ func (p *Processor) handleJobError(
 
 	switch {
 	case errors.Is(err, ErrCancelled):
-		// Phase 1 cancel: no output files exist yet
+		// Ingestion cancel: no output files exist yet
 		if cancelErr := p.handleCancelled(ctx, updater, jobItem, nil, nil); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
@@ -294,7 +294,7 @@ func (p *Processor) handleExpired(
 	return nil
 }
 
-// handleFailedWithPartial finalizes a Phase 2 failure by uploading partial results before
+// handleFailedWithPartial finalizes an execution failure by uploading partial results before
 // transitioning to failed status. Completed requests are preserved in the output file,
 // and unexecuted requests were already drained to the error file as "batch_failed".
 func (p *Processor) handleFailedWithPartial(
@@ -324,7 +324,7 @@ func (p *Processor) handleFailedWithPartial(
 }
 
 // handleFailed finalizes a failed job without partial output upload.
-// Used for Phase 1 failures (no output files), Phase 3 failures (upload retries exhausted),
+// Used for ingestion failures (no output files), finalization failures (upload retries exhausted),
 // and re-enqueue failures (infrastructure-level issue). requestCounts is recorded in DB when non-nil.
 func (p *Processor) handleFailed(
 	ctx context.Context,

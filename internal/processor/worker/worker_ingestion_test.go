@@ -226,7 +226,7 @@ func uniqueTestFolder(t *testing.T, base string) string {
 }
 
 // -------------------------
-// Test 1: Phase 1
+// Test 1: Ingestion
 // - local input.jsonl exact copy (line-by-line)
 // - plan offsets/lengths are correct (ReadAt matches original line bytes)
 // - model_map.json consistency

@@ -49,7 +49,7 @@ const NoPrefixHash uint32 = math.MaxUint32
 // 16 bytes:
 // Offset [int64 Offset] start byte offset of the request line in input.jsonl
 // Length [uint32 Length] length of the request line in input.jsonl
-// PrefixHash [uint32 PrefixHash] FNV-32a hash of the request's system prompt, used to group similar requests together in Phase 2. If the system prompt is absent, the hash defaults to NoPrefixHash.
+// PrefixHash [uint32 PrefixHash] FNV-32a hash of the request's system prompt, used to group similar requests together during execution. If the system prompt is absent, the hash defaults to NoPrefixHash.
 type planEntry struct {
 	Offset     int64
 	Length     uint32
@@ -65,8 +65,8 @@ func (e planEntry) marshalBinary() [planEntrySize]byte {
 	return buf
 }
 
-// planAccumulator collects plan entries in memory per model.
-// At finalization it sorts each model's entries by PrefixHash and writes them to disk.
+// planAccumulator collects plan entries in memory per model during ingestion.
+// Once all entries are collected, Finalize sorts each model's entries by PrefixHash and writes them to disk.
 type planAccumulator struct {
 	jobRootDir string
 	entries    map[string][]planEntry // safeModelID -> entries
@@ -210,7 +210,7 @@ func accumulatePlanEntry(
 	return offset + int64(length)
 }
 
-// finalizePlanFiles sorts and writes the plan entries to disk.
+// finalizePlanFiles concludes ingestion by sorting and writing the plan entries to disk.
 func finalizePlanFiles(acc *planAccumulator, modelToSafe map[string]string) error {
 	modelIDs := make([]string, 0, len(modelToSafe))
 	for _, safeID := range modelToSafe {
