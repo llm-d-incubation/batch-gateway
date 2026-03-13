@@ -36,8 +36,7 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(&jobExecutionParams{
-		ctx:     testLoggerCtx(),
+	p.runJob(testLoggerCtx(), &jobExecutionParams{
 		updater: NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
 		jobItem: &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
 		jobInfo: &batch_types.JobInfo{JobID: "job-1"},
@@ -86,8 +85,7 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 		t.Fatalf("expected token acquire before runJob")
 	}
 	p.wg.Add(1)
-	p.runJob(&jobExecutionParams{
-		ctx:     ctx,
+	p.runJob(ctx, &jobExecutionParams{
 		updater: NewStatusUpdater(dbClient, statusClient, 86400),
 		jobItem: jobItem,
 		jobInfo: jobInfo,

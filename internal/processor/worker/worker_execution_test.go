@@ -654,10 +654,7 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          ctx,
-		inferCtx:        ctx,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -705,10 +702,7 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          ctx,
-		inferCtx:        ctx,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -744,10 +738,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
 
-	_, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          ctx,
-		inferCtx:        ctx,
+	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -777,10 +768,7 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	inferCtx, inferCancel := context.WithCancel(ctx)
 	inferCancel()
 
-	_, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          ctx,
-		inferCtx:        inferCtx,
+	_, err := env.p.executeJob(ctx, ctx, inferCtx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -815,10 +803,7 @@ func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          ctx,
-		inferCtx:        ctx,
+	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -864,10 +849,7 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		counts, err := env.p.executeJob(&jobExecutionParams{
-			ctx:             ctx,
-			sloCtx:          ctx,
-			inferCtx:        inferCtx,
+		counts, err := env.p.executeJob(ctx, ctx, inferCtx, &jobExecutionParams{
 			updater:         env.updater,
 			jobInfo:         jobInfo,
 			cancelRequested: cancelReq,
@@ -921,10 +903,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	counts, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          sloCtx,
-		inferCtx:        sloCtx,
+	counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -1005,10 +984,7 @@ func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		counts, err := env.p.executeJob(&jobExecutionParams{
-			ctx:             ctx,
-			sloCtx:          sloCtx,
-			inferCtx:        sloCtx,
+		counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
 			updater:         env.updater,
 			jobInfo:         jobInfo,
 			cancelRequested: cancelReq,
@@ -1165,10 +1141,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(&jobExecutionParams{
-		ctx:             ctx,
-		sloCtx:          ctx,
-		inferCtx:        ctx,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -1314,8 +1287,7 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(&jobExecutionParams{
-		ctx:     ctx,
+	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 	}, ErrCancelled)
@@ -1341,8 +1313,7 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-ctx"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(&jobExecutionParams{
-		ctx:     ctx,
+	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 		task:    task,
@@ -1367,8 +1338,7 @@ func TestHandleJobError_DeadlineExceeded_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-deadline"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(&jobExecutionParams{
-		ctx:     ctx,
+	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 		task:    task,
@@ -1393,8 +1363,7 @@ func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
 
 	ctx := testLoggerCtx()
 	// task is nil — should not panic, and job status should remain unchanged
-	env.p.handleJobError(&jobExecutionParams{
-		ctx:     ctx,
+	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 	}, context.Canceled)
@@ -1421,8 +1390,7 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(&jobExecutionParams{
-		ctx:     ctx,
+	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 	}, errors.New("some error"))
@@ -1486,8 +1454,7 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
 
 	ctx := testLoggerCtx()
-	if err := env.p.handleCancelled(&jobExecutionParams{
-		ctx:           ctx,
+	if err := env.p.handleCancelled(ctx, &jobExecutionParams{
 		updater:       env.updater,
 		jobItem:       dbJob,
 		jobInfo:       jobInfo,

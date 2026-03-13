@@ -226,8 +226,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// process job
 		p.wg.Add(1)
-		go p.runJob(&jobExecutionParams{
-			ctx:     jctx,
+		go p.runJob(jctx, &jobExecutionParams{
 			updater: p.updater,
 			jobItem: jobItem,
 			jobInfo: jobInfo,

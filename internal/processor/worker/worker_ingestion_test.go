@@ -604,7 +604,6 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 
 	// Start watching cancel in background
 	params := &jobExecutionParams{
-		ctx:             ctx,
 		eventWatcher:    evCh,
 		updater:         updater,
 		jobItem:         jobItem,
@@ -612,7 +611,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 		cancelRequested: &cancelRequested,
 		cancellingOnce:  &cancellingOnce,
 	}
-	go p.watchCancel(params)
+	go p.watchCancel(ctx, params)
 
 	// Send cancel twice; status update should still happen once due to sync.Once.
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
@@ -674,7 +673,6 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 	inferCtx, inferCancelFn := context.WithCancel(ctx)
 
 	params := &jobExecutionParams{
-		ctx:             ctx,
 		eventWatcher:    evCh,
 		updater:         updater,
 		jobItem:         jobItem,
@@ -682,7 +680,7 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 		cancelRequested: &cancelRequested,
 		cancellingOnce:  &cancellingOnce,
 	}
-	go p_watchCancelHelper(t, params)
+	go p_watchCancelHelper(t, ctx, params)
 
 	// Send cancel event
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
@@ -703,10 +701,10 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 }
 
 // p_watchCancelHelper is a test helper that calls watchCancel on a fresh Processor.
-func p_watchCancelHelper(t *testing.T, params *jobExecutionParams) {
+func p_watchCancelHelper(t *testing.T, ctx context.Context, params *jobExecutionParams) {
 	t.Helper()
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
-	p.watchCancel(params)
+	p.watchCancel(ctx, params)
 }
 
 func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
@@ -834,8 +832,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
-	if err := p.handleCancelled(&jobExecutionParams{
-		ctx:     ctx,
+	if err := p.handleCancelled(ctx, &jobExecutionParams{
 		updater: updater,
 		jobItem: jobItem,
 	}); err != nil {

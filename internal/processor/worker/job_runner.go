@@ -40,9 +40,7 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
-func (p *Processor) runJob(params *jobExecutionParams) {
-	ctx := params.ctx
-
+func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Restore parent trace context propagated from the apiserver via Redis tags
 	if len(params.jobInfo.TraceContext) > 0 {
 		propagator := otel.GetTextMapPropagator()
@@ -59,7 +57,6 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 	ctx, span := uotel.StartSpan(ctx, "process-batch",
 		trace.WithAttributes(spanAttrs...),
 	)
-	params.ctx = ctx
 	defer span.End()
 
 	logger := klog.FromContext(ctx)
@@ -119,19 +116,19 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 	// inferCtx is cancelled when the user requests batch cancellation, propagating
 	// the signal to all in-flight inference HTTP requests so they abort promptly.
 	// It is derived from sloCtx so the SLO deadline is also respected.
-	params.sloCtx = sloCtx
-	params.inferCtx, params.inferCancelFn = context.WithCancel(sloCtx)
-	defer params.inferCancelFn()
+	inferCtx, inferCancelFn := context.WithCancel(sloCtx)
+	params.inferCancelFn = inferCancelFn
+	defer inferCancelFn()
 
 	// watch for cancel event
 	params.eventWatcher = eventWatcher
-	go p.watchCancel(params)
+	go p.watchCancel(ctx, params)
 
 	// ingestion: pre-process job
 	if err := p.preProcessJob(ctx, params.jobInfo, params.cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
-		p.handleJobError(params, err)
+		p.handleJobError(ctx, params, err)
 		return
 	}
 
@@ -147,7 +144,7 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 	}
 
 	// execution: execute inference requests
-	requestCounts, err := p.executeJob(params)
+	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, params)
 	params.requestCounts = requestCounts
 	if err != nil {
 		switch {
@@ -160,7 +157,7 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 
 		case errors.Is(err, ErrCancelled):
-			if cancelErr := p.handleCancelled(params); cancelErr != nil {
+			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
 				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
 				span.RecordError(cancelErr)
 				span.SetStatus(codes.Error, "cancelled finalization failed")
@@ -172,7 +169,7 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 		default:
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "execution failed")
-			p.handleJobError(params, err)
+			p.handleJobError(ctx, params, err)
 		}
 		return
 	}
@@ -199,8 +196,7 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 
 // handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).
 // requestCounts and jobInfo are non-nil only when the error originates from execution (executeJob).
-func (p *Processor) handleJobError(params *jobExecutionParams, err error) {
-	ctx := params.ctx
+func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionParams, err error) {
 	logger := klog.FromContext(ctx)
 
 	switch {
@@ -209,7 +205,7 @@ func (p *Processor) handleJobError(params *jobExecutionParams, err error) {
 		cancelParams := *params
 		cancelParams.jobInfo = nil
 		cancelParams.requestCounts = nil
-		if cancelErr := p.handleCancelled(&cancelParams); cancelErr != nil {
+		if cancelErr := p.handleCancelled(ctx, &cancelParams); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
 

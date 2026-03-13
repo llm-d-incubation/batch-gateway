@@ -27,11 +27,8 @@ import (
 )
 
 // jobExecutionParams holds the job-scoped state shared across processing stages.
+// Contexts are NOT stored here — they are passed explicitly per Go convention.
 type jobExecutionParams struct {
-	ctx      context.Context
-	sloCtx   context.Context
-	inferCtx context.Context
-
 	updater *StatusUpdater
 	jobItem *db.BatchItem
 	jobInfo *batch_types.JobInfo

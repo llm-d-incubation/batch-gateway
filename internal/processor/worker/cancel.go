@@ -17,6 +17,7 @@ limitations under the License.
 package worker
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
@@ -28,8 +29,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
-func (p *Processor) watchCancel(params *jobExecutionParams) {
-	ctx := params.ctx
+func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {
 	logger := klog.FromContext(ctx)
 	if params.cancelRequested == nil {
 		params.cancelRequested = &atomic.Bool{}
@@ -81,8 +81,7 @@ func (p *Processor) watchCancel(params *jobExecutionParams) {
 // When called after executeJob (execution), requestCounts and jobInfo are non-nil and partial
 // results are uploaded. When called before executeJob (ingestion), both are nil and only
 // cleanup + status transition is performed.
-func (p *Processor) handleCancelled(params *jobExecutionParams) error {
-	ctx := params.ctx
+func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionParams) error {
 	logger := klog.FromContext(ctx)
 
 	var outputFileID, errorFileID string
