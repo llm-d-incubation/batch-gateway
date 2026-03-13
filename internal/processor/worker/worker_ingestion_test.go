@@ -286,7 +286,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		FileDB:  fileDBClient,
 		File:    filesClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	// Build JobInfo (only BatchSpec.InputFileID is used in preProcessJob)
 	jobID := "job-abc"
@@ -460,7 +460,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 		FileDB:  fileDBClient,
 		File:    filesClient,
 	}
-	p := NewProcessor(cfg, cs)
+	p := mustNewProcessor(t, cfg, cs)
 
 	jobID := "job-sys-prompt"
 	jobInfo := &batch_types.JobInfo{
@@ -590,7 +590,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 		t.Fatalf("DBStore job item: %v", err)
 	}
 
-	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
@@ -705,7 +705,7 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 // p_watchCancelHelper is a test helper that calls watchCancel on a fresh Processor.
 func p_watchCancelHelper(t *testing.T, params *jobExecutionParams) {
 	t.Helper()
-	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	p.watchCancel(params)
 }
 
@@ -724,7 +724,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 		FileDB:  fileDBClient,
 		File:    filesClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	jobID := "job-preprocess-cancel"
 	inputFileID := "file-preprocess-cancel"
@@ -800,7 +800,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 		BatchDB: dbClient,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	jobID := "job-handle-cancelled"
 	jobItem := &db.BatchItem{
@@ -896,7 +896,7 @@ func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
 		Queue:   pq,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
@@ -941,7 +941,7 @@ func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
 		Queue:   pq,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
@@ -999,7 +999,7 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 		Queue:   pq,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()

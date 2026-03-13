@@ -18,6 +18,15 @@ func (f *fakeInferenceClient) Generate(ctx context.Context, req *inference.Gener
 	return nil, nil
 }
 
+func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *clientset.Clientset) *Processor {
+	t.Helper()
+	p, err := NewProcessor(cfg, clients)
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
+	return p
+}
+
 func validProcessorClients() *clientset.Clientset {
 	return &clientset.Clientset{
 		BatchDB:   newMockBatchDBClient(),
@@ -69,9 +78,27 @@ func TestClientsetValidate_Table(t *testing.T) {
 	}
 }
 
+func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.NumWorkers = 0
+	_, err := NewProcessor(cfg, &clientset.Clientset{})
+	if err == nil {
+		t.Fatalf("expected error for NumWorkers=0")
+	}
+}
+
+func TestNewProcessor_InvalidGlobalConcurrency(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.GlobalConcurrency = -1
+	_, err := NewProcessor(cfg, &clientset.Clientset{})
+	if err == nil {
+		t.Fatalf("expected error for GlobalConcurrency=-1")
+	}
+}
+
 func TestProcessorPrepare_ReturnsValidationError(t *testing.T) {
 	cfg := config.NewConfig()
-	p := NewProcessor(cfg, &clientset.Clientset{})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{})
 
 	if err := p.prepare(context.Background()); err == nil {
 		t.Fatalf("expected validation error")
@@ -82,7 +109,7 @@ func TestProcessorRun_ContextCanceled_ReturnsNil(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
 	clients := validProcessorClients()
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -93,7 +120,7 @@ func TestProcessorRun_ContextCanceled_ReturnsNil(t *testing.T) {
 
 func TestProcessorStop_DoneAndContextPaths(t *testing.T) {
 	cfg := config.NewConfig()
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	// done path
 	p.Stop(context.Background())
@@ -108,7 +135,7 @@ func TestProcessorTokenHelpers(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
 	cfg.PollInterval = 5 * time.Millisecond
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	if !p.acquire(context.Background()) {
 		t.Fatalf("expected acquire true")

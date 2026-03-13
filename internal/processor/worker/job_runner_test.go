@@ -27,7 +27,7 @@ func (c *errEventClient) ECConsumerGetChannel(ctx context.Context, ID string) (*
 func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		Event: &errEventClient{err: errors.New("event unavailable")},
 	})
 
@@ -53,7 +53,7 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 	eventClient := mockdb.NewMockBatchEventChannelClient()
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		BatchDB: dbClient,
 		Status:  statusClient,
 		Event:   eventClient,
@@ -119,7 +119,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 	}
 	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
-	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	err := p.handleFailed(testLoggerCtx(), updater, &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{

@@ -55,13 +55,17 @@ type Processor struct {
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
-) *Processor {
+) (*Processor, error) {
+	tokenSem, err := semaphore.New(cfg.NumWorkers)
+	if err != nil {
+		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, err)
+	}
+	globalSem, err := semaphore.New(cfg.GlobalConcurrency)
+	if err != nil {
+		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, err)
+	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
-	// TODO: Handle errors from semaphore.New() — change NewProcessor to return (*Processor, error)
-	// so callers can surface invalid concurrency settings that slip past config.Validate().
-	tokenSem, _ := semaphore.New(cfg.NumWorkers)
-	globalSem, _ := semaphore.New(cfg.GlobalConcurrency)
 	return &Processor{
 		cfg:       cfg,
 		tokens:    tokenSem,
@@ -71,7 +75,7 @@ func NewProcessor(
 		event:     clients.Event,
 		inference: clients.Inference,
 		files:     newFileManager(clients.File, clients.FileDB),
-	}
+	}, nil
 }
 
 // Run starts processor orchestration and enters the polling loop.

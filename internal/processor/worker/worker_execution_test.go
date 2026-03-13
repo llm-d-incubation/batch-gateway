@@ -125,7 +125,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	pqClient := mockdb.NewMockBatchPriorityQueueClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
 		FileDB:    newMockFileDBClient(),
 		File:      mockfiles.NewMockBatchFilesClient(),
@@ -134,6 +134,9 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(inferClient),
 	})
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
 	p.poller = NewPoller(pqClient, dbClient)
 
 	return &testProcessorEnv{
@@ -1608,7 +1611,7 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 func TestCleanupJobArtifacts_RemovesDirectory(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	jobDir, _ := p.jobRootDir("cleanup-job", "tenant-1")
 	os.MkdirAll(filepath.Join(jobDir, "plans"), 0o755)
@@ -1631,7 +1634,7 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	cfg.DefaultOutputExpirationSeconds = 86400
 
 	failDB := &dbStoreErrFileClient{err: errors.New("db write failed")}
-	p := NewProcessor(cfg, &clientset.Clientset{FileDB: failDB})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{FileDB: failDB})
 
 	ctx := testLoggerCtx()
 	err := p.storeFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})

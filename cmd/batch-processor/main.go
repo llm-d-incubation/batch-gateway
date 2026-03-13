@@ -121,7 +121,11 @@ func run() error {
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc := worker.NewProcessor(cfg, procClients)
+	proc, err := worker.NewProcessor(cfg, procClients)
+	if err != nil {
+		logger.Error(err, "Failed to create processor")
+		return err
+	}
 	defer func() {
 		// stop with a fresh timeout ctx (avoid already-cancelled ctx)
 		// timeout should be less than k8s terminationGracePeriodSeconds
