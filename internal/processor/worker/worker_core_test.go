@@ -46,38 +46,6 @@ func TestClientsetFields_Assigned(t *testing.T) {
 	}
 }
 
-func TestClientsetValidate_Table(t *testing.T) {
-	base := validProcessorClients()
-	tests := []struct {
-		name    string
-		mutate  func(c *clientset.Clientset)
-		wantErr bool
-	}{
-		{"ok", func(c *clientset.Clientset) {}, false},
-		{"missing BatchDB", func(c *clientset.Clientset) { c.BatchDB = nil }, true},
-		{"missing FileDB", func(c *clientset.Clientset) { c.FileDB = nil }, true},
-		{"missing File", func(c *clientset.Clientset) { c.File = nil }, true},
-		{"missing Queue", func(c *clientset.Clientset) { c.Queue = nil }, true},
-		{"missing Status", func(c *clientset.Clientset) { c.Status = nil }, true},
-		{"missing Event", func(c *clientset.Clientset) { c.Event = nil }, true},
-		{"missing Inference", func(c *clientset.Clientset) { c.Inference = nil }, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := *base
-			tt.mutate(&c)
-			err := ValidateClientset(&c)
-			if tt.wantErr && err == nil {
-				t.Fatalf("expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
 func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 0

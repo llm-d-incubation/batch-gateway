@@ -30,10 +30,6 @@ import (
 
 func (p *Processor) watchCancel(params *jobExecutionParams) {
 	ctx := params.ctx
-	eventWatcher := params.eventWatcher
-	updater := params.updater
-	jobItem := params.jobItem
-
 	logger := klog.FromContext(ctx)
 	if params.cancelRequested == nil {
 		params.cancelRequested = &atomic.Bool{}
@@ -47,7 +43,7 @@ func (p *Processor) watchCancel(params *jobExecutionParams) {
 			logger.V(logging.DEBUG).Info("watchCancel: context done")
 			return
 
-		case event, ok := <-eventWatcher.Events:
+		case event, ok := <-params.eventWatcher.Events:
 			if !ok {
 				logger.V(logging.DEBUG).Info("watchCancel: event channel closed")
 				return
@@ -65,9 +61,9 @@ func (p *Processor) watchCancel(params *jobExecutionParams) {
 
 				// update status to cancelling
 				params.cancellingOnce.Do(func() {
-					err := updater.UpdatePersistentStatus(
+					err := params.updater.UpdatePersistentStatus(
 						ctx,
-						jobItem,
+						params.jobItem,
 						openai.BatchStatusCancelling,
 						nil,
 						nil,
@@ -87,28 +83,23 @@ func (p *Processor) watchCancel(params *jobExecutionParams) {
 // cleanup + status transition is performed.
 func (p *Processor) handleCancelled(params *jobExecutionParams) error {
 	ctx := params.ctx
-	updater := params.updater
-	jobItem := params.jobItem
-	jobInfo := params.jobInfo
-	requestCounts := params.requestCounts
-
 	logger := klog.FromContext(ctx)
 
 	var outputFileID, errorFileID string
-	if requestCounts != nil && jobInfo != nil {
+	if params.requestCounts != nil && params.jobInfo != nil {
 		// upload partial results
 		logger.V(logging.INFO).Info("Job cancelled mid-execution, uploading partial results")
-		outputFileID, errorFileID = p.uploadPartialResults(ctx, jobInfo, jobItem)
+		outputFileID, errorFileID = p.uploadPartialResults(ctx, params.jobInfo, params.jobItem)
 	}
 
-	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
+	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 
-	if err := updater.UpdateCancelledStatus(ctx, jobItem, requestCounts, outputFileID, errorFileID); err != nil {
+	if err := params.updater.UpdateCancelledStatus(ctx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update status to cancelled")
 		return err
 	}
 
-	setRequestCountAttrs(ctx, requestCounts)
+	setRequestCountAttrs(ctx, params.requestCounts)
 
 	// record processed metrics as success because we successfully finished user-initiated cancellation
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)

@@ -114,11 +114,6 @@ func run() error {
 	}
 	defer procClients.Close()
 
-	if err := worker.ValidateClientset(procClients); err != nil {
-		logger.Error(err, "Processor client validation failed")
-		return err
-	}
-
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
 	proc, err := worker.NewProcessor(cfg, procClients)

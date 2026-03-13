@@ -137,20 +137,14 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // and to drain undispatched entries with the correct error code.
 func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
 	ctx := params.ctx
-	sloCtx := params.sloCtx
-	inferCtx := params.inferCtx
-	updater := params.updater
-	jobInfo := params.jobInfo
-	cancelRequested := params.cancelRequested
-	if cancelRequested == nil {
-		cancelRequested = &atomic.Bool{}
-		params.cancelRequested = cancelRequested
+	if params.cancelRequested == nil {
+		params.cancelRequested = &atomic.Bool{}
 	}
 
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
-	jobRootDir, err := p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	jobRootDir, err := p.jobRootDir(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve job root directory: %w", err)
 	}
@@ -163,13 +157,13 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 	// Early SLO check: if the deadline already fired before execution begins (e.g. SLO expired
 	// during ingestion), skip dispatch entirely. No output/error files are written
 	// since no requests were executed. handleExpired will transition the job to expired status.
-	if sloCtx.Err() == context.DeadlineExceeded {
+	if params.sloCtx.Err() == context.DeadlineExceeded {
 		logger.V(logging.INFO).Info("SLO already expired at execution start, skipping dispatch",
 			"total", modelMap.LineCount)
 		return &openai.BatchRequestCounts{Total: modelMap.LineCount}, ErrExpired
 	}
 
-	inputFilePath, err := p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFilePath, err := p.jobInputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +173,7 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 	}
 	defer inputFile.Close()
 
-	outputFilePath, err := p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outputFilePath, err := p.jobOutputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +183,7 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 	}
 	defer outputFile.Close()
 
-	errorFilePath, err := p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	errorFilePath, err := p.jobErrorFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +198,7 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 		errors: bufio.NewWriterSize(errorFile, 1024*1024),
 	}
 
-	plansDir, err := p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+	plansDir, err := p.jobPlansDir(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -213,18 +207,18 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit).
 	// execCtx is derived from inferCtx (which itself is derived from sloCtx) so both the SLO
 	// deadline and user-initiated cancellation propagate to all dispatch loops and inference calls.
-	execCtx, execCancel := context.WithCancel(inferCtx)
+	execCtx, execCancel := context.WithCancel(params.inferCtx)
 	defer execCancel()
 
 	progress := &executionProgress{
 		total:   modelMap.LineCount,
-		updater: updater,
-		jobID:   jobInfo.JobID,
+		updater: params.updater,
+		jobID:   params.jobInfo.JobID,
 	}
 
 	errCh := make(chan error, len(modelMap.SafeToModel))
 
-	passThroughHeaders := jobInfo.PassThroughHeaders
+	passThroughHeaders := params.jobInfo.PassThroughHeaders
 	if len(passThroughHeaders) > 0 {
 		headerNames := make([]string, 0, len(passThroughHeaders))
 		for k := range passThroughHeaders {
@@ -240,11 +234,11 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 		go func(safeModelID, modelID string) {
 			err := p.processModel(
 				execCtx,
-				sloCtx,
+				params.sloCtx,
 				inputFile,
 				plansDir, safeModelID, modelID,
 				writers,
-				cancelRequested,
+				params.cancelRequested,
 				progress,
 				passThroughHeaders,
 			)
@@ -267,7 +261,7 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 		if ctx.Err() != nil {
 			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
 		}
-		if cancelRequested.Load() {
+		if params.cancelRequested.Load() {
 			_ = writers.output.Flush()
 			_ = writers.errors.Flush()
 			counts := progress.counts()
@@ -279,7 +273,7 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 		// processModel already drained undispatched entries to error file; flush and return partial counts.
 		// Use sloCtx.Err() rather than execCtx.Err(): execCtx may have been cancelled by a goroutine
 		// via execCancel() before the sloCtx deadline propagated, setting execCtx.Err() = Canceled.
-		if sloCtx.Err() == context.DeadlineExceeded {
+		if params.sloCtx.Err() == context.DeadlineExceeded {
 			// best-effort: flush the output and error files
 			_ = writers.output.Flush()
 			_ = writers.errors.Flush()
@@ -310,7 +304,7 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 
 	// Cancel may have arrived after all requests were dispatched and completed normally
 	// (i.e. context cancellation never interrupted dispatch). Honour the cancellation.
-	if cancelRequested.Load() {
+	if params.cancelRequested.Load() {
 		return counts, ErrCancelled
 	}
 

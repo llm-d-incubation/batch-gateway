@@ -261,32 +261,6 @@ func (p *Processor) releaseForNextPoll() {
 	p.release()
 }
 
-// ValidateClientset checks that all clients required by the processor are non-nil.
-func ValidateClientset(cs *clientset.Clientset) error {
-	if cs.BatchDB == nil {
-		return fmt.Errorf("database client is missing")
-	}
-	if cs.FileDB == nil {
-		return fmt.Errorf("file database client is missing")
-	}
-	if cs.File == nil {
-		return fmt.Errorf("files client is missing")
-	}
-	if cs.Queue == nil {
-		return fmt.Errorf("priority queue client is missing")
-	}
-	if cs.Status == nil {
-		return fmt.Errorf("status client is missing")
-	}
-	if cs.Event == nil {
-		return fmt.Errorf("event channel client is missing")
-	}
-	if cs.Inference == nil {
-		return fmt.Errorf("inference client is missing")
-	}
-	return nil
-}
-
 // pre-flight check
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
