@@ -131,10 +131,10 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // in-flight inference HTTP requests immediately, freeing downstream resources (GPU slots, EPP
 // capacity). inferCtx is derived from sloCtx in the caller so the SLO deadline is also respected.
 //
-// TODO: Now that inferCtx propagates cancellation through the context tree, checkAbortCondition's
-// cancelRequested polling is partially redundant for stopping dispatch. Refactor so that context
-// cancellation is the sole dispatch-abort mechanism and cancelRequested is only used to distinguish
-// the cancellation reason (user cancel vs SLO vs pod shutdown) in the error-handling path.
+// Dispatch abort relies solely on context cancellation (checkAbortCondition checks ctx.Err()).
+// The cancelRequested flag is NOT polled to stop dispatch; it is only consulted in the
+// error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown)
+// and to drain undispatched entries with the correct error code.
 func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
 	ctx := params.ctx
 	sloCtx := params.sloCtx
@@ -308,8 +308,8 @@ func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequest
 	logger.V(logging.INFO).Info("Execution completed",
 		"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 
-	// Cancel may have arrived after all requests were already dispatched and completed normally
-	// (i.e. checkAbortCondition never fired). Honour the cancellation even in this case.
+	// Cancel may have arrived after all requests were dispatched and completed normally
+	// (i.e. context cancellation never interrupted dispatch). Honour the cancellation.
 	if cancelRequested.Load() {
 		return counts, ErrCancelled
 	}
@@ -363,7 +363,7 @@ func (p *Processor) processModel(
 
 dispatch:
 	for i, entry := range entries {
-		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
+		if err := checkAbortCondition(ctx); err != nil {
 			errOnce.Do(func() { modelErr = err })
 			break
 		}

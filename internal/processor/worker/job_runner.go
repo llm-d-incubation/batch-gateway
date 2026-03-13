@@ -106,8 +106,8 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "event watcher failed")
-		// re-enqueue the job to the queue so this job can be picked up later by another worker
-		// best-effort
+		// Re-enqueue best-effort. Use context.Background() because ctx may already be
+		// cancelled (e.g. pod shutdown) and we don't want the enqueue call to be short-circuited.
 		if task != nil {
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
 			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
@@ -228,6 +228,7 @@ func (p *Processor) handleJobError(params *jobExecutionParams, err error) {
 		// Parent context was cancelled or deadline exceeded (e.g. pod shutdown).
 		// Re-enqueue so another worker can pick it up.
 		// Note: SLO expiry returns ErrExpired, which is handled before this function is called.
+		// Use context.Background() because ctx is already cancelled.
 		if task != nil {
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
 			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {

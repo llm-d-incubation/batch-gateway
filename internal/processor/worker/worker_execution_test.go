@@ -473,7 +473,11 @@ func TestProcessModel_Success(t *testing.T) {
 	}
 }
 
-func TestProcessModel_CancelRequested(t *testing.T) {
+// TestProcessModel_CancelStopsDispatch verifies that when the context is cancelled
+// and cancelRequested is set (matching the real watchCancel flow), processModel stops
+// dispatch via context cancellation and drains undispatched entries as batch_cancelled
+// using the cancelRequested flag to determine the drain reason.
+func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -500,12 +504,33 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 	}
 
 	var errBuf bytes.Buffer
-	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+	errWriter := bufio.NewWriter(&errBuf)
+	writers := &outputWriters{output: writer, errors: errWriter}
 
-	ctx := testLoggerCtx()
+	// Cancel context to simulate the real flow: watchCancel cancels inferCtx (which
+	// propagates to execCtx passed to processModel) AND sets cancelRequested.
+	ctx, cancel := context.WithCancel(testLoggerCtx())
+	cancel()
+
 	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled, got: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+
+	// Verify that undispatched entry was drained as batch_cancelled (reason from cancelRequested).
+	if flushErr := errWriter.Flush(); flushErr != nil {
+		t.Fatalf("flush error writer: %v", flushErr)
+	}
+	errLines := bytes.Split(bytes.TrimSpace(errBuf.Bytes()), []byte{'\n'})
+	if len(errLines) != 1 {
+		t.Fatalf("expected 1 drain entry in error output, got %d", len(errLines))
+	}
+	var drainEntry outputLine
+	if unmarshalErr := json.Unmarshal(errLines[0], &drainEntry); unmarshalErr != nil {
+		t.Fatalf("unmarshal drain entry: %v", unmarshalErr)
+	}
+	if drainEntry.Error == nil || drainEntry.Error.Code != batch_types.ErrCodeBatchCancelled {
+		t.Fatalf("expected error code %s, got %+v", batch_types.ErrCodeBatchCancelled, drainEntry.Error)
 	}
 }
 
@@ -729,6 +754,10 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	}
 }
 
+// TestExecuteJob_UserCancelFlag verifies that when inferCtx is cancelled and cancelRequested
+// is set (matching the real watchCancel flow), executeJob returns ErrCancelled. Context
+// cancellation stops dispatch; cancelRequested is used in the error-handling path to
+// return the correct sentinel error.
 func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -742,10 +771,13 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
+	inferCtx, inferCancel := context.WithCancel(ctx)
+	inferCancel()
+
 	_, err := env.p.executeJob(&jobExecutionParams{
 		ctx:             ctx,
 		sloCtx:          ctx,
-		inferCtx:        ctx,
+		inferCtx:        inferCtx,
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -756,9 +788,9 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 }
 
 // TestExecuteJob_CancelFlagSetAfterAllRequestsComplete verifies that if the cancel flag is set
-// after all requests have already been dispatched and completed successfully (i.e.
-// checkAbortCondition never fired during dispatch), executeJob still returns ErrCancelled
-// rather than nil, preventing the job from being finalized as "completed".
+// after all requests have already been dispatched and completed successfully (i.e. context
+// cancellation never interrupted dispatch), executeJob still returns ErrCancelled rather than
+// nil, preventing the job from being finalized as "completed".
 func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -919,6 +951,105 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	}
 	if _, statErr := os.Stat(errorPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("error.jsonl should not exist on early SLO exit, got stat err: %v", statErr)
+	}
+}
+
+// TestExecuteJob_SLOExpiredDuringDispatch verifies that when the SLO deadline fires while
+// requests are being dispatched, completed requests are preserved in the output file,
+// undispatched requests are drained to the error file as batch_expired, and executeJob
+// returns ErrExpired with accurate partial counts.
+//
+// This exercises the full context-cancellation chain for SLO expiry:
+//
+//	sloCtx (WithDeadline) → inferCtx (WithCancel) → execCtx (WithCancel)
+//	         DeadlineExceeded       Canceled                Canceled
+//
+// checkAbortCondition sees Canceled on execCtx to stop dispatch;
+// processModel's drain switch checks sloCtx.Err() == DeadlineExceeded to select batch_expired.
+func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.GlobalConcurrency = 1
+	cfg.PerModelMaxConcurrency = 1
+
+	// The mock blocks until the context is cancelled (SLO deadline fires).
+	// Concurrency = 1, so the first request holds the semaphore while blocking,
+	// preventing the second request from being dispatched. When the deadline fires,
+	// semaphore.Acquire returns an error and the dispatch loop exits.
+	mock := &mockInferenceClient{
+		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			<-ctx.Done()
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	cancelReq := &atomic.Bool{}
+
+	ctx := testLoggerCtx()
+	// Use context.WithDeadline so sloCtx.Err() returns DeadlineExceeded (matching real code).
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(100*time.Millisecond))
+	defer sloCancel()
+
+	type result struct {
+		counts *openai.BatchRequestCounts
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		counts, err := env.p.executeJob(&jobExecutionParams{
+			ctx:             ctx,
+			sloCtx:          sloCtx,
+			inferCtx:        sloCtx,
+			updater:         env.updater,
+			jobInfo:         jobInfo,
+			cancelRequested: cancelReq,
+		})
+		resCh <- result{counts, err}
+	}()
+
+	select {
+	case res := <-resCh:
+		if !errors.Is(res.err, ErrExpired) {
+			t.Fatalf("expected ErrExpired, got: %v", res.err)
+		}
+		if res.counts == nil {
+			t.Fatal("expected non-nil counts")
+		}
+		if res.counts.Total != 3 {
+			t.Errorf("Total = %d, want 3", res.counts.Total)
+		}
+		// r1 was dispatched and completed (mock returns success after ctx cancellation);
+		// r2, r3 were never dispatched and drained as batch_expired.
+		if res.counts.Completed != 1 {
+			t.Errorf("Completed = %d, want 1", res.counts.Completed)
+		}
+		if res.counts.Failed != 2 {
+			t.Errorf("Failed = %d, want 2 (undispatched drained as expired)", res.counts.Failed)
+		}
+
+		// Verify the error file contains batch_expired entries for undispatched requests.
+		errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+		errLines := readNonEmptyJSONLLines(t, errorPath)
+		if len(errLines) != 2 {
+			t.Fatalf("error.jsonl lines = %d, want 2", len(errLines))
+		}
+		for i, line := range errLines {
+			var entry outputLine
+			if err := json.Unmarshal(line, &entry); err != nil {
+				t.Fatalf("unmarshal error line %d: %v", i, err)
+			}
+			if entry.Error == nil || entry.Error.Code != batch_types.ErrCodeBatchExpired {
+				t.Errorf("error line %d: expected code %s, got %+v", i, batch_types.ErrCodeBatchExpired, entry.Error)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executeJob did not return within 5s")
 	}
 }
 

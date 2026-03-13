@@ -56,7 +56,8 @@ func NewProcessor(
 	// moving Event and Inference to dedicated fields, so Clientset is not leaked into Processor.
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
-	// TODO: Handle errors from semaphore.New().
+	// TODO: Handle errors from semaphore.New() — change NewProcessor to return (*Processor, error)
+	// so callers can surface invalid concurrency settings that slip past config.Validate().
 	tokenSem, _ := semaphore.New(cfg.NumWorkers)
 	globalSem, _ := semaphore.New(cfg.GlobalConcurrency)
 	return &Processor{
