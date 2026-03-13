@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package inference
+package http
 
-// ErrorCategory defines the category of an inference error
+// ErrorCategory defines the category of an HTTP client error
 type ErrorCategory string
 
 const (
@@ -28,7 +28,7 @@ const (
 	ErrCategoryUnknown    ErrorCategory = "UNKNOWN"      // not retryable
 )
 
-// ClientError represents an inference client error with category and context
+// ClientError represents an HTTP client error with category and context
 type ClientError struct {
 	Category ErrorCategory
 	Message  string

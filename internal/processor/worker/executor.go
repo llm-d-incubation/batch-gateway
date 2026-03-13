@@ -36,8 +36,9 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
@@ -546,7 +547,7 @@ func (p *Processor) executeOneRequest(
 		return &outputLine{
 			ID: newBatchRequestID(requestID),
 			Error: &outputError{
-				Code:    string(inference.ErrCategoryParse),
+				Code:    string(httpclient.ErrCategoryParse),
 				Message: fmt.Sprintf("failed to parse request line: %v", err),
 			},
 		}, nil
@@ -591,7 +592,7 @@ func (p *Processor) executeOneRequest(
 		// ok status without error but no response
 		logger.Error(nil, "inference returned no error but response is nil")
 		result.Error = &outputError{
-			Code:    string(inference.ErrCategoryServer),
+			Code:    string(httpclient.ErrCategoryServer),
 			Message: "inference returned no error but response is nil",
 		}
 	} else {
@@ -602,7 +603,7 @@ func (p *Processor) executeOneRequest(
 				// failed to unmarshal the response body
 				logger.Error(err, "failed to unmarshal inference response body")
 				result.Error = &outputError{
-					Code:    string(inference.ErrCategoryParse),
+					Code:    string(httpclient.ErrCategoryParse),
 					Message: fmt.Sprintf("inference succeeded but response body could not be parsed: %v", err),
 				}
 			}

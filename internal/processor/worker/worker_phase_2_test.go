@@ -15,8 +15,9 @@ import (
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
@@ -118,7 +119,7 @@ type testProcessorEnv struct {
 
 // newTestProcessorEnv creates a Processor wired with mock clients.
 // The returned env exposes the shared dbClient and pqClient for seeding and verification.
-func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient inference.Client) *testProcessorEnv {
+func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient inference.InferenceClientI) *testProcessorEnv {
 	t.Helper()
 
 	dbClient := newMockBatchDBClient()
@@ -148,7 +149,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 func setupPhase2Job(
 	t *testing.T,
 	cfg *config.ProcessorConfig,
-	inferClient inference.Client,
+	inferClient inference.InferenceClientI,
 	requests []batch_types.Request,
 	modelToSafe map[string]string,
 ) (*testProcessorEnv, *batch_types.JobInfo) {
@@ -278,7 +279,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	mock := &mockInferenceClient{
 		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
 			return nil, &inference.ClientError{
-				Category: inference.ErrCategoryServer,
+				Category: httpclient.ErrCategoryServer,
 				Message:  "backend unavailable",
 			}
 		},
@@ -304,8 +305,8 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error field in output line")
 	}
-	if result.Error.Code != string(inference.ErrCategoryServer) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCategoryServer)
+	if result.Error.Code != string(httpclient.ErrCategoryServer) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
 	}
 	if result.Response != nil {
 		t.Fatalf("expected nil response on inference error")
@@ -342,8 +343,8 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error field for nil response")
 	}
-	if result.Error.Code != string(inference.ErrCategoryServer) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCategoryServer)
+	if result.Error.Code != string(httpclient.ErrCategoryServer) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
 	}
 }
 
@@ -380,8 +381,8 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error field for bad JSON response")
 	}
-	if result.Error.Code != string(inference.ErrCategoryParse) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCategoryParse)
+	if result.Error.Code != string(httpclient.ErrCategoryParse) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryParse)
 	}
 }
 
@@ -689,7 +690,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	mock := &mockInferenceClient{
 		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
 			<-ctx.Done()
-			return nil, &inference.ClientError{Category: inference.ErrCategoryServer, Message: "cancelled"}
+			return nil, &inference.ClientError{Category: httpclient.ErrCategoryServer, Message: "cancelled"}
 		},
 	}
 
@@ -904,7 +905,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 			if callCount.Add(1)%2 == 1 {
 				return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
 			}
-			return nil, &inference.ClientError{Category: inference.ErrCategoryServer, Message: "mock error"}
+			return nil, &inference.ClientError{Category: httpclient.ErrCategoryServer, Message: "mock error"}
 		},
 	}
 
