@@ -16,11 +16,11 @@ import (
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // ---------------------------------------------------------------------------

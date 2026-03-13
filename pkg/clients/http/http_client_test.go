@@ -536,17 +536,17 @@ func TestMapStatusCodeToCategory(t *testing.T) {
 		statusCode int
 		expected   ErrorCategory
 	}{
-		{http.StatusBadRequest, ErrCategoryInvalidReq},           // 400
-		{http.StatusUnauthorized, ErrCategoryAuth},               // 401
-		{http.StatusForbidden, ErrCategoryAuth},                  // 403
-		{http.StatusTooManyRequests, ErrCategoryRateLimit},       // 429
-		{http.StatusInternalServerError, ErrCategoryServer},      // 500
-		{http.StatusBadGateway, ErrCategoryServer},               // 502
-		{http.StatusServiceUnavailable, ErrCategoryServer},       // 503
-		{http.StatusGatewayTimeout, ErrCategoryServer},           // 504
-		{http.StatusHTTPVersionNotSupported, ErrCategoryServer},  // 505 (other 5xx)
-		{http.StatusNotFound, ErrCategoryUnknown},                // 404 (unmapped 4xx)
-		{http.StatusTeapot, ErrCategoryUnknown},                  // 418 (unmapped)
+		{http.StatusBadRequest, ErrCategoryInvalidReq},          // 400
+		{http.StatusUnauthorized, ErrCategoryAuth},              // 401
+		{http.StatusForbidden, ErrCategoryAuth},                 // 403
+		{http.StatusTooManyRequests, ErrCategoryRateLimit},      // 429
+		{http.StatusInternalServerError, ErrCategoryServer},     // 500
+		{http.StatusBadGateway, ErrCategoryServer},              // 502
+		{http.StatusServiceUnavailable, ErrCategoryServer},      // 503
+		{http.StatusGatewayTimeout, ErrCategoryServer},          // 504
+		{http.StatusHTTPVersionNotSupported, ErrCategoryServer}, // 505 (other 5xx)
+		{http.StatusNotFound, ErrCategoryUnknown},               // 404 (unmapped 4xx)
+		{http.StatusTeapot, ErrCategoryUnknown},                 // 418 (unmapped)
 	}
 
 	for _, tt := range tests {

@@ -37,8 +37,6 @@ import (
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
@@ -46,6 +44,8 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
