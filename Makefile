@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy dev-clean
 
 SHELL := /usr/bin/env bash
 
@@ -206,6 +206,10 @@ test-all: test test-integration
 ## deploy: Deploy batch-gateway to a local kind cluster and start port-forward
 dev-deploy:
 	@bash scripts/dev-deploy.sh
+
+## dev-clean: Clean up dev deployment (removes all resources and optionally deletes the kind cluster)
+dev-clean:
+	@bash scripts/dev-clean.sh
 
 ## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or port-forward)
 test-e2e:

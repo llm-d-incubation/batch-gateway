@@ -1,0 +1,235 @@
+# Batch Gateway Demo
+# REST Client format for VS Code REST Client plugin
+#
+# Usage:
+# 1. Install REST Client extension in VS Code
+# 2. Click "Send Request" above each request
+# 3. Follow the sequences below
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+@baseUrl = https://localhost:8000/v1
+@tenantHeader = X-MaaS-Username
+@tenantId = demo-user
+@apiKey = unused
+
+# ============================================================
+# DEMO SEQUENCE 1: Complete Batch Processing Flow
+# ============================================================
+
+### 1.1 Upload Batch Input File (80 requests, 4 models)
+# @name uploadFile
+POST {{baseUrl}}/files
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="purpose"
+
+batch
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="batch_input.jsonl"
+Content-Type: application/jsonl
+
+< ./batch_input.jsonl
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### 1.2 Create Batch Job
+# Replace {{uploadFile.response.body.id}} with the file ID from step 1.1
+# @name createBatch
+POST {{baseUrl}}/batches
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{
+  "input_file_id": "{{uploadFile.response.body.id}}",
+  "endpoint": "/v1/chat/completions",
+  "completion_window": "24h"
+}
+
+###
+
+### 1.3 Get Batch Status (Poll this to monitor progress)
+# Replace {{createBatch.response.body.id}} with the batch ID from step 1.2
+GET {{baseUrl}}/batches/{{createBatch.response.body.id}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 1.4 List All Batches
+GET {{baseUrl}}/batches
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 1.5 Download Output File (when status = completed)
+# Replace the file_id with output_file_id from step 1.3
+GET {{baseUrl}}/files/{{createBatch.response.body.output_file_id}}/content
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 1.6 Get File Details
+GET {{baseUrl}}/files/{{uploadFile.response.body.id}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 1.7 List All Files
+GET {{baseUrl}}/files
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 1.8 View API Server Metrics
+GET http://localhost:8081/metrics
+Accept: text/plain
+
+###
+
+### 1.9 View Processor Metrics
+GET http://localhost:9090/metrics
+Accept: text/plain
+
+###
+
+### 1.10 View API Server Health
+GET http://localhost:8081/health
+Accept: application/json
+
+###
+
+### 1.11 View Processor Health
+GET http://localhost:9090/health
+Accept: application/json
+
+###
+
+# ============================================================
+# DEMO SEQUENCE 2: Batch Cancellation Flow
+# ============================================================
+
+### 2.1 Upload Smaller Batch Input File (10 requests for quick demo)
+# @name uploadFileCancelDemo
+POST {{baseUrl}}/files
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="purpose"
+
+batch
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="batch_input_cancel.jsonl"
+Content-Type: application/jsonl
+
+< ./batch_input_cancel.jsonl
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### 2.2 Create Batch Job (To Be Cancelled)
+# @name createBatchToCancel
+POST {{baseUrl}}/batches
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{
+  "input_file_id": "{{uploadFileCancelDemo.response.body.id}}",
+  "endpoint": "/v1/chat/completions",
+  "completion_window": "24h"
+}
+
+###
+
+### 2.3 Check Initial Status
+GET {{baseUrl}}/batches/{{createBatchToCancel.response.body.id}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 2.4 Cancel the Batch
+POST {{baseUrl}}/batches/{{createBatchToCancel.response.body.id}}/cancel
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 2.5 Verify Cancelled Status
+GET {{baseUrl}}/batches/{{createBatchToCancel.response.body.id}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+### 2.6 Download Partial Results (if any)
+# This will show completed requests before cancellation
+GET {{baseUrl}}/files/{{createBatchToCancel.response.body.output_file_id}}/content
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+###
+
+# ============================================================
+# CLEANUP (Optional)
+# ============================================================
+
+### 3.1 Delete Batch (only if expired, failed, completed, or cancelled)
+# DELETE {{baseUrl}}/batches/{{createBatch.response.body.id}}
+# {{tenantHeader}}: {{tenantId}}
+# Authorization: Bearer {{apiKey}}
+
+###
+
+### 3.2 Delete File
+# DELETE {{baseUrl}}/files/{{uploadFile.response.body.id}}
+# {{tenantHeader}}: {{tenantId}}
+# Authorization: Bearer {{apiKey}}
+
+###
+
+# ============================================================
+# ADVANCED: Monitoring and Observability
+# ============================================================
+
+### 4.1 View Jaeger Traces
+# Open in browser: http://localhost:16686
+# Service: batch-gateway-apiserver or batch-gateway-processor
+# You can correlate requests using the batch ID
+
+###
+
+### 4.2 Check Prometheus Metrics - Request Counts
+GET http://localhost:8081/metrics
+Accept: text/plain
+
+# Look for:
+# - batch_gateway_api_http_requests_total
+# - batch_gateway_api_batch_jobs_total
+# - batch_gateway_processor_jobs_processed_total
+
+###
+
+### 4.3 Check Prometheus Metrics - Processing Duration
+GET http://localhost:9090/metrics
+Accept: text/plain
+
+# Look for:
+# - batch_gateway_processor_job_duration_seconds
+# - batch_gateway_processor_inference_duration_seconds
+
+###

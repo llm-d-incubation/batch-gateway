@@ -33,6 +33,8 @@ FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
 JAEGER_NAME="${JAEGER_NAME:-jaeger}"
 VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
+VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
+VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-4}"
 APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
@@ -446,6 +448,81 @@ EOF
     log "vLLM simulator installed. Service: ${VLLM_SIM_NAME}:8000"
 }
 
+install_vllm_sim_b() {
+    step "Installing vLLM simulator '${VLLM_SIM_B_NAME}' (model: ${VLLM_SIM_B_MODEL})..."
+
+    if kubectl get deployment "${VLLM_SIM_B_NAME}" -n "${NAMESPACE}" &>/dev/null; then
+        log "vLLM simulator '${VLLM_SIM_B_NAME}' already exists. Skipping."
+        return
+    fi
+
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${VLLM_SIM_B_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${VLLM_SIM_B_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${VLLM_SIM_B_NAME}
+    spec:
+      containers:
+      - name: vllm-sim
+        image: ${VLLM_SIM_IMAGE}
+        imagePullPolicy: IfNotPresent
+        args:
+        - --model
+        - ${VLLM_SIM_B_MODEL}
+        - --port
+        - "8000"
+        - --time-to-first-token=200ms
+        - --inter-token-latency=500ms
+        - --v=5
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${VLLM_SIM_B_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${VLLM_SIM_B_NAME}
+spec:
+  selector:
+    app: ${VLLM_SIM_B_NAME}
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8000
+    targetPort: 8000
+  type: ClusterIP
+EOF
+
+    wait_for_deployment "${VLLM_SIM_B_NAME}" "${NAMESPACE}" 120s
+    log "vLLM simulator '${VLLM_SIM_B_NAME}' installed. Service: ${VLLM_SIM_B_NAME}:8000"
+}
+
 # ── Batch Gateway ─────────────────────────────────────────────────────────────
 
 install_batch_gateway() {
@@ -453,6 +530,7 @@ install_batch_gateway() {
     cd "${REPO_ROOT}"
 
     local vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+    local vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
 
     local helm_args=(
         --set apiserver.image.pullPolicy=IfNotPresent
@@ -462,6 +540,12 @@ install_batch_gateway() {
         --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
         --set "global.appSecretName=${APP_SECRET_NAME}"
         --set "processor.config.modelGateways.default.url=${vllm_sim_url}"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.url=${vllm_sim_url}"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.requestTimeout=5m"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxRetries=3"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.url=${vllm_sim_b_url}"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.requestTimeout=5m"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxRetries=3"
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
@@ -657,7 +741,11 @@ print_usage() {
     echo "         -F 'purpose=batch'"
     echo ""
     echo "     Each line in the JSONL file should follow this format:"
-    echo '       {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}}'
+    echo '       {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"Hello"}]}}'
+    echo ""
+    echo "     Available models in dev environment:"
+    echo "       - sim-model   (vLLM simulator at ${VLLM_SIM_NAME})"
+    echo "       - sim-model-b (vLLM simulator at ${VLLM_SIM_B_NAME})"
     echo ""
     echo "  3. Create a batch (replace FILE_ID with the id from step 2):"
     echo ""
@@ -678,6 +766,7 @@ print_usage() {
     echo "       helm uninstall ${POSTGRESQL_RELEASE} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${JAEGER_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_NAME} -n ${NAMESPACE}"
+    echo "       kubectl delete deployment,svc ${VLLM_SIM_B_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete secret ${APP_SECRET_NAME} ${TLS_SECRET_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete pvc ${FILES_PVC_NAME} -n ${NAMESPACE}"
     echo ""
@@ -707,6 +796,7 @@ main() {
     load_images
     install_jaeger
     install_vllm_sim
+    install_vllm_sim_b
     install_batch_gateway
     verify_deployment
     print_usage
