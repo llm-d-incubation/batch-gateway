@@ -31,6 +31,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+const (
+	HeaderNameReqID       string = "X-Request-ID"
+	HeaderNameContentType string = "Content-Type"
+)
+
 // HTTPClient implements HTTP client with retry, TLS, and observability support
 type HTTPClient struct {
 	client    *resty.Client
@@ -87,7 +92,7 @@ func NewHTTPClient(config *Config) (*HTTPClient, error) {
 	client := resty.New().
 		SetBaseURL(config.BaseURL).
 		SetTimeout(config.Timeout).
-		SetHeader("Content-Type", "application/json")
+		SetHeader(HeaderNameContentType, "application/json")
 
 	// Set auth token if provided (adds "Authorization: Bearer <token>" to all requests)
 	if config.APIKey != "" {
@@ -140,7 +145,7 @@ func NewHTTPClient(config *Config) (*HTTPClient, error) {
 
 		// Add retry hook for logging
 		client.AddRetryHook(func(resp *resty.Response, err error) {
-			if reqID := resp.Request.Header.Get("X-Request-ID"); reqID != "" {
+			if reqID := resp.Request.Header.Get(HeaderNameReqID); reqID != "" {
 				klog.V(3).Infof("Retrying request_id=%s (attempt %d/%d)",
 					reqID, resp.Request.Attempt, config.MaxRetries)
 			}
@@ -161,7 +166,7 @@ func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}
 
 	// Set request ID header if provided
 	if requestID != "" {
-		restyReq.SetHeader("X-Request-ID", requestID)
+		restyReq.SetHeader(HeaderNameReqID, requestID)
 	}
 
 	// Set pass-through headers
