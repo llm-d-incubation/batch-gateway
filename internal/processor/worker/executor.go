@@ -582,7 +582,7 @@ func (p *Processor) executeOneRequest(
 	metrics.IncModelInflightRequests(modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
 
-	inferClient := p.clients.Inference.ClientFor(modelID)
+	inferClient := p.inference.ClientFor(modelID)
 	inferResp, inferErr := inferClient.Generate(ctx, inferReq)
 
 	metrics.DecModelInflightRequests(modelID)
@@ -785,7 +785,7 @@ func (p *Processor) uploadJobFile(
 	// TODO: distinguish retryable (network/storage transient) vs non-retryable (auth, permission)
 	// errors and skip retries for the latter. Deferred until we have more storage backends
 	// or see real non-transient failures in production.
-	fileMeta, err := p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
+	fileMeta, err := p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
 		metrics.RecordFileUploadRetry(fileType)
 		backoff := min(retryCfg.InitialBackoff*(1<<(attempt-1)), retryCfg.MaxBackoff)
@@ -801,7 +801,7 @@ func (p *Processor) uploadJobFile(
 		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
 			return 0, fmt.Errorf("failed to seek file %s for retry: %w", fileName, seekErr)
 		}
-		fileMeta, err = p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
+		fileMeta, err = p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload file %s after %d attempts: %w", fileName, maxAttempts, err)
@@ -839,7 +839,7 @@ func (p *Processor) storeFileRecord(
 		return fmt.Errorf("failed to convert file to db item: %w", err)
 	}
 
-	if err := p.clients.FileDB.DBStore(ctx, fileItem); err != nil {
+	if err := p.files.db.DBStore(ctx, fileItem); err != nil {
 		return fmt.Errorf("failed to store file record: %w", err)
 	}
 	return nil

@@ -1113,7 +1113,7 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
-	env.p.clients.File = &failNTimesFilesClient{failCount: 100}
+	env.p.files.storage = &failNTimesFilesClient{failCount: 100}
 
 	jobID := "finalize-fail"
 	tenantID := "tenant-1"

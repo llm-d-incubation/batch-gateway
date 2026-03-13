@@ -101,7 +101,7 @@ func (p *Processor) runJob(params *jobExecutionParams) {
 	defer sloCancel()
 
 	// event watcher for cancel event
-	eventWatcher, err := p.clients.Event.ECConsumerGetChannel(ctx, jobInfo.JobID)
+	eventWatcher, err := p.event.ECConsumerGetChannel(ctx, jobInfo.JobID)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
 		span.RecordError(err)

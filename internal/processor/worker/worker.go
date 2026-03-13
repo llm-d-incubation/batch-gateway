@@ -25,6 +25,8 @@ import (
 
 	"k8s.io/klog/v2"
 
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
@@ -42,18 +44,18 @@ type Processor struct {
 	// globalSem limits total in-flight inference requests across all workers.
 	globalSem semaphore.Semaphore
 
-	clients *clientset.Clientset
 	poller  *Poller
 	updater *StatusUpdater
+
+	event     db.BatchEventChannelClient // cancel-event subscription
+	inference *inference.GatewayResolver // model → gateway routing
+	files     *fileManager
 }
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
 ) *Processor {
-	// TODO: need to group clients by usecase (poller, updater, etc.)
-	// Eliminate p.clients by extracting role-specific wrappers (e.g. FileManager for File+FileDB),
-	// moving Event and Inference to dedicated fields, so Clientset is not leaked into Processor.
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	// TODO: Handle errors from semaphore.New() — change NewProcessor to return (*Processor, error)
@@ -64,9 +66,11 @@ func NewProcessor(
 		cfg:       cfg,
 		tokens:    tokenSem,
 		globalSem: globalSem,
-		clients:   clients,
 		poller:    poller,
 		updater:   updater,
+		event:     clients.Event,
+		inference: clients.Inference,
+		files:     newFileManager(clients.File, clients.FileDB),
 	}
 }
 
@@ -283,10 +287,35 @@ func ValidateClientset(cs *clientset.Clientset) error {
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
-	if err := ValidateClientset(p.clients); err != nil {
+	if err := p.validate(); err != nil {
 		return fmt.Errorf("critical clients are missing in processor: %w", err)
 	}
 
 	logger.V(logging.DEBUG).Info("Processor pre-flight check done", "max_workers", p.cfg.NumWorkers)
 	return nil
+}
+
+func (p *Processor) validate() error {
+	if p.poller == nil {
+		return fmt.Errorf("poller is missing")
+	}
+	if err := p.poller.validate(); err != nil {
+		return err
+	}
+	if p.updater == nil {
+		return fmt.Errorf("status updater is missing")
+	}
+	if err := p.updater.validate(); err != nil {
+		return err
+	}
+	if p.event == nil {
+		return fmt.Errorf("event channel client is missing")
+	}
+	if p.inference == nil {
+		return fmt.Errorf("inference client is missing")
+	}
+	if p.files == nil {
+		return fmt.Errorf("file manager is missing")
+	}
+	return p.files.validate()
 }
