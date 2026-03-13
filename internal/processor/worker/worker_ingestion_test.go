@@ -286,7 +286,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		FileDB:  fileDBClient,
 		File:    filesClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	// Build JobInfo (only BatchSpec.InputFileID is used in preProcessJob)
 	jobID := "job-abc"
@@ -460,7 +460,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 		FileDB:  fileDBClient,
 		File:    filesClient,
 	}
-	p := NewProcessor(cfg, cs)
+	p := mustNewProcessor(t, cfg, cs)
 
 	jobID := "job-sys-prompt"
 	jobInfo := &batch_types.JobInfo{
@@ -590,7 +590,7 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 		t.Fatalf("DBStore job item: %v", err)
 	}
 
-	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
 	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
@@ -603,7 +603,15 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	var cancellingOnce sync.Once
 
 	// Start watching cancel in background
-	go p.watchCancel(ctx, evCh, updater, jobItem, &cancelRequested, &cancellingOnce, func() {})
+	params := &jobExecutionParams{
+		eventWatcher:    evCh,
+		updater:         updater,
+		jobItem:         jobItem,
+		inferCancelFn:   func() {},
+		cancelRequested: &cancelRequested,
+		cancellingOnce:  &cancellingOnce,
+	}
+	go p.watchCancel(ctx, params)
 
 	// Send cancel twice; status update should still happen once due to sync.Once.
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
@@ -614,10 +622,10 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(2 * time.Second)
-	for !cancelRequested.Load() && time.Now().Before(deadline) {
+	for !params.cancelRequested.Load() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !cancelRequested.Load() {
+	if !params.cancelRequested.Load() {
 		t.Fatalf("cancelRequested was not set")
 	}
 
@@ -664,7 +672,15 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 
 	inferCtx, inferCancelFn := context.WithCancel(ctx)
 
-	go p_watchCancelHelper(t, ctx, evCh, updater, jobItem, &cancelRequested, &cancellingOnce, inferCancelFn)
+	params := &jobExecutionParams{
+		eventWatcher:    evCh,
+		updater:         updater,
+		jobItem:         jobItem,
+		inferCancelFn:   inferCancelFn,
+		cancelRequested: &cancelRequested,
+		cancellingOnce:  &cancellingOnce,
+	}
+	go p_watchCancelHelper(t, ctx, params)
 
 	// Send cancel event
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
@@ -679,25 +695,16 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 		t.Fatal("inferCtx was not cancelled within 2s after cancel event")
 	}
 
-	if !cancelRequested.Load() {
+	if !params.cancelRequested.Load() {
 		t.Fatal("cancelRequested was not set")
 	}
 }
 
 // p_watchCancelHelper is a test helper that calls watchCancel on a fresh Processor.
-func p_watchCancelHelper(
-	t *testing.T,
-	ctx context.Context,
-	evCh *db.BatchEventsChan,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	cancelRequested *atomic.Bool,
-	cancellingOnce *sync.Once,
-	inferCancelFn func(),
-) {
+func p_watchCancelHelper(t *testing.T, ctx context.Context, params *jobExecutionParams) {
 	t.Helper()
-	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
-	p.watchCancel(ctx, evCh, updater, jobItem, cancelRequested, cancellingOnce, inferCancelFn)
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
+	p.watchCancel(ctx, params)
 }
 
 func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
@@ -715,7 +722,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 		FileDB:  fileDBClient,
 		File:    filesClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	jobID := "job-preprocess-cancel"
 	inputFileID := "file-preprocess-cancel"
@@ -791,7 +798,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 		BatchDB: dbClient,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	jobID := "job-handle-cancelled"
 	jobItem := &db.BatchItem{
@@ -825,7 +832,10 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
-	if err := p.handleCancelled(ctx, updater, jobItem, nil, nil); err != nil {
+	if err := p.handleCancelled(ctx, &jobExecutionParams{
+		updater: updater,
+		jobItem: jobItem,
+	}); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
 	}
 
@@ -883,7 +893,7 @@ func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
 		Queue:   pq,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
@@ -928,7 +938,7 @@ func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
 		Queue:   pq,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
@@ -986,7 +996,7 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 		Queue:   pq,
 		Status:  statusClient,
 	}
-	p := NewProcessor(cfg, clients)
+	p := mustNewProcessor(t, cfg, clients)
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()

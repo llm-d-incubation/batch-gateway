@@ -114,14 +114,13 @@ func run() error {
 	}
 	defer procClients.Close()
 
-	if err := worker.ValidateClientset(procClients); err != nil {
-		logger.Error(err, "Processor client validation failed")
-		return err
-	}
-
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc := worker.NewProcessor(cfg, procClients)
+	proc, err := worker.NewProcessor(cfg, procClients)
+	if err != nil {
+		logger.Error(err, "Failed to create processor")
+		return err
+	}
 	defer func() {
 		// stop with a fresh timeout ctx (avoid already-cancelled ctx)
 		// timeout should be less than k8s terminationGracePeriodSeconds

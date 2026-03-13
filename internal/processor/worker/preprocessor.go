@@ -98,12 +98,14 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	inputFileReader := bufio.NewReaderSize(reader, 1024*1024)
 
 	for {
-		// cancellation checks
-		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
-			if err == ErrCancelled {
-				logger.V(logging.INFO).Info("preProcess: cancel requested")
-			}
-			return err
+		// Ingestion uses the parent ctx (not inferCtx), so user-cancel signals do not
+		// propagate through the context tree. Check cancelRequested explicitly.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if cancelRequested.Load() {
+			logger.V(logging.INFO).Info("preProcess: cancel requested")
+			return ErrCancelled
 		}
 
 		// read a line from the input file
@@ -167,16 +169,13 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	return nil
 }
 
-// checkAbortCondition returns a non-nil error if dispatch should stop: either the context
-// is done (cancelled, deadline exceeded, or SLO deadline) or an explicit cancel was requested.
-func checkAbortCondition(ctx context.Context, cancelRequested *atomic.Bool) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	if cancelRequested.Load() {
-		return ErrCancelled
+// checkAbortCondition returns a non-nil error if dispatch should stop because the context
+// is done (cancelled, deadline exceeded, or SLO deadline). It does NOT check the
+// cancelRequested flag; that flag is only consulted in the error-handling path to
+// distinguish the cancellation reason (user cancel vs SLO vs pod shutdown).
+func checkAbortCondition(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return nil
 }

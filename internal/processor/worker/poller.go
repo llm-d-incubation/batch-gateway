@@ -38,6 +38,16 @@ func NewPoller(pq db.BatchPriorityQueueClient, db db.BatchDBClient) *Poller {
 	}
 }
 
+func (p *Poller) validate() error {
+	if p.pq == nil {
+		return fmt.Errorf("priority queue client is missing")
+	}
+	if p.db == nil {
+		return fmt.Errorf("database client is missing")
+	}
+	return nil
+}
+
 func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 	logger := klog.FromContext(ctx)
 

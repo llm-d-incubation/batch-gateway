@@ -27,7 +27,7 @@ func (c *errEventClient) ECConsumerGetChannel(ctx context.Context, ID string) (*
 func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		Event: &errEventClient{err: errors.New("event unavailable")},
 	})
 
@@ -36,13 +36,11 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(
-		testLoggerCtx(),
-		NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
-		&db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
-		&batch_types.JobInfo{JobID: "job-1"},
-		nil,
-	)
+	p.runJob(testLoggerCtx(), &jobExecutionParams{
+		updater: NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
+		jobItem: &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
+		jobInfo: &batch_types.JobInfo{JobID: "job-1"},
+	})
 }
 
 func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
@@ -54,7 +52,7 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 	eventClient := mockdb.NewMockBatchEventChannelClient()
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		BatchDB: dbClient,
 		Status:  statusClient,
 		Event:   eventClient,
@@ -87,9 +85,14 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 		t.Fatalf("expected token acquire before runJob")
 	}
 	p.wg.Add(1)
-	p.runJob(ctx, NewStatusUpdater(dbClient, statusClient, 86400), jobItem, jobInfo, &db.BatchJobPriority{
-		ID:  "job-fail",
-		SLO: time.Now().Add(1 * time.Hour),
+	p.runJob(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: jobInfo,
+		task: &db.BatchJobPriority{
+			ID:  "job-fail",
+			SLO: time.Now().Add(1 * time.Hour),
+		},
 	})
 
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
@@ -114,7 +117,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 	}
 	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
-	p := NewProcessor(config.NewConfig(), &clientset.Clientset{})
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	err := p.handleFailed(testLoggerCtx(), updater, &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{

@@ -22,7 +22,7 @@ import (
 func TestResolveOutputExpiration_UserTagOverridesConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 7776000 // 90 days
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	now := int64(1000000)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
@@ -37,7 +37,7 @@ func TestResolveOutputExpiration_UserTagOverridesConfig(t *testing.T) {
 func TestResolveOutputExpiration_FallsBackToConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	now := int64(1000000)
 	tags := db.Tags{}
@@ -52,7 +52,7 @@ func TestResolveOutputExpiration_FallsBackToConfig(t *testing.T) {
 func TestResolveOutputExpiration_ZeroWhenNeitherSet(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 0
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	now := int64(1000000)
 	tags := db.Tags{}
@@ -66,7 +66,7 @@ func TestResolveOutputExpiration_ZeroWhenNeitherSet(t *testing.T) {
 func TestResolveOutputExpiration_InvalidTagFallsBackToConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	now := int64(1000000)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "not-a-number"}
@@ -81,7 +81,7 @@ func TestResolveOutputExpiration_InvalidTagFallsBackToConfig(t *testing.T) {
 func TestResolveOutputExpiration_ZeroTagFallsBackToConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	now := int64(1000000)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "0"}
@@ -96,7 +96,7 @@ func TestResolveOutputExpiration_ZeroTagFallsBackToConfig(t *testing.T) {
 func TestResolveOutputExpiration_NilTags(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	now := int64(1000000)
 
@@ -140,7 +140,7 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
 	fileDB := newMockFileDBClient()
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		FileDB: fileDB,
 	})
 
@@ -204,7 +204,7 @@ func TestUploadOutputFile_RetriesAndSucceeds(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 2}
-	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-retry", "tenant-1")
 	ctx := testLoggerCtx()
@@ -231,7 +231,7 @@ func TestUploadOutputFile_ExhaustsRetries(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 100}
-	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-exhaust", "tenant-1")
 	ctx := testLoggerCtx()
@@ -255,7 +255,7 @@ func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
 	}
 
 	mock := &failNTimesFilesClient{failCount: 100}
-	p := NewProcessor(cfg, &clientset.Clientset{File: mock})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
 
 	jobInfo := setupJobWithOutputFile(t, cfg, "job-cancel", "tenant-1")
 	ctx, cancel := context.WithCancel(testLoggerCtx())
@@ -270,7 +270,7 @@ func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
 // setupJobWithOutputFile creates the local job directory structure with a dummy output file.
 func setupJobWithOutputFile(t *testing.T, cfg *config.ProcessorConfig, jobID, tenantID string) *batch_types.JobInfo {
 	t.Helper()
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	jobDir, err := p.jobRootDir(jobID, tenantID)
 	if err != nil {

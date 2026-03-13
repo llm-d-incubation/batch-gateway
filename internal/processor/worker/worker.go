@@ -25,6 +25,8 @@ import (
 
 	"k8s.io/klog/v2"
 
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
@@ -42,29 +44,38 @@ type Processor struct {
 	// globalSem limits total in-flight inference requests across all workers.
 	globalSem semaphore.Semaphore
 
-	clients *clientset.Clientset
 	poller  *Poller
 	updater *StatusUpdater
+
+	event     db.BatchEventChannelClient // cancel-event subscription
+	inference *inference.GatewayResolver // model → gateway routing
+	files     *fileManager
 }
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
-) *Processor {
-	// TODO: need to group clients by usecase (poller, updater, etc.)
+) (*Processor, error) {
+	tokenSem, err := semaphore.New(cfg.NumWorkers)
+	if err != nil {
+		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, err)
+	}
+	globalSem, err := semaphore.New(cfg.GlobalConcurrency)
+	if err != nil {
+		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, err)
+	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
-	// TODO: Handle errors from semaphore.New().
-	tokenSem, _ := semaphore.New(cfg.NumWorkers)
-	globalSem, _ := semaphore.New(cfg.GlobalConcurrency)
 	return &Processor{
 		cfg:       cfg,
 		tokens:    tokenSem,
 		globalSem: globalSem,
-		clients:   clients,
 		poller:    poller,
 		updater:   updater,
-	}
+		event:     clients.Event,
+		inference: clients.Inference,
+		files:     newFileManager(clients.File, clients.FileDB),
+	}, nil
 }
 
 // Run starts processor orchestration and enters the polling loop.
@@ -215,7 +226,12 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// process job
 		p.wg.Add(1)
-		go p.runJob(jctx, p.updater, jobItem, jobInfo, task)
+		go p.runJob(jctx, &jobExecutionParams{
+			updater: p.updater,
+			jobItem: jobItem,
+			jobInfo: jobInfo,
+			task:    task,
+		})
 	}
 }
 
@@ -244,40 +260,39 @@ func (p *Processor) releaseForNextPoll() {
 	p.release()
 }
 
-// ValidateClientset checks that all clients required by the processor are non-nil.
-func ValidateClientset(cs *clientset.Clientset) error {
-	if cs.BatchDB == nil {
-		return fmt.Errorf("database client is missing")
-	}
-	if cs.FileDB == nil {
-		return fmt.Errorf("file database client is missing")
-	}
-	if cs.File == nil {
-		return fmt.Errorf("files client is missing")
-	}
-	if cs.Queue == nil {
-		return fmt.Errorf("priority queue client is missing")
-	}
-	if cs.Status == nil {
-		return fmt.Errorf("status client is missing")
-	}
-	if cs.Event == nil {
-		return fmt.Errorf("event channel client is missing")
-	}
-	if cs.Inference == nil {
-		return fmt.Errorf("inference client is missing")
-	}
-	return nil
-}
-
 // pre-flight check
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
-	if err := ValidateClientset(p.clients); err != nil {
+	if err := p.validate(); err != nil {
 		return fmt.Errorf("critical clients are missing in processor: %w", err)
 	}
 
 	logger.V(logging.DEBUG).Info("Processor pre-flight check done", "max_workers", p.cfg.NumWorkers)
 	return nil
+}
+
+func (p *Processor) validate() error {
+	if p.poller == nil {
+		return fmt.Errorf("poller is missing")
+	}
+	if err := p.poller.validate(); err != nil {
+		return err
+	}
+	if p.updater == nil {
+		return fmt.Errorf("status updater is missing")
+	}
+	if err := p.updater.validate(); err != nil {
+		return err
+	}
+	if p.event == nil {
+		return fmt.Errorf("event channel client is missing")
+	}
+	if p.inference == nil {
+		return fmt.Errorf("inference client is missing")
+	}
+	if p.files == nil {
+		return fmt.Errorf("file manager is missing")
+	}
+	return p.files.validate()
 }
