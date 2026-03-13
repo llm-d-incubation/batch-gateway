@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"k8s.io/klog/v2"
@@ -78,7 +79,7 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	}
 
 	// Check for non-retryable errors after all retries exhausted
-	if statusCode != 200 {
+	if statusCode != http.StatusOK {
 		return nil, c.client.HandleErrorResponse(statusCode, resp)
 	}
 
