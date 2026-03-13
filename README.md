@@ -84,13 +84,13 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
                          ↓
                   Batch Processor (pulls jobs)
                          ↓
-              Phase 1: Ingestion & Plan Building
+              Ingestion
                   - Obtain input file
                   - Parse model IDs and system prompts
                   - Build per-model plans
                   - Write plans to local disk
                          ↓
-              Phase 2: Scheduling & Execution
+              Execution
                   - Launch per-model goroutines
                   - Acquire global & per-model semaphores
                   - Read requests from plan files

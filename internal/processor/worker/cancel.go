@@ -37,6 +37,7 @@ func (p *Processor) watchCancel(
 	jobItem *db.BatchItem,
 	cancelRequested *atomic.Bool,
 	cancellingOnce *sync.Once,
+	inferCancelFn func(),
 ) {
 	logger := klog.FromContext(ctx)
 	for {
@@ -57,6 +58,10 @@ func (p *Processor) watchCancel(
 				// signal
 				cancelRequested.Store(true)
 
+				// cancel the inference context to abort in-flight HTTP requests immediately,
+				// freeing downstream resources.
+				inferCancelFn()
+
 				// update status to cancelling
 				cancellingOnce.Do(func() {
 					err := updater.UpdatePersistentStatus(
@@ -76,8 +81,8 @@ func (p *Processor) watchCancel(
 }
 
 // handleCancelled finalizes a user-cancelled job.
-// When called after executeJob (Phase 2), requestCounts and jobInfo are non-nil and partial
-// results are uploaded. When called before executeJob (Phase 1), both are nil and only
+// When called after executeJob (execution), requestCounts and jobInfo are non-nil and partial
+// results are uploaded. When called before executeJob (ingestion), both are nil and only
 // cleanup + status transition is performed.
 func (p *Processor) handleCancelled(
 	ctx context.Context,

@@ -42,7 +42,7 @@ func (m *mockInferenceClient) Generate(ctx context.Context, req *inference.Gener
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: write binary plan file and model map for Phase 2
+// Helpers: write binary plan file and model map for execution
 // ---------------------------------------------------------------------------
 
 func writePlanFile(t *testing.T, dir, safeModelID string, entries []planEntry) {
@@ -145,8 +145,8 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	}
 }
 
-// setupPhase2Job creates a complete job directory with input file, plan files, and model map.
-func setupPhase2Job(
+// setupExecutionJob creates a complete job directory with input file, plan files, and model map.
+func setupExecutionJob(
 	t *testing.T,
 	cfg *config.ProcessorConfig,
 	inferClient inference.InferenceClientI,
@@ -238,7 +238,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1", "prompt": "hi"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, err := os.Open(inputPath)
@@ -288,7 +288,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-err", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -326,7 +326,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-nil", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -364,7 +364,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-bad-json", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -393,7 +393,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -428,7 +428,7 @@ func TestProcessModel_Success(t *testing.T) {
 		{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -481,7 +481,7 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -524,7 +524,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -572,7 +572,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -623,11 +623,11 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -667,11 +667,11 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 		{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "d", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m2"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -697,13 +697,13 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
 
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
@@ -716,13 +716,13 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	cancelReq := &atomic.Bool{}
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
@@ -750,17 +750,83 @@ func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled when cancel flag set after all requests complete, got: %v", err)
 	}
 }
 
+// TestExecuteJob_InferCtxCancel_AbortsInflightRequests verifies that cancelling inferCtx
+// aborts in-flight inference requests. The mock blocks until it sees context cancellation,
+// simulating a long-running inference call that should be interrupted.
+func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	inferStarted := make(chan struct{})
+	mock := &mockInferenceClient{
+		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			close(inferStarted)
+			// Block until context is cancelled (simulates slow inference)
+			<-ctx.Done()
+			return nil, &inference.ClientError{
+				Category: inference.ErrCategoryServer,
+				Message:  "context cancelled",
+				RawError: ctx.Err(),
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	cancelReq := &atomic.Bool{}
+	ctx := testLoggerCtx()
+	inferCtx, inferCancelFn := context.WithCancel(ctx)
+
+	type result struct {
+		counts *openai.BatchRequestCounts
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		counts, err := env.p.executeJob(ctx, ctx, inferCtx, env.updater, jobInfo, cancelReq)
+		resCh <- result{counts, err}
+	}()
+
+	<-inferStarted
+	cancelReq.Store(true)
+	inferCancelFn()
+
+	select {
+	case res := <-resCh:
+		if !errors.Is(res.err, ErrCancelled) {
+			t.Fatalf("expected ErrCancelled, got: %v", res.err)
+		}
+		if res.counts == nil {
+			t.Fatal("expected non-nil counts")
+		}
+		if res.counts.Total != 1 {
+			t.Errorf("Total = %d, want 1", res.counts.Total)
+		}
+		if res.counts.Completed != 0 {
+			t.Errorf("Completed = %d, want 0 (request was aborted)", res.counts.Completed)
+		}
+		if res.counts.Failed != 1 {
+			t.Errorf("Failed = %d, want 1 (aborted request counted as failed)", res.counts.Failed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executeJob did not return within 5s after inferCtx cancellation")
+	}
+}
+
 // TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
-// passed before Phase 2 begins, executeJob returns ErrExpired immediately with the total
+// passed before execution begins, executeJob returns ErrExpired immediately with the total
 // request count and no output/error files are written (early-exit fast path).
 func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	cfg := config.NewConfig()
@@ -771,7 +837,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
@@ -779,7 +845,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	counts, err := env.p.executeJob(ctx, sloCtx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, env.updater, jobInfo, cancelReq)
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got: %v", err)
 	}
@@ -913,11 +979,11 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, env.updater, jobInfo, cancelReq)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -1187,7 +1253,7 @@ func createPartialOutputFiles(t *testing.T, p *Processor, jobID, tenantID string
 	}
 }
 
-func TestHandleCancelled_Phase2_UploadsPartialOutput(t *testing.T) {
+func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -1235,7 +1301,7 @@ func TestHandleCancelled_Phase2_UploadsPartialOutput(t *testing.T) {
 	}
 }
 
-func TestHandleFailedWithPartial_Phase2_UploadsPartialOutput(t *testing.T) {
+func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -1283,13 +1349,13 @@ func TestHandleFailedWithPartial_Phase2_UploadsPartialOutput(t *testing.T) {
 	}
 }
 
-func TestHandleFailed_Phase3_RecordsCountsOnly(t *testing.T) {
+func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
-	jobID := "job-fail-phase3"
+	jobID := "job-fail-finalization"
 	dbJob := seedDBJob(t, env.dbClient, jobID)
 
 	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}

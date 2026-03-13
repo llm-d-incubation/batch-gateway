@@ -22,7 +22,7 @@ The processor exposes the following Prometheus metrics:
 - `jobs_processed_total{result,reason}` (Counter) - Total jobs processed by result.
 - `job_processing_duration_seconds{tenantID,size_bucket}` (Histogram) - Job processing duration histogram.
 - `job_queue_wait_duration{tenantID}` (Histogram) - Time jobs spend in queue.
-- `plan_build_duration_seconds{tenantID,size_bucket}` (Histogram) - Duration of phase 1 ingestion and plan build in seconds
+- `plan_build_duration_seconds{tenantID,size_bucket}` (Histogram) - Duration of ingestion and plan build in seconds
 
 **Worker Metrics:**
 

@@ -154,7 +154,7 @@ func (s *StatusUpdater) UpdateCompletedStatus(
 }
 
 // UpdateFailedStatus transitions the job to failed status and records partial file IDs when available.
-// counts may be nil when the job failed before execution (Phase 1).
+// counts may be nil when the job failed before execution (ingestion).
 func (s *StatusUpdater) UpdateFailedStatus(
 	ctx context.Context,
 	dbJob *db.BatchItem,
@@ -168,7 +168,7 @@ func (s *StatusUpdater) UpdateFailedStatus(
 }
 
 // UpdateCancelledStatus transitions the job to cancelled status and records partial file IDs.
-// counts may be nil when the job was cancelled before execution (Phase 1).
+// counts may be nil when the job was cancelled before execution (ingestion).
 func (s *StatusUpdater) UpdateCancelledStatus(
 	ctx context.Context,
 	dbJob *db.BatchItem,

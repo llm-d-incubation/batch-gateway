@@ -53,7 +53,7 @@ const (
 	ReasonDBInconsistency  = "db_inconsistency"   // PQ item exists but DB item missing or corrupted
 	ReasonNotRunnableState = "not_runnable_state" // job status is not runnable by processor policy
 	ReasonExpiredDequeue   = "expired_dequeue"    // SLO already exceeded before execution started; skipped at dequeue
-	ReasonExpiredExecution = "expired_execution"  // SLO deadline fired during Phase 2; partial results preserved
+	ReasonExpiredExecution = "expired_execution"  // SLO deadline fired during execution; partial results preserved
 	ReasonNone             = "none"               // no additional reason beyond the result (e.g. success, cancelled)
 
 	// size bucket labels
@@ -138,7 +138,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"model"},
 	)
 
-	// global in-flight request count during phase 2 execution
+	// global in-flight request count during execution
 	processorInflightRequests = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "processor_inflight_requests",
@@ -155,11 +155,11 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 	)
 	processorMaxInflightConc.Set(float64(cfg.GlobalConcurrency))
 
-	// phase 1 plan build duration
+	// ingestion plan build duration
 	planBuildDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name: "plan_build_duration_seconds",
-			Help: "Duration of phase 1 ingestion and plan build in seconds",
+			Help: "Duration of ingestion and plan build in seconds",
 			Buckets: prometheus.ExponentialBuckets(
 				cfg.ProcessTimeBucket.BucketStart,
 				cfg.ProcessTimeBucket.BucketFactor,
@@ -168,7 +168,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		}, []string{"tenantID", "size_bucket"},
 	)
 
-	// per-model in-flight requests during phase 2 execution
+	// per-model in-flight requests during execution
 	modelInflightRequests = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "model_inflight_requests",
@@ -181,7 +181,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 	modelRequestExecutionDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name: "model_request_execution_duration_seconds",
-			Help: "Per-request phase 2 execution duration in seconds by model",
+			Help: "Per-request execution duration in seconds by model",
 			Buckets: prometheus.ExponentialBuckets(
 				cfg.ProcessTimeBucket.BucketStart,
 				cfg.ProcessTimeBucket.BucketFactor,
@@ -295,7 +295,7 @@ func DecProcessorInflightRequests() {
 	processorInflightRequests.Dec()
 }
 
-// RecordPlanBuildDuration observes phase 1 plan build duration.
+// RecordPlanBuildDuration observes ingestion plan build duration.
 func RecordPlanBuildDuration(duration time.Duration, tenantID string, sizeBucket string) {
 	planBuildDuration.WithLabelValues(tenantID, sizeBucket).Observe(duration.Seconds())
 }
@@ -310,7 +310,7 @@ func DecModelInflightRequests(model string) {
 	modelInflightRequests.WithLabelValues(model).Dec()
 }
 
-// RecordModelRequestExecutionDuration observes phase 2 per-request execution duration by model.
+// RecordModelRequestExecutionDuration observes per-request execution duration by model.
 func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
 	modelRequestExecutionDuration.WithLabelValues(model).Observe(duration.Seconds())
 }
