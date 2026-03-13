@@ -23,7 +23,7 @@ import (
 )
 
 // InferenceClientI defines the interface for making inference requests
-type InferenceClientI interface {
+type InferenceClient interface {
 	Generate(ctx context.Context, req *GenerateRequest) (*GenerateResponse, *ClientError)
 }
 

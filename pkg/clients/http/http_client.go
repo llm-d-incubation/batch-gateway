@@ -39,7 +39,7 @@ const (
 // HTTPClient implements HTTP client with retry, TLS, and observability support
 type HTTPClient struct {
 	client    *resty.Client
-	Transport *http.Transport // underlying transport (before OTel wrapping), exported for testing
+	transport *http.Transport // underlying transport (before OTel wrapping)
 }
 
 // Config holds configuration for the HTTP client
@@ -66,7 +66,7 @@ type Config struct {
 }
 
 // NewHTTPClient creates a new HTTP client
-func NewHTTPClient(config *Config) (*HTTPClient, error) {
+func NewHTTPClient(config Config) (*HTTPClient, error) {
 	// Set defaults for HTTP client
 	if config.Timeout == 0 {
 		config.Timeout = 5 * time.Minute
@@ -110,7 +110,7 @@ func NewHTTPClient(config *Config) (*HTTPClient, error) {
 	transport.ResponseHeaderTimeout = 30 * time.Second // Prevent hanging on slow backends
 
 	// Configure custom TLS if needed
-	tlsConfig, err := BuildTLSConfig(config)
+	tlsConfig, err := BuildTLSConfig(&config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build TLS config: %w", err)
 	}
@@ -154,7 +154,7 @@ func NewHTTPClient(config *Config) (*HTTPClient, error) {
 
 	return &HTTPClient{
 		client:    client,
-		Transport: transport,
+		transport: transport,
 	}, nil
 }
 

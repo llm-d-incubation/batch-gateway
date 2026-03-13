@@ -119,7 +119,7 @@ type testProcessorEnv struct {
 
 // newTestProcessorEnv creates a Processor wired with mock clients.
 // The returned env exposes the shared dbClient and pqClient for seeding and verification.
-func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient inference.InferenceClientI) *testProcessorEnv {
+func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient inference.InferenceClient) *testProcessorEnv {
 	t.Helper()
 
 	dbClient := newMockBatchDBClient()
@@ -149,7 +149,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 func setupExecutionJob(
 	t *testing.T,
 	cfg *config.ProcessorConfig,
-	inferClient inference.InferenceClientI,
+	inferClient inference.InferenceClient,
 	requests []batch_types.Request,
 	modelToSafe map[string]string,
 ) (*testProcessorEnv, *batch_types.JobInfo) {

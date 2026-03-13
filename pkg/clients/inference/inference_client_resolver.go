@@ -68,8 +68,8 @@ func (gw GatewayClientConfig) toHTTPClientConfig() *HTTPClientConfig {
 // routing strategy. Tests inject mock InferenceClient instances via NewSingleClientResolver.
 // TODO: Extract an interface if multiple routing strategies are needed.
 type GatewayResolver struct {
-	defaultClient InferenceClientI
-	modelClients  map[string]InferenceClientI
+	defaultClient InferenceClient
+	modelClients  map[string]InferenceClient
 }
 
 // NewGatewayResolver creates a GatewayResolver from a map of model-to-gateway
@@ -93,10 +93,10 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 	// GatewayClientConfig is used directly as the pool key: all its fields are
 	// comparable primitives, so two configs with identical settings produce the
 	// same key and reuse a single InferenceClient (and its connection pool).
-	pool := map[GatewayClientConfig]InferenceClientI{
+	pool := map[GatewayClientConfig]InferenceClient{
 		defaultGW: defaultClient,
 	}
-	modelClients := make(map[string]InferenceClientI, len(modelGateways))
+	modelClients := make(map[string]InferenceClient, len(modelGateways))
 
 	for model, gw := range modelGateways {
 		if model == "default" {
@@ -124,7 +124,7 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 
 // ClientFor returns the inference client for the given model.
 // Falls back to the default client if no model-specific mapping exists.
-func (r *GatewayResolver) ClientFor(modelID string) InferenceClientI {
+func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
 	if c, ok := r.modelClients[modelID]; ok {
 		return c
 	}
@@ -134,6 +134,6 @@ func (r *GatewayResolver) ClientFor(modelID string) InferenceClientI {
 // NewSingleClientResolver wraps a single InferenceClientI in a GatewayResolver
 // where all models resolve to that client. Currently used only in tests
 // to inject mock inference clients into Clientset.
-func NewSingleClientResolver(c InferenceClientI) *GatewayResolver {
+func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
 	return &GatewayResolver{defaultClient: c}
 }

@@ -22,27 +22,26 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"k8s.io/klog/v2"
 )
 
-// InferenceClient wraps the generic HTTP client and implements InferenceClientI interface
-type InferenceClient struct {
+// InferenceHTTPClient wraps the generic HTTP client and implements InferenceClient interface
+type InferenceHTTPClient struct {
 	client *httpclient.HTTPClient
 }
 
 // NewInferenceClient creates a new HTTP-based inference client
-func NewInferenceClient(config *HTTPClientConfig) (*InferenceClient, error) {
-	client, err := httpclient.NewHTTPClient(config)
+func NewInferenceClient(config *HTTPClientConfig) (*InferenceHTTPClient, error) {
+	client, err := httpclient.NewHTTPClient(*config)
 	if err != nil {
 		return nil, err
 	}
-	return &InferenceClient{client: client}, nil
+	return &InferenceHTTPClient{client: client}, nil
 }
 
 // Generate makes an inference request with automatic retry logic
-func (c *InferenceClient) Generate(ctx context.Context, req *GenerateRequest) (*GenerateResponse, *ClientError) {
+func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*GenerateResponse, *ClientError) {
 	if req == nil {
 		return nil, &ClientError{
 			Category: httpclient.ErrCategoryInvalidReq,
@@ -93,9 +92,9 @@ func (c *InferenceClient) Generate(ctx context.Context, req *GenerateRequest) (*
 		}
 	}
 
-	if klog.V(logging.DEBUG).Enabled() {
+	if klog.V(4).Enabled() {
 		promptTokens, completionTokens, totalTokens := extractUsage(rawData)
-		klog.V(logging.DEBUG).Infof("Received successful response for request_id=%s, status=%d, body_size=%d, prompt_tokens=%v, completion_tokens=%v, total_tokens=%v",
+		klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d, prompt_tokens=%v, completion_tokens=%v, total_tokens=%v",
 			req.RequestID, statusCode, len(resp), promptTokens, completionTokens, totalTokens)
 	}
 
@@ -107,7 +106,7 @@ func (c *InferenceClient) Generate(ctx context.Context, req *GenerateRequest) (*
 }
 
 // handleRequestError processes request-level errors (network, timeout, cancellation)
-func (c *InferenceClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest) (*GenerateResponse, *ClientError) {
+func (c *InferenceHTTPClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest) (*GenerateResponse, *ClientError) {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		klog.V(3).Infof("Request cancelled for request_id=%s", req.RequestID)
 		return nil, &ClientError{
