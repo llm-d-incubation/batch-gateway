@@ -135,14 +135,18 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // cancelRequested polling is partially redundant for stopping dispatch. Refactor so that context
 // cancellation is the sole dispatch-abort mechanism and cancelRequested is only used to distinguish
 // the cancellation reason (user cancel vs SLO vs pod shutdown) in the error-handling path.
-func (p *Processor) executeJob(
-	ctx context.Context,
-	sloCtx context.Context,
-	inferCtx context.Context,
-	updater *StatusUpdater,
-	jobInfo *batch_types.JobInfo,
-	cancelRequested *atomic.Bool,
-) (*openai.BatchRequestCounts, error) {
+func (p *Processor) executeJob(params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+	ctx := params.ctx
+	sloCtx := params.sloCtx
+	inferCtx := params.inferCtx
+	updater := params.updater
+	jobInfo := params.jobInfo
+	cancelRequested := params.cancelRequested
+	if cancelRequested == nil {
+		cancelRequested = &atomic.Bool{}
+		params.cancelRequested = cancelRequested
+	}
+
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 

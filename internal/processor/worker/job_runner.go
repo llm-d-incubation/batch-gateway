@@ -40,13 +40,13 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
-func (p *Processor) runJob(
-	ctx context.Context,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	jobInfo *batch_types.JobInfo,
-	task *db.BatchJobPriority,
-) {
+func (p *Processor) runJob(params *jobExecutionParams) {
+	ctx := params.ctx
+	updater := params.updater
+	jobItem := params.jobItem
+	jobInfo := params.jobInfo
+	task := params.task
+
 	// Restore parent trace context propagated from the apiserver via Redis tags
 	if len(jobInfo.TraceContext) > 0 {
 		propagator := otel.GetTextMapPropagator()
@@ -63,10 +63,18 @@ func (p *Processor) runJob(
 	ctx, span := uotel.StartSpan(ctx, "process-batch",
 		trace.WithAttributes(spanAttrs...),
 	)
+	params.ctx = ctx
 	defer span.End()
 
 	// this logger includes job ID in the context
 	logger := klog.FromContext(ctx)
+
+	if params.cancelRequested == nil {
+		params.cancelRequested = &atomic.Bool{}
+	}
+	if params.cancellingOnce == nil {
+		params.cancellingOnce = &sync.Once{}
+	}
 
 	defer p.wg.Done()
 	defer p.release()
@@ -87,7 +95,7 @@ func (p *Processor) runJob(
 	// If an SLO deadline is set, create a child context that cancels when the deadline fires.
 	// This context is passed to executeJob to bound dispatch and trigger expiration handling.
 	sloCtx, sloCancel := ctx, func() {}
-	if !task.SLO.IsZero() {
+	if task != nil && !task.SLO.IsZero() {
 		sloCtx, sloCancel = context.WithDeadline(ctx, task.SLO)
 	}
 	defer sloCancel()
@@ -113,24 +121,22 @@ func (p *Processor) runJob(
 	}
 	defer eventWatcher.CloseFn()
 
-	// cancel requested flag and cancelling once
-	var cancelRequested atomic.Bool
-	var cancellingOnce sync.Once
-
 	// inferCtx is cancelled when the user requests batch cancellation, propagating
 	// the signal to all in-flight inference HTTP requests so they abort promptly.
 	// It is derived from sloCtx so the SLO deadline is also respected.
-	inferCtx, inferCancelFn := context.WithCancel(sloCtx)
-	defer inferCancelFn()
+	params.sloCtx = sloCtx
+	params.inferCtx, params.inferCancelFn = context.WithCancel(sloCtx)
+	defer params.inferCancelFn()
 
 	// watch for cancel event
-	go p.watchCancel(ctx, eventWatcher, updater, jobItem, &cancelRequested, &cancellingOnce, inferCancelFn)
+	params.eventWatcher = eventWatcher
+	go p.watchCancel(params)
 
 	// ingestion: pre-process job
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, params.cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
-		p.handleJobError(ctx, err, jobItem, updater, task, nil, nil)
+		p.handleJobError(params, err)
 		return
 	}
 
@@ -146,7 +152,8 @@ func (p *Processor) runJob(
 	}
 
 	// execution: execute inference requests
-	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, updater, jobInfo, &cancelRequested)
+	requestCounts, err := p.executeJob(params)
+	params.requestCounts = requestCounts
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrExpired):
@@ -158,7 +165,7 @@ func (p *Processor) runJob(
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 
 		case errors.Is(err, ErrCancelled):
-			if cancelErr := p.handleCancelled(ctx, updater, jobItem, jobInfo, requestCounts); cancelErr != nil {
+			if cancelErr := p.handleCancelled(params); cancelErr != nil {
 				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
 				span.RecordError(cancelErr)
 				span.SetStatus(codes.Error, "cancelled finalization failed")
@@ -170,7 +177,7 @@ func (p *Processor) runJob(
 		default:
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "execution failed")
-			p.handleJobError(ctx, err, jobItem, updater, task, requestCounts, jobInfo)
+			p.handleJobError(params, err)
 		}
 		return
 	}
@@ -197,21 +204,23 @@ func (p *Processor) runJob(
 
 // handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).
 // requestCounts and jobInfo are non-nil only when the error originates from execution (executeJob).
-func (p *Processor) handleJobError(
-	ctx context.Context,
-	err error,
-	jobItem *db.BatchItem,
-	updater *StatusUpdater,
-	task *db.BatchJobPriority,
-	requestCounts *openai.BatchRequestCounts,
-	jobInfo *batch_types.JobInfo,
-) {
+func (p *Processor) handleJobError(params *jobExecutionParams, err error) {
+	ctx := params.ctx
+	jobItem := params.jobItem
+	updater := params.updater
+	task := params.task
+	requestCounts := params.requestCounts
+	jobInfo := params.jobInfo
+
 	logger := klog.FromContext(ctx)
 
 	switch {
 	case errors.Is(err, ErrCancelled):
 		// Ingestion cancel: no output files exist yet
-		if cancelErr := p.handleCancelled(ctx, updater, jobItem, nil, nil); cancelErr != nil {
+		cancelParams := *params
+		cancelParams.jobInfo = nil
+		cancelParams.requestCounts = nil
+		if cancelErr := p.handleCancelled(&cancelParams); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
 

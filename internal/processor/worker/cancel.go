@@ -17,7 +17,6 @@ limitations under the License.
 package worker
 
 import (
-	"context"
 	"sync"
 	"sync/atomic"
 
@@ -26,20 +25,22 @@ import (
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
-func (p *Processor) watchCancel(
-	ctx context.Context,
-	eventWatcher *db.BatchEventsChan,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	cancelRequested *atomic.Bool,
-	cancellingOnce *sync.Once,
-	inferCancelFn func(),
-) {
+func (p *Processor) watchCancel(params *jobExecutionParams) {
+	ctx := params.ctx
+	eventWatcher := params.eventWatcher
+	updater := params.updater
+	jobItem := params.jobItem
+
 	logger := klog.FromContext(ctx)
+	if params.cancelRequested == nil {
+		params.cancelRequested = &atomic.Bool{}
+	}
+	if params.cancellingOnce == nil {
+		params.cancellingOnce = &sync.Once{}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -56,14 +57,14 @@ func (p *Processor) watchCancel(
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
 				// signal
-				cancelRequested.Store(true)
+				params.cancelRequested.Store(true)
 
 				// cancel the inference context to abort in-flight HTTP requests immediately,
 				// freeing downstream resources.
-				inferCancelFn()
+				params.inferCancelFn()
 
 				// update status to cancelling
-				cancellingOnce.Do(func() {
+				params.cancellingOnce.Do(func() {
 					err := updater.UpdatePersistentStatus(
 						ctx,
 						jobItem,
@@ -84,13 +85,13 @@ func (p *Processor) watchCancel(
 // When called after executeJob (execution), requestCounts and jobInfo are non-nil and partial
 // results are uploaded. When called before executeJob (ingestion), both are nil and only
 // cleanup + status transition is performed.
-func (p *Processor) handleCancelled(
-	ctx context.Context,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	jobInfo *batch_types.JobInfo,
-	requestCounts *openai.BatchRequestCounts,
-) error {
+func (p *Processor) handleCancelled(params *jobExecutionParams) error {
+	ctx := params.ctx
+	updater := params.updater
+	jobItem := params.jobItem
+	jobInfo := params.jobInfo
+	requestCounts := params.requestCounts
+
 	logger := klog.FromContext(ctx)
 
 	var outputFileID, errorFileID string

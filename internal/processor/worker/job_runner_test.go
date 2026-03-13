@@ -36,13 +36,12 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(
-		testLoggerCtx(),
-		NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
-		&db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
-		&batch_types.JobInfo{JobID: "job-1"},
-		nil,
-	)
+	p.runJob(&jobExecutionParams{
+		ctx:     testLoggerCtx(),
+		updater: NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
+		jobItem: &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
+		jobInfo: &batch_types.JobInfo{JobID: "job-1"},
+	})
 }
 
 func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
@@ -87,9 +86,15 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 		t.Fatalf("expected token acquire before runJob")
 	}
 	p.wg.Add(1)
-	p.runJob(ctx, NewStatusUpdater(dbClient, statusClient, 86400), jobItem, jobInfo, &db.BatchJobPriority{
-		ID:  "job-fail",
-		SLO: time.Now().Add(1 * time.Hour),
+	p.runJob(&jobExecutionParams{
+		ctx:     ctx,
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: jobInfo,
+		task: &db.BatchJobPriority{
+			ID:  "job-fail",
+			SLO: time.Now().Add(1 * time.Hour),
+		},
 	})
 
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)

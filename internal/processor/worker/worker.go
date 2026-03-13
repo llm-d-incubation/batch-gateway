@@ -52,6 +52,8 @@ func NewProcessor(
 	clients *clientset.Clientset,
 ) *Processor {
 	// TODO: need to group clients by usecase (poller, updater, etc.)
+	// Eliminate p.clients by extracting role-specific wrappers (e.g. FileManager for File+FileDB),
+	// moving Event and Inference to dedicated fields, so Clientset is not leaked into Processor.
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	// TODO: Handle errors from semaphore.New().
@@ -215,7 +217,13 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// process job
 		p.wg.Add(1)
-		go p.runJob(jctx, p.updater, jobItem, jobInfo, task)
+		go p.runJob(&jobExecutionParams{
+			ctx:     jctx,
+			updater: p.updater,
+			jobItem: jobItem,
+			jobInfo: jobInfo,
+			task:    task,
+		})
 	}
 }
 
