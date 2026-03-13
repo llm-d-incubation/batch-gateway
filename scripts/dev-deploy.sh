@@ -537,50 +537,90 @@ kill_stale_port_forwards() {
 
 start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
+    local max_retries=3
+    local health_check_attempts=30
 
     kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
-    step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE}..."
-    kubectl port-forward "${svc}" "${LOCAL_PORT}:8000" "${LOCAL_OBS_PORT}:8081" -n "${NAMESPACE}" &
-    local pf_pid=$!
-    disown "${pf_pid}"
-    log "Port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
+    for retry in $(seq 1 ${max_retries}); do
+        step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
+        kubectl port-forward "${svc}" "${LOCAL_PORT}:8000" "${LOCAL_OBS_PORT}:8081" -n "${NAMESPACE}" &
+        local pf_pid=$!
+        disown "${pf_pid}"
+        log "Port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
 
-    log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
+        log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
 
-    for i in $(seq 1 30); do
-        if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
-            log "API server is ready at https://localhost:${LOCAL_PORT}"
+        local success=false
+        for i in $(seq 1 ${health_check_attempts}); do
+            if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
+                log "API server is ready at https://localhost:${LOCAL_PORT}"
+                success=true
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "${success}" = true ]; then
             return 0
         fi
-        sleep 1
+
+        # Health check failed - kill the port-forward and retry
+        warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
+        kill "${pf_pid}" 2>/dev/null || true
+        kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
+
+        if [ ${retry} -lt ${max_retries} ]; then
+            log "Retrying port-forward in 2 seconds..."
+            sleep 2
+        fi
     done
 
-    die "Timed out waiting for API server to become ready"
+    die "Timed out waiting for API server to become ready after ${max_retries} attempts"
 }
 
 start_processor_port_forward() {
     local deploy="deployment/${HELM_RELEASE}-processor"
+    local max_retries=3
+    local health_check_attempts=30
 
     kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
 
-    step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE}..."
-    kubectl port-forward "${deploy}" "${LOCAL_PROCESSOR_PORT}:9090" -n "${NAMESPACE}" &
-    local pf_pid=$!
-    disown "${pf_pid}"
-    log "Processor port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
+    for retry in $(seq 1 ${max_retries}); do
+        step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
+        kubectl port-forward "${deploy}" "${LOCAL_PROCESSOR_PORT}:9090" -n "${NAMESPACE}" &
+        local pf_pid=$!
+        disown "${pf_pid}"
+        log "Processor port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
 
-    log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/health ..."
+        log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/health ..."
 
-    for i in $(seq 1 30); do
-        if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/health" >/dev/null 2>&1; then
-            log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
+        local success=false
+        for i in $(seq 1 ${health_check_attempts}); do
+            if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/health" >/dev/null 2>&1; then
+                log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
+                success=true
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "${success}" = true ]; then
             return 0
         fi
-        sleep 1
+
+        # Health check failed - kill the port-forward and retry
+        warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
+        kill "${pf_pid}" 2>/dev/null || true
+        kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
+
+        if [ ${retry} -lt ${max_retries} ]; then
+            log "Retrying port-forward in 2 seconds..."
+            sleep 2
+        fi
     done
 
-    die "Timed out waiting for Processor to become ready"
+    die "Timed out waiting for Processor to become ready after ${max_retries} attempts"
 }
 
 start_jaeger_port_forward() {
