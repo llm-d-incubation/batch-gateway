@@ -19,6 +19,7 @@ VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-4}"
 APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
 PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:${DEV_VERSION}}"
+GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${DEV_VERSION}}"
 # USE_KIND=true  → use kind; create cluster if it doesn't exist (default)
 # USE_KIND=false → use existing kubeconfig context (OpenShift / Kubernetes)
 USE_KIND="${USE_KIND:-true}"
@@ -213,26 +214,16 @@ load_images() {
         if [ "${CONTAINER_TOOL}" = "docker" ]; then
             kind load docker-image "${APISERVER_IMG}" --name "${KIND_CLUSTER}"
             kind load docker-image "${PROCESSOR_IMG}" --name "${KIND_CLUSTER}"
+            kind load docker-image "${GC_IMG}" --name "${KIND_CLUSTER}"
         else
-            # Podman: save to tar archives then load into kind
-            local tmp_apiserver tmp_processor
-            tmp_apiserver="/tmp/apiserver.tar"
-            tmp_processor="/tmp/processor.tar"
-            rm -f "${tmp_apiserver}" "${tmp_processor}"
-
-            log "Saving Podman images to tar archives..."
-            podman save -o "${tmp_apiserver}" "${APISERVER_IMG}"
-            podman save -o "${tmp_processor}" "${PROCESSOR_IMG}"
-
-            kind load image-archive "${tmp_apiserver}" --name "${KIND_CLUSTER}"
-            kind load image-archive "${tmp_processor}" --name "${KIND_CLUSTER}"
-
-            rm -f "${tmp_apiserver}" "${tmp_processor}"
+            podman save "${APISERVER_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
+            podman save "${PROCESSOR_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
+            podman save "${GC_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
         fi
         log "Images loaded into kind."
     else
         warn "Not a kind cluster — skipping image load."
-        warn "Ensure '${APISERVER_IMG}' and '${PROCESSOR_IMG}' are accessible from the cluster."
+        warn "Ensure '${APISERVER_IMG}', '${PROCESSOR_IMG}', and '${GC_IMG}' are accessible from the cluster."
     fi
 }
 
@@ -608,6 +599,10 @@ install_batch_gateway() {
         --set "global.databaseType=postgresql"
         --set "apiserver.enablePprof=true"
         --set "processor.enablePprof=true"
+        --set "gc.enabled=true"
+        --set "gc.image.pullPolicy=IfNotPresent"
+        --set "gc.image.tag=${DEV_VERSION}"
+        --set "gc.config.interval=5s"
         --namespace "${NAMESPACE}"
     )
 
@@ -626,6 +621,7 @@ install_batch_gateway() {
 
     wait_for_deployment "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
     wait_for_deployment "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
+    wait_for_deployment "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
 
     log "batch-gateway installed."
 }
@@ -643,19 +639,13 @@ wait_for_deployment() {
     local name="$1"
     local ns="$2"
     local timeout="${3:-120s}"
-    local retries=5
 
     step "Waiting for deployment '${name}' to be ready..."
-    for i in $(seq 1 "${retries}"); do
-        if kubectl rollout status deployment/"${name}" \
-            -n "${ns}" --timeout="${timeout}"; then
-            log "Deployment '${name}' is ready."
-            return 0
-        fi
-        [ "${i}" -eq "${retries}" ] && die "Deployment '${name}' did not become ready"
-        warn "Deployment not yet visible, retrying in 2s... (${i}/${retries})"
-        sleep 2
-    done
+    if ! kubectl wait deployment/"${name}" \
+        -n "${ns}" --for=condition=Available --timeout="${timeout}"; then
+        die "Deployment '${name}' did not become ready within ${timeout}"
+    fi
+    log "Deployment '${name}' is ready."
 }
 
 start_apiserver_port_forward() {

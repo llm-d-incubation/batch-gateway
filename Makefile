@@ -231,6 +231,8 @@ test-integration:
 ## test-all: Run all tests (unit + integration)
 test-all: test test-integration
 
+KIND_CLUSTER_NAME ?= batch-gateway-dev
+
 ## deploy: Deploy batch-gateway to a local kind cluster and start port-forward
 dev-deploy:
 	@bash scripts/dev-deploy.sh
