@@ -773,7 +773,7 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 			// Block until context is cancelled (simulates slow inference)
 			<-ctx.Done()
 			return nil, &inference.ClientError{
-				Category: inference.ErrCategoryServer,
+				Category: httpclient.ErrCategoryServer,
 				Message:  "context cancelled",
 				RawError: ctx.Err(),
 			}
