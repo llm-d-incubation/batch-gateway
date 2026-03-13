@@ -32,14 +32,15 @@ import (
 )
 
 var (
-	testApiserverURL    = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
-	testApiserverObsURL = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
-	testProcessorObsURL = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9090")
-	testJaegerURL       = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
-	testTenantHeader    = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
-	testTenantID        = getEnvOrDefault("TEST_TENANT_ID", "default")
-	testNamespace       = getEnvOrDefault("TEST_NAMESPACE", "default")
-	testHelmRelease     = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
+	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
+	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
+	testProcessorObsURL   = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "http://localhost:9090")
+	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
+	testTenantHeader      = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
+	testTenantID          = getEnvOrDefault("TEST_TENANT_ID", "default")
+	testNamespace         = getEnvOrDefault("TEST_NAMESPACE", "default")
+	testHelmRelease       = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
+	testPostgresqlRelease = getEnvOrDefault("TEST_POSTGRESQL_RELEASE", "postgresql")
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
@@ -315,5 +316,6 @@ func TestE2E(t *testing.T) {
 	t.Run("Batches", testBatches)
 	t.Run("Concurrent", testConcurrent)
 	t.Run("MultiTenant", testMultiTenant)
+	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
 }
