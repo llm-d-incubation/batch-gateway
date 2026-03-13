@@ -17,8 +17,8 @@ limitations under the License.
 package batch_types
 
 import (
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // Tag key prefixes and names stored in database tags (db.Tags).

@@ -26,27 +26,24 @@ import (
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
-func (p *Processor) watchCancel(
-	ctx context.Context,
-	eventWatcher *db.BatchEventsChan,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	cancelRequested *atomic.Bool,
-	cancellingOnce *sync.Once,
-	inferCancelFn func(),
-) {
+func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {
 	logger := klog.FromContext(ctx)
+	if params.cancelRequested == nil {
+		params.cancelRequested = &atomic.Bool{}
+	}
+	if params.cancellingOnce == nil {
+		params.cancellingOnce = &sync.Once{}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			logger.V(logging.DEBUG).Info("watchCancel: context done")
 			return
 
-		case event, ok := <-eventWatcher.Events:
+		case event, ok := <-params.eventWatcher.Events:
 			if !ok {
 				logger.V(logging.DEBUG).Info("watchCancel: event channel closed")
 				return
@@ -56,17 +53,17 @@ func (p *Processor) watchCancel(
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
 				// signal
-				cancelRequested.Store(true)
+				params.cancelRequested.Store(true)
 
 				// cancel the inference context to abort in-flight HTTP requests immediately,
 				// freeing downstream resources.
-				inferCancelFn()
+				params.inferCancelFn()
 
 				// update status to cancelling
-				cancellingOnce.Do(func() {
-					err := updater.UpdatePersistentStatus(
+				params.cancellingOnce.Do(func() {
+					err := params.updater.UpdatePersistentStatus(
 						ctx,
-						jobItem,
+						params.jobItem,
 						openai.BatchStatusCancelling,
 						nil,
 						nil,
@@ -84,30 +81,24 @@ func (p *Processor) watchCancel(
 // When called after executeJob (execution), requestCounts and jobInfo are non-nil and partial
 // results are uploaded. When called before executeJob (ingestion), both are nil and only
 // cleanup + status transition is performed.
-func (p *Processor) handleCancelled(
-	ctx context.Context,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	jobInfo *batch_types.JobInfo,
-	requestCounts *openai.BatchRequestCounts,
-) error {
+func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionParams) error {
 	logger := klog.FromContext(ctx)
 
 	var outputFileID, errorFileID string
-	if requestCounts != nil && jobInfo != nil {
+	if params.requestCounts != nil && params.jobInfo != nil {
 		// upload partial results
 		logger.V(logging.INFO).Info("Job cancelled mid-execution, uploading partial results")
-		outputFileID, errorFileID = p.uploadPartialResults(ctx, jobInfo, jobItem)
+		outputFileID, errorFileID = p.uploadPartialResults(ctx, params.jobInfo, params.jobItem)
 	}
 
-	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
+	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 
-	if err := updater.UpdateCancelledStatus(ctx, jobItem, requestCounts, outputFileID, errorFileID); err != nil {
+	if err := params.updater.UpdateCancelledStatus(ctx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update status to cancelled")
 		return err
 	}
 
-	setRequestCountAttrs(ctx, requestCounts)
+	setRequestCountAttrs(ctx, params.requestCounts)
 
 	// record processed metrics as success because we successfully finished user-initiated cancellation
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)

@@ -36,7 +36,6 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -45,6 +44,8 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // outputWriters holds the buffered writers and their mutexes for the output and error JSONL files.
@@ -131,22 +132,19 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // in-flight inference HTTP requests immediately, freeing downstream resources (GPU slots, EPP
 // capacity). inferCtx is derived from sloCtx in the caller so the SLO deadline is also respected.
 //
-// TODO: Now that inferCtx propagates cancellation through the context tree, checkAbortCondition's
-// cancelRequested polling is partially redundant for stopping dispatch. Refactor so that context
-// cancellation is the sole dispatch-abort mechanism and cancelRequested is only used to distinguish
-// the cancellation reason (user cancel vs SLO vs pod shutdown) in the error-handling path.
-func (p *Processor) executeJob(
-	ctx context.Context,
-	sloCtx context.Context,
-	inferCtx context.Context,
-	updater *StatusUpdater,
-	jobInfo *batch_types.JobInfo,
-	cancelRequested *atomic.Bool,
-) (*openai.BatchRequestCounts, error) {
+// Dispatch abort relies solely on context cancellation (checkAbortCondition checks ctx.Err()).
+// The cancelRequested flag is NOT polled to stop dispatch; it is only consulted in the
+// error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown)
+// and to drain undispatched entries with the correct error code.
+func (p *Processor) executeJob(ctx, sloCtx, inferCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+	if params.cancelRequested == nil {
+		params.cancelRequested = &atomic.Bool{}
+	}
+
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
-	jobRootDir, err := p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	jobRootDir, err := p.jobRootDir(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve job root directory: %w", err)
 	}
@@ -165,7 +163,7 @@ func (p *Processor) executeJob(
 		return &openai.BatchRequestCounts{Total: modelMap.LineCount}, ErrExpired
 	}
 
-	inputFilePath, err := p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFilePath, err := p.jobInputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +173,7 @@ func (p *Processor) executeJob(
 	}
 	defer inputFile.Close()
 
-	outputFilePath, err := p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outputFilePath, err := p.jobOutputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +183,7 @@ func (p *Processor) executeJob(
 	}
 	defer outputFile.Close()
 
-	errorFilePath, err := p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	errorFilePath, err := p.jobErrorFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +198,7 @@ func (p *Processor) executeJob(
 		errors: bufio.NewWriterSize(errorFile, 1024*1024),
 	}
 
-	plansDir, err := p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+	plansDir, err := p.jobPlansDir(params.jobInfo.JobID, params.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,13 +212,13 @@ func (p *Processor) executeJob(
 
 	progress := &executionProgress{
 		total:   modelMap.LineCount,
-		updater: updater,
-		jobID:   jobInfo.JobID,
+		updater: params.updater,
+		jobID:   params.jobInfo.JobID,
 	}
 
 	errCh := make(chan error, len(modelMap.SafeToModel))
 
-	passThroughHeaders := jobInfo.PassThroughHeaders
+	passThroughHeaders := params.jobInfo.PassThroughHeaders
 	if len(passThroughHeaders) > 0 {
 		headerNames := make([]string, 0, len(passThroughHeaders))
 		for k := range passThroughHeaders {
@@ -240,7 +238,7 @@ func (p *Processor) executeJob(
 				inputFile,
 				plansDir, safeModelID, modelID,
 				writers,
-				cancelRequested,
+				params.cancelRequested,
 				progress,
 				passThroughHeaders,
 			)
@@ -263,7 +261,7 @@ func (p *Processor) executeJob(
 		if ctx.Err() != nil {
 			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
 		}
-		if cancelRequested.Load() {
+		if params.cancelRequested.Load() {
 			_ = writers.output.Flush()
 			_ = writers.errors.Flush()
 			counts := progress.counts()
@@ -304,9 +302,9 @@ func (p *Processor) executeJob(
 	logger.V(logging.INFO).Info("Execution completed",
 		"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 
-	// Cancel may have arrived after all requests were already dispatched and completed normally
-	// (i.e. checkAbortCondition never fired). Honour the cancellation even in this case.
-	if cancelRequested.Load() {
+	// Cancel may have arrived after all requests were dispatched and completed normally
+	// (i.e. context cancellation never interrupted dispatch). Honour the cancellation.
+	if params.cancelRequested.Load() {
 		return counts, ErrCancelled
 	}
 
@@ -359,7 +357,7 @@ func (p *Processor) processModel(
 
 dispatch:
 	for i, entry := range entries {
-		if err := checkAbortCondition(ctx, cancelRequested); err != nil {
+		if err := checkAbortCondition(ctx); err != nil {
 			errOnce.Do(func() { modelErr = err })
 			break
 		}
@@ -557,7 +555,7 @@ func (p *Processor) executeOneRequest(
 		return &outputLine{
 			ID: newBatchRequestID(requestID),
 			Error: &outputError{
-				Code:    string(inference.ErrCategoryParse),
+				Code:    string(httpclient.ErrCategoryParse),
 				Message: fmt.Sprintf("failed to parse request line: %v", err),
 			},
 		}, nil
@@ -578,7 +576,7 @@ func (p *Processor) executeOneRequest(
 	metrics.IncModelInflightRequests(modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
 
-	inferClient := p.clients.Inference.ClientFor(modelID)
+	inferClient := p.inference.ClientFor(modelID)
 	inferResp, inferErr := inferClient.Generate(ctx, inferReq)
 
 	metrics.DecModelInflightRequests(modelID)
@@ -602,7 +600,7 @@ func (p *Processor) executeOneRequest(
 		// ok status without error but no response
 		logger.Error(nil, "inference returned no error but response is nil")
 		result.Error = &outputError{
-			Code:    string(inference.ErrCategoryServer),
+			Code:    string(httpclient.ErrCategoryServer),
 			Message: "inference returned no error but response is nil",
 		}
 	} else {
@@ -613,7 +611,7 @@ func (p *Processor) executeOneRequest(
 				// failed to unmarshal the response body
 				logger.Error(err, "failed to unmarshal inference response body")
 				result.Error = &outputError{
-					Code:    string(inference.ErrCategoryParse),
+					Code:    string(httpclient.ErrCategoryParse),
 					Message: fmt.Sprintf("inference succeeded but response body could not be parsed: %v", err),
 				}
 			}
@@ -781,7 +779,7 @@ func (p *Processor) uploadJobFile(
 	// TODO: distinguish retryable (network/storage transient) vs non-retryable (auth, permission)
 	// errors and skip retries for the latter. Deferred until we have more storage backends
 	// or see real non-transient failures in production.
-	fileMeta, err := p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
+	fileMeta, err := p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
 		metrics.RecordFileUploadRetry(fileType)
 		backoff := min(retryCfg.InitialBackoff*(1<<(attempt-1)), retryCfg.MaxBackoff)
@@ -797,7 +795,7 @@ func (p *Processor) uploadJobFile(
 		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
 			return 0, fmt.Errorf("failed to seek file %s for retry: %w", fileName, seekErr)
 		}
-		fileMeta, err = p.clients.File.Store(ctx, fileName, folderName, 0, 0, f)
+		fileMeta, err = p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload file %s after %d attempts: %w", fileName, maxAttempts, err)
@@ -835,7 +833,7 @@ func (p *Processor) storeFileRecord(
 		return fmt.Errorf("failed to convert file to db item: %w", err)
 	}
 
-	if err := p.clients.FileDB.DBStore(ctx, fileItem); err != nil {
+	if err := p.files.db.DBStore(ctx, fileItem); err != nil {
 		return fmt.Errorf("failed to store file record: %w", err)
 	}
 	return nil

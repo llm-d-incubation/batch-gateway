@@ -56,7 +56,7 @@ func TestGatewayResolver_ClientFor_DefaultFallback(t *testing.T) {
 
 	r := &GatewayResolver{
 		defaultClient: defaultC,
-		modelClients:  map[string]Client{"model-a": modelC},
+		modelClients:  map[string]InferenceClient{"model-a": modelC},
 	}
 
 	if got := r.ClientFor("model-a"); got != modelC {

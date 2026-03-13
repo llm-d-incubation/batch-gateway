@@ -40,33 +40,33 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
-func (p *Processor) runJob(
-	ctx context.Context,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	jobInfo *batch_types.JobInfo,
-	task *db.BatchJobPriority,
-) {
+func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Restore parent trace context propagated from the apiserver via Redis tags
-	if len(jobInfo.TraceContext) > 0 {
+	if len(params.jobInfo.TraceContext) > 0 {
 		propagator := otel.GetTextMapPropagator()
-		ctx = propagator.Extract(ctx, propagation.MapCarrier(jobInfo.TraceContext))
+		ctx = propagator.Extract(ctx, propagation.MapCarrier(params.jobInfo.TraceContext))
 	}
 
 	spanAttrs := []attribute.KeyValue{
-		attribute.String(uotel.AttrBatchID, jobItem.ID),
-		attribute.String(uotel.AttrTenantID, jobItem.TenantID),
+		attribute.String(uotel.AttrBatchID, params.jobItem.ID),
+		attribute.String(uotel.AttrTenantID, params.jobItem.TenantID),
 	}
-	if jobInfo.BatchJob != nil {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrInputFileID, jobInfo.BatchJob.InputFileID))
+	if params.jobInfo.BatchJob != nil {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrInputFileID, params.jobInfo.BatchJob.InputFileID))
 	}
 	ctx, span := uotel.StartSpan(ctx, "process-batch",
 		trace.WithAttributes(spanAttrs...),
 	)
 	defer span.End()
 
-	// this logger includes job ID in the context
 	logger := klog.FromContext(ctx)
+
+	if params.cancelRequested == nil {
+		params.cancelRequested = &atomic.Bool{}
+	}
+	if params.cancellingOnce == nil {
+		params.cancellingOnce = &sync.Once{}
+	}
 
 	defer p.wg.Done()
 	defer p.release()
@@ -87,22 +87,22 @@ func (p *Processor) runJob(
 	// If an SLO deadline is set, create a child context that cancels when the deadline fires.
 	// This context is passed to executeJob to bound dispatch and trigger expiration handling.
 	sloCtx, sloCancel := ctx, func() {}
-	if !task.SLO.IsZero() {
-		sloCtx, sloCancel = context.WithDeadline(ctx, task.SLO)
+	if params.task != nil && !params.task.SLO.IsZero() {
+		sloCtx, sloCancel = context.WithDeadline(ctx, params.task.SLO)
 	}
 	defer sloCancel()
 
 	// event watcher for cancel event
-	eventWatcher, err := p.clients.Event.ECConsumerGetChannel(ctx, jobInfo.JobID)
+	eventWatcher, err := p.event.ECConsumerGetChannel(ctx, params.jobInfo.JobID)
 	if err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "event watcher failed")
-		// re-enqueue the job to the queue so this job can be picked up later by another worker
-		// best-effort
-		if task != nil {
+		// Re-enqueue best-effort. Use context.Background() because ctx may already be
+		// cancelled (e.g. pod shutdown) and we don't want the enqueue call to be short-circuited.
+		if params.task != nil {
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
-			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
+			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
 				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
@@ -113,105 +113,99 @@ func (p *Processor) runJob(
 	}
 	defer eventWatcher.CloseFn()
 
-	// cancel requested flag and cancelling once
-	var cancelRequested atomic.Bool
-	var cancellingOnce sync.Once
-
 	// inferCtx is cancelled when the user requests batch cancellation, propagating
 	// the signal to all in-flight inference HTTP requests so they abort promptly.
 	// It is derived from sloCtx so the SLO deadline is also respected.
 	inferCtx, inferCancelFn := context.WithCancel(sloCtx)
+	params.inferCancelFn = inferCancelFn
 	defer inferCancelFn()
 
 	// watch for cancel event
-	go p.watchCancel(ctx, eventWatcher, updater, jobItem, &cancelRequested, &cancellingOnce, inferCancelFn)
+	params.eventWatcher = eventWatcher
+	go p.watchCancel(ctx, params)
 
 	// ingestion: pre-process job
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, params.jobInfo, params.cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
-		p.handleJobError(ctx, err, jobItem, updater, task, nil, nil)
+		p.handleJobError(ctx, params, err)
 		return
 	}
 
 	// transition to in_progress before executing requests
-	if err := updater.UpdatePersistentStatus(ctx, jobItem, openai.BatchStatusInProgress, nil, nil); err != nil {
+	if err := params.updater.UpdatePersistentStatus(ctx, params.jobItem, openai.BatchStatusInProgress, nil, nil); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to update status to in_progress")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "status transition failed")
-		if failErr := p.handleFailed(ctx, updater, jobItem, nil); failErr != nil {
+		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
 		return
 	}
 
 	// execution: execute inference requests
-	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, updater, jobInfo, &cancelRequested)
+	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, params)
+	params.requestCounts = requestCounts
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrExpired):
-			if expiredErr := p.handleExpired(ctx, updater, jobItem, jobInfo, requestCounts); expiredErr != nil {
+			if expiredErr := p.handleExpired(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts); expiredErr != nil {
 				logger.V(logging.ERROR).Error(expiredErr, "Failed to finalize expired job")
 				span.RecordError(expiredErr)
 				span.SetStatus(codes.Error, "expired finalization failed")
 			}
-			metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 
 		case errors.Is(err, ErrCancelled):
-			if cancelErr := p.handleCancelled(ctx, updater, jobItem, jobInfo, requestCounts); cancelErr != nil {
+			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
 				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
 				span.RecordError(cancelErr)
 				span.SetStatus(codes.Error, "cancelled finalization failed")
 			}
 			if requestCounts != nil {
-				metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+				metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 			}
 
 		default:
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "execution failed")
-			p.handleJobError(ctx, err, jobItem, updater, task, requestCounts, jobInfo)
+			p.handleJobError(ctx, params, err)
 		}
 		return
 	}
 
 	// finalization: upload output, update status to completed
-	if err := p.finalizeJob(ctx, updater, jobItem, jobInfo, requestCounts); err != nil {
+	if err := p.finalizeJob(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "finalize failed")
 		// Upload retries already exhausted inside finalizeJob — don't re-attempt upload.
 		// Pass requestCounts so they are recorded in the failed status.
-		if failErr := p.handleFailed(ctx, updater, jobItem, requestCounts); failErr != nil {
+		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, requestCounts); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
 		return
 	}
 
 	// cleanup local artifacts (best-effort)
-	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
-	metrics.RecordJobProcessingDuration(time.Since(jobStart), jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
+	metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job completed successfully")
 }
 
 // handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).
 // requestCounts and jobInfo are non-nil only when the error originates from execution (executeJob).
-func (p *Processor) handleJobError(
-	ctx context.Context,
-	err error,
-	jobItem *db.BatchItem,
-	updater *StatusUpdater,
-	task *db.BatchJobPriority,
-	requestCounts *openai.BatchRequestCounts,
-	jobInfo *batch_types.JobInfo,
-) {
+func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionParams, err error) {
 	logger := klog.FromContext(ctx)
 
 	switch {
 	case errors.Is(err, ErrCancelled):
 		// Ingestion cancel: no output files exist yet
-		if cancelErr := p.handleCancelled(ctx, updater, jobItem, nil, nil); cancelErr != nil {
+		cancelParams := *params
+		cancelParams.jobInfo = nil
+		cancelParams.requestCounts = nil
+		if cancelErr := p.handleCancelled(ctx, &cancelParams); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
 
@@ -219,11 +213,12 @@ func (p *Processor) handleJobError(
 		// Parent context was cancelled or deadline exceeded (e.g. pod shutdown).
 		// Re-enqueue so another worker can pick it up.
 		// Note: SLO expiry returns ErrExpired, which is handled before this function is called.
-		if task != nil {
+		// Use context.Background() because ctx is already cancelled.
+		if params.task != nil {
 			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
-			if enqErr := p.poller.enqueueOne(bgCtx, task); enqErr != nil {
+			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
 				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
-				if failErr := p.handleFailed(bgCtx, updater, jobItem, nil); failErr != nil {
+				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
 					logger.V(logging.ERROR).Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
@@ -233,12 +228,12 @@ func (p *Processor) handleJobError(
 		}
 
 	default:
-		if requestCounts != nil && jobInfo != nil {
-			if failErr := p.handleFailedWithPartial(ctx, updater, jobItem, jobInfo, requestCounts); failErr != nil {
+		if params.requestCounts != nil && params.jobInfo != nil {
+			if failErr := p.handleFailedWithPartial(ctx, params.updater, params.jobItem, params.jobInfo, params.requestCounts); failErr != nil {
 				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event with partial output")
 			}
 		} else {
-			if failErr := p.handleFailed(ctx, updater, jobItem, nil); failErr != nil {
+			if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
 				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 			}
 		}

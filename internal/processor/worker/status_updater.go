@@ -45,6 +45,16 @@ func NewStatusUpdater(db db.BatchDBClient, status db.BatchStatusClient, progress
 	}
 }
 
+func (s *StatusUpdater) validate() error {
+	if s.db == nil {
+		return fmt.Errorf("database client is missing")
+	}
+	if s.status == nil {
+		return fmt.Errorf("status client is missing")
+	}
+	return nil
+}
+
 // UpdateProgressCounts pushes request counts to the volatile status store (e.g. Redis).
 // This is NOT a persistent DB update — it is a lightweight, frequent update used to power
 // real-time progress polling. The data expires after progressTTLSec.
