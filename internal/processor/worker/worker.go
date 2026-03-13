@@ -26,8 +26,8 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
