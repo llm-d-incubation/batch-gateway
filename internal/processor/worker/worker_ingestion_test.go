@@ -55,6 +55,12 @@ func (s *spyPQ) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) 
 	s.mu.Unlock()
 	return s.inner.PQDelete(ctx, jobPriority)
 }
+func (s *spyPQ) PQSignalDone(ctx context.Context, ID string) error {
+	return s.inner.PQSignalDone(ctx, ID)
+}
+func (s *spyPQ) PQReEnqueue(ctx context.Context) error {
+	return s.inner.PQReEnqueue(ctx)
+}
 func (s *spyPQ) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parentCtx, timeLimit)
 }

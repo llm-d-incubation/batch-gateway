@@ -53,6 +53,14 @@ func (p *pqSpy) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) 
 	return p.inner.PQDelete(ctx, jobPriority)
 }
 
+func (p *pqSpy) PQSignalDone(ctx context.Context, ID string) error {
+	return p.inner.PQSignalDone(ctx, ID)
+}
+
+func (p *pqSpy) PQReEnqueue(ctx context.Context) error {
+	return p.inner.PQReEnqueue(ctx)
+}
+
 func (p *pqSpy) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parentCtx, timeLimit)
 }

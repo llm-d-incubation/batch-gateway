@@ -113,6 +113,14 @@ func (m *MockBatchPriorityQueueClient) PQDelete(ctx context.Context, jobPriority
 	return 0, nil
 }
 
+func (m *MockBatchPriorityQueueClient) PQSignalDone(ctx context.Context, ID string) (err error) {
+	return
+}
+
+func (m *MockBatchPriorityQueueClient) PQReEnqueue(ctx context.Context) (err error) {
+	return
+}
+
 func (m *MockBatchPriorityQueueClient) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parentCtx, timeLimit)
 }

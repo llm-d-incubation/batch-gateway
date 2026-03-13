@@ -184,6 +184,14 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	return
 }
 
+func (c *ExchangeDBClientRedis) PQSignalDone(ctx context.Context, ID string) (err error) {
+	return
+}
+
+func (c *ExchangeDBClientRedis) PQReEnqueue(ctx context.Context) (err error) {
+	return
+}
+
 func unrecognizedBlockingError(err error) bool {
 	errStr := err.Error()
 	unrecognized :=

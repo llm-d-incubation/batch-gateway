@@ -91,10 +91,11 @@ var LogicalCondNames = map[LogicalCond]string{
 // -- Batch jobs priority queue --
 
 type BatchJobPriority struct {
-	ID   string    `json:"id,omitempty"`   // [mandatory] ID of the batch job.
-	SLO  time.Time `json:"slo,omitempty"`  // [mandatory] The SLO value determines the priority of the job.
-	Data []byte    `json:"data,omitempty"` // [optional] User defined data.
-	TTL  int       // [optional] TTL in seconds applied on the entire queue. If used, this should be set to a sufficiently large value to prevent premature removal of items.
+	ID       string    `json:"id,omitempty"`   // [mandatory] ID of the batch job.
+	SLO      time.Time `json:"slo,omitempty"`  // [mandatory] The SLO value determines the priority of the job.
+	Data     []byte    `json:"data,omitempty"` // [optional] User defined data.
+	TTL      int       // [optional] TTL in seconds applied on the entire queue. If used, this should be set to a sufficiently large value to prevent premature removal of items.
+	Recovery bool      `json:"recovery,omitempty"` // [optional] Indicates if the item requires recovery processing.
 }
 
 func (bj *BatchJobPriority) IsValid() error {
@@ -118,10 +119,20 @@ type BatchPriorityQueueClient interface {
 	// up to the maximum number of objects specified in maxItems.
 	// The function blocks up to the timeout value for a job priority object to be available.
 	// If the timeout value is zero, the function returns immediately.
+	// Every item that is dequeued creates resources to reflect that the item is in processing.
+	// When processing of an item completes, the caller must call PQSignalDone.
 	PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
 		jobPriorities []*BatchJobPriority, err error)
 
-	// PQSignalDone(ctx context.Context, ID string) (err error)
+	// PQSignalDone signals that an item that has been in processing is now done.
+	// This method must be called when processing of an item is complete.
+	PQSignalDone(ctx context.Context, ID string) (err error)
+
+	// PQReEnqueue scans the items in processing, identifies orphan items,
+	// and reenqueues these items into the priority queue with an indication
+	// that recovery is needed for these items.
+	// This method should be called periodically by a single scanner process.
+	PQReEnqueue(ctx context.Context) (err error)
 
 	// PQDelete deletes a job priority object from the queue.
 	// Specify the ID and SLO values for deleting. Other values are not required.
