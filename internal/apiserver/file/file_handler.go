@@ -44,6 +44,9 @@ const (
 	maxListFilesLimit     = 10000
 )
 
+// Compile-time check: FileAPIHandler implements common.ApiHandler.
+var _ common.ApiHandler = (*FileAPIHandler)(nil)
+
 type FileAPIHandler struct {
 	config  *common.ServerConfig
 	clients *clientset.Clientset

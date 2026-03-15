@@ -30,6 +30,9 @@ type eventChannel struct {
 	closeFn func()
 }
 
+// Compile-time check: MockBatchEventChannelClient implements api.BatchEventChannelClient.
+var _ api.BatchEventChannelClient = (*MockBatchEventChannelClient)(nil)
+
 type MockBatchEventChannelClient struct {
 	mu       sync.RWMutex
 	channels map[string][]*eventChannel // Map of job ID to list of event channels

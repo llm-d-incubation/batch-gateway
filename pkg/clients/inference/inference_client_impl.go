@@ -27,6 +27,9 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// Compile-time check: InferenceHTTPClient implements InferenceClient.
+var _ InferenceClient = (*InferenceHTTPClient)(nil)
+
 // InferenceHTTPClient wraps the generic HTTP client and implements InferenceClient interface
 type InferenceHTTPClient struct {
 	client *httpclient.HTTPClient
