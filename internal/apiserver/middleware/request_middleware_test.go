@@ -24,8 +24,6 @@ import (
 	"testing"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 )
 
 // newTestConfig returns a minimal ServerConfig suitable for middleware tests.
@@ -36,14 +34,12 @@ func newTestConfig(tenantHeader string) *common.ServerConfig {
 	}
 }
 
-// captureHandler returns an http.Handler that captures the tenant ID from context.
-func captureHandler(captured *string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if v, ok := r.Context().Value(common.TenantIDKey).(string); ok {
-			*captured = v
-		}
-		w.WriteHeader(http.StatusOK)
-	})
+var batchesRoute = common.Route{Method: http.MethodGet, Pattern: "/v1/batches"}
+
+// wrapWithRequestMiddleware creates a handler wrapped by NewRequestMiddleware for testing.
+func wrapWithRequestMiddleware(config *common.ServerConfig, inner http.HandlerFunc) http.HandlerFunc {
+	mw := NewRequestMiddleware(config)
+	return mw(batchesRoute, inner)
 }
 
 func TestRequestMiddleware_TenantHeader(t *testing.T) {
@@ -88,7 +84,12 @@ func TestRequestMiddleware_TenantHeader(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			config := newTestConfig(tenantHeader)
 			var captured string
-			handler := RequestMiddleware(config)(captureHandler(&captured))
+			handler := wrapWithRequestMiddleware(config, func(w http.ResponseWriter, r *http.Request) {
+				if v, ok := r.Context().Value(common.TenantIDKey).(string); ok {
+					captured = v
+				}
+				w.WriteHeader(http.StatusOK)
+			})
 
 			req := httptest.NewRequest(http.MethodGet, "/v1/batches", nil)
 			for _, v := range tt.headerValues {
@@ -110,12 +111,12 @@ func TestRequestMiddleware_RequestID(t *testing.T) {
 
 	t.Run("preserves existing request ID", func(t *testing.T) {
 		var captured string
-		handler := RequestMiddleware(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := wrapWithRequestMiddleware(config, func(w http.ResponseWriter, r *http.Request) {
 			if v, ok := r.Context().Value(common.RequestIDKey).(string); ok {
 				captured = v
 			}
 			w.WriteHeader(http.StatusOK)
-		}))
+		})
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/batches", nil)
 		req.Header.Set(RequestIdHeaderKey, "my-request-id")
@@ -132,12 +133,12 @@ func TestRequestMiddleware_RequestID(t *testing.T) {
 
 	t.Run("generates request ID when absent", func(t *testing.T) {
 		var captured string
-		handler := RequestMiddleware(config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := wrapWithRequestMiddleware(config, func(w http.ResponseWriter, r *http.Request) {
 			if v, ok := r.Context().Value(common.RequestIDKey).(string); ok {
 				captured = v
 			}
 			w.WriteHeader(http.StatusOK)
-		}))
+		})
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/batches", nil)
 		w := httptest.NewRecorder()
@@ -154,31 +155,4 @@ func TestRequestMiddleware_RequestID(t *testing.T) {
 			t.Errorf("expected context request ID %q to match response header %q", captured, headerID)
 		}
 	})
-}
-
-func TestRequestMiddleware_SkipsMetricsAndHealth(t *testing.T) {
-	config := newTestConfig("X-MaaS-Username")
-	called := false
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		// If the middleware processed this, there would be a request ID in context.
-		// For skipped paths, the middleware delegates directly without enriching context.
-		if _, ok := r.Context().Value(common.RequestIDKey).(string); ok {
-			t.Error("expected no request ID in context for skipped path")
-		}
-		w.WriteHeader(http.StatusOK)
-	})
-
-	handler := RequestMiddleware(config)(inner)
-
-	for _, path := range []string{metrics.MetricsPath, health.HealthPath} {
-		called = false
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-
-		if !called {
-			t.Errorf("expected handler to be called for path %s", path)
-		}
-	}
 }

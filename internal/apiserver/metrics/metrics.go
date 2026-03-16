@@ -37,11 +37,12 @@ var (
 		},
 		[]string{"method", "path", "status"},
 	)
-	httpRequestsInFlight = prometheus.NewGauge(
+	httpRequestsInFlight = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "http_requests_in_flight",
 			Help: "Current number of HTTP requests being processed by the api server",
 		},
+		[]string{"method", "path"},
 	)
 )
 
@@ -51,12 +52,12 @@ func init() {
 	prometheus.MustRegister(httpRequestsInFlight)
 }
 
-func RecordRequestStart() {
-	httpRequestsInFlight.Inc()
+func RecordRequestStart(method, path string) {
+	httpRequestsInFlight.WithLabelValues(method, path).Inc()
 }
 
 func RecordRequestFinish(method, path, status string, durationSeconds float64) {
-	httpRequestsInFlight.Dec()
+	httpRequestsInFlight.WithLabelValues(method, path).Dec()
 	httpRequestsTotal.WithLabelValues(method, path, status).Inc()
 	httpRequestDuration.WithLabelValues(method, path, status).Observe(durationSeconds)
 }
