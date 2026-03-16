@@ -19,11 +19,14 @@ package middleware
 
 import (
 	"net/http"
+
+	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 )
 
-func SecurityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
+// SecurityHeaders returns a RouteMiddleware that sets security headers
+// and handles CORS preflight requests.
+func SecurityHeaders(_ common.Route, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		// Security headers
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -35,6 +38,6 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		next(w, r)
+	}
 }

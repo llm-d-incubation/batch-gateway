@@ -89,19 +89,22 @@ func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	// API mux: business endpoints only
+	// API mux: business endpoints with per-route middleware.
+	// Request flow:
+	//   Matched:   Client → ServeMux → Recovery → RequestMiddleware (+ OTel) → SecurityHeaders → Handler
+	//   Unmatched: Client → ServeMux → Recovery → RequestMiddleware → SecurityHeaders → NotFoundHandler
 	apiMux := http.NewServeMux()
 	fileHandler := file.NewFileAPIHandler(config, clients)
 	batchHandler := batch.NewBatchAPIHandler(config, clients)
-	for _, h := range []common.ApiHandler{fileHandler, batchHandler} {
-		common.RegisterHandler(apiMux, h)
+	apiMiddlewares := []common.RouteMiddleware{
+		middleware.Recovery,                     // outermost: catches panics from all inner layers
+		middleware.NewRequestMiddleware(config), // request ID, tenant, logging, metrics, OTel tracing
+		middleware.SecurityHeaders,              // innermost: security response headers
 	}
-
-	// apply middlewares to the API handler
-	var apiHandler http.Handler = apiMux
-	apiHandler = middleware.SecurityHeadersMiddleware(apiHandler)
-	apiHandler = middleware.RequestMiddleware(config)(apiHandler)
-	apiHandler = middleware.RecoveryMiddleware(apiHandler)
+	for _, h := range []common.ApiHandler{fileHandler, batchHandler} {
+		common.RegisterHandler(apiMux, h, apiMiddlewares...)
+	}
+	common.RegisterNotFoundHandler(apiMux, apiMiddlewares...)
 
 	// Observability mux: health, readiness, metrics (always plain HTTP)
 	obsMux := http.NewServeMux()
@@ -116,7 +119,7 @@ func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 		config:      config,
 		logger:      logger,
 		serverReady: serverReady,
-		apiHandler:  apiHandler,
+		apiHandler:  apiMux,
 		obsHandler:  obsMux,
 		clients:     clients,
 	}, nil
