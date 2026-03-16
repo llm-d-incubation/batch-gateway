@@ -209,6 +209,9 @@ func extractModelAndPrefixHash(line []byte) (string, uint32, error) {
 	if modelID == "" {
 		return "", NoPrefixHash, fmt.Errorf("model id is empty")
 	}
+	if req.Body.Stream != nil && *req.Body.Stream {
+		return "", NoPrefixHash, fmt.Errorf("streaming is not supported in batch requests (model: %s)", modelID)
+	}
 
 	prefixHash := NoPrefixHash
 	for _, msg := range req.Body.Messages {
