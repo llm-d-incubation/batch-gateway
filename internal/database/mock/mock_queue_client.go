@@ -25,6 +25,9 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
 )
 
+// Compile-time check: MockBatchPriorityQueueClient implements api.BatchPriorityQueueClient.
+var _ api.BatchPriorityQueueClient = (*MockBatchPriorityQueueClient)(nil)
+
 type MockBatchPriorityQueueClient struct {
 	mu    sync.Mutex
 	queue []*api.BatchJobPriority

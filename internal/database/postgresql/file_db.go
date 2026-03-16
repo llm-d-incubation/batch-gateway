@@ -32,6 +32,9 @@ const (
 	colPurpose = "purpose"
 )
 
+// Compile-time check: fileTableDescriptor implements TableDescriptor.
+var _ TableDescriptor = (*fileTableDescriptor)(nil)
+
 // fileTableDescriptor implements TableDescriptor for file items.
 type fileTableDescriptor struct{}
 

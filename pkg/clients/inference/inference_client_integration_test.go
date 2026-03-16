@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -108,7 +109,7 @@ func testHTTPClientBasicInference(t *testing.T) {
 	}
 	t.Cleanup(func() { stopMockServer(testPort) })
 
-	client, err := NewHTTPClient(HTTPClientConfig{
+	client, err := NewInferenceClient(&HTTPClientConfig{
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
 	})
@@ -182,7 +183,7 @@ func testHTTPClientLatencySimulation(t *testing.T) {
 	}
 	t.Cleanup(func() { stopMockServer(testPort) })
 
-	client, err := NewHTTPClient(HTTPClientConfig{
+	client, err := NewInferenceClient(&HTTPClientConfig{
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
 	})
@@ -253,7 +254,7 @@ func testHTTPClientFailureInjection(t *testing.T) {
 		}
 		t.Cleanup(func() { stopMockServer(testPort) })
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:        fmt.Sprintf("http://localhost:%d", testPort),
 			Timeout:        10 * time.Second,
 			MaxRetries:     5,
@@ -280,7 +281,7 @@ func testHTTPClientFailureInjection(t *testing.T) {
 			assert.NotNil(t, resp)
 		} else {
 			// If it did fail, verify it's the right type
-			assert.Equal(t, ErrCategoryServer, inferr.Category)
+			assert.Equal(t, httpclient.ErrCategoryServer, inferr.Category)
 			assert.True(t, inferr.IsRetryable())
 		}
 	})
