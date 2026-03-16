@@ -39,7 +39,7 @@ Content-Type: application/jsonl
 ------WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 # Set @fileIdN with the file ID returned in this step
-@fileIdN = 
+@fileIdN =
 
 ### Get File Details
 GET {{baseUrl}}/files/{{fileIdN}}
@@ -60,7 +60,7 @@ Content-Type: application/json
 }
 
 # Set @batchIdN with the batch ID returned in this step
-@batchIdN = 
+@batchIdN =
 
 ### List All Batches
 GET {{baseUrl}}/batches
@@ -73,7 +73,7 @@ GET {{baseUrl}}/batches/{{batchIdN}}
 Authorization: Bearer {{apiKey}}
 
 # Set @outputfileIdN with the output_file_id returned in this step
-@outputfileIdN = 
+@outputfileIdN =
 
 ### Download Output File (when status = completed)
 GET {{baseUrl}}/files/{{outputfileIdN}}/content
@@ -124,7 +124,7 @@ Content-Type: application/jsonl
 ------WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 # Set @fileIdC with the file ID returned in this step
-@fileIdC = 
+@fileIdC =
 
 ### Create Batch (To Be Cancelled)
 # @name createBatchToCancel
@@ -140,7 +140,7 @@ Content-Type: application/json
 }
 
 # Set @batchIdC with the batch ID returned in this step
-@batchIdC = 
+@batchIdC =
 
 ### Check Initial Status
 GET {{baseUrl}}/batches/{{batchIdC}}
@@ -158,7 +158,7 @@ GET {{baseUrl}}/batches/{{{{batchIdC}}}}
 Authorization: Bearer {{apiKey}}
 
 # Set @outputfileIdC with the output_file_id returned in this step
-@outputfileIdC = 
+@outputfileIdC =
 
 ### Download Partial Results (if any)
 # This will show completed requests before cancellation
