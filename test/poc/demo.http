@@ -39,7 +39,7 @@ Content-Type: application/jsonl
 ------WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 # Set @fileIdN with the file ID returned in this step
-@fileIdN = tbd
+@fileIdN = 
 
 ### Get File Details
 GET {{baseUrl}}/files/{{fileIdN}}
@@ -59,8 +59,8 @@ Content-Type: application/json
   "completion_window": "24h"
 }
 
-# Set @batchId with the batch ID returned in this step
-@batchId = tbd
+# Set @batchIdN with the batch ID returned in this step
+@batchIdN = 
 
 ### List All Batches
 GET {{baseUrl}}/batches
@@ -68,12 +68,12 @@ GET {{baseUrl}}/batches
 Authorization: Bearer {{apiKey}}
 
 ### Get Batch Status (Poll this to monitor progress)
-GET {{baseUrl}}/batches/{{batchId}}
+GET {{baseUrl}}/batches/{{batchIdN}}
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
 # Set @outputfileIdN with the output_file_id returned in this step
-@outputfileIdN = tbd
+@outputfileIdN = 
 
 ### Download Output File (when status = completed)
 GET {{baseUrl}}/files/{{outputfileIdN}}/content
@@ -124,7 +124,7 @@ Content-Type: application/jsonl
 ------WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 # Set @fileIdC with the file ID returned in this step
-@fileIdC = tbd
+@fileIdC = 
 
 ### Create Batch (To Be Cancelled)
 # @name createBatchToCancel
@@ -139,26 +139,26 @@ Content-Type: application/json
   "completion_window": "24h"
 }
 
-# Set @batchId with the batch ID returned in this step
-@batchId = tbd
+# Set @batchIdC with the batch ID returned in this step
+@batchIdC = 
 
 ### Check Initial Status
-GET {{baseUrl}}/batches/{{batchId}}
+GET {{baseUrl}}/batches/{{batchIdC}}
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
 ### Cancel the Batch
-POST {{baseUrl}}/batches/{{batchId}}/cancel
+POST {{baseUrl}}/batches/{{batchIdC}}/cancel
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
 ### Verify Cancelled Status
-GET {{baseUrl}}/batches/{{{{batchId}}}}
+GET {{baseUrl}}/batches/{{{{batchIdC}}}}
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
 # Set @outputfileIdC with the output_file_id returned in this step
-@outputfileIdC = tbd
+@outputfileIdC = 
 
 ### Download Partial Results (if any)
 # This will show completed requests before cancellation
