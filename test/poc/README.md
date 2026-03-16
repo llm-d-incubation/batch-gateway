@@ -11,6 +11,7 @@ This directory contains demo files for testing the Batch Gateway system.
 ## Prerequisites
 
 1. **Deploy the Batch Gateway**:
+
    ```bash
    make dev-deploy
    ```
@@ -84,17 +85,22 @@ Both models are mock simulators configured in the dev deployment to demonstrate 
 ## Monitoring
 
 ### Jaeger Traces
+
 Open http://localhost:16686 in your browser to view distributed traces:
+
 - Select service: `batch-gateway`
 - Search by batch ID to see the full request flow
 - View span details to see timing and errors
 
 ### Prometheus Metrics
+
 View metrics at:
+
 - API Server: http://localhost:8081/metrics
 - Processor: http://localhost:9090/metrics
 
 Key metrics to watch:
+
 - `batch_gateway_api_http_requests_total`: Total API requests
 - `batch_gateway_api_batch_jobs_total`: Total batch jobs created
 - `batch_gateway_processor_jobs_processed_total`: Total jobs processed
@@ -109,20 +115,24 @@ Key metrics to watch:
 ## Troubleshooting
 
 ### Connection Refused
+
 - Ensure the batch gateway is deployed: `make dev-deploy`
 - Check that port forwarding is active (should happen automatically after deploy)
 
 ### TLS Certificate Errors
+
 - The demo uses self-signed certificates
 - REST Client and cURL commands use `-k` / insecure mode for testing
 - This is normal for local development
 
 ### No Results After Completion
+
 - Check that mock models are configured in the gateway
 - View processor logs: `kubectl logs -l app=batch-gateway-processor -n default`
 - Check Jaeger traces for errors
 
 ### Batch Stuck in Processing
+
 - View processor metrics to see if it's processing: http://localhost:9090/metrics
 - Check processor health: http://localhost:9090/health
 - View processor logs for errors
