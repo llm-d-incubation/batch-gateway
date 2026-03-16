@@ -14,22 +14,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// The file implements request middleware for generating request IDs, logging requests and recording metrics.
+// The file implements request-level observability middleware:
+// request ID generation, tenant extraction, structured logging, metrics, and OTel tracing.
 package middleware
 
 import (
 	"context"
 	"net/http"
-	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"k8s.io/klog/v2"
 )
 
@@ -37,24 +40,16 @@ const (
 	RequestIdHeaderKey = "x-request-id"
 )
 
-var (
-	fileIDRegex  = regexp.MustCompile(`^/v1/files/([^/]+)`)
-	batchIDRegex = regexp.MustCompile(`^/v1/batches/([^/]+)`)
-)
-
-func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			path := r.URL.Path
-			// Skip /metrics and /health endpoints to avoid noise in logs and metrics
-			if path == metrics.MetricsPath || path == health.HealthPath {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			start := time.Now()
-			metrics.RecordRequestStart()
-
+// NewRequestMiddleware returns a RouteMiddleware that adds request ID generation,
+// tenant extraction, structured logging, metrics recording, and OTel tracing.
+// It uses route.Pattern (e.g. "/v1/batches/{batch_id}") as the metric path label,
+// avoiding high-cardinality issues from raw paths with resource IDs.
+// OTel spans are created when route.SpanName is non-empty.
+func NewRequestMiddleware(config *common.ServerConfig) common.RouteMiddleware {
+	return func(route common.Route, next http.HandlerFunc) http.HandlerFunc {
+		metricsPath := route.Pattern
+		spanName := route.SpanName
+		return func(w http.ResponseWriter, r *http.Request) {
 			// Extract request ID from header
 			requestID := r.Header.Get(RequestIdHeaderKey)
 			if requestID == "" {
@@ -78,15 +73,9 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 				tenantID = common.DefaultTenantID
 			}
 
-			// Extract file ID and batch ID from path for logging
-			fileID := ""
-			if m := fileIDRegex.FindStringSubmatch(path); len(m) > 1 {
-				fileID = m[1]
-			}
-			batchID := ""
-			if m := batchIDRegex.FindStringSubmatch(path); len(m) > 1 {
-				batchID = m[1]
-			}
+			// Extract file ID and batch ID from path values for logging
+			fileID := r.PathValue(common.PathParamFileID)
+			batchID := r.PathValue(common.PathParamBatchID)
 
 			// Create request logger with request ID and tenant ID
 			logger := klog.FromContext(r.Context())
@@ -103,9 +92,6 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 			ctx = context.WithValue(ctx, common.RequestIDKey, requestID)
 			ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
 
-			// Wrap response writer to capture status code
-			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
 			// Log incoming request
 			logger.V(logging.TRACE).Info("incoming request",
 				"method", r.Method,
@@ -113,19 +99,41 @@ func RequestMiddleware(config *common.ServerConfig) func(http.Handler) http.Hand
 				"remoteAddr", r.RemoteAddr,
 			)
 
+			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+			// Metrics
+			start := time.Now()
+			metrics.RecordRequestStart(r.Method, metricsPath)
 			defer func() {
 				duration := time.Since(start).Seconds()
 				status := strconv.Itoa(rw.statusCode)
-				metrics.RecordRequestFinish(r.Method, r.URL.Path, status, duration)
+				metrics.RecordRequestFinish(r.Method, metricsPath, status, duration)
 			}()
 
-			next.ServeHTTP(rw, r.WithContext(ctx))
-		})
+			// OTel tracing (skipped when route has no SpanName)
+			if spanName != "" {
+				var span trace.Span
+				ctx, span = uotel.StartSpan(ctx, spanName)
+				span.SetAttributes(attribute.String(uotel.AttrTenantID, tenantID))
+				if fileID != "" {
+					span.SetAttributes(attribute.String(uotel.AttrInputFileID, fileID))
+				}
+				if batchID != "" {
+					span.SetAttributes(attribute.String(uotel.AttrBatchID, batchID))
+				}
+				defer func() {
+					span.SetAttributes(attribute.Int("http.status_code", rw.statusCode))
+					if rw.statusCode >= 500 {
+						span.SetStatus(codes.Error, http.StatusText(rw.statusCode))
+					}
+					span.End()
+				}()
+			}
+
+			next(rw, r.WithContext(ctx))
+		}
 	}
 }
-
-// Compile-time check: responseWriter implements common.StatusRecorder.
-var _ common.StatusRecorder = (*responseWriter)(nil)
 
 // responseWriter wraps http.ResponseWriter to capture status code
 type responseWriter struct {

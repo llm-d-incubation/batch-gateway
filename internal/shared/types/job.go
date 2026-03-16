@@ -18,7 +18,6 @@ package batch_types
 
 import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // Tag key prefixes and names stored in database tags (db.Tags).
@@ -58,14 +57,6 @@ type Request struct {
 	Method   string                 `json:"method"`    // HTTP method (GET, POST, PUT, DELETE)
 	URL      string                 `json:"url"`       // API endpoint (e.g., "/v1/chat/completions")
 	Body     map[string]interface{} `json:"body"`      // request body
-}
-
-// Response represents a line in output jsonl file
-type Response struct {
-	ID       string                      `json:"id"`        // unique id for each response
-	CustomID string                      `json:"custom_id"` // custom id set by user
-	Response *inference.GenerateResponse `json:"response"`  // response data on success
-	Error    *inference.ClientError      `json:"error"`     // error data on failure
 }
 
 // ResponseData represents the response data in the output jsonl file

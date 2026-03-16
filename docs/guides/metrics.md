@@ -11,7 +11,7 @@ The API server exposes the following Prometheus metrics:
 
 - `http_requests_total{method,path,status}` (Counter) - Total HTTP requests by method, path, and status code.
 - `http_request_duration_seconds{method,path,status}` (Histogram) - HTTP request latency histogram.
-- `http_requests_in_flight{method,path,status}` (Gauge) - Current number of HTTP requests being processed by the api server.
+- `http_requests_in_flight{method,path}` (Gauge) - Current number of HTTP requests being processed by the api server.
 
 ## Processor
 

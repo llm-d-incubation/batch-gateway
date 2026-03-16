@@ -24,21 +24,9 @@ import (
 	"io"
 	"net/http"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
-
-// StatusRecorder is implemented by http.ResponseWriter wrappers that capture the status code.
-// This allows downstream handlers (e.g. OTel instrumentation) to read the status
-// without adding another wrapper layer.
-type StatusRecorder interface {
-	http.ResponseWriter
-	StatusCode() int
-}
 
 type Route struct {
 	Method      string
@@ -51,77 +39,39 @@ type ApiHandler interface {
 	GetRoutes() []Route
 }
 
-func RegisterHandler(mux *http.ServeMux, h ApiHandler) {
+// RouteMiddleware produces a middleware wrapper for a given route.
+// It receives the Route so it can use route-specific information (e.g. Pattern for metrics).
+type RouteMiddleware func(route Route, next http.HandlerFunc) http.HandlerFunc
+
+// RegisterHandler registers all routes from h on mux, wrapping each handler
+// with the provided middleware chain. Middleware is applied in order: the first
+// middleware is the outermost wrapper (executes first on request, last on response).
+func RegisterHandler(mux *http.ServeMux, h ApiHandler, middlewares ...RouteMiddleware) {
 	routes := h.GetRoutes()
 	for _, route := range routes {
 		pattern := route.Method + " " + route.Pattern
 		handler := route.HandlerFunc
-		if route.SpanName != "" {
-			handler = otelInstrumentHandler(route.SpanName, handler)
+		// Apply middleware in reverse order so the first middleware is outermost
+		for i := len(middlewares) - 1; i >= 0; i-- {
+			handler = middlewares[i](route, handler)
 		}
 		mux.HandleFunc(pattern, handler)
 	}
 }
 
-// otelInstrumentHandler wraps a handler to create an OTel span with the given name.
-// It sets tenant.id, file.id, and batch.id span attributes from the request context and path values.
-// It reads the HTTP status code from the upstream StatusRecorder (e.g. the request middleware's
-// response writer) instead of adding another wrapper layer.
-func otelInstrumentHandler(spanName string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := uotel.StartSpan(r.Context(), spanName)
-		defer span.End()
-
-		span.SetAttributes(attribute.String(uotel.AttrTenantID, GetTenantIDFromContext(ctx)))
-		if fileID := r.PathValue(PathParamFileID); fileID != "" {
-			span.SetAttributes(attribute.String(uotel.AttrInputFileID, fileID))
-		}
-		if batchID := r.PathValue(PathParamBatchID); batchID != "" {
-			span.SetAttributes(attribute.String(uotel.AttrBatchID, batchID))
-		}
-
-		sr, ok := w.(StatusRecorder)
-		if !ok {
-			// No upstream StatusRecorder (e.g. request middleware absent) — add one.
-			fw := &otelStatusWriter{ResponseWriter: w}
-			sr = fw
-			w = fw
-		}
-
-		next(w, r.WithContext(ctx))
-
-		status := sr.StatusCode()
-		span.SetAttributes(attribute.Int("http.status_code", status))
-		if status >= 500 {
-			span.SetStatus(codes.Error, http.StatusText(status))
-		}
+// RegisterNotFoundHandler registers a catch-all "/" route that returns a JSON 404
+// response for any request not matched by more specific routes. The handler is
+// wrapped with the same middleware chain as business routes.
+func RegisterNotFoundHandler(mux *http.ServeMux, middlewares ...RouteMiddleware) {
+	route := Route{Pattern: "/"}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oaiErr := openai.NewAPIError(http.StatusNotFound, "", fmt.Sprintf("Unknown request URL: %s %s", r.Method, r.URL.Path), nil)
+		WriteAPIError(w, r, oaiErr)
+	})
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middlewares[i](route, handler)
 	}
-}
-
-// Compile-time check: otelStatusWriter implements StatusRecorder.
-var _ StatusRecorder = (*otelStatusWriter)(nil)
-
-// otelStatusWriter is a minimal StatusRecorder used only when no upstream
-// wrapper (e.g. request middleware) is present.
-type otelStatusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *otelStatusWriter) WriteHeader(code int) {
-	w.status = code
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *otelStatusWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-func (w *otelStatusWriter) StatusCode() int {
-	return w.status
+	mux.HandleFunc("/", handler)
 }
 
 func DecodeJSON(r io.Reader, obj any) error {

@@ -27,9 +27,9 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
-// RecoveryMiddleware recovers from panics and returns a JSON error response
-func RecoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// Recovery returns a RouteMiddleware that recovers from panics and returns a JSON error response.
+func Recovery(_ common.Route, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
 				var panicErr error
@@ -47,7 +47,6 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 					logger.Error(panicErr, "handler panic",
 						"method", r.Method,
 						"path", r.URL.Path,
-						//"stack", string(debug.Stack()),
 					)
 				}
 
@@ -57,6 +56,6 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 			}
 		}()
 
-		next.ServeHTTP(w, r)
-	})
+		next(w, r)
+	}
 }
