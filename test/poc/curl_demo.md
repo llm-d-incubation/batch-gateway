@@ -1,4 +1,4 @@
-# Batch Gateway Quick Start
+# Batch Gateway Demo with Curl
 
 Fast-track demo using curl commands.
 
@@ -62,12 +62,12 @@ curl -s http://localhost:9090/metrics | grep batch_gateway
 ## Demo 2: Batch Cancellation (2 minutes)
 
 ```bash
-# Step 1: Upload smaller batch file
+# Step 1: Upload batch file
 FILE_RESPONSE=$(curl -k -s -X POST https://localhost:8000/v1/files \
   -H "X-MaaS-Username: demo-user" \
   -H "Authorization: Bearer unused" \
   -F "purpose=batch" \
-  -F "file=@batch_input_cancel.jsonl;type=application/jsonl")
+  -F "file=@batch_input.jsonl;type=application/jsonl")
 
 FILE_ID=$(echo $FILE_RESPONSE | jq -r '.id')
 echo "Uploaded file: $FILE_ID"
@@ -164,8 +164,7 @@ kubectl logs -l app=batch-gateway-apiserver -n default -f
 
 - **File upload**: < 1 second
 - **Batch creation**: < 1 second
-- **Processing 80 requests**: ~30-60 seconds (depends on mock simulator settings)
-- **Processing 10 requests**: ~10-20 seconds
+- **Processing 40 requests**: ~15-30 seconds (depends on mock simulator settings)
 
 ## Batch Status Flow
 
@@ -180,11 +179,6 @@ validating → in_progress → finalizing → completed
 ## Cleanup
 
 ```bash
-# Delete batch (only works for completed/cancelled/failed/expired batches)
-curl -k -s -X DELETE https://localhost:8000/v1/batches/$BATCH_ID \
-  -H "X-MaaS-Username: demo-user" \
-  -H "Authorization: Bearer unused"
-
 # Delete file
 curl -k -s -X DELETE https://localhost:8000/v1/files/$FILE_ID \
   -H "X-MaaS-Username: demo-user" \

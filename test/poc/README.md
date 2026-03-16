@@ -1,13 +1,11 @@
-# Batch Gateway Demo
+# Batch Gateway Demo Overview
 
 This directory contains demo files for testing the Batch Gateway system.
 
 ## Files
 
-- **batch_input.jsonl**: Batch input file with 80 diverse inference requests using the `sim-model` (mock simulator model).
-- **batch_input_two_models.jsonl**: Batch input file with 80 requests distributed across two models: 40 requests for `sim-model` and 40 for `sim-model-b` (demonstrates multi-model routing).
-- **batch_input_cancel.jsonl**: Smaller batch input file with 10 requests for testing batch cancellation.
-- **demo.txt**: REST Client format file for VS Code REST Client plugin with two complete demo sequences.
+- **batch_input.jsonl**: Batch input file with 40 diverse inference requests distributed across two models: 20 requests for `sim-model` and 20 for `sim-model-b` (demonstrates multi-model routing with interweaved requests). Used for both complete processing and cancellation demos.
+- **demo.http**: REST Client format file for VS Code REST Client plugin with two complete demo sequences.
 
 ## Prerequisites
 
@@ -24,8 +22,7 @@ This directory contains demo files for testing the Batch Gateway system.
 
 2. **Install VS Code REST Client Extension**:
    - Open VS Code Extensions (Ctrl+Shift+X / Cmd+Shift+X)
-   - Search for "REST Client" by Huachao Mao
-   - Install the extension
+   - Install the REST Client for Visual Studio Code extension
 
 ## Demo Sequences
 
@@ -33,25 +30,26 @@ This directory contains demo files for testing the Batch Gateway system.
 
 This demo shows the full lifecycle of a batch job:
 
-1. **Upload batch input file** (80 requests)
+1. **Upload batch input file** (40 requests)
 2. **Create batch job** specifying the input file
 3. **Monitor batch status** by polling the batch endpoint
 4. **Download results** when processing completes
 5. **View system metrics** from API server and processor
 
 **Steps**:
-1. Open `demo.txt` in VS Code
-2. Click "Send Request" above step 1.1 to upload the file
-3. Click "Send Request" above step 1.2 to create the batch
-4. Click "Send Request" above step 1.3 to check status (repeat until status = "completed")
-5. Click "Send Request" above step 1.5 to download results
-6. Click "Send Request" above steps 1.8-1.11 to view metrics and health
+
+1. Open `demo.http` in VS Code
+2. Click "Send Request" to upload the file
+3. Click "Send Request" to create the batch
+4. Click "Send Request" to check status (repeat until status = "completed")
+5. Click "Send Request" to download results
+6. Click "Send Request" to view metrics and health
 
 ### Sequence 2: Batch Cancellation Flow
 
 This demo shows how to cancel a running batch job:
 
-1. **Upload smaller batch input file** (10 requests for quick testing)
+1. **Upload batch input file** (same 40-request file)
 2. **Create batch job**
 3. **Check initial status**
 4. **Cancel the batch** immediately
@@ -59,13 +57,14 @@ This demo shows how to cancel a running batch job:
 6. **Download partial results** (completed requests before cancellation)
 
 **Steps**:
-1. Open `demo.txt` in VS Code
+
+1. Open `demo.http` in VS Code
 2. Scroll to "DEMO SEQUENCE 2"
-3. Click "Send Request" above step 2.1 to upload the cancellation demo file
-4. Click "Send Request" above step 2.2 to create the batch
-5. **Immediately** click "Send Request" above step 2.4 to cancel
-6. Click "Send Request" above step 2.5 to verify cancellation
-7. Click "Send Request" above step 2.6 to see partial results (if any)
+3. Click "Send Request" to upload the file
+4. Click "Send Request" to create the batch
+5. **Immediately** click "Send Request" to cancel the batch
+6. Click "Send Request" to verify cancellation
+7. Click "Send Request" to see partial results (if any)
 
 ## Request Format
 
@@ -88,14 +87,17 @@ Each line in the JSONL files follows the OpenAI Batch API format:
 
 ## Request Topics
 
-The `batch_input.jsonl` file contains 80 requests covering diverse topics:
+The `batch_input.jsonl` file contains 40 requests covering diverse machine learning topics, with requests interweaved between two models:
+
+- **sim-model**: Odd-numbered requests (1, 3, 5, ..., 39) - 20 total
+- **sim-model-b**: Even-numbered requests (2, 4, 6, ..., 40) - 20 total
+
+Topics covered:
 
 - Machine learning fundamentals (requests 1-20)
 - Natural language processing (requests 21-40)
-- Computer vision (requests 41-60)
-- Distributed training and optimization (requests 61-80)
 
-All requests use the `sim-model` which is a mock simulator configured in the dev deployment.
+Both models are mock simulators configured in the dev deployment to demonstrate multi-model routing.
 
 ## Monitoring
 
@@ -148,9 +150,9 @@ curl -k https://localhost:8000/v1/batches/BATCH_ID \
 
 ## Cleanup
 
-To clean up batches and files after testing, uncomment and use the cleanup requests in section 3 of `demo.txt`.
+To clean up files after testing, use the cleanup requests at the end of `demo.http`.
 
-**Note**: You can only delete batches in terminal states: `expired`, `failed`, `completed`, or `cancelled`.
+**Note**: Files can be deleted using the DELETE endpoint. Batches are permanent records and cannot be deleted.
 
 ## Troubleshooting
 
