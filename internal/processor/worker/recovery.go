@@ -145,19 +145,19 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 
 // recoverFinalizing completes a job that crashed during the upload phase.
 // Output files should be complete on disk since execution finished before finalizing.
+// We upload directly (instead of calling finalizeJob) so that file IDs are available
+// for the fallback path if the status update fails.
 func (p *Processor) recoverFinalizing(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
 	logger := klog.FromContext(ctx)
 	counts := p.extractRequestCounts(dbItem)
 
-	// finalizeJob may have partially succeeded (e.g. output uploaded, error upload failed,
-	// or both uploaded but UpdateCompletedStatus failed). We cannot recover the file IDs
-	// here because finalizeJob does not return them. The uploaded files remain in storage
-	// with their own file records (storeFileRecord), but the batch record's output_file_id /
-	// error_file_id won't reference them. This is a known limitation; the files are not lost
-	// and can be linked manually before GC expires them.
-	if err := p.finalizeJob(ctx, p.updater, dbItem, jobInfo, counts); err != nil {
+	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbItem)
+
+	if err := p.updater.UpdateCompletedStatus(ctx, dbItem, counts, outputFileID, errorFileID); err != nil {
 		logger.Error(err, "Startup recovery: finalization failed, marking as failed")
-		return p.recoverWithFailed(ctx, dbItem, err, &recoveryFallback{counts: counts})
+		return p.recoverWithFailed(ctx, dbItem, err, &recoveryFallback{
+			counts: counts, outputFileID: outputFileID, errorFileID: errorFileID,
+		})
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
