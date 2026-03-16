@@ -14,7 +14,7 @@
 @tenantHeader = X-MaaS-Username
 @tenantId = demo-user
 @apiKey = unused
-@inputFile = batch_input_two_models.jsonl
+@inputFile = batch_input.jsonl
 
 # ============================================================
 # DEMO SEQUENCE 1: Complete Batch Processing Flow
