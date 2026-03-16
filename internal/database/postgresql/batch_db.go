@@ -28,6 +28,9 @@ import (
 //go:embed batch_schema.sql
 var batchSchemaSql string
 
+// Compile-time check: batchDescriptor implements TableDescriptor.
+var _ TableDescriptor = (*batchDescriptor)(nil)
+
 // batchDescriptor implements TableDescriptor for batch items.
 type batchDescriptor struct{}
 

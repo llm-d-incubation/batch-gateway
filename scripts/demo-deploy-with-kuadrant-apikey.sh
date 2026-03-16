@@ -1,168 +1,69 @@
 #!/bin/bash
 set -euo pipefail
 
-# ── User Token mode (OpenShift): authentication via user token, authorization via SubjectAccessReview ──
-# Requires OpenShift cluster with htpasswd identity provider
+# ── API Key mode: authentication via API Key secrets, authorization via OPA ──
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/kuadrant-common.sh"
+source "${SCRIPT_DIR}/common.sh"
 
-# ── User Token Configuration ─────────────────────────────────────────────────
-GOLD_USER="${GOLD_USER:-gold-user}"
-GOLD_PASS="${GOLD_PASS:-gold-pass}"
-FREE_USER="${FREE_USER:-free-user}"
-FREE_PASS="${FREE_PASS:-free-pass}"
-GOLD_GROUP="${GOLD_GROUP:-tier-gold}"
-FREE_GROUP="${FREE_GROUP:-tier-free}"
+# ── API Key Configuration ─────────────────────────────────────────────────────
+# WARNING: Default keys are for demo only. For production, override via env vars:
+#   API_KEY_GOLD="$(openssl rand -hex 32)" API_KEY_FREE="$(openssl rand -hex 32)" ./deploy-with-kuadrant-apikey.sh install
+API_KEY_GOLD="${API_KEY_GOLD:-gold-key-12345}"
+API_KEY_FREE="${API_KEY_FREE:-free-key-67890}"
 
-# ── OpenShift Users & Groups ─────────────────────────────────────────────────
+# ── API Key Secrets ───────────────────────────────────────────────────────────
 
-create_users_and_groups() {
-    step "Creating OpenShift users and tier groups..."
+create_api_key_secrets() {
+    step "Creating tier-based API key secrets in ${KUADRANT_NAMESPACE}..."
 
-    # Create htpasswd file
-    local htpasswd_file
-    htpasswd_file=$(mktemp)
-    htpasswd -c -B -b "${htpasswd_file}" "${GOLD_USER}" "${GOLD_PASS}"
-    htpasswd -B -b "${htpasswd_file}" "${FREE_USER}" "${FREE_PASS}"
-
-    # Create or update htpasswd secret
-    kubectl create secret generic htpass-secret \
-        --from-file=htpasswd="${htpasswd_file}" \
-        -n openshift-config \
-        --dry-run=client -o yaml | kubectl apply -f -
-    rm -f "${htpasswd_file}"
-
-    # Ensure htpasswd identity provider is configured
-    local has_htpasswd
-    has_htpasswd=$(kubectl get oauth cluster -o jsonpath='{.spec.identityProviders[?(@.name=="htpasswd_provider")].name}' 2>/dev/null || true)
-    if [ -z "$has_htpasswd" ]; then
-        step "Adding htpasswd identity provider to OAuth..."
-        kubectl get oauth cluster -o json | python3 -c "
-import json, sys
-oauth = json.load(sys.stdin)
-providers = oauth.get('spec', {}).get('identityProviders', [])
-providers.append({
-    'name': 'htpasswd_provider',
-    'mappingMethod': 'claim',
-    'type': 'HTPasswd',
-    'htpasswd': {'fileData': {'name': 'htpass-secret'}}
-})
-oauth.setdefault('spec', {})['identityProviders'] = providers
-json.dump(oauth, sys.stdout)
-" | kubectl apply -f -
-        log "htpasswd identity provider added. Waiting for OAuth server to restart..."
-        sleep 30
-    else
-        log "htpasswd identity provider already configured."
-    fi
-
-    # Create OpenShift groups
-    for group in "${GOLD_GROUP}" "${FREE_GROUP}"; do
-        if ! oc get group "${group}" &>/dev/null; then
-            oc adm groups new "${group}"
-            log "Created group '${group}'."
-        fi
-    done
-
-    # Add users to groups
-    oc adm groups add-users "${GOLD_GROUP}" "${GOLD_USER}" 2>/dev/null || true
-    oc adm groups add-users "${FREE_GROUP}" "${FREE_USER}" 2>/dev/null || true
-
-    log "Users and groups created."
-    log "  ${GOLD_USER} (password: ${GOLD_PASS}) -> group: ${GOLD_GROUP}"
-    log "  ${FREE_USER} (password: ${FREE_PASS}) -> group: ${FREE_GROUP}"
-}
-
-create_model_rbac() {
-    step "Creating per-model RBAC (Role + RoleBinding)..."
-
-    # RBAC uses InferencePool resources for SubjectAccessReview
-    # InferencePool names match model names (free-model, gold-model)
-    # RoleBinding subjects use OpenShift group names (tier-gold, tier-free)
     kubectl apply -f - <<EOF
-# Role: allows GET inferencepools/free-model (both tiers)
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+apiVersion: v1
+kind: Secret
 metadata:
-  name: ${FREE_MODEL}-access
-  namespace: ${LLM_NAMESPACE}
-rules:
-- apiGroups: ["inference.networking.k8s.io"]
-  resources: ["inferencepools"]
-  resourceNames: ["${FREE_MODEL}"]
-  verbs: ["get"]
+  name: api-key-gold
+  namespace: ${KUADRANT_NAMESPACE}
+  labels:
+    app: batch-api
+    authorino.kuadrant.io/managed-by: authorino
+  annotations:
+    username: "gold-user"
+    group: "gold"
+    tier: "gold"
+    models: "${FREE_MODEL},${GOLD_MODEL}"
+    secret.kuadrant.io/user-id: "gold-user"
+    kuadrant.io/groups: "gold"
+stringData:
+  api_key: ${API_KEY_GOLD}
 ---
-# RoleBinding: grant free-model access to both tiers
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+apiVersion: v1
+kind: Secret
 metadata:
-  name: ${FREE_MODEL}-tier-binding
-  namespace: ${LLM_NAMESPACE}
-subjects:
-- kind: Group
-  name: ${GOLD_GROUP}
-  apiGroup: rbac.authorization.k8s.io
-- kind: Group
-  name: ${FREE_GROUP}
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: Role
-  name: ${FREE_MODEL}-access
-  apiGroup: rbac.authorization.k8s.io
----
-# Role: allows GET inferencepools/gold-model (gold tier only)
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ${GOLD_MODEL}-access
-  namespace: ${LLM_NAMESPACE}
-rules:
-- apiGroups: ["inference.networking.k8s.io"]
-  resources: ["inferencepools"]
-  resourceNames: ["${GOLD_MODEL}"]
-  verbs: ["get"]
----
-# RoleBinding: grant gold-model access to gold tier only
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ${GOLD_MODEL}-tier-binding
-  namespace: ${LLM_NAMESPACE}
-subjects:
-- kind: Group
-  name: ${GOLD_GROUP}
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: Role
-  name: ${GOLD_MODEL}-access
-  apiGroup: rbac.authorization.k8s.io
+  name: api-key-free
+  namespace: ${KUADRANT_NAMESPACE}
+  labels:
+    app: batch-api
+    authorino.kuadrant.io/managed-by: authorino
+  annotations:
+    username: "free-user"
+    group: "free"
+    tier: "free"
+    models: "${FREE_MODEL}"
+    secret.kuadrant.io/user-id: "free-user"
+    kuadrant.io/groups: "free"
+stringData:
+  api_key: ${API_KEY_FREE}
 EOF
 
-    log "RBAC created."
-    log "  ${FREE_MODEL}: ${GOLD_GROUP} + ${FREE_GROUP}"
-    log "  ${GOLD_MODEL}: ${GOLD_GROUP} only"
+    log "API key secrets created."
+    log "  gold (${API_KEY_GOLD}): tier=gold, models=${FREE_MODEL},${GOLD_MODEL}"
+    log "  free (${API_KEY_FREE}): tier=free, models=${FREE_MODEL}"
 }
 
-get_user_token() {
-    local user="$1"
-    local pass="$2"
-    # Save current context
-    local prev_context
-    prev_context=$(kubectl config current-context 2>/dev/null)
-    # Login as user and get token
-    oc login -u "${user}" -p "${pass}" --insecure-skip-tls-verify=true >/dev/null 2>&1 || return 1
-    local token
-    token=$(oc whoami -t 2>/dev/null) || return 1
-    # Switch back to previous context
-    kubectl config use-context "${prev_context}" >/dev/null 2>&1 || true
-    echo "${token}"
-}
-
-# ── Kuadrant Policies (User Token mode) ──────────────────────────────────────
+# ── Kuadrant Policies (API Key mode) ─────────────────────────────────────────
 
 apply_batch_auth_policy() {
-    step "Applying batch-auth AuthPolicy (User token authentication)..."
+    step "Applying batch-auth AuthPolicy (API Key authentication)..."
 
     kubectl apply -f - <<EOF
 apiVersion: kuadrant.io/v1
@@ -177,12 +78,15 @@ spec:
     name: batch-route
   rules:
     authentication:
-      "k8s-token":
-        kubernetesTokenReview:
-          audiences:
-          - https://kubernetes.default.svc
-    # Assumes user is in a tier-* OpenShift group (e.g. tier-gold, tier-free).
-    # If user is not in a tier-* group, filter returns empty and [0] will error.
+      "api-key-authn":
+        apiKey:
+          allNamespaces: true
+          selector:
+            matchLabels:
+              app: batch-api
+        credentials:
+          authorizationHeader:
+            prefix: APIKEY
     response:
       success:
         filters:
@@ -190,32 +94,24 @@ spec:
             json:
               properties:
                 "tier":
-                  expression: |
-                    auth.identity.user.groups
-                      .filter(g, g.startsWith("tier-"))
-                      .map(g, g.replace("tier-", ""))
-                      [0]
+                  selector: auth.identity.metadata.annotations.tier
         headers:
           "x-tier":
             plain:
-              expression: |
-                auth.identity.user.groups
-                  .filter(g, g.startsWith("tier-"))
-                  .map(g, g.replace("tier-", ""))
-                  [0]
+              selector: auth.identity.metadata.annotations.tier
           "x-username":
             plain:
-              selector: auth.identity.user.username
+              selector: auth.identity.metadata.annotations.username
           "x-group":
             plain:
-              selector: auth.identity.user.groups.@tostr
+              selector: auth.identity.metadata.annotations.group
 EOF
 
-    log "batch-auth applied (User token authentication, tier from OpenShift group)."
+    log "batch-auth applied (API Key authentication, targets batch-route)."
 }
 
 apply_llm_auth_policy() {
-    step "Applying llm-auth AuthPolicy (User token + SubjectAccessReview)..."
+    step "Applying llm-auth AuthPolicy (API Key + OPA model authorization)..."
 
     kubectl apply -f - <<EOF
 apiVersion: kuadrant.io/v1
@@ -230,28 +126,25 @@ spec:
     name: llm-route
   rules:
     authentication:
-      "k8s-token":
-        kubernetesTokenReview:
-          audiences:
-          - https://kubernetes.default.svc
+      "api-key-authn":
+        apiKey:
+          allNamespaces: true
+          selector:
+            matchLabels:
+              app: batch-api
+        credentials:
+          authorizationHeader:
+            prefix: APIKEY
     authorization:
       "model-access":
-        kubernetesSubjectAccessReview:
-          user:
-            expression: auth.identity.user.username
-          authorizationGroups:
-            expression: auth.identity.user.groups
-          resourceAttributes:
-            group:
-              value: inference.networking.k8s.io
-            resource:
-              value: inferencepools
-            namespace:
-              expression: request.path.split("/")[1]
-            name:
-              expression: request.path.split("/")[2]
-            verb:
-              value: get
+        opa:
+          rego: |
+            path_parts := split(input.context.request.http.path, "/")
+            requested_model := path_parts[2]
+            allowed_csv := object.get(input.auth.identity.metadata.annotations, "models", "")
+            allowed_models := split(allowed_csv, ",")
+            allow { allowed_models[_] == requested_model }
+          allValues: true
     response:
       success:
         filters:
@@ -259,42 +152,25 @@ spec:
             json:
               properties:
                 "tier":
-                  expression: |
-                    auth.identity.user.groups
-                      .filter(g, g.startsWith("tier-"))
-                      .map(g, g.replace("tier-", ""))
-                      [0]
+                  selector: auth.identity.metadata.annotations.tier
         headers:
           "x-tier":
             plain:
-              expression: |
-                auth.identity.user.groups
-                  .filter(g, g.startsWith("tier-"))
-                  .map(g, g.replace("tier-", ""))
-                  [0]
+              selector: auth.identity.metadata.annotations.tier
           "x-username":
             plain:
-              selector: auth.identity.user.username
+              selector: auth.identity.metadata.annotations.username
           "x-group":
             plain:
-              selector: auth.identity.user.groups.@tostr
+              selector: auth.identity.metadata.annotations.group
 EOF
 
-    log "llm-auth applied (User token + SubjectAccessReview, targets llm-route)."
+    log "llm-auth applied (API Key + OPA model authorization, targets llm-route)."
 }
 
 cleanup_auth_resources() {
-    # Delete OpenShift groups
-    for group in "${GOLD_GROUP}" "${FREE_GROUP}"; do
-        oc delete group "${group}" 2>/dev/null || true
-    done
-    # Delete users
-    for user in "${GOLD_USER}" "${FREE_USER}"; do
-        oc delete user "${user}" 2>/dev/null || true
-        oc delete identity "htpasswd_provider:${user}" 2>/dev/null || true
-    done
-    timeout_delete 15s role "${FREE_MODEL}-access" "${GOLD_MODEL}-access" -n "${LLM_NAMESPACE}" || true
-    timeout_delete 15s rolebinding "${FREE_MODEL}-tier-binding" "${GOLD_MODEL}-tier-binding" -n "${LLM_NAMESPACE}" || true
+    timeout_delete 15s secret api-key-gold api-key-free -n "${KUADRANT_NAMESPACE}" \
+        || warn "No API key secrets to delete"
 }
 
 # ── Install ───────────────────────────────────────────────────────────────────
@@ -302,21 +178,12 @@ cleanup_auth_resources() {
 cmd_install() {
     echo ""
     echo "  ╔═══════════════════════════════════════════════════════╗"
-    echo "  ║   Kuadrant + GAIE Setup (User Token mode)            ║"
+    echo "  ║   Kuadrant + GAIE Setup (API Key mode)                ║"
     echo "  ╚═══════════════════════════════════════════════════════╝"
     echo ""
 
-    # Check OpenShift and python3
-    if ! command -v oc &>/dev/null; then
-        die "This script requires OpenShift (oc command). Use deploy-with-kuadrant-satoken.sh for standard K8s."
-    fi
-    if ! command -v python3 &>/dev/null; then
-        die "This script requires python3 for JSON manipulation."
-    fi
-
-    common_install
-    create_users_and_groups
-    create_model_rbac
+    install_with_kuadrant
+    create_api_key_secrets
     apply_batch_auth_policy
     apply_llm_auth_policy
     wait_for_auth_policies
@@ -328,25 +195,18 @@ cmd_install() {
 # ── Test ──────────────────────────────────────────────────────────────────────
 
 cmd_test() {
-    init_test "User Token"
+    init_test "API Key"
 
-    step "Getting user tokens..."
-    local GOLD_TOKEN FREE_TOKEN
-
-    GOLD_TOKEN=$(get_user_token "${GOLD_USER}" "${GOLD_PASS}") \
-        || die "Failed to get token for ${GOLD_USER}. Run '$0 install' first."
-    FREE_TOKEN=$(get_user_token "${FREE_USER}" "${FREE_PASS}") \
-        || die "Failed to get token for ${FREE_USER}. Run '$0 install' first."
-
-    if [ -z "${GOLD_TOKEN}" ] || [ -z "${FREE_TOKEN}" ]; then
-        die "Failed to get user tokens. Users may not be ready yet (OAuth restart takes ~60s)."
-    fi
-    log "Tokens obtained (gold: ${GOLD_TOKEN:0:20}..., free: ${FREE_TOKEN:0:20}...)."
+    API_KEY_GOLD=$(kubectl get secret api-key-gold -n "${KUADRANT_NAMESPACE}" -o jsonpath='{.data.api_key}' 2>/dev/null | base64 -d) \
+        || die "api-key-gold secret not found. Run '$0 install' first."
+    API_KEY_FREE=$(kubectl get secret api-key-free -n "${KUADRANT_NAMESPACE}" -o jsonpath='{.data.api_key}' 2>/dev/null | base64 -d) \
+        || die "api-key-free secret not found. Run '$0 install' first."
+    log "API keys read from secrets (gold: ${API_KEY_GOLD}, free: ${API_KEY_FREE})."
 
     local base_url="http://localhost:${LOCAL_PORT}"
     local free_payload='{"model":"'"${FREE_MODEL}"'","messages":[{"role":"user","content":"Hello"}]}'
     local gold_payload='{"model":"'"${GOLD_MODEL}"'","messages":[{"role":"user","content":"Hello"}]}'
-    local test_payload="${free_payload}"
+    local test_payload="${free_payload}"  # default payload uses free-model
     local test_total=0
     local test_passed=0
     local test_failed=0
@@ -361,12 +221,12 @@ cmd_test() {
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
     echo "  LLM Route Tests (llm-route)"
-    echo "  - Authentication (TokenReview), Authorization (SubjectAccessReview), Rate Limiting (token-based)"
+    echo "  - Authentication, Authorization (OPA model access), Rate Limiting (token-based)"
     echo "═══════════════════════════════════════════════════════════════"
 
-    # Test 1: No token -> 401
+    # Test 1: No API key -> 401
     echo ""
-    echo "── Test 1: LLM Authentication - No token ──"
+    echo "── Test 1: LLM Authentication - No API key ──"
     echo "  Route: llm-route | Tier: none | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
     echo "  Goal: Verify auth rejects unauthenticated requests (expect 401)"
     response=$(curl -s -w "\n%{http_code}" \
@@ -382,33 +242,33 @@ cmd_test() {
 
     sleep 1
 
-    # Test 2: Invalid token -> 401
+    # Test 2: Invalid API key -> 401
     echo ""
-    echo "── Test 2: LLM Authentication - Invalid token ──"
+    echo "── Test 2: LLM Authentication - Invalid API key ──"
     echo "  Route: llm-route | Tier: none | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
-    echo "  Goal: Verify invalid token is rejected (expect 401)"
+    echo "  Goal: Verify invalid API key is rejected (expect 401)"
     response=$(curl -s -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
-        -H "Authorization: Bearer invalid-token-99999" \
+        -H "Authorization: APIKEY invalid-key-99999" \
         -H 'Content-Type: application/json' \
         -d "${test_payload}")
     http_code=$(echo "$response" | tail -n1)
     if [ "$http_code" = "401" ]; then
-        pass_test "Test 2: 401 Unauthorized (invalid token rejected)"
+        pass_test "Test 2: 401 Unauthorized (invalid key rejected)"
     else
         fail_test "Test 2: Expected 401, got $http_code"
     fi
 
     sleep 1
 
-    # Test 3: Valid token -> 200
+    # Test 3: Valid API key -> 200
     echo ""
-    echo "── Test 3: LLM Authentication - With valid user token ──"
+    echo "── Test 3: LLM Authentication - With API key ──"
     echo "  Route: llm-route | Tier: gold | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
-    echo "  Goal: Verify authenticated user request succeeds (expect 200)"
+    echo "  Goal: Verify authenticated request succeeds (expect 200)"
     response=$(curl -s -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}" \
+        -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
         -d "${test_payload}")
     http_code=$(echo "$response" | tail -n1)
@@ -423,20 +283,20 @@ cmd_test() {
 
     sleep 1
 
-    # Test 4: Free user accessing gold-model -> 403
+    # Test 4: Free tier accessing ${GOLD_MODEL} -> 403
     echo ""
-    echo "── Test 4: LLM Authorization - Free user accessing ${GOLD_MODEL} ──"
+    echo "── Test 4: LLM Authorization - Free tier accessing ${GOLD_MODEL} ──"
     echo "  Route: llm-route | Tier: free | Method: POST | Path: /${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions"
-    echo "  Goal: Verify SubjectAccessReview denies free user access to ${GOLD_MODEL} (expect 403)"
+    echo "  Goal: Verify free tier is denied access to ${GOLD_MODEL} (expect 403)"
     response=$(curl -s -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions" \
-        -H "Authorization: Bearer ${FREE_TOKEN}" \
+        -H "Authorization: APIKEY ${API_KEY_FREE}" \
         -H 'Content-Type: application/json' \
         -d "${gold_payload}")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$ d')
     if [ "$http_code" = "403" ]; then
-        pass_test "Test 4: 403 Forbidden (free user denied access to ${GOLD_MODEL})"
+        pass_test "Test 4: 403 Forbidden (free tier denied access to ${GOLD_MODEL})"
     else
         fail_test "Test 4: Expected 403, got $http_code"
         echo "  Response: $body"
@@ -444,20 +304,20 @@ cmd_test() {
 
     sleep 1
 
-    # Test 5: Gold user accessing gold-model -> 200
+    # Test 5: Gold tier accessing ${GOLD_MODEL} -> authorized
     echo ""
-    echo "── Test 5: LLM Authorization - Gold user accessing ${GOLD_MODEL} ──"
+    echo "── Test 5: LLM Authorization - Gold tier accessing ${GOLD_MODEL} ──"
     echo "  Route: llm-route | Tier: gold | Method: POST | Path: /${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions"
-    echo "  Goal: Verify SubjectAccessReview allows gold user access to ${GOLD_MODEL} (expect 200)"
+    echo "  Goal: Verify gold tier can access ${GOLD_MODEL} (in allowed models, expect not 403)"
     response=$(curl -s -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${GOLD_MODEL}/v1/chat/completions" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}" \
+        -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
         -d "${gold_payload}")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$ d')
     if [ "$http_code" = "200" ]; then
-        pass_test "Test 5: 200 OK (gold user authorized for ${GOLD_MODEL})"
+        pass_test "Test 5: 200 OK (gold tier authorized for ${GOLD_MODEL})"
         echo "  Response: $body"
     else
         fail_test "Test 5: Expected 200, got $http_code"
@@ -466,9 +326,9 @@ cmd_test() {
 
     sleep 1
 
-    # Test 6: Free user token rate limiting
+    # Test 6: Free tier token rate limiting
     echo ""
-    echo "── Test 6: LLM Rate Limiting - Free user token-based ──"
+    echo "── Test 6: LLM Rate Limiting - Free tier token-based ──"
     echo "  Route: llm-route | Tier: free | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
     echo "  Goal: Verify token rate limit triggers 429 after budget exhausted (150 tokens/min)"
     local llm_success=0
@@ -477,7 +337,7 @@ cmd_test() {
     for i in $(seq 1 10); do
         http_code=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
-            -H "Authorization: Bearer ${FREE_TOKEN}" \
+            -H "Authorization: APIKEY ${API_KEY_FREE}" \
             -H 'Content-Type: application/json' \
             -d "${test_payload}")
         if [ "$http_code" = "200" ]; then
@@ -493,7 +353,7 @@ cmd_test() {
     done
 
     echo ""
-    log "LLM free user: $llm_success successful, $llm_limited rate-limited"
+    log "LLM free tier: $llm_success successful, $llm_limited rate-limited"
     if [ "$llm_limited" -ge 3 ]; then
         pass_test "Test 6: Token rate limiting is working"
     else
@@ -502,20 +362,20 @@ cmd_test() {
 
     sleep 1
 
-    # Test 7: Gold user after free exhausted -> 200
+    # Test 7: Gold tier after free exhausted -> 200
     echo ""
-    echo "── Test 7: LLM Rate Limiting - Gold user after free user exhausted ──"
+    echo "── Test 7: LLM Rate Limiting - Gold tier after free tier exhausted ──"
     echo "  Route: llm-route | Tier: gold | Method: POST | Path: /${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions"
-    echo "  Goal: Verify gold user is unaffected by free user token rate limit (expect 200)"
+    echo "  Goal: Verify gold tier is unaffected by free tier token rate limit (expect 200)"
     response=$(curl -s -w "\n%{http_code}" \
         -X POST "${base_url}/${LLM_NAMESPACE}/${FREE_MODEL}/v1/chat/completions" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}" \
+        -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
         -d "${test_payload}")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$ d')
     if [ "$http_code" = "200" ]; then
-        pass_test "Test 7: 200 OK (gold user unaffected by free user limit)"
+        pass_test "Test 7: 200 OK (gold tier unaffected by free tier limit)"
         echo "  Response: $body"
     else
         fail_test "Test 7: Expected 200, got $http_code"
@@ -526,12 +386,12 @@ cmd_test() {
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
     echo "  Batch Route Tests (batch-route)"
-    echo "  - Authentication (TokenReview), Rate Limiting (request-based)"
+    echo "  - Authentication, Rate Limiting (request-based)"
     echo "═══════════════════════════════════════════════════════════════"
 
-    # Test 8: No token -> 401
+    # Test 8: No API key -> 401
     echo ""
-    echo "── Test 8: Batch Authentication - No token ──"
+    echo "── Test 8: Batch Authentication - No API key ──"
     echo "  Route: batch-route | Tier: none | Method: GET | Path: /v1/batches"
     echo "  Goal: Verify auth rejects unauthenticated requests (expect 401)"
     response=$(curl -s -w "\n%{http_code}" \
@@ -545,31 +405,31 @@ cmd_test() {
 
     sleep 1
 
-    # Test 9: Invalid token -> 401
+    # Test 9: Invalid API key -> 401
     echo ""
-    echo "── Test 9: Batch Authentication - Invalid token ──"
+    echo "── Test 9: Batch Authentication - Invalid API key ──"
     echo "  Route: batch-route | Tier: none | Method: GET | Path: /v1/batches"
-    echo "  Goal: Verify invalid token is rejected (expect 401)"
+    echo "  Goal: Verify invalid API key is rejected (expect 401)"
     response=$(curl -s -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches" \
-        -H "Authorization: Bearer invalid-token-99999")
+        -H "Authorization: APIKEY invalid-key-99999")
     http_code=$(echo "$response" | tail -n1)
     if [ "$http_code" = "401" ]; then
-        pass_test "Test 9: 401 Unauthorized (invalid token rejected)"
+        pass_test "Test 9: 401 Unauthorized (invalid key rejected)"
     else
         fail_test "Test 9: Expected 401, got $http_code"
     fi
 
     sleep 1
 
-    # Test 10: Valid token -> 200
+    # Test 10: Valid API key -> 200
     echo ""
-    echo "── Test 10: Batch Authentication - With valid user token ──"
+    echo "── Test 10: Batch Authentication - With API key ──"
     echo "  Route: batch-route | Tier: gold | Method: GET | Path: /v1/batches"
-    echo "  Goal: Verify authenticated user request succeeds (expect 200)"
+    echo "  Goal: Verify authenticated request succeeds (expect 200)"
     response=$(curl -s -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}")
+        -H "Authorization: APIKEY ${API_KEY_GOLD}")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$ d')
     if [ "$http_code" = "200" ]; then
@@ -581,20 +441,24 @@ cmd_test() {
 
     sleep 1
 
-    # Test 11: Free user request rate limiting (GET)
+    # Test 11: Free tier request rate limiting (GET)
     echo ""
-    echo "── Test 11: Batch Rate Limiting - Free user request-based ──"
+    echo "── Test 11: Batch Rate Limiting - Free tier request-based ──"
     echo "  Route: batch-route | Tier: free | Method: GET | Path: /v1/batches"
     echo "  Goal: Verify request rate limit triggers 429 after 5 req/10s"
     local free_success=0
     local free_limited=0
 
+    local first_429_id=""
     for i in $(seq 1 8); do
+        local req_id="batch-free-${i}-$(gen_id)"
         http_code=$(curl -s -o /dev/null -w "%{http_code}" \
             -X GET "${base_url}/v1/batches" \
-            -H "Authorization: Bearer ${FREE_TOKEN}")
+            -H "Authorization: APIKEY ${API_KEY_FREE}" \
+            -H "x-request-id: ${req_id}")
         if [ "$http_code" = "429" ]; then
             free_limited=$((free_limited + 1))
+            [ -z "$first_429_id" ] && first_429_id="$req_id"
             echo "  Request $i: 429 Rate Limited"
         else
             free_success=$((free_success + 1))
@@ -604,27 +468,33 @@ cmd_test() {
     done
 
     echo ""
-    log "Free user: $free_success passed, $free_limited rate-limited"
+    log "Free tier: $free_success passed, $free_limited rate-limited"
     if [ "$free_limited" -ge 3 ]; then
-        pass_test "Test 11: Request rate limiting is working"
+        sleep 0.5
+        if kubectl logs -n "${BATCH_NAMESPACE}" -l app="${BATCH_INFERENCE_SERVICE}" --tail=50 2>/dev/null \
+                | grep -q "${first_429_id}"; then
+            fail_test "Test 11: 429 came from llm-route (token limit), expected batch-route (request limit)"
+        else
+            pass_test "Test 11: Request rate limiting is working (verified: 429 from batch-route, not llm-route)"
+        fi
     else
-        fail_test "Test 11: Free user should have been rate-limited"
+        fail_test "Test 11: Free tier should have been rate-limited"
     fi
 
     sleep 1
 
-    # Test 12: Gold user after free rate-limited -> 200
+    # Test 12: Gold tier after free rate-limited -> 200
     echo ""
-    echo "── Test 12: Batch Rate Limiting - Gold user after free user rate-limited ──"
+    echo "── Test 12: Batch Rate Limiting - Gold tier after free tier rate-limited ──"
     echo "  Route: batch-route | Tier: gold | Method: GET | Path: /v1/batches"
-    echo "  Goal: Verify gold user is unaffected by free user request rate limit (expect 200)"
+    echo "  Goal: Verify gold tier is unaffected by free tier request rate limit (expect 200)"
     response=$(curl -s -w "\n%{http_code}" \
         -X GET "${base_url}/v1/batches" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}")
+        -H "Authorization: APIKEY ${API_KEY_GOLD}")
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$ d')
     if [ "$http_code" = "200" ]; then
-        pass_test "Test 12: 200 OK (gold user unaffected by free user rate limit)"
+        pass_test "Test 12: 200 OK (gold request rate limit unaffected by free tier)"
     else
         fail_test "Test 12: Expected 200, got $http_code"
         echo "  Response: $body"
@@ -639,14 +509,14 @@ cmd_test() {
 
     sleep 1
 
-    # Test 13: E2E gold user POST
+    # Test 13: E2E gold tier POST
     echo ""
-    echo "── Test 13: E2E - Gold user full inference flow ──"
+    echo "── Test 13: E2E - Gold tier full inference flow ──"
     echo "  Route: batch-route | Tier: gold | Method: POST | Path: /v1/batches"
     echo "  Goal: Verify full E2E: batch-route -> svc/batch-inference -> llm-route -> InferencePool -> svc/vllm-sim (expect 200)"
     response=$(curl -s -w "\n%{http_code}" \
         -X POST "${base_url}/v1/batches" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}" \
+        -H "Authorization: APIKEY ${API_KEY_GOLD}" \
         -H 'Content-Type: application/json' \
         -d "${test_payload}")
     http_code=$(echo "$response" | tail -n1)
@@ -666,8 +536,8 @@ cmd_test() {
     echo "  Goal: Verify Authorino injects correct identity headers into upstream request"
     sleep 1
     curl -s -o /dev/null -X GET "${base_url}/v1/batches" \
-        -H "Authorization: Bearer ${GOLD_TOKEN}"
-    verify_nginx_headers "gold" "gold-user"
+        -H "Authorization: APIKEY ${API_KEY_GOLD}"
+    verify_nginx_headers "gold" "gold-user" "gold"
     if [ "$HEADER_CHECK_OK" = true ]; then
         pass_test "Test 14: All identity headers correctly injected"
     else

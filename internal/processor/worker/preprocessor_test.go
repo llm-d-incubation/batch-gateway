@@ -5,8 +5,8 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type errReader struct{}
@@ -15,33 +15,30 @@ func (errReader) Read(_ []byte) (int, error) {
 	return 0, errors.New("boom")
 }
 
-func TestCheckPreProcessCancellation_ContextDone(t *testing.T) {
+func TestCheckAbortCondition_ContextDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var cancelRequested atomic.Bool
-	err := checkAbortCondition(ctx, &cancelRequested)
+	err := checkAbortCondition(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
 
-func TestCheckPreProcessCancellation_CancelRequested(t *testing.T) {
-	ctx := context.Background()
-	var cancelRequested atomic.Bool
-	cancelRequested.Store(true)
+func TestCheckAbortCondition_DeadlineExceeded(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
 
-	err := checkAbortCondition(ctx, &cancelRequested)
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled, got %v", err)
+	err := checkAbortCondition(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
 	}
 }
 
-func TestCheckPreProcessCancellation_None(t *testing.T) {
+func TestCheckAbortCondition_None(t *testing.T) {
 	ctx := context.Background()
-	var cancelRequested atomic.Bool
 
-	if err := checkAbortCondition(ctx, &cancelRequested); err != nil {
+	if err := checkAbortCondition(ctx); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 }

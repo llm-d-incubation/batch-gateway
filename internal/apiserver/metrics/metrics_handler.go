@@ -28,6 +28,9 @@ const (
 	MetricsPath = "/metrics"
 )
 
+// Compile-time check: MetricsApiHandler implements common.ApiHandler.
+var _ common.ApiHandler = (*MetricsApiHandler)(nil)
+
 type MetricsApiHandler struct {
 }
 

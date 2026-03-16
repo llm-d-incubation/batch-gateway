@@ -15,11 +15,12 @@ import (
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ func (m *mockInferenceClient) Generate(ctx context.Context, req *inference.Gener
 }
 
 // ---------------------------------------------------------------------------
-// Helpers: write binary plan file and model map for Phase 2
+// Helpers: write binary plan file and model map for execution
 // ---------------------------------------------------------------------------
 
 func writePlanFile(t *testing.T, dir, safeModelID string, entries []planEntry) {
@@ -118,14 +119,14 @@ type testProcessorEnv struct {
 
 // newTestProcessorEnv creates a Processor wired with mock clients.
 // The returned env exposes the shared dbClient and pqClient for seeding and verification.
-func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient inference.Client) *testProcessorEnv {
+func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient inference.InferenceClient) *testProcessorEnv {
 	t.Helper()
 
 	dbClient := newMockBatchDBClient()
 	pqClient := mockdb.NewMockBatchPriorityQueueClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
-	p := NewProcessor(cfg, &clientset.Clientset{
+	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
 		FileDB:    newMockFileDBClient(),
 		File:      mockfiles.NewMockBatchFilesClient(),
@@ -134,6 +135,9 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(inferClient),
 	})
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
 	p.poller = NewPoller(pqClient, dbClient)
 
 	return &testProcessorEnv{
@@ -144,11 +148,11 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	}
 }
 
-// setupPhase2Job creates a complete job directory with input file, plan files, and model map.
-func setupPhase2Job(
+// setupExecutionJob creates a complete job directory with input file, plan files, and model map.
+func setupExecutionJob(
 	t *testing.T,
 	cfg *config.ProcessorConfig,
-	inferClient inference.Client,
+	inferClient inference.InferenceClient,
 	requests []batch_types.Request,
 	modelToSafe map[string]string,
 ) (*testProcessorEnv, *batch_types.JobInfo) {
@@ -237,7 +241,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1", "prompt": "hi"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, err := os.Open(inputPath)
@@ -278,7 +282,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	mock := &mockInferenceClient{
 		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
 			return nil, &inference.ClientError{
-				Category: inference.ErrCategoryServer,
+				Category: httpclient.ErrCategoryServer,
 				Message:  "backend unavailable",
 			}
 		},
@@ -287,7 +291,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-err", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -304,8 +308,8 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error field in output line")
 	}
-	if result.Error.Code != string(inference.ErrCategoryServer) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCategoryServer)
+	if result.Error.Code != string(httpclient.ErrCategoryServer) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
 	}
 	if result.Response != nil {
 		t.Fatalf("expected nil response on inference error")
@@ -325,7 +329,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-nil", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -342,8 +346,8 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error field for nil response")
 	}
-	if result.Error.Code != string(inference.ErrCategoryServer) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCategoryServer)
+	if result.Error.Code != string(httpclient.ErrCategoryServer) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
 	}
 }
 
@@ -363,7 +367,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-bad-json", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -380,8 +384,8 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error field for bad JSON response")
 	}
-	if result.Error.Code != string(inference.ErrCategoryParse) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCategoryParse)
+	if result.Error.Code != string(httpclient.ErrCategoryParse) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryParse)
 	}
 }
 
@@ -392,7 +396,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -427,7 +431,7 @@ func TestProcessModel_Success(t *testing.T) {
 		{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -473,14 +477,18 @@ func TestProcessModel_Success(t *testing.T) {
 	}
 }
 
-func TestProcessModel_CancelRequested(t *testing.T) {
+// TestProcessModel_CancelStopsDispatch verifies that when the context is cancelled
+// and cancelRequested is set (matching the real watchCancel flow), processModel stops
+// dispatch via context cancellation and drains undispatched entries as batch_cancelled
+// using the cancelRequested flag to determine the drain reason.
+func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -500,12 +508,33 @@ func TestProcessModel_CancelRequested(t *testing.T) {
 	}
 
 	var errBuf bytes.Buffer
-	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+	errWriter := bufio.NewWriter(&errBuf)
+	writers := &outputWriters{output: writer, errors: errWriter}
 
-	ctx := testLoggerCtx()
+	// Cancel context to simulate the real flow: watchCancel cancels inferCtx (which
+	// propagates to execCtx passed to processModel) AND sets cancelRequested.
+	ctx, cancel := context.WithCancel(testLoggerCtx())
+	cancel()
+
 	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled, got: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+
+	// Verify that undispatched entry was drained as batch_cancelled (reason from cancelRequested).
+	if flushErr := errWriter.Flush(); flushErr != nil {
+		t.Fatalf("flush error writer: %v", flushErr)
+	}
+	errLines := bytes.Split(bytes.TrimSpace(errBuf.Bytes()), []byte{'\n'})
+	if len(errLines) != 1 {
+		t.Fatalf("expected 1 drain entry in error output, got %d", len(errLines))
+	}
+	var drainEntry outputLine
+	if unmarshalErr := json.Unmarshal(errLines[0], &drainEntry); unmarshalErr != nil {
+		t.Fatalf("unmarshal drain entry: %v", unmarshalErr)
+	}
+	if drainEntry.Error == nil || drainEntry.Error.Code != batch_types.ErrCodeBatchCancelled {
+		t.Fatalf("expected error code %s, got %+v", batch_types.ErrCodeBatchCancelled, drainEntry.Error)
 	}
 }
 
@@ -523,7 +552,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -571,7 +600,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	inputFile, _ := os.Open(inputPath)
@@ -622,11 +651,15 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -666,11 +699,15 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 		{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "d", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m2"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -689,25 +726,33 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	mock := &mockInferenceClient{
 		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
 			<-ctx.Done()
-			return nil, &inference.ClientError{Category: inference.ErrCategoryServer, Message: "cancelled"}
+			return nil, &inference.ClientError{Category: httpclient.ErrCategoryServer, Message: "cancelled"}
 		},
 	}
 
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
 
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
 }
 
+// TestExecuteJob_UserCancelFlag verifies that when inferCtx is cancelled and cancelRequested
+// is set (matching the real watchCancel flow), executeJob returns ErrCancelled. Context
+// cancellation stops dispatch; cancelRequested is used in the error-handling path to
+// return the correct sentinel error.
 func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -715,20 +760,132 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	cancelReq := &atomic.Bool{}
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
-	_, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	inferCtx, inferCancel := context.WithCancel(ctx)
+	inferCancel()
+
+	_, err := env.p.executeJob(ctx, ctx, inferCtx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
 	if !errors.Is(err, ErrCancelled) {
 		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
 }
 
+// TestExecuteJob_CancelFlagSetAfterAllRequestsComplete verifies that if the cancel flag is set
+// after all requests have already been dispatched and completed successfully (i.e. context
+// cancellation never interrupted dispatch), executeJob still returns ErrCancelled rather than
+// nil, preventing the job from being finalized as "completed".
+func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	cancelReq := &atomic.Bool{}
+
+	// The mock sets cancelRequested=true only after the inference call returns, simulating
+	// the race where the cancel event arrives while (or just after) the last request completes.
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			cancelReq.Store(true)
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	ctx := testLoggerCtx()
+	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
+	if !errors.Is(err, ErrCancelled) {
+		t.Fatalf("expected ErrCancelled when cancel flag set after all requests complete, got: %v", err)
+	}
+}
+
+// TestExecuteJob_InferCtxCancel_AbortsInflightRequests verifies that cancelling inferCtx
+// aborts in-flight inference requests. The mock blocks until it sees context cancellation,
+// simulating a long-running inference call that should be interrupted.
+func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	inferStarted := make(chan struct{})
+	mock := &mockInferenceClient{
+		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			close(inferStarted)
+			// Block until context is cancelled (simulates slow inference)
+			<-ctx.Done()
+			return nil, &inference.ClientError{
+				Category: httpclient.ErrCategoryServer,
+				Message:  "context cancelled",
+				RawError: ctx.Err(),
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	cancelReq := &atomic.Bool{}
+	ctx := testLoggerCtx()
+	inferCtx, inferCancelFn := context.WithCancel(ctx)
+
+	type result struct {
+		counts *openai.BatchRequestCounts
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		counts, err := env.p.executeJob(ctx, ctx, inferCtx, &jobExecutionParams{
+			updater:         env.updater,
+			jobInfo:         jobInfo,
+			cancelRequested: cancelReq,
+		})
+		resCh <- result{counts, err}
+	}()
+
+	<-inferStarted
+	cancelReq.Store(true)
+	inferCancelFn()
+
+	select {
+	case res := <-resCh:
+		if !errors.Is(res.err, ErrCancelled) {
+			t.Fatalf("expected ErrCancelled, got: %v", res.err)
+		}
+		if res.counts == nil {
+			t.Fatal("expected non-nil counts")
+		}
+		if res.counts.Total != 1 {
+			t.Errorf("Total = %d, want 1", res.counts.Total)
+		}
+		if res.counts.Completed != 0 {
+			t.Errorf("Completed = %d, want 0 (request was aborted)", res.counts.Completed)
+		}
+		if res.counts.Failed != 1 {
+			t.Errorf("Failed = %d, want 1 (aborted request counted as failed)", res.counts.Failed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executeJob did not return within 5s after inferCtx cancellation")
+	}
+}
+
 // TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
-// passed before Phase 2 begins, executeJob returns ErrExpired immediately with the total
+// passed before execution begins, executeJob returns ErrExpired immediately with the total
 // request count and no output/error files are written (early-exit fast path).
 func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	cfg := config.NewConfig()
@@ -739,7 +896,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
@@ -747,7 +904,11 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	counts, err := env.p.executeJob(ctx, sloCtx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected ErrExpired, got: %v", err)
 	}
@@ -773,6 +934,102 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	}
 	if _, statErr := os.Stat(errorPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("error.jsonl should not exist on early SLO exit, got stat err: %v", statErr)
+	}
+}
+
+// TestExecuteJob_SLOExpiredDuringDispatch verifies that when the SLO deadline fires while
+// requests are being dispatched, completed requests are preserved in the output file,
+// undispatched requests are drained to the error file as batch_expired, and executeJob
+// returns ErrExpired with accurate partial counts.
+//
+// This exercises the full context-cancellation chain for SLO expiry:
+//
+//	sloCtx (WithDeadline) → inferCtx (WithCancel) → execCtx (WithCancel)
+//	         DeadlineExceeded       Canceled                Canceled
+//
+// checkAbortCondition sees Canceled on execCtx to stop dispatch;
+// processModel's drain switch checks sloCtx.Err() == DeadlineExceeded to select batch_expired.
+func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.GlobalConcurrency = 1
+	cfg.PerModelMaxConcurrency = 1
+
+	// The mock blocks until the context is cancelled (SLO deadline fires).
+	// Concurrency = 1, so the first request holds the semaphore while blocking,
+	// preventing the second request from being dispatched. When the deadline fires,
+	// semaphore.Acquire returns an error and the dispatch loop exits.
+	mock := &mockInferenceClient{
+		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			<-ctx.Done()
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	cancelReq := &atomic.Bool{}
+
+	ctx := testLoggerCtx()
+	// Use context.WithDeadline so sloCtx.Err() returns DeadlineExceeded (matching real code).
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(100*time.Millisecond))
+	defer sloCancel()
+
+	type result struct {
+		counts *openai.BatchRequestCounts
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
+			updater:         env.updater,
+			jobInfo:         jobInfo,
+			cancelRequested: cancelReq,
+		})
+		resCh <- result{counts, err}
+	}()
+
+	select {
+	case res := <-resCh:
+		if !errors.Is(res.err, ErrExpired) {
+			t.Fatalf("expected ErrExpired, got: %v", res.err)
+		}
+		if res.counts == nil {
+			t.Fatal("expected non-nil counts")
+		}
+		if res.counts.Total != 3 {
+			t.Errorf("Total = %d, want 3", res.counts.Total)
+		}
+		// r1 was dispatched and completed (mock returns success after ctx cancellation);
+		// r2, r3 were never dispatched and drained as batch_expired.
+		if res.counts.Completed != 1 {
+			t.Errorf("Completed = %d, want 1", res.counts.Completed)
+		}
+		if res.counts.Failed != 2 {
+			t.Errorf("Failed = %d, want 2 (undispatched drained as expired)", res.counts.Failed)
+		}
+
+		// Verify the error file contains batch_expired entries for undispatched requests.
+		errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+		errLines := readNonEmptyJSONLLines(t, errorPath)
+		if len(errLines) != 2 {
+			t.Fatalf("error.jsonl lines = %d, want 2", len(errLines))
+		}
+		for i, line := range errLines {
+			var entry outputLine
+			if err := json.Unmarshal(line, &entry); err != nil {
+				t.Fatalf("unmarshal error line %d: %v", i, err)
+			}
+			if entry.Error == nil || entry.Error.Code != batch_types.ErrCodeBatchExpired {
+				t.Errorf("error line %d: expected code %s, got %+v", i, batch_types.ErrCodeBatchExpired, entry.Error)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executeJob did not return within 5s")
 	}
 }
 
@@ -836,7 +1093,7 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 	}
 
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
-	env.p.clients.File = &failNTimesFilesClient{failCount: 100}
+	env.p.files.storage = &failNTimesFilesClient{failCount: 100}
 
 	jobID := "finalize-fail"
 	tenantID := "tenant-1"
@@ -873,7 +1130,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 			if callCount.Add(1)%2 == 1 {
 				return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
 			}
-			return nil, &inference.ClientError{Category: inference.ErrCategoryServer, Message: "mock error"}
+			return nil, &inference.ClientError{Category: httpclient.ErrCategoryServer, Message: "mock error"}
 		},
 	}
 
@@ -881,11 +1138,15 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
-	env, jobInfo := setupPhase2Job(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx()
-	counts, err := env.p.executeJob(ctx, ctx, env.updater, jobInfo, cancelReq)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -1027,7 +1288,10 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, ErrCancelled, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobItem: dbJob,
+	}, ErrCancelled)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-cancel"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1050,7 +1314,11 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-ctx"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, context.Canceled, dbJob, env.updater, task)
+	env.p.handleJobError(ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobItem: dbJob,
+		task:    task,
+	}, context.Canceled)
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1071,7 +1339,11 @@ func TestHandleJobError_DeadlineExceeded_ReEnqueues(t *testing.T) {
 	task := &db.BatchJobPriority{ID: "job-deadline"}
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, context.DeadlineExceeded, dbJob, env.updater, task)
+	env.p.handleJobError(ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobItem: dbJob,
+		task:    task,
+	}, context.DeadlineExceeded)
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1092,7 +1364,10 @@ func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
 
 	ctx := testLoggerCtx()
 	// task is nil — should not panic, and job status should remain unchanged
-	env.p.handleJobError(ctx, context.Canceled, dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobItem: dbJob,
+	}, context.Canceled)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-ctx-nil"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1116,7 +1391,10 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
 
 	ctx := testLoggerCtx()
-	env.p.handleJobError(ctx, errors.New("some error"), dbJob, env.updater, nil)
+	env.p.handleJobError(ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobItem: dbJob,
+	}, errors.New("some error"))
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1130,13 +1408,261 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 }
 
 // =====================================================================
+// Tests: handleCancelled / handleFailedWithPartial / handleFailed
+// with partial output
+// =====================================================================
+
+// createPartialOutputFiles creates dummy output.jsonl and error.jsonl under the job dir
+// so uploadPartialResults can find and upload them.
+func createPartialOutputFiles(t *testing.T, p *Processor, jobID, tenantID string) {
+	t.Helper()
+	jobDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath := filepath.Join(jobDir, "output.jsonl")
+	errorPath := filepath.Join(jobDir, "error.jsonl")
+	if err := os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"req-1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile output: %v", err)
+	}
+	if err := os.WriteFile(errorPath, []byte(`{"id":"batch_req_2","custom_id":"req-2","error":{"code":"batch_cancelled","message":"cancelled"}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+}
+
+func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-cancel-partial"
+	tenantID := "tenant__tenantA"
+	dbJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusCancelling})},
+	}
+	if err := env.dbClient.DBStore(context.Background(), dbJob); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	createPartialOutputFiles(t, env.p, jobID, tenantID)
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
+
+	ctx := testLoggerCtx()
+	if err := env.p.handleCancelled(ctx, &jobExecutionParams{
+		updater:       env.updater,
+		jobItem:       dbJob,
+		jobInfo:       jobInfo,
+		requestCounts: counts,
+	}); err != nil {
+		t.Fatalf("handleCancelled: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusCancelled {
+		t.Fatalf("status = %s, want cancelled", got.Status)
+	}
+	if got.RequestCounts.Total != 5 || got.RequestCounts.Completed != 3 || got.RequestCounts.Failed != 2 {
+		t.Fatalf("request_counts = %+v, want {5,3,2}", got.RequestCounts)
+	}
+	if got.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set")
+	}
+	if got.ErrorFileID == "" {
+		t.Fatal("expected error_file_id to be set")
+	}
+}
+
+func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-fail-partial"
+	tenantID := "tenant__tenantA"
+	dbJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := env.dbClient.DBStore(context.Background(), dbJob); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	createPartialOutputFiles(t, env.p, jobID, tenantID)
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 10, Completed: 7, Failed: 3}
+
+	ctx := testLoggerCtx()
+	if err := env.p.handleFailedWithPartial(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+		t.Fatalf("handleFailedWithPartial: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.RequestCounts.Total != 10 || got.RequestCounts.Completed != 7 || got.RequestCounts.Failed != 3 {
+		t.Fatalf("request_counts = %+v, want {10,7,3}", got.RequestCounts)
+	}
+	if got.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set")
+	}
+	if got.ErrorFileID == "" {
+		t.Fatal("expected error_file_id to be set")
+	}
+}
+
+func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-fail-finalization"
+	dbJob := seedDBJob(t, env.dbClient, jobID)
+
+	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}
+
+	ctx := testLoggerCtx()
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts); err != nil {
+		t.Fatalf("handleFailed: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.RequestCounts.Total != 8 || got.RequestCounts.Completed != 8 || got.RequestCounts.Failed != 0 {
+		t.Fatalf("request_counts = %+v, want {8,8,0}", got.RequestCounts)
+	}
+	if got.OutputFileID != "" {
+		t.Fatalf("expected empty output_file_id, got %s", got.OutputFileID)
+	}
+	if got.ErrorFileID != "" {
+		t.Fatalf("expected empty error_file_id, got %s", got.ErrorFileID)
+	}
+}
+
+// =====================================================================
+// Tests: uploadPartialResults — empty / missing files
+// =====================================================================
+
+// TestUploadPartialResults_EmptyFiles verifies that when both output and error files
+// exist but are empty (0 bytes), uploadPartialResults returns empty file IDs and does
+// not create any file records in the database.
+func TestUploadPartialResults_EmptyFiles(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "partial-empty"
+	tenantID := "tenant__tenantA"
+
+	jobDir, err := env.p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := env.p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile output: %v", err)
+	}
+	errorPath, _ := env.p.jobErrorFilePath(jobID, tenantID)
+	if err := os.WriteFile(errorPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	dbJob := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+	}
+
+	ctx := testLoggerCtx()
+	outputFileID, errorFileID := env.p.uploadPartialResults(ctx, jobInfo, dbJob)
+
+	if outputFileID != "" {
+		t.Fatalf("outputFileID = %q, want empty (output file was 0 bytes)", outputFileID)
+	}
+	if errorFileID != "" {
+		t.Fatalf("errorFileID = %q, want empty (error file was 0 bytes)", errorFileID)
+	}
+}
+
+// TestUploadPartialResults_MissingFiles verifies that when neither output nor error
+// files exist on disk, uploadPartialResults returns empty file IDs without error.
+func TestUploadPartialResults_MissingFiles(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "partial-missing"
+	tenantID := "tenant__tenantA"
+
+	jobDir, err := env.p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	dbJob := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+	}
+
+	ctx := testLoggerCtx()
+	outputFileID, errorFileID := env.p.uploadPartialResults(ctx, jobInfo, dbJob)
+
+	if outputFileID != "" {
+		t.Fatalf("outputFileID = %q, want empty (output file does not exist)", outputFileID)
+	}
+	if errorFileID != "" {
+		t.Fatalf("errorFileID = %q, want empty (error file does not exist)", errorFileID)
+	}
+}
+
+// =====================================================================
 // Tests: cleanupJobArtifacts
 // =====================================================================
 
 func TestCleanupJobArtifacts_RemovesDirectory(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	p := NewProcessor(cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients())
 
 	jobDir, _ := p.jobRootDir("cleanup-job", "tenant-1")
 	os.MkdirAll(filepath.Join(jobDir, "plans"), 0o755)
@@ -1159,7 +1685,7 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	cfg.DefaultOutputExpirationSeconds = 86400
 
 	failDB := &dbStoreErrFileClient{err: errors.New("db write failed")}
-	p := NewProcessor(cfg, &clientset.Clientset{FileDB: failDB})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{FileDB: failDB})
 
 	ctx := testLoggerCtx()
 	err := p.storeFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})

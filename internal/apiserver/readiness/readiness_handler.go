@@ -28,6 +28,9 @@ const (
 	ReadyPath = "/ready"
 )
 
+// Compile-time check: ReadinessApiHandler implements common.ApiHandler.
+var _ common.ApiHandler = (*ReadinessApiHandler)(nil)
+
 type ReadinessApiHandler struct {
 	// serverReady indicates if the HTTP server has started accepting connections
 	serverReady *atomic.Bool

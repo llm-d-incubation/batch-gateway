@@ -84,13 +84,13 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
                          ↓
                   Batch Processor (pulls jobs)
                          ↓
-              Phase 1: Ingestion & Plan Building
+              Ingestion
                   - Obtain input file
                   - Parse model IDs and system prompts
                   - Build per-model plans
                   - Write plans to local disk
                          ↓
-              Phase 2: Scheduling & Execution
+              Execution
                   - Launch per-model goroutines
                   - Acquire global & per-model semaphores
                   - Read requests from plan files
@@ -231,7 +231,7 @@ Deploy to a local Kind cluster for development:
 make dev-deploy
 ```
 
-For detailed instructions, see [Development Guide](docs/guides/DEVELOPMENT.md).
+For detailed instructions, see [Development Guide](docs/guides/development.md).
 
 #### Production Deployment
 
@@ -426,4 +426,4 @@ For help and support:
 
 - Open an issue on GitHub.
 - Review the [design documentation](docs/design/).
-- Check the [development guide](docs/guides/DEVELOPMENT.md).
+- Check the [development guide](docs/guides/development.md).

@@ -4,7 +4,7 @@ set -euo pipefail
 # ── Token mode: authentication via K8s token, authorization via SubjectAccessReview ──
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/kuadrant-common.sh"
+source "${SCRIPT_DIR}/common.sh"
 
 # ── Token Configuration ───────────────────────────────────────────────────────
 TIER_GOLD_NS="${TIER_GOLD_NS:-tier-gold}"
@@ -262,7 +262,7 @@ cmd_install() {
     echo "  ╚═══════════════════════════════════════════════════════╝"
     echo ""
 
-    common_install
+    install_with_kuadrant
     create_service_accounts
     create_model_rbac
     apply_batch_auth_policy

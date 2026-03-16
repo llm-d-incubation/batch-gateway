@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 4
--   **Last Updated**: 2026-03-05
+-   **Revision**: 5
+-   **Last Updated**: 2026-03-11
 
 -------------------------------------------------------------------
 
@@ -101,8 +101,7 @@ Unsupported features must return OpenAI-compatible error responses.
 -------------------------------------------------------------------
 **TODO:**
 -   Worker Crash Recovery: If a worker crashes during `in_progress`, the job is retried from scratch upon re-queueing. Partial plan files and input artifacts are treated as temporary and discarded. Resume-from-checkpoint is not supported in MVP.
--   Cancellation Partial Results: OpenAI waits for in-flight requests to complete (up to 10 minutes) before transitioning to `cancelled`, implying partial results may be preserved. Current implementation discards all results on cancellation without uploading. This should be aligned with the expired path (upload completed results before setting status to `cancelled`).
--   Failure Partial Results: Similarly, when a job fails mid-Phase 2 due to a systemic error, completed requests may already be written to the output buffer. Current implementation discards these without uploading. To preserve them, `executeJob` would need to flush and return partial counts on the failure path, and `handleFailed` would need to upload before transitioning to `failed` (mirroring `handleExpired`). Note: failures in Phase 1 or during status transitions have no partial output to preserve.
+
 --------------------------------------------------------------------
 ### High-Level Architecture
 #### Processor and Worker
@@ -113,55 +112,70 @@ Unsupported features must return OpenAI-compatible error responses.
 > Isolation: Each Worker independently handles the entire lifecycle of its assigned job, ensuring failure isolation.
 
 #### 1. Job Lifecycle
+
+```mermaid
+flowchart TD
+    poll["Polled from priority queue"] --> assign["Assigned to worker"]
+    assign --> phase1
+
+    subgraph phase1 ["Ingestion"]
+        direction TB
+        download["Download input file to local storage"]
+        download --> parsePlan["Parse lines: extract model ID, PrefixHash"]
+        parsePlan --> sort["Sort entries per model by PrefixHash"]
+        sort --> writePlans["Write plan files + metadata"]
+    end
+
+    phase1 --> phase2
+
+    subgraph phase2 ["Execution"]
+        direction TB
+        dispatch["Dispatch requests concurrently per model"]
+        dispatch --> readPlan["Read plan entry, read input line"]
+        readPlan --> sendInfer["Send to inference client"]
+        sendInfer --> writeResult["Write result to output.jsonl or error.jsonl"]
+    end
+
+    phase2 --> phase3
+
+    subgraph phase3 ["Finalization"]
+        direction TB
+        flushFiles["Flush output.jsonl and error.jsonl"]
+        flushFiles --> uploadFiles["Upload to shared storage"]
+        uploadFiles --> createRecords["Create file records in DB"]
+        createRecords --> cleanupLocal["Cleanup local artifacts"]
+    end
+
+    phase3 --> completedState["completed"]
+
+    phase1 -->|"cancel or error"| failedNoOutput["failed — no output"]
+    phase2 -->|"SLO expired"| expiredState["expired — partial output"]
+    phase2 -->|"user cancel"| cancelledState["cancelled — partial output"]
+    phase2 -->|"system error"| failedPartial["failed — partial output"]
+    phase3 -->|"upload retry exhausted"| failedCounts["failed — counts only"]
 ```
-    [ Polled by processor ]
-      ↓
-    [ Assigned to a worker ]
-      ↓
-    [ Validated by worker ]
-      ↓
-    [ Process Phase 1 ] – Ingestion & Plan Building
-      ↓
-        - Get input file stream
-            ↓
-        - Read line by line
-            ↓
-        - Write to local storage (input.jsonl)
-            ↓
-        - Parse (minimal) to get the requested model of the request and PrefixHash value
-            ↓
-        - accumulate the request's location, size, and PrefixHash in memory
-            ↓
-        - Sort accumulated plan entries per model by PrefixHash, write sorted entries to plan files, and create a metadata file for model ID to filename map and total request line information
-            ↓
-        - Finalize input file
-      ↓
-    [ Process Phase 2 ] – Scheduling & Execution
-      ↓
-        - Scheduler dispatches requests subject to concurrency limits. Execution is performed concurrently using bounded goroutines.
-            ↓
-        - Plan file Read: Get the request line         ←──────────────────────────────────┐
-            ↓                                                                             │
-        - Parse the line                                                  SLO deadline fires mid-dispatch
-            ↓                                                         (context.WithDeadline cancels execCtx)
-        - Validate the line                                                               │
-            ↓                                                                             │
-        - Send the request using inference client                 Drain undispatched entries to error.jsonl
-            ↓                                                          as "batch_expired"; flush writers
-        - Send the received response to the writing channel            Upload partial output.jsonl / error.jsonl
-      ↓ (all requests dispatched and completed)              → status: in_progress → expired   [TERMINAL]
-    [ Finalize ]
-      ↓
-    Flush output.jsonl and error.jsonl
-      ↓
-    Upload output.jsonl to shared storage (skipped if empty — all requests failed)
-      ↓
-    Upload error.jsonl to shared storage (skipped if empty — no requests failed)
-      ↓
-    Create file records in DB for non-empty files; set output_file_id / error_file_id on job
-      ↓
-    File cleanup (plan files, metadata file, input/output/error files)
-```
+
+**Ingestion**
+
+1.  Download the input file from shared storage to local disk (`input.jsonl`)
+2.  Parse each line minimally to extract the target model ID and PrefixHash
+3.  Accumulate request location (offset, length) and PrefixHash in memory
+4.  Sort entries per model by PrefixHash for cache-friendly dispatch ordering
+5.  Write sorted plan files (one per model) and a metadata file (model map + total line count)
+
+**Execution**
+
+1.  One goroutine per model dispatches requests concurrently, bounded by global and per-model semaphores
+2.  For each plan entry: read the input line at the recorded offset, parse, send to the inference client
+3.  Write the response to `output.jsonl` (success) or `error.jsonl` (inference error)
+4.  If interrupted (SLO expiry, cancel, system error): drain undispatched entries to `error.jsonl` with the appropriate error code, flush writers, and return partial counts
+
+**Finalization**
+
+1.  Flush buffered `output.jsonl` and `error.jsonl` to disk
+2.  Upload non-empty files to shared storage (with exponential backoff retry)
+3.  Create file records in DB; set `output_file_id` / `error_file_id` on the job
+4.  Transition status to `completed`; cleanup local artifacts
 -------------------------------------------------------------------
 
 #### 2. State Transitions
@@ -194,7 +208,7 @@ Terminal states are removed from the priority queue.
 -------------------------------------------------------------------
 
 ### Process Flow
-#### Phase 1. Ingestion & Plan Building
+#### Ingestion
 ##### Objectives
 -   Download input file
 -   Process line-by-line
@@ -210,9 +224,9 @@ Directory layout:
 ```
 jobs/
 └── <job_id>/
-    ├── input.jsonl        # downloaded from shared storage; read-only during Phase 2
-    ├── output.jsonl       # written during Phase 2; contains successful responses
-    ├── error.jsonl        # written during Phase 2; contains failed responses
+    ├── input.jsonl        # downloaded from shared storage; read-only during execution
+    ├── output.jsonl       # written during execution; contains successful responses
+    ├── error.jsonl        # written during execution; contains failed responses
     ├── model_map.json
     └── plans/
         ├── <safe_model_id_1>.plan
@@ -235,14 +249,14 @@ jobs/
 }
 ```
 -   `model_to_safe` maps original model IDs to sanitized file names used for plan files.
--   `safe_to_model` is the reverse mapping, used during Phase 2 execution to recover the original model ID.
--   `line_count` is stored since Phase 1 is the first (and only) pass over the entire input file.
+-   `safe_to_model` is the reverse mapping, used during execution to recover the original model ID.
+-   `line_count` is stored since ingestion is the first (and only) pass over the entire input file.
 
 For each `input.jsonl` line:
 1.  Compute current byte offset in input.jsonl file
 2.  Compute request length (including newline)
 3.  Parse minimal JSON to extract model
-4.  Extract and hash the system prompt content from the request body for grouping requests with identical system prompts in Phase 2. If the system prompt is absent, the hash defaults to 0.
+4.  Extract and hash the system prompt content from the request body for grouping requests with identical system prompts during execution. If the system prompt is absent, the hash defaults to 0.
 5.  Intern modelID for plan file name
 6.  Accumulate plan entry (offset, length, prefix hash) in memory per model
 
@@ -268,7 +282,7 @@ Renamed atomically upon completion.
 type PlanEntry struct {
     Offset     int64  // 8 bytes: Position in input.jsonl
     Length     uint32 // 4 bytes: Length of the JSON line
-    PrefixHash uint32 // 4 bytes: FNV-32a hash of the request's system prompt, used to group requests with identical system prompts in Phase 2
+    PrefixHash uint32 // 4 bytes: FNV-32a hash of the request's system prompt, used to group requests with identical system prompts during execution
 }
 ```
 The request JSON body is NOT stored in the plan.
@@ -281,20 +295,20 @@ The plan acts as an index into `input.jsonl`.
 
 -   Plan entry ≈ 16 bytes
 -   50,000 requests → ~800KB plan storage
--   Request bodies are never accumulated in memory; only lightweight plan entries (16 bytes each) are held in memory during Phase 1
--   Only in-flight requests reside in memory during Phase 2
+-   Request bodies are never accumulated in memory; only lightweight plan entries (16 bytes each) are held in memory during ingestion
+-   Only in-flight requests reside in memory during execution
 
 Worst-case memory usage (processor-level):
 ```
-Phase 1: O(totalRequestsPerJob × numWorkers) plan entries in memory (≤ 800KB per worker for 50,000 requests)
-Phase 2: O(GlobalConcurrency) in-flight requests (shared across all workers)
+Ingestion: O(totalRequestsPerJob × numWorkers) plan entries in memory (≤ 800KB per worker for 50,000 requests)
+Execution: O(GlobalConcurrency) in-flight requests (shared across all workers)
 ```
 
 Plan entry overhead is negligible (16 bytes each). Request bodies are never buffered.
 
 ------------------------------------------------------------------------
 
-#### Phase 2. Scheduling & Execution
+#### Execution
 ##### Execution Inputs
 -   `input.jsonl`
 -   Per-model plan files
@@ -314,7 +328,7 @@ Each plan file functions as a per-model execution queue.
 - Fairness across models is achieved naturally through goroutine scheduling and the global semaphore: no single model can monopolize all slots because each model is independently bounded by `PerModelMaxConcurrency`.
 
 **Downstream-aware ordering:**
-- Plan entries are already sorted by `PrefixHash` during Phase 1 finalization.
+- Plan entries are already sorted by `PrefixHash` during ingestion.
 - This groups requests with the same system prompt together, enabling the downstream inference gateway to maximize KV prefix cache hits by routing similar requests to the same backend pod.
 
 ###### Scheduling and Execution Sequence
@@ -364,7 +378,7 @@ sequenceDiagram
 
 ###### Algorithm:
 1.  Executor launches one goroutine per model.
-2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during Phase 1 finalization) and dispatches requests concurrently, subject to:
+2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during ingestion) and dispatches requests concurrently, subject to:
     - `GlobalConcurrency` (global semaphore: max in-flight requests across all workers. this is to protect system resource from too many goroutines being opened at once)
     - `PerModelMaxConcurrency` (per-model semaphore: max in-flight requests per model. this is to protect downstream from too many requests being dumped at once)
 3.  When a model's plan is fully drained, its goroutine exits.
@@ -387,7 +401,7 @@ FNV-32a hash collisions (32-bit space, ~4 billion values) are theoretically poss
 
 **Future work — similar-prefix grouping:**
 
-A potential improvement is to sort by the system prompt string lexicographically instead of by hash. Lexicographic sorting naturally places prompts with a shared prefix adjacent to each other, which would improve KV cache hit rates for prompts that are similar but not identical. This avoids tokenization dependency (which would couple the batch gateway to model-specific tokenizers) while still capturing partial prefix overlap at the string level. The main trade-off is memory: it requires holding system prompt strings in memory during Phase 1 rather than just a 4-byte hash. This is tracked as a post-MVP enhancement.
+A potential improvement is to sort by the system prompt string lexicographically instead of by hash. Lexicographic sorting naturally places prompts with a shared prefix adjacent to each other, which would improve KV cache hit rates for prompts that are similar but not identical. This avoids tokenization dependency (which would couple the batch gateway to model-specific tokenizers) while still capturing partial prefix overlap at the string level. The main trade-off is memory: it requires holding system prompt strings in memory during ingestion rather than just a 4-byte hash. This is tracked as a post-MVP enhancement.
 
 -------------------------------------------------------------------
 
@@ -502,13 +516,30 @@ SLO is enforced via `context.WithDeadline(ctx, slo)` on the job execution contex
 1.  New request dispatch stops — semaphore acquisition fails on the expired context, breaking the dispatch loop
 2.  In-flight inference requests that are mid-flight have their context cancelled; they are written to the error file with whatever error the inference client returns (not `batch_expired`)
 3.  Requests that were never dispatched (pending in the plan but not yet started) are written to the error file as `batch_expired`
-4.  Requests that already completed successfully remain in the output file — this is the key difference from user-initiated cancellation, which discards all partial results
+4.  Requests that already completed successfully remain in the output file
 
 The job then transitions directly `in_progress → expired` (no `finalizing` transient state).
 
 **Why not configurable?**
 
 An earlier design considered making expiration behavior configurable (continue vs. stop on SLO breach). This was dropped in favor of strict OpenAI spec alignment: the `expired` state and its semantics are well-defined in the OpenAI API, and diverging from them would break client expectations. Partial results are always preserved.
+
+#### Partial Output Preservation
+
+This is an extension of the OpenAI Batch API — OpenAI discards results when a batch is cancelled or fails. We preserve them because completed inference results are expensive to produce and should not be thrown away.
+
+For all terminal states where work was interrupted (expired, cancelled, failed), any completed inference results are preserved in the output file, and unexecuted requests are recorded in the error file with the appropriate error code (`batch_expired`, `batch_cancelled`, `batch_failed`). `batch_expired` is defined by the OpenAI spec; `batch_cancelled` and `batch_failed` are our extensions.
+
+**Path-by-path behavior:**
+
+-   **Expired (SLO deadline)**: Undispatched requests are drained as `batch_expired`, partial output is uploaded, status transitions to `expired`. (OpenAI spec behavior.)
+-   **Cancelled (user-initiated)**: In-flight requests complete, undispatched requests are drained as `batch_cancelled`, partial output is uploaded, status transitions to `cancelled`.
+-   **Failed (execution system error)**: Undispatched requests are drained as `batch_failed`, partial output is uploaded, status transitions to `failed`.
+-   **Failed (ingestion)**: No output files exist — nothing to preserve. Status transitions to `failed` without file IDs.
+-   **Failed (finalization — upload retry exhausted)**: Upload retries (exponential backoff, `MaxRetries + 1` attempts) are already exhausted inside `finalizeJob`. Re-attempting upload would fail for the same reason. Only `requestCounts` are recorded in the `failed` status; no file IDs.
+-   **Graceful shutdown (pod termination)**: Job is re-enqueued for another worker to process from scratch. No partial upload — preserving the chance for a complete result.
+
+Partial upload is best-effort: upload failures are logged but do not block the terminal status transition.
 
 ---
 
@@ -522,20 +553,20 @@ An earlier design considered making expiration behavior configurable (continue v
 
 #### Tracing (OpenTelemetry)
 
-A single `"process-batch"` span covers the full job lifecycle (Phase 1 → Phase 2 → Phase 3). The following span attributes are recorded:
+A single `"process-batch"` span covers the full job lifecycle (ingestion → execution → finalization). The following span attributes are recorded:
 
 | Attribute | Type | Set at | Description |
 |---|---|---|---|
 | `batch.id` | string | span start | Batch ID |
 | `tenant.id` | string | span start | Tenant ID |
 | `file.id` | string | span start | Input file ID |
-| `batch.output_file.id` | string | Phase 3 finalize (completed) or expiry | Output file ID; not set on cancel or fail (no file upload) |
-| `batch.error_file.id` | string | Phase 3 finalize (completed) or expiry | Error file ID; not set on cancel or fail (no file upload) |
-| `batch.request.total` | int64 | Phase 3 finalize (completed) or expiry | Total request count; not set on cancel or fail |
-| `batch.request.completed` | int64 | Phase 3 finalize (completed) or expiry | Successfully completed request count; not set on cancel or fail |
-| `batch.request.failed` | int64 | Phase 3 finalize (completed) or expiry | Failed request count; not set on cancel or fail |
+| `batch.output_file.id` | string | Any terminal state with partial output | Output file ID; set on completed, expired, cancelled (execution), and failed (execution) |
+| `batch.error_file.id` | string | Any terminal state with partial output | Error file ID; set on completed, expired, cancelled (execution), and failed (execution) |
+| `batch.request.total` | int64 | Any terminal state after execution | Total request count |
+| `batch.request.completed` | int64 | Any terminal state after execution | Successfully completed request count |
+| `batch.request.failed` | int64 | Any terminal state after execution | Failed request count |
 
-Errors at each phase are recorded via `span.RecordError()` and `span.SetStatus(codes.Error, ...)`.
+Errors at each stage are recorded via `span.RecordError()` and `span.SetStatus(codes.Error, ...)`.
 
 Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provider).
 
@@ -559,7 +590,7 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   - `db_inconsistency`
   - `not_runnable_state`
   - `expired_dequeue` — SLO already exceeded before execution started
-  - `expired_execution` — SLO deadline fired during Phase 2; partial results preserved
+  - `expired_execution` — SLO deadline fired during execution; partial results preserved
   - `none` — no additional reason beyond the result (e.g. success, cancelled)
 
 - `job_processing_duration_seconds{tenantID,size_bucket}` (histogram)
@@ -586,13 +617,13 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 - `model_inflight_requests{model}` (gauge)
   Per-model in-flight request count (bounded by `PerModelMaxConcurrency`).
 
-**Phase-Level Duration Metrics**
+**Duration Metrics**
 
 - `plan_build_duration_seconds{tenantID,size_bucket}` (histogram)
-  Measures Phase 1 ingestion and plan build duration.
+  Measures ingestion and plan build duration.
 
 - `model_request_execution_duration_seconds{model}` (histogram)
-  Measures per-request execution duration during Phase 2.
+  Measures per-request execution duration.
 
 **Error and Retry Metrics**
 

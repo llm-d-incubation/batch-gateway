@@ -21,7 +21,12 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
 )
+
+// Compile-time check: MockBatchStatusClient implements api.BatchStatusClient.
+var _ api.BatchStatusClient = (*MockBatchStatusClient)(nil)
 
 type MockBatchStatusClient struct {
 	mu     sync.RWMutex

@@ -17,8 +17,8 @@ limitations under the License.
 package batch_types
 
 import (
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 // Tag key prefixes and names stored in database tags (db.Tags).
@@ -28,6 +28,20 @@ const (
 	TagSLO                       = "slo_unix_micro"
 	TagOutputExpiresAfterAnchor  = "output_expires_after_anchor"
 	TagOutputExpiresAfterSeconds = "output_expires_after_seconds"
+)
+
+// Error codes written to the error JSONL file for requests that could not be executed
+// before the job terminated. Output format follows the OpenAI Batch API error schema:
+//
+//	{"id": "batch_req_...", "custom_id": "...", "response": null, "error": {"code": "<code>", "message": "..."}}
+//
+// ErrCodeBatchExpired is defined by the OpenAI Batch API spec.
+// ErrCodeBatchCancelled and ErrCodeBatchFailed are our extensions to preserve partial
+// output on cancel/fail — OpenAI discards results in these cases.
+const (
+	ErrCodeBatchExpired   = "batch_expired"
+	ErrCodeBatchCancelled = "batch_cancelled"
+	ErrCodeBatchFailed    = "batch_failed"
 )
 
 type JobInfo struct {

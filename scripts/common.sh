@@ -25,8 +25,10 @@ ISTIO_VERSION="${ISTIO_VERSION:-v1.28.0}"
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
 GAIE_VERSION="${GAIE_VERSION:-v1.3.1}"
 GAIE_REPO=/tmp/gateway-api-inference-extension-${GAIE_VERSION#v}
+# TODO: Upgrade to GAIE v1.4.0+ when released — adds EPP request logging (logger.V(1).Info("EPP received request"))
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 BATCH_INFERENCE_SERVICE="${BATCH_INFERENCE_SERVICE:-batch-inference}"
+BATCH_INFERENCE_PORT="${BATCH_INFERENCE_PORT:-80}"
 GATEWAY_NAME="${GATEWAY_NAME:-istio-gateway}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
 
@@ -41,6 +43,10 @@ MODEL_ROUTES=(
 )
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
+
+is_openshift() {
+    kubectl api-resources --api-group=route.openshift.io &>/dev/null 2>&1
+}
 
 gen_id() {
     uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "${RANDOM}-${RANDOM}-$$"
@@ -226,7 +232,7 @@ install_istio() {
         --set values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true
         --set values.pilot.autoscaleEnabled=false
     )
-    if kubectl api-resources --api-group=route.openshift.io &>/dev/null 2>&1; then
+    if is_openshift; then
         log "OpenShift detected, adding platform=openshift"
         istioctl_args+=(--set values.global.platform=openshift)
     fi
@@ -607,7 +613,7 @@ spec:
         value: /v1/files
     backendRefs:
     - name: ${BATCH_INFERENCE_SERVICE}
-      port: 80
+      port: ${BATCH_INFERENCE_PORT}
 EOF
 
     # llm-route is created by each script via create_llm_route
@@ -764,7 +770,7 @@ EOF
 
 # ── Common Install / Uninstall ────────────────────────────────────────────────
 
-common_install() {
+install_with_kuadrant() {
     check_prerequisites
 
     for ns in "${BATCH_NAMESPACE}" "${LLM_NAMESPACE}" "${INGRESS_NAMESPACE}"; do
@@ -893,10 +899,14 @@ cmd_uninstall() {
 
 init_test() {
     local test_title="$1"
+    local header="  Testing: ${test_title}  "
+    local width=${#header}
+    local border=""
+    for ((i=0; i<width; i++)); do border+="═"; done
     echo ""
-    echo "  ╔══════════════════════════════════════════════════════════════╗"
-    echo "  ║   Testing Kuadrant Integration (${test_title})               ║"
-    echo "  ╚══════════════════════════════════════════════════════════════╝"
+    echo "  ╔${border}╗"
+    echo "  ║${header}║"
+    echo "  ╚${border}╝"
     echo ""
 
     if ! kubectl get gateway "${GATEWAY_NAME}" -n "${INGRESS_NAMESPACE}" &>/dev/null; then
@@ -911,10 +921,10 @@ init_test() {
     fi
 
     step "Waiting for gateway to be accessible..."
-    local base_url="http://localhost:${LOCAL_PORT}"
+    local base_url="${GATEWAY_URL:-http://localhost:${LOCAL_PORT}}"
     local retries=30
     for i in $(seq 1 "${retries}"); do
-        if curl -s -o /dev/null -w "%{http_code}" "${base_url}/${LLM_NAMESPACE}/${E2E_MODEL}/v1/chat/completions" &>/dev/null; then
+        if curl -sk -o /dev/null -w "%{http_code}" "${base_url}/${LLM_NAMESPACE}/${E2E_MODEL}/v1/chat/completions" &>/dev/null; then
             log "Gateway is accessible."
             break
         fi

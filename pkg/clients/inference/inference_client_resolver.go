@@ -41,8 +41,8 @@ type GatewayClientConfig struct {
 }
 
 // toHTTPClientConfig converts a GatewayClientConfig to an HTTPClientConfig.
-func (gw GatewayClientConfig) toHTTPClientConfig() HTTPClientConfig {
-	return HTTPClientConfig{
+func (gw GatewayClientConfig) toHTTPClientConfig() *HTTPClientConfig {
+	return &HTTPClientConfig{
 		BaseURL:               gw.URL,
 		APIKey:                gw.APIKey,
 		Timeout:               gw.Timeout,
@@ -65,11 +65,11 @@ func (gw GatewayClientConfig) toHTTPClientConfig() HTTPClientConfig {
 // and swap the entire resolver on reload.
 //
 // This is a concrete struct rather than an interface because there is only one
-// routing strategy. Tests inject mock Client instances via NewSingleClientResolver.
+// routing strategy. Tests inject mock InferenceClient instances via NewSingleClientResolver.
 // TODO: Extract an interface if multiple routing strategies are needed.
 type GatewayResolver struct {
-	defaultClient Client
-	modelClients  map[string]Client
+	defaultClient InferenceClient
+	modelClients  map[string]InferenceClient
 }
 
 // NewGatewayResolver creates a GatewayResolver from a map of model-to-gateway
@@ -85,18 +85,18 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 		return nil, fmt.Errorf("modelGateways must contain a \"default\" entry")
 	}
 
-	defaultClient, err := NewHTTPClient(defaultGW.toHTTPClientConfig())
+	defaultClient, err := NewInferenceClient(defaultGW.toHTTPClientConfig())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default inference client: %w", err)
 	}
 
 	// GatewayClientConfig is used directly as the pool key: all its fields are
 	// comparable primitives, so two configs with identical settings produce the
-	// same key and reuse a single HTTPClient (and its connection pool).
-	pool := map[GatewayClientConfig]Client{
+	// same key and reuse a single InferenceClient (and its connection pool).
+	pool := map[GatewayClientConfig]InferenceClient{
 		defaultGW: defaultClient,
 	}
-	modelClients := make(map[string]Client, len(modelGateways))
+	modelClients := make(map[string]InferenceClient, len(modelGateways))
 
 	for model, gw := range modelGateways {
 		if model == "default" {
@@ -108,7 +108,7 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 			continue
 		}
 
-		client, err := NewHTTPClient(gw.toHTTPClientConfig())
+		client, err := NewInferenceClient(gw.toHTTPClientConfig())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}
@@ -124,16 +124,16 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 
 // ClientFor returns the inference client for the given model.
 // Falls back to the default client if no model-specific mapping exists.
-func (r *GatewayResolver) ClientFor(modelID string) Client {
+func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
 	if c, ok := r.modelClients[modelID]; ok {
 		return c
 	}
 	return r.defaultClient
 }
 
-// NewSingleClientResolver wraps a single Client in a GatewayResolver
+// NewSingleClientResolver wraps a single InferenceClientI in a GatewayResolver
 // where all models resolve to that client. Currently used only in tests
 // to inject mock inference clients into Clientset.
-func NewSingleClientResolver(c Client) *GatewayResolver {
+func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
 	return &GatewayResolver{defaultClient: c}
 }
