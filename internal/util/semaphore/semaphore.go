@@ -45,6 +45,9 @@ type Semaphore interface {
 }
 
 // semaphore implements the Semaphore interface using a buffered channel.
+// Compile-time check: semaphore implements Semaphore.
+var _ Semaphore = (*semaphore)(nil)
+
 type semaphore struct {
 	tokens chan struct{}
 }

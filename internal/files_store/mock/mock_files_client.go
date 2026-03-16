@@ -29,6 +29,9 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 )
 
+// Compile-time check: MockBatchFilesClient implements api.BatchFilesClient.
+var _ api.BatchFilesClient = (*MockBatchFilesClient)(nil)
+
 // MockBatchFilesClient is a mock implementation of the BatchFilesClient interface.
 type MockBatchFilesClient struct{}
 

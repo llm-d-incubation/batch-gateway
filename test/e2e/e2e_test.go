@@ -15,7 +15,6 @@
 package e2e_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -29,6 +28,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 var (
@@ -70,6 +70,13 @@ var (
 	testPassThroughHeaders = map[string]string{
 		"X-E2E-Pass-Through-1": "test-value-1",
 		"X-E2E-Pass-Through-2": "test-value-2",
+	}
+
+	// testBatchMetadata is attached to every batch created via mustCreateBatch
+	// so that metadata round-tripping is verified as part of the lifecycle test.
+	testBatchMetadata = shared.Metadata{
+		"env":    "e2e-test",
+		"run_id": testRunID,
 	}
 )
 
@@ -127,6 +134,7 @@ func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) 
 			InputFileID:      fileID,
 			Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
 			CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+			Metadata:         testBatchMetadata,
 		},
 		opts...,
 	)
@@ -144,6 +152,13 @@ func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) 
 	}
 	if batch.CompletionWindow != "24h" {
 		t.Errorf("expected completion_window %q, got %q", "24h", batch.CompletionWindow)
+	}
+	for k, wantV := range testBatchMetadata {
+		if gotV, ok := batch.Metadata[k]; !ok {
+			t.Errorf("metadata key %q missing from create response", k)
+		} else if gotV != wantV {
+			t.Errorf("metadata[%q] = %q, want %q", k, gotV, wantV)
+		}
 	}
 	return batch.ID
 }
@@ -214,7 +229,6 @@ func waitForBatchCompletion(t *testing.T, batchID string) *openai.Batch {
 func validateAndLogJSONL(t *testing.T, label string, content string) {
 	t.Helper()
 
-	var pretty strings.Builder
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
@@ -223,18 +237,31 @@ func validateAndLogJSONL(t *testing.T, label string, content string) {
 		}
 		if !json.Valid([]byte(line)) {
 			t.Errorf("%s: line %d is not valid JSON: %q", label, i+1, line)
-			pretty.WriteString(line + "\n")
-			continue
 		}
-		// pretty print json
-		var buf bytes.Buffer
-		if err := json.Indent(&buf, []byte(line), "", "  "); err == nil {
-			pretty.WriteString(buf.String() + "\n")
-		} else {
-			pretty.WriteString(line + "\n")
+		t.Logf("%s line %d: %s", label, i+1, line)
+	}
+}
+
+// assertSliceEqual verifies that want and got contain the same elements
+// (order-independent, no duplicates allowed in got).
+func assertSliceEqual(t *testing.T, want, got []string) {
+	t.Helper()
+
+	seen := make(map[string]bool, len(got))
+	for _, v := range got {
+		if seen[v] {
+			t.Errorf("duplicate element: %s", v)
+		}
+		seen[v] = true
+	}
+	for _, v := range want {
+		if !seen[v] {
+			t.Errorf("missing element: %s", v)
 		}
 	}
-	t.Logf("=== %s ===\n%s", label, strings.TrimSpace(pretty.String()))
+	if len(got) != len(want) {
+		t.Errorf("length mismatch: got %d, want %d", len(got), len(want))
+	}
 }
 
 // ── Setup ────────────────────────────────────────────────────────────────
@@ -273,6 +300,7 @@ func TestE2E(t *testing.T) {
 
 	t.Run("Files", testFiles)
 	t.Run("Batches", testBatches)
+	t.Run("Concurrent", testConcurrent)
 	t.Run("MultiTenant", testMultiTenant)
 	t.Run("Observability", testObservability)
 }

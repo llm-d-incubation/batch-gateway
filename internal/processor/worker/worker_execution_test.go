@@ -1573,6 +1573,89 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 }
 
 // =====================================================================
+// Tests: uploadPartialResults — empty / missing files
+// =====================================================================
+
+// TestUploadPartialResults_EmptyFiles verifies that when both output and error files
+// exist but are empty (0 bytes), uploadPartialResults returns empty file IDs and does
+// not create any file records in the database.
+func TestUploadPartialResults_EmptyFiles(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "partial-empty"
+	tenantID := "tenant__tenantA"
+
+	jobDir, err := env.p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := env.p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile output: %v", err)
+	}
+	errorPath, _ := env.p.jobErrorFilePath(jobID, tenantID)
+	if err := os.WriteFile(errorPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	dbJob := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+	}
+
+	ctx := testLoggerCtx()
+	outputFileID, errorFileID := env.p.uploadPartialResults(ctx, jobInfo, dbJob)
+
+	if outputFileID != "" {
+		t.Fatalf("outputFileID = %q, want empty (output file was 0 bytes)", outputFileID)
+	}
+	if errorFileID != "" {
+		t.Fatalf("errorFileID = %q, want empty (error file was 0 bytes)", errorFileID)
+	}
+}
+
+// TestUploadPartialResults_MissingFiles verifies that when neither output nor error
+// files exist on disk, uploadPartialResults returns empty file IDs without error.
+func TestUploadPartialResults_MissingFiles(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "partial-missing"
+	tenantID := "tenant__tenantA"
+
+	jobDir, err := env.p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	dbJob := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
+	}
+
+	ctx := testLoggerCtx()
+	outputFileID, errorFileID := env.p.uploadPartialResults(ctx, jobInfo, dbJob)
+
+	if outputFileID != "" {
+		t.Fatalf("outputFileID = %q, want empty (output file does not exist)", outputFileID)
+	}
+	if errorFileID != "" {
+		t.Fatalf("errorFileID = %q, want empty (error file does not exist)", errorFileID)
+	}
+}
+
+// =====================================================================
 // Tests: cleanupJobArtifacts
 // =====================================================================
 

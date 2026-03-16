@@ -75,6 +75,21 @@ func doTestMultiTenantIsolation(t *testing.T) {
 		}
 	}
 
+	// Tenant B should not be able to create a batch using tenant A's file
+	_, err = clientB.Batches.New(ctx, openai.BatchNewParams{
+		InputFileID:      fileA.ID,
+		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+	})
+	if err == nil {
+		t.Error("tenant B was able to create a batch with tenant A's file; expected error")
+	} else {
+		var apiErr *openai.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 when tenant B uses tenant A's file_id, got %d", apiErr.StatusCode)
+		}
+	}
+
 	// ── Batches isolation ────────────────────────────────────────────────
 
 	// Tenant A creates a batch
