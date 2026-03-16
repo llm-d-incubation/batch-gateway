@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -782,5 +783,111 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 	// no persistent status transition should be attempted for not-runnable jobs.
 	if dbClient.StatusCalls(openai.BatchStatusCompleted) > 0 || dbClient.StatusCalls(openai.BatchStatusFailed) > 0 || dbClient.StatusCalls(openai.BatchStatusExpired) > 0 {
 		t.Fatalf("expected no status updates for not-runnable job")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stream: true rejection
+// ---------------------------------------------------------------------------
+
+func TestExtractModelAndPrefixHash_StreamTrue_ReturnsError(t *testing.T) {
+	line := []byte(`{"body":{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, _, err := extractModelAndPrefixHash(line)
+	if err == nil {
+		t.Fatal("expected error for stream: true, got nil")
+	}
+	if !strings.Contains(err.Error(), "streaming is not supported") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractModelAndPrefixHash_StreamFalse_OK(t *testing.T) {
+	line := []byte(`{"body":{"model":"gpt-4","stream":false,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	model, _, err := extractModelAndPrefixHash(line)
+	if err != nil {
+		t.Fatalf("unexpected error for stream: false: %v", err)
+	}
+	if model != "gpt-4" {
+		t.Fatalf("expected model gpt-4, got %s", model)
+	}
+}
+
+func TestExtractModelAndPrefixHash_StreamOmitted_OK(t *testing.T) {
+	line := []byte(`{"body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	model, _, err := extractModelAndPrefixHash(line)
+	if err != nil {
+		t.Fatalf("unexpected error when stream is omitted: %v", err)
+	}
+	if model != "gpt-4" {
+		t.Fatalf("expected model gpt-4, got %s", model)
+	}
+}
+
+func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	tenantID := uniqueTestFolder(t, "tenantA/stream-reject")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	cleanMockFilesFolder(t, folder)
+
+	var remoteBuf bytes.Buffer
+	remoteBuf.WriteString(`{"body":{"model":"m1","messages":[{"role":"user","content":"ok"}]}}` + "\n")
+	remoteBuf.WriteString(`{"body":{"model":"m1","stream":true,"messages":[{"role":"user","content":"bad"}]}}` + "\n")
+	remoteBuf.WriteString(`{"body":{"model":"m1","messages":[{"role":"user","content":"ok2"}]}}` + "\n")
+
+	filename := "input.jsonl"
+	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+
+	inputFileID := "file-stream-reject"
+	fileSpec := &openai.FileObject{Filename: filename}
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, fileSpec)},
+	}
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-stream-reject"
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	var cancelRequested atomic.Bool
+	err = p.preProcessJob(ctx, jobInfo, &cancelRequested)
+	if err == nil {
+		t.Fatal("expected preProcessJob to fail for input with stream: true")
+	}
+	if !strings.Contains(err.Error(), "streaming is not supported") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
