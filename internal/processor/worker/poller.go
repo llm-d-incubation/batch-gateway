@@ -77,28 +77,22 @@ func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) erro
 	return nil
 }
 
-func (p *Poller) fetchJobItem(ctx context.Context, task *db.BatchJobPriority) (*db.BatchItem, error) {
+func (p *Poller) fetchJobItemByID(ctx context.Context, jobID string) (*db.BatchItem, error) {
 	logger := klog.FromContext(ctx)
 
-	// get only one job data
-	ids := []string{task.ID}
 	jobs, _, _, err := p.db.DBGet(ctx,
 		&db.BatchQuery{
-			BaseQuery: db.BaseQuery{IDs: ids},
+			BaseQuery: db.BaseQuery{IDs: []string{jobID}},
 		},
 		true, 0, 1)
-
-	// system error. (db connection, etc. temporary error)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Temporary DB error. Need to Re-enqueue the job.")
+		logger.V(logging.ERROR).Error(err, "Failed to fetch job item from DB")
 		return nil, err
 	}
 
-	// data inconsistency. job data is not in the db while the task is in the queue.
-	// don't re-enqueue and return nil. job is already deleted from the queue by the dequeue function.
+	// (nil, nil) signals "not found" — caller decides how to handle.
 	if len(jobs) == 0 {
-		jobDataErr := fmt.Errorf("Job data for %s does not exist", task.ID)
-		logger.Error(jobDataErr, "CRITICAL: Job data is not in the DB while the task is in the queue. Returning error.")
+		logger.V(logging.DEBUG).Info("Job item not found in DB", "jobId", jobID)
 		return nil, nil
 	}
 
