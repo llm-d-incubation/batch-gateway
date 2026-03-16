@@ -26,6 +26,7 @@ JAEGER_NAME="${JAEGER_NAME:-jaeger}"
 VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
 USE_KIND="${USE_KIND:-true}"
+DELETE_CLUSTER="${DELETE_CLUSTER:-}"  # Set to "yes" to skip cluster deletion prompt
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
@@ -103,13 +104,30 @@ cleanup_kind_cluster() {
         return
     fi
 
-    step "Deleting kind cluster '${KIND_CLUSTER_NAME}'..."
+    # Check if cluster exists
+    if ! kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
+        log "Kind cluster '${KIND_CLUSTER_NAME}' not found, skipping."
+        return
+    fi
 
-    if kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
+    # Check if DELETE_CLUSTER is set to skip prompt
+    local delete_cluster="${DELETE_CLUSTER}"
+    if [ -z "${delete_cluster}" ]; then
+        # Ask user if they want to delete the kind cluster
+        echo ""
+        warn "Do you also want to delete the kind cluster '${KIND_CLUSTER_NAME}'?"
+        log "  (You can skip this to keep the cluster for future use)"
+        read -p "Delete kind cluster? (yes/no): " -r
+        echo
+        delete_cluster="${REPLY}"
+    fi
+
+    if [[ $delete_cluster =~ ^[Yy][Ee][Ss]$ ]]; then
+        step "Deleting kind cluster '${KIND_CLUSTER_NAME}'..."
         kind delete cluster --name "${KIND_CLUSTER_NAME}"
         log "Kind cluster '${KIND_CLUSTER_NAME}' deleted."
     else
-        log "Kind cluster '${KIND_CLUSTER_NAME}' not found, skipping."
+        log "Kind cluster '${KIND_CLUSTER_NAME}' preserved."
     fi
 }
 
@@ -142,10 +160,11 @@ main() {
         die "kubectl not found. Please install it first."
     fi
 
-    # Confirm deletion if using kind
+    # Confirm deletion
     if [ "${USE_KIND}" = "true" ]; then
-        warn "This will delete the kind cluster '${KIND_CLUSTER_NAME}' and all resources."
-        read -p "Are you sure? (yes/no): " -r
+        warn "This will delete all batch-gateway resources from the kind cluster '${KIND_CLUSTER_NAME}'."
+        log "  (You will be asked separately about deleting the cluster itself)"
+        read -p "Proceed with cleanup? (yes/no): " -r
         echo
         if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
             log "Cleanup cancelled."
