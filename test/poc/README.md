@@ -17,10 +17,10 @@ This directory contains demo files for testing the Batch Gateway system.
    ```
 
    This will start:
-   - API Server at https://localhost:8000
-   - Processor at http://localhost:9090
-   - Jaeger UI at http://localhost:16686
-   - Metrics endpoints at http://localhost:8081 (API) and http://localhost:9090 (Processor)
+   - API Server at <https://localhost:8000>
+   - Processor at <http://localhost:9090>
+   - Jaeger UI at <http://localhost:16686>
+   - Metrics endpoints at <http://localhost:8081> (API) and <http://localhost:9090> (Processor)
 
 2. **Choose Your Demo Tool**:
    - **Using demo.http**: Install the REST Client for Visual Studio Code extension (Ctrl+Shift+X / Cmd+Shift+X)
@@ -86,7 +86,7 @@ Both models are mock simulators configured in the dev deployment to demonstrate 
 
 ### Jaeger Traces
 
-Open http://localhost:16686 in your browser to view distributed traces:
+Open <http://localhost:16686> in your browser to view distributed traces:
 
 - Select service: `batch-gateway`
 - Search by batch ID to see the full request flow
@@ -96,8 +96,8 @@ Open http://localhost:16686 in your browser to view distributed traces:
 
 View metrics at:
 
-- API Server: http://localhost:8081/metrics
-- Processor: http://localhost:9090/metrics
+- API Server: <http://localhost:8081/metrics>
+- Processor: <http://localhost:9090/metrics>
 
 Key metrics to watch:
 
@@ -109,8 +109,8 @@ Key metrics to watch:
 
 ### Health Endpoints
 
-- API Server Health: http://localhost:8081/health
-- Processor Health: http://localhost:9090/health
+- API Server Health: <http://localhost:8081/health>
+- Processor Health: <http://localhost:9090/health>
 
 ## Troubleshooting
 
@@ -133,6 +133,6 @@ Key metrics to watch:
 
 ### Batch Stuck in Processing
 
-- View processor metrics to see if it's processing: http://localhost:9090/metrics
-- Check processor health: http://localhost:9090/health
+- View processor metrics to see if it's processing: <http://localhost:9090/metrics>
+- Check processor health: <http://localhost:9090/health>
 - View processor logs for errors
