@@ -6,6 +6,7 @@ This directory contains demo files for testing the Batch Gateway system.
 
 - **batch_input.jsonl**: Batch input file with 40 diverse inference requests distributed across two models: 20 requests for `sim-model` and 20 for `sim-model-b` (demonstrates multi-model routing with interweaved requests). Used for both complete processing and cancellation demos.
 - **demo.http**: REST Client format file for VS Code REST Client plugin with two complete demo sequences.
+- **curl_demo.md**: Fast-track demo guide using curl commands from the command line, with detailed examples for complete batch processing and cancellation workflows.
 
 ## Prerequisites
 
@@ -20,9 +21,9 @@ This directory contains demo files for testing the Batch Gateway system.
    - Jaeger UI at http://localhost:16686
    - Metrics endpoints at http://localhost:8081 (API) and http://localhost:9090 (Processor)
 
-2. **Install VS Code REST Client Extension**:
-   - Open VS Code Extensions (Ctrl+Shift+X / Cmd+Shift+X)
-   - Install the REST Client for Visual Studio Code extension
+2. **Choose Your Demo Tool**:
+   - **Using demo.http**: Install the REST Client for Visual Studio Code extension (Ctrl+Shift+X / Cmd+Shift+X)
+   - **Using curl_demo.md**: Ensure `curl` and `jq` are available on your system
 
 ## Demo Sequences
 
@@ -36,15 +37,6 @@ This demo shows the full lifecycle of a batch job:
 4. **Download results** when processing completes
 5. **View system metrics** from API server and processor
 
-**Steps**:
-
-1. Open `demo.http` in VS Code
-2. Click "Send Request" to upload the file
-3. Click "Send Request" to create the batch
-4. Click "Send Request" to check status (repeat until status = "completed")
-5. Click "Send Request" to download results
-6. Click "Send Request" to view metrics and health
-
 ### Sequence 2: Batch Cancellation Flow
 
 This demo shows how to cancel a running batch job:
@@ -55,16 +47,6 @@ This demo shows how to cancel a running batch job:
 4. **Cancel the batch** immediately
 5. **Verify cancelled status**
 6. **Download partial results** (completed requests before cancellation)
-
-**Steps**:
-
-1. Open `demo.http` in VS Code
-2. Scroll to "DEMO SEQUENCE 2"
-3. Click "Send Request" to upload the file
-4. Click "Send Request" to create the batch
-5. **Immediately** click "Send Request" to cancel the batch
-6. Click "Send Request" to verify cancellation
-7. Click "Send Request" to see partial results (if any)
 
 ## Request Format
 
@@ -103,7 +85,7 @@ Both models are mock simulators configured in the dev deployment to demonstrate 
 
 ### Jaeger Traces
 Open http://localhost:16686 in your browser to view distributed traces:
-- Select service: `batch-gateway-apiserver` or `batch-gateway-processor`
+- Select service: `batch-gateway`
 - Search by batch ID to see the full request flow
 - View span details to see timing and errors
 
@@ -120,39 +102,9 @@ Key metrics to watch:
 - `batch_gateway_processor_inference_duration_seconds`: Inference request time
 
 ### Health Endpoints
+
 - API Server Health: http://localhost:8081/health
 - Processor Health: http://localhost:9090/health
-
-## Using cURL Instead of REST Client
-
-If you prefer using cURL from the command line, you can extract the requests from `demo.txt` and run them manually. For example:
-
-```bash
-# Upload file
-curl -k -X POST https://localhost:8000/v1/files \
-  -H "X-MaaS-Username: demo-user" \
-  -H "Authorization: Bearer unused" \
-  -F "purpose=batch" \
-  -F "file=@batch_input.jsonl;type=application/jsonl"
-
-# Create batch (replace FILE_ID)
-curl -k -X POST https://localhost:8000/v1/batches \
-  -H "X-MaaS-Username: demo-user" \
-  -H "Authorization: Bearer unused" \
-  -H "Content-Type: application/json" \
-  -d '{"input_file_id":"FILE_ID","endpoint":"/v1/chat/completions","completion_window":"24h"}'
-
-# Check status (replace BATCH_ID)
-curl -k https://localhost:8000/v1/batches/BATCH_ID \
-  -H "X-MaaS-Username: demo-user" \
-  -H "Authorization: Bearer unused"
-```
-
-## Cleanup
-
-To clean up files after testing, use the cleanup requests at the end of `demo.http`.
-
-**Note**: Files can be deleted using the DELETE endpoint. Batches are permanent records and cannot be deleted.
 
 ## Troubleshooting
 
