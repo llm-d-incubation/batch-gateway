@@ -62,223 +62,222 @@ func setupTestHandlerWithConfig(config *common.ServerConfig) *BatchAPIHandler {
 
 func TestBatchHandler(t *testing.T) {
 	t.Run("CreateBatch", func(t *testing.T) {
-		t.Run("Basic", func(t *testing.T) {
-			handler := setupTestHandler()
-
-			// First, create a file in the database
-			fileItem := &dbapi.FileItem{
-				BaseIndexes: dbapi.BaseIndexes{
-					ID:       "file-abc123",
-					TenantID: common.DefaultTenantID,
+		t.Run("Success", func(t *testing.T) {
+			successCases := []struct {
+				name               string
+				fileID             string
+				outputExpiresAfter *openai.OutputExpiresAfter
+				wantTags           map[string]string
+			}{
+				{
+					name:   "Basic",
+					fileID: "file-abc123",
+				},
+				{
+					name:   "WithExpires",
+					fileID: "file-with-expiry",
+					outputExpiresAfter: &openai.OutputExpiresAfter{
+						Seconds: 86400,
+						Anchor:  "created_at",
+					},
+					wantTags: map[string]string{
+						batch_types.TagOutputExpiresAfterSeconds: "86400",
+						batch_types.TagOutputExpiresAfterAnchor:  "created_at",
+					},
 				},
 			}
-			ctx := context.Background()
-			if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
-				t.Fatalf("Failed to store file: %v", err)
-			}
+			for _, tc := range successCases {
+				t.Run(tc.name, func(t *testing.T) {
+					handler := setupTestHandler()
+					ctx := context.Background()
 
-			// create batch
-			reqBody := openai.CreateBatchRequest{
-				InputFileID:      "file-abc123",
-				Endpoint:         openai.EndpointChatCompletions,
-				CompletionWindow: "24h",
-			}
+					if err := handler.clients.FileDB.DBStore(ctx, &dbapi.FileItem{
+						BaseIndexes: dbapi.BaseIndexes{ID: tc.fileID, TenantID: common.DefaultTenantID},
+					}); err != nil {
+						t.Fatalf("Failed to store file: %v", err)
+					}
 
-			body, err := json.Marshal(reqBody)
-			if err != nil {
-				t.Fatalf("Failed to marshal request body: %v", err)
-			}
-			req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rr := httptest.NewRecorder()
-			handler.CreateBatch(rr, req)
+					reqBody := openai.CreateBatchRequest{
+						InputFileID:        tc.fileID,
+						Endpoint:           openai.EndpointChatCompletions,
+						CompletionWindow:   "24h",
+						OutputExpiresAfter: tc.outputExpiresAfter,
+					}
+					body, err := json.Marshal(reqBody)
+					if err != nil {
+						t.Fatalf("Failed to marshal request body: %v", err)
+					}
+					req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
+					req.Header.Set("Content-Type", "application/json")
+					rr := httptest.NewRecorder()
+					handler.CreateBatch(rr, req)
 
-			// verify response
-			if status := rr.Code; status != http.StatusOK {
-				t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
-			}
-			t.Logf("Response Body: %s", rr.Body.String())
+					if status := rr.Code; status != http.StatusOK {
+						t.Fatalf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+					}
+					t.Logf("Response Body: %s", rr.Body.String())
 
-			var batch openai.Batch
-			if err := json.NewDecoder(rr.Body).Decode(&batch); err != nil {
-				t.Fatalf("Failed to decode response body: %v", err)
-			}
+					var batch openai.Batch
+					if err := json.NewDecoder(rr.Body).Decode(&batch); err != nil {
+						t.Fatalf("Failed to decode response body: %v", err)
+					}
 
-			if batch.Object != "batch" {
-				t.Errorf("Expected object to be 'batch', got %v", batch.Object)
-			}
-			if batch.Endpoint != openai.EndpointChatCompletions {
-				t.Errorf("Expected endpoint to be '%s', got %v", openai.EndpointChatCompletions, batch.Endpoint)
-			}
-			if batch.InputFileID != "file-abc123" {
-				t.Errorf("Expected input_file_id to be 'file-abc123', got %v", batch.InputFileID)
-			}
-			if batch.CompletionWindow != "24h" {
-				t.Errorf("Expected completion_window to be '24h', got %v", batch.CompletionWindow)
-			}
-			if batch.BatchStatusInfo.Status != openai.BatchStatusValidating {
-				t.Errorf("Expected status to be '%s', got %v", openai.BatchStatusValidating, batch.BatchStatusInfo)
-			}
-			if batch.RequestCounts.Total != 0 {
-				t.Errorf("Expected request_counts.total to be 0, got %v", batch.RequestCounts.Total)
-			}
-			if batch.ID == "" {
-				t.Error("Expected batch ID to be generated")
-			}
-		})
+					if batch.ID == "" {
+						t.Error("Expected batch ID to be generated")
+					}
+					if batch.Object != "batch" {
+						t.Errorf("Expected object to be 'batch', got %v", batch.Object)
+					}
+					if batch.Endpoint != openai.EndpointChatCompletions {
+						t.Errorf("Expected endpoint to be '%s', got %v", openai.EndpointChatCompletions, batch.Endpoint)
+					}
+					if batch.InputFileID != tc.fileID {
+						t.Errorf("Expected input_file_id to be %q, got %v", tc.fileID, batch.InputFileID)
+					}
+					if batch.CompletionWindow != "24h" {
+						t.Errorf("Expected completion_window to be '24h', got %v", batch.CompletionWindow)
+					}
+					if batch.BatchStatusInfo.Status != openai.BatchStatusValidating {
+						t.Errorf("Expected status to be '%s', got %v", openai.BatchStatusValidating, batch.BatchStatusInfo)
+					}
+					if batch.RequestCounts.Total != 0 {
+						t.Errorf("Expected request_counts.total to be 0, got %v", batch.RequestCounts.Total)
+					}
 
-		t.Run("WithOutputExpiresAfter", func(t *testing.T) {
-			handler := setupTestHandler()
-
-			// First, create a file in the database
-			fileItem := &dbapi.FileItem{
-				BaseIndexes: dbapi.BaseIndexes{
-					ID:       "file-with-expiry",
-					TenantID: common.DefaultTenantID,
-				},
-			}
-			ctx := context.Background()
-			if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
-				t.Fatalf("Failed to store file: %v", err)
-			}
-
-			// Create batch with OutputExpiresAfter
-			reqBody := openai.CreateBatchRequest{
-				InputFileID:      "file-with-expiry",
-				Endpoint:         openai.EndpointChatCompletions,
-				CompletionWindow: "24h",
-				OutputExpiresAfter: &openai.OutputExpiresAfter{
-					Seconds: 86400, // 1 day
-					Anchor:  "created_at",
-				},
-			}
-
-			body, err := json.Marshal(reqBody)
-			if err != nil {
-				t.Fatalf("Failed to marshal request body: %v", err)
-			}
-			req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rr := httptest.NewRecorder()
-			handler.CreateBatch(rr, req)
-
-			// Verify response
-			if status := rr.Code; status != http.StatusOK {
-				t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
-			}
-
-			var batch openai.Batch
-			if err := json.NewDecoder(rr.Body).Decode(&batch); err != nil {
-				t.Fatalf("Failed to decode response body: %v", err)
-			}
-
-			// Verify batch was created
-			if batch.ID == "" {
-				t.Error("Expected batch ID to be generated")
-			}
-
-			// Verify tags were stored in database
-			query := &dbapi.BatchQuery{
-				BaseQuery: dbapi.BaseQuery{
-					IDs:      []string{batch.ID},
-					TenantID: common.DefaultTenantID,
-				},
-			}
-			items, _, _, err := handler.clients.BatchDB.DBGet(ctx, query, true, 0, 1)
-			if err != nil {
-				t.Fatalf("Failed to retrieve batch from database: %v", err)
-			}
-			if len(items) == 0 {
-				t.Fatal("Batch not found in database")
-			}
-
-			dbItem := items[0]
-			if dbItem.Tags[batch_types.TagOutputExpiresAfterSeconds] != "86400" {
-				t.Errorf("Expected output_expires_after_seconds tag to be '86400', got %q",
-					dbItem.Tags[batch_types.TagOutputExpiresAfterSeconds])
-			}
-			if dbItem.Tags[batch_types.TagOutputExpiresAfterAnchor] != "created_at" {
-				t.Errorf("Expected output_expires_after_anchor tag to be 'created_at', got %q",
-					dbItem.Tags[batch_types.TagOutputExpiresAfterAnchor])
+					if len(tc.wantTags) > 0 {
+						query := &dbapi.BatchQuery{
+							BaseQuery: dbapi.BaseQuery{
+								IDs:      []string{batch.ID},
+								TenantID: common.DefaultTenantID,
+							},
+						}
+						items, _, _, err := handler.clients.BatchDB.DBGet(ctx, query, true, 0, 1)
+						if err != nil {
+							t.Fatalf("Failed to retrieve batch from database: %v", err)
+						}
+						if len(items) == 0 {
+							t.Fatal("Batch not found in database")
+						}
+						for k, want := range tc.wantTags {
+							if got := items[0].Tags[k]; got != want {
+								t.Errorf("Expected tag %q to be %q, got %q", k, want, got)
+							}
+						}
+					}
+				})
 			}
 		})
 
 		t.Run("Negative", func(t *testing.T) {
-			t.Run("UnknownField", func(t *testing.T) {
-				handler := setupTestHandler()
+			negativeCases := []struct {
+				name    string
+				fileID  string // if non-empty, pre-store this file before the request
+				reqBody string // raw JSON request body
+				wantMsg string // if non-empty, verify error message
+			}{
+				{
+					name:    "InvalidEndpoint",
+					fileID:  "file-invalid-endpoint",
+					reqBody: `{"input_file_id":"file-invalid-endpoint","endpoint":"/v1/invalid","completion_window":"24h"}`,
+				},
+				{
+					name:    "MissingCompletionWindow",
+					reqBody: `{"input_file_id":"file-abc123","endpoint":"/v1/chat/completions"}`,
+				},
+				{
+					name:    "InvalidCompletionWindow",
+					fileID:  "file-invalid-cw",
+					reqBody: `{"input_file_id":"file-invalid-cw","endpoint":"/v1/chat/completions","completion_window":"abc"}`,
+				},
+				{
+					name:    "MissingEndpoint",
+					reqBody: `{"input_file_id":"file-abc123","completion_window":"24h"}`,
+				},
+				{
+					name:    "UnknownField",
+					reqBody: `{"input_file_id":"file-abc123","endpoint":"/v1/chat/completions","completion_window":"24h","invalid_field":"some_value"}`,
+					wantMsg: `json: unknown field "invalid_field"`,
+				},
+				{
+					name:    "FileNotFound",
+					reqBody: `{"input_file_id":"file-nonexistent","endpoint":"/v1/chat/completions","completion_window":"24h"}`,
+					wantMsg: "Input file with ID 'file-nonexistent' not found",
+				},
+			}
+			for _, tc := range negativeCases {
+				t.Run(tc.name, func(t *testing.T) {
+					handler := setupTestHandler()
 
-				// Send request with unknown field
-				reqBodyJSON := `{
-					"input_file_id": "file-abc123",
-					"endpoint": "/v1/chat/completions",
-					"completion_window": "24h",
-					"invalid_field": "some_value"
-				}`
+					if tc.fileID != "" {
+						if err := handler.clients.FileDB.DBStore(context.Background(), &dbapi.FileItem{
+							BaseIndexes: dbapi.BaseIndexes{ID: tc.fileID, TenantID: common.DefaultTenantID},
+						}); err != nil {
+							t.Fatalf("Failed to store file: %v", err)
+						}
+					}
 
-				req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader([]byte(reqBodyJSON)))
-				req.Header.Set("Content-Type", "application/json")
-				rr := httptest.NewRecorder()
-				handler.CreateBatch(rr, req)
+					req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader([]byte(tc.reqBody)))
+					req.Header.Set("Content-Type", "application/json")
+					rr := httptest.NewRecorder()
+					handler.CreateBatch(rr, req)
 
-				// verify response
-				if status := rr.Code; status != http.StatusBadRequest {
-					t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusBadRequest)
+					if rr.Code != http.StatusBadRequest {
+						t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+					}
+
+					if tc.wantMsg != "" {
+						var errResp openai.ErrorResponse
+						if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+							t.Fatalf("Failed to decode error response: %v", err)
+						}
+						if errResp.Error.Message != tc.wantMsg {
+							t.Errorf("expected error message %q, got %q", tc.wantMsg, errResp.Error.Message)
+						}
+					}
+				})
+			}
+
+			t.Run("OutputExpiresAfter", func(t *testing.T) {
+				oeaCases := []struct {
+					name    string
+					fileID  string
+					anchor  string
+					seconds int64
+				}{
+					{"InvalidAnchor", "file-oea-anchor", "updated_at", 86400},
+					{"SecondsTooSmall", "file-oea-small", "created_at", 100},
+					{"SecondsTooLarge", "file-oea-large", "created_at", 9999999},
+					{"SecondsNegative", "file-oea-neg", "created_at", -1},
 				}
-				t.Logf("Response Body: %s", rr.Body.String())
+				for _, tc := range oeaCases {
+					t.Run(tc.name, func(t *testing.T) {
+						handler := setupTestHandler()
 
-				var errResp openai.ErrorResponse
-				if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
-					t.Fatalf("Failed to decode error response body: %v", err)
-				}
+						if err := handler.clients.FileDB.DBStore(context.Background(), &dbapi.FileItem{
+							BaseIndexes: dbapi.BaseIndexes{ID: tc.fileID, TenantID: common.DefaultTenantID},
+						}); err != nil {
+							t.Fatalf("Failed to store file: %v", err)
+						}
 
-				// Verify error contains information about the unknown field
-				if errResp.Error.Code != http.StatusBadRequest {
-					t.Errorf("Expected error code to be %d, got %d", http.StatusBadRequest, errResp.Error.Code)
-				}
+						reqBody := openai.CreateBatchRequest{
+							InputFileID:      tc.fileID,
+							Endpoint:         openai.EndpointChatCompletions,
+							CompletionWindow: "24h",
+							OutputExpiresAfter: &openai.OutputExpiresAfter{
+								Anchor:  tc.anchor,
+								Seconds: tc.seconds,
+							},
+						}
+						body, _ := json.Marshal(reqBody)
+						req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
+						req.Header.Set("Content-Type", "application/json")
+						rr := httptest.NewRecorder()
+						handler.CreateBatch(rr, req)
 
-				expectedMsg := "json: unknown field \"invalid_field\""
-				if errResp.Error.Message != expectedMsg {
-					t.Errorf("Expected error message to be %q, got %q", expectedMsg, errResp.Error.Message)
-				}
-			})
-
-			t.Run("FileNotFound", func(t *testing.T) {
-				handler := setupTestHandler()
-
-				// Create batch with non-existent file
-				reqBody := openai.CreateBatchRequest{
-					InputFileID:      "file-nonexistent",
-					Endpoint:         openai.EndpointChatCompletions,
-					CompletionWindow: "24h",
-				}
-
-				body, err := json.Marshal(reqBody)
-				if err != nil {
-					t.Fatalf("Failed to marshal request body: %v", err)
-				}
-				req := httptest.NewRequest(http.MethodPost, "/v1/batches", bytes.NewReader(body))
-				req.Header.Set("Content-Type", "application/json")
-				rr := httptest.NewRecorder()
-				handler.CreateBatch(rr, req)
-
-				// verify response
-				if status := rr.Code; status != http.StatusBadRequest {
-					t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusBadRequest)
-				}
-				t.Logf("Response Body: %s", rr.Body.String())
-
-				var errResp openai.ErrorResponse
-				if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
-					t.Fatalf("Failed to decode error response body: %v", err)
-				}
-
-				// Verify error message mentions file not found
-				expectedMsg := "Input file with ID 'file-nonexistent' not found"
-				if errResp.Error.Message != expectedMsg {
-					t.Errorf("Expected error message to be %q, got %q", expectedMsg, errResp.Error.Message)
-				}
-				if errResp.Error.Type != "invalid_request_error" {
-					t.Errorf("Expected error type to be 'invalid_request_error', got %q", errResp.Error.Type)
+						if rr.Code != http.StatusBadRequest {
+							t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+						}
+					})
 				}
 			})
 		})
@@ -663,15 +662,35 @@ func TestBatchHandler(t *testing.T) {
 		if respBatch.ID != batchID {
 			t.Errorf("Expected batch ID to be %s, got %s", batchID, respBatch.ID)
 		}
-		if respBatch.Status != openai.BatchStatusValidating {
-			t.Errorf("Expected status to be '%s', got %s", openai.BatchStatusValidating, respBatch.Status)
+		if respBatch.Object != batch.Object {
+			t.Errorf("Expected object to be %q, got %q", batch.Object, respBatch.Object)
+		}
+		if respBatch.Endpoint != batch.Endpoint {
+			t.Errorf("Expected endpoint to be %q, got %q", batch.Endpoint, respBatch.Endpoint)
+		}
+		if respBatch.InputFileID != batch.InputFileID {
+			t.Errorf("Expected input_file_id to be %q, got %q", batch.InputFileID, respBatch.InputFileID)
+		}
+		if respBatch.CompletionWindow != batch.CompletionWindow {
+			t.Errorf("Expected completion_window to be %q, got %q", batch.CompletionWindow, respBatch.CompletionWindow)
+		}
+		if respBatch.CreatedAt != batch.CreatedAt {
+			t.Errorf("Expected created_at to be %d, got %d", batch.CreatedAt, respBatch.CreatedAt)
+		}
+		if respBatch.Status != batch.Status {
+			t.Errorf("Expected status to be %q, got %q", batch.Status, respBatch.Status)
+		}
+		if respBatch.RequestCounts != batch.RequestCounts {
+			t.Errorf("Expected request_counts to be %+v, got %+v", batch.RequestCounts, respBatch.RequestCounts)
 		}
 	})
 
 	t.Run("ListBatches", func(t *testing.T) {
 		handler := setupTestHandler()
 
+		createdAt := time.Now().UTC().Unix()
 		// create two batches
+		createdBatches := make([]openai.Batch, 2)
 		for i := range 2 {
 			batchID := fmt.Sprintf("batch-test-%d", i)
 			batch := openai.Batch{
@@ -681,7 +700,7 @@ func TestBatchHandler(t *testing.T) {
 					InputFileID:      fmt.Sprintf("file-%d", i),
 					Endpoint:         openai.EndpointChatCompletions,
 					CompletionWindow: "24h",
-					CreatedAt:        time.Now().UTC().Unix(),
+					CreatedAt:        createdAt,
 				},
 				BatchStatusInfo: openai.BatchStatusInfo{
 					Status: openai.BatchStatusValidating,
@@ -692,6 +711,7 @@ func TestBatchHandler(t *testing.T) {
 					},
 				},
 			}
+			createdBatches[i] = batch
 			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{})
 			if err != nil {
 				t.Fatalf("Failed to convert batch to DB item: %v", err)
@@ -708,7 +728,7 @@ func TestBatchHandler(t *testing.T) {
 
 		// verify response
 		if status := rr.Code; status != http.StatusOK {
-			t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+			t.Fatalf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
 		}
 		t.Logf("Response Body: %s", rr.Body.String())
 
@@ -720,85 +740,176 @@ func TestBatchHandler(t *testing.T) {
 		if resp.Object != "list" {
 			t.Errorf("Expected object to be 'list', got %v", resp.Object)
 		}
-
 		if len(resp.Data) != 2 {
-			t.Errorf("Expected 2 batches, got %d", len(resp.Data))
+			t.Fatalf("Expected 2 batches, got %d", len(resp.Data))
+		}
+
+		// Verify each batch's fields match what was created
+		created := make(map[string]openai.Batch, len(createdBatches))
+		for _, b := range createdBatches {
+			created[b.ID] = b
+		}
+		for _, got := range resp.Data {
+			want, ok := created[got.ID]
+			if !ok {
+				t.Errorf("Unexpected batch ID %q in list response", got.ID)
+				continue
+			}
+			if got.Object != want.Object {
+				t.Errorf("batch %s: expected object %q, got %q", got.ID, want.Object, got.Object)
+			}
+			if got.Endpoint != want.Endpoint {
+				t.Errorf("batch %s: expected endpoint %q, got %q", got.ID, want.Endpoint, got.Endpoint)
+			}
+			if got.InputFileID != want.InputFileID {
+				t.Errorf("batch %s: expected input_file_id %q, got %q", got.ID, want.InputFileID, got.InputFileID)
+			}
+			if got.CompletionWindow != want.CompletionWindow {
+				t.Errorf("batch %s: expected completion_window %q, got %q", got.ID, want.CompletionWindow, got.CompletionWindow)
+			}
+			if got.CreatedAt != want.CreatedAt {
+				t.Errorf("batch %s: expected created_at %d, got %d", got.ID, want.CreatedAt, got.CreatedAt)
+			}
+			if got.Status != want.Status {
+				t.Errorf("batch %s: expected status %q, got %q", got.ID, want.Status, got.Status)
+			}
+			if got.RequestCounts != want.RequestCounts {
+				t.Errorf("batch %s: expected request_counts %+v, got %+v", got.ID, want.RequestCounts, got.RequestCounts)
+			}
 		}
 
 		// Verify pagination fields
-		if resp.HasMore != false {
+		if resp.HasMore {
 			t.Errorf("Expected has_more to be false, got %v", resp.HasMore)
 		}
-
 		if resp.FirstID == "" {
-			t.Errorf("Expected first_id to be set, got %v", resp.FirstID)
+			t.Error("Expected first_id to be set")
+		}
+		if resp.LastID == "" {
+			t.Error("Expected last_id to be set")
 		}
 
-		if resp.LastID == "" {
-			t.Errorf("Expected last_id to be set, got %v", resp.LastID)
-		}
+		t.Run("Negative", func(t *testing.T) {
+			negativeCases := []struct {
+				name  string
+				query string
+			}{
+				{"LimitZero", "limit=0"},
+				{"LimitTooLarge", "limit=999"},
+				{"InvalidLimit", "limit=abc"},
+				{"AfterNegative", "after=-1"},
+				{"InvalidAfter", "after=abc"},
+			}
+			for _, tc := range negativeCases {
+				t.Run(tc.name, func(t *testing.T) {
+					req := httptest.NewRequest(http.MethodGet, "/v1/batches?"+tc.query, nil)
+					rr := httptest.NewRecorder()
+					handler.ListBatches(rr, req)
+
+					if rr.Code != http.StatusBadRequest {
+						t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+					}
+				})
+			}
+		})
 	})
 
 	t.Run("CancelBatch", func(t *testing.T) {
-		handler := setupTestHandler()
+		t.Run("CancelCompletedBatch", func(t *testing.T) {
+			handler := setupTestHandler()
 
-		// create a batch first
-		batchID := "batch-test-cancel"
-		batch := openai.Batch{
-			ID: batchID,
-			BatchSpec: openai.BatchSpec{
-				Object:           "batch",
-				InputFileID:      "file-abc123",
-				Endpoint:         openai.EndpointChatCompletions,
-				CompletionWindow: "24h",
-				CreatedAt:        time.Now().UTC().Unix(),
-			},
-			BatchStatusInfo: openai.BatchStatusInfo{
-				Status: openai.BatchStatusInProgress,
-				RequestCounts: openai.BatchRequestCounts{
-					Total:     10,
-					Completed: 5,
-					Failed:    0,
+			batchID := "batch-test-cancel-completed"
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
 				},
-			},
-		}
-		slo := time.Now().UTC().Add(24 * time.Hour)
-		item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
-			batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status: openai.BatchStatusCompleted,
+				},
+			}
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to DB item: %v", err)
+			}
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+			}
 		})
-		if err != nil {
-			t.Fatalf("Failed to convert batch to DB item: %v", err)
-		}
-		if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
-			t.Fatalf("Failed to store item: %v", err)
-		}
 
-		req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
-		req.SetPathValue("batch_id", batchID)
-		rr := httptest.NewRecorder()
-		handler.CancelBatch(rr, req)
+		t.Run("CancelInProgressBatch", func(t *testing.T) {
+			handler := setupTestHandler()
 
-		// verify response
-		if status := rr.Code; status != http.StatusOK {
-			t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
-		}
-		t.Logf("Response Body: %s", rr.Body.String())
+			batchID := "batch-test-cancel"
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
+				},
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status: openai.BatchStatusInProgress,
+					RequestCounts: openai.BatchRequestCounts{
+						Total:     10,
+						Completed: 5,
+						Failed:    0,
+					},
+				},
+			}
+			slo := time.Now().UTC().Add(24 * time.Hour)
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
+				batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+			})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to DB item: %v", err)
+			}
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
 
-		var respBatch openai.Batch
-		if err := json.NewDecoder(rr.Body).Decode(&respBatch); err != nil {
-			t.Fatalf("Failed to decode response body: %v", err)
-		}
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
 
-		if respBatch.ID != batchID {
-			t.Errorf("Expected batch ID to be %s, got %s", batchID, respBatch.ID)
-		}
-		if respBatch.Status != openai.BatchStatusCancelling {
-			t.Errorf("Expected status to be '%s', got %s", openai.BatchStatusCancelling, respBatch.Status)
-		}
-		if respBatch.CancellingAt == nil {
-			t.Error("Expected cancelling_at to be set")
-		}
+			if status := rr.Code; status != http.StatusOK {
+				t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+			}
+			t.Logf("Response Body: %s", rr.Body.String())
+
+			var respBatch openai.Batch
+			if err := json.NewDecoder(rr.Body).Decode(&respBatch); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+
+			if respBatch.ID != batchID {
+				t.Errorf("Expected batch ID to be %s, got %s", batchID, respBatch.ID)
+			}
+			if respBatch.Status != openai.BatchStatusCancelling {
+				t.Errorf("Expected status to be '%s', got %s", openai.BatchStatusCancelling, respBatch.Status)
+			}
+			if respBatch.CancellingAt == nil {
+				t.Error("Expected cancelling_at to be set")
+			}
+		})
 	})
+
 }
 
 // Benchmark tests for batch handler

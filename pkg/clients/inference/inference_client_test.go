@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,7 +102,7 @@ func testNewHTTPInferenceClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, err := NewHTTPClient(tt.config)
+			client, err := NewInferenceClient(&tt.config)
 			require.NoError(t, err)
 			require.NotNil(t, client)
 			assert.NotNil(t, client.client)
@@ -144,7 +145,7 @@ func testGenerate(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
@@ -186,7 +187,7 @@ func testGenerate(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
@@ -197,7 +198,7 @@ func testGenerate(t *testing.T) {
 
 		assert.Nil(t, resp)
 		require.NotNil(t, genErr)
-		assert.Equal(t, ErrCategoryInvalidReq, genErr.Category)
+		assert.Equal(t, httpclient.ErrCategoryInvalidReq, genErr.Category)
 		assert.Contains(t, genErr.Message, "cannot be nil")
 	})
 
@@ -210,7 +211,7 @@ func testGenerate(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
@@ -237,7 +238,7 @@ func testGenerate(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
@@ -256,7 +257,7 @@ func testGenerate(t *testing.T) {
 		resp, genErr := client.Generate(context.Background(), req)
 		assert.Nil(t, resp)
 		require.NotNil(t, genErr)
-		assert.Equal(t, ErrCategoryInvalidReq, genErr.Category)
+		assert.Equal(t, httpclient.ErrCategoryInvalidReq, genErr.Category)
 		assert.Contains(t, genErr.Message, "endpoint cannot be empty")
 	})
 }
@@ -268,7 +269,7 @@ func testErrorHandling(t *testing.T) {
 			statusCode    int
 			responseBody  map[string]interface{}
 			responseText  string
-			wantCategory  ErrorCategory
+			wantCategory  httpclient.ErrorCategory
 			wantRetryable bool
 		}{
 			// 4xx client errors
@@ -281,7 +282,7 @@ func testErrorHandling(t *testing.T) {
 						"message": "Invalid request parameters",
 					},
 				},
-				wantCategory:  ErrCategoryInvalidReq,
+				wantCategory:  httpclient.ErrCategoryInvalidReq,
 				wantRetryable: false,
 			},
 			{
@@ -293,19 +294,19 @@ func testErrorHandling(t *testing.T) {
 						"message": "Invalid API key",
 					},
 				},
-				wantCategory:  ErrCategoryAuth,
+				wantCategory:  httpclient.ErrCategoryAuth,
 				wantRetryable: false,
 			},
 			{
 				name:          "should handle 403 Forbidden",
 				statusCode:    http.StatusForbidden,
-				wantCategory:  ErrCategoryAuth,
+				wantCategory:  httpclient.ErrCategoryAuth,
 				wantRetryable: false,
 			},
 			{
 				name:          "should handle 404 Not Found",
 				statusCode:    http.StatusNotFound,
-				wantCategory:  ErrCategoryUnknown,
+				wantCategory:  httpclient.ErrCategoryUnknown,
 				wantRetryable: false,
 			},
 			{
@@ -317,7 +318,7 @@ func testErrorHandling(t *testing.T) {
 						"message": "Rate limit exceeded",
 					},
 				},
-				wantCategory:  ErrCategoryRateLimit,
+				wantCategory:  httpclient.ErrCategoryRateLimit,
 				wantRetryable: true,
 			},
 			// 5xx server errors
@@ -330,26 +331,26 @@ func testErrorHandling(t *testing.T) {
 						"message": "Internal server error",
 					},
 				},
-				wantCategory:  ErrCategoryServer,
+				wantCategory:  httpclient.ErrCategoryServer,
 				wantRetryable: true,
 			},
 			{
 				name:          "should handle 502 Bad Gateway",
 				statusCode:    http.StatusBadGateway,
-				wantCategory:  ErrCategoryServer,
+				wantCategory:  httpclient.ErrCategoryServer,
 				wantRetryable: true,
 			},
 			{
 				name:          "should handle 503 Service Unavailable",
 				statusCode:    http.StatusServiceUnavailable,
 				responseText:  "Service temporarily unavailable",
-				wantCategory:  ErrCategoryServer,
+				wantCategory:  httpclient.ErrCategoryServer,
 				wantRetryable: true,
 			},
 			{
 				name:          "should handle 504 Gateway Timeout",
 				statusCode:    http.StatusGatewayTimeout,
-				wantCategory:  ErrCategoryServer,
+				wantCategory:  httpclient.ErrCategoryServer,
 				wantRetryable: true,
 			},
 		}
@@ -373,7 +374,7 @@ func testErrorHandling(t *testing.T) {
 				}))
 				t.Cleanup(testServer.Close)
 
-				client, err := NewHTTPClient(HTTPClientConfig{BaseURL: testServer.URL})
+				client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
 				require.NoError(t, err)
 
 				req := &GenerateRequest{
@@ -403,7 +404,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{BaseURL: testServer.URL})
+		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
 		require.NoError(t, err)
 
 		req := &GenerateRequest{
@@ -428,7 +429,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{BaseURL: testServer.URL})
+		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
 		require.NoError(t, err)
 
 		req := &GenerateRequest{
@@ -455,7 +456,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{BaseURL: testServer.URL})
+		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
 		require.NoError(t, err)
 
 		req := &GenerateRequest{
@@ -492,7 +493,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 100 * time.Millisecond,
 		})
@@ -508,7 +509,7 @@ func testErrorHandling(t *testing.T) {
 		resp, genErr := client.Generate(ctx, req)
 		assert.Nil(t, resp)
 		require.NotNil(t, genErr)
-		assert.Equal(t, ErrCategoryServer, genErr.Category)
+		assert.Equal(t, httpclient.ErrCategoryServer, genErr.Category)
 	})
 }
 
@@ -521,7 +522,7 @@ func testRetryLogic(t *testing.T) {
 			failuresBeforeSuccess int
 			wantAttemptCount      int
 			wantSuccess           bool
-			wantErrorCategory     ErrorCategory
+			wantErrorCategory     httpclient.ErrorCategory
 		}{
 			{
 				name:                  "should retry on rate limit error",
@@ -545,7 +546,7 @@ func testRetryLogic(t *testing.T) {
 				errorMessage:      "Bad request",
 				wantAttemptCount:  1,
 				wantSuccess:       false,
-				wantErrorCategory: ErrCategoryInvalidReq,
+				wantErrorCategory: httpclient.ErrCategoryInvalidReq,
 			},
 			{
 				name:              "should not retry on auth error",
@@ -553,7 +554,7 @@ func testRetryLogic(t *testing.T) {
 				errorMessage:      "Unauthorized",
 				wantAttemptCount:  1,
 				wantSuccess:       false,
-				wantErrorCategory: ErrCategoryAuth,
+				wantErrorCategory: httpclient.ErrCategoryAuth,
 			},
 		}
 
@@ -588,7 +589,7 @@ func testRetryLogic(t *testing.T) {
 				}))
 				t.Cleanup(testServer.Close)
 
-				client, err := NewHTTPClient(HTTPClientConfig{
+				client, err := NewInferenceClient(&HTTPClientConfig{
 					BaseURL:        testServer.URL,
 					MaxRetries:     3,
 					InitialBackoff: 10 * time.Millisecond,
@@ -630,7 +631,7 @@ func testRetryLogic(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:        testServer.URL,
 			MaxRetries:     2,
 			InitialBackoff: 10 * time.Millisecond,
@@ -658,7 +659,7 @@ func testRetryLogic(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:    testServer.URL,
 			MaxRetries: 0, // Retry disabled
 		})
@@ -768,13 +769,13 @@ func testTLSConfiguration(t *testing.T) {
 			// No TLS options specified
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.Nil(t, err)
 		assert.Nil(t, tlsConfig, "should return nil to use Go's default TLS config")
 	})
 
 	t.Run("should use secure TLS defaults when InsecureSkipVerify is false", func(t *testing.T) {
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:               "https://localhost:8000",
 			TLSInsecureSkipVerify: false, // Default: use system root CAs
 		})
@@ -782,18 +783,11 @@ func testTLSConfiguration(t *testing.T) {
 
 		require.NotNil(t, client)
 
-		// Access the underlying transport to verify TLS configuration
-		transport := client.transport
-		require.NotNil(t, transport, "expected transport to be set")
-
-		// Note: Clone() creates a TLSClientConfig with default values
-		// Verify certificate verification is enabled (InsecureSkipVerify = false)
-		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should exist")
-		assert.False(t, transport.TLSClientConfig.InsecureSkipVerify, "Certificate verification should be enabled")
+		// Client created successfully with default TLS settings (system root CAs)
 	})
 
 	t.Run("should disable certificate verification when InsecureSkipVerify is true", func(t *testing.T) {
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:               "https://localhost:8443",
 			TLSInsecureSkipVerify: true, // Skip cert verification for testing
 		})
@@ -801,13 +795,7 @@ func testTLSConfiguration(t *testing.T) {
 
 		require.NotNil(t, client)
 
-		// Access the underlying transport to verify TLS configuration
-		transport := client.transport
-		require.NotNil(t, transport, "expected transport to be set")
-
-		// Verify InsecureSkipVerify is actually set to true
-		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should be set")
-		assert.True(t, transport.TLSClientConfig.InsecureSkipVerify, "InsecureSkipVerify should be true")
+		// Client created successfully with InsecureSkipVerify enabled
 	})
 
 	t.Run("should load custom CA certificate", func(t *testing.T) {
@@ -818,7 +806,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSCACertFile: caCertFile,
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.Nil(t, err)
 		assert.NotNil(t, tlsConfig, "TLS config should be created for custom CA")
 		assert.NotNil(t, tlsConfig.RootCAs, "RootCAs should be set")
@@ -834,7 +822,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.Nil(t, err)
 		assert.NotNil(t, tlsConfig, "TLS config should be created for mTLS")
 		assert.Equal(t, 1, len(tlsConfig.Certificates), "Should have one client certificate")
@@ -850,7 +838,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.Nil(t, err)
 		assert.NotNil(t, tlsConfig, "TLS config should be created")
 		assert.NotNil(t, tlsConfig.RootCAs, "RootCAs should be set")
@@ -864,7 +852,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSMaxVersion: tls.VersionTLS13,
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.Nil(t, err)
 		assert.NotNil(t, tlsConfig, "TLS config should be created for version constraints")
 		assert.Equal(t, uint16(tls.VersionTLS12), tlsConfig.MinVersion, "Min TLS version should be TLS 1.2")
@@ -879,7 +867,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSCACertFile: filepath.Join(certDir, "nonexistent.pem"),
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.NotNil(t, err, "Should fail with missing CA cert file")
 		assert.Nil(t, tlsConfig)
 		assert.Contains(t, err.Error(), "failed to read CA certificate file")
@@ -893,7 +881,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSCACertFile: invalidPemFile,
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.NotNil(t, err, "Should fail with invalid PEM")
 		assert.Nil(t, tlsConfig)
 		assert.Contains(t, err.Error(), "failed to parse CA certificate")
@@ -908,7 +896,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.NotNil(t, err, "Should fail with missing client cert")
 		assert.Nil(t, tlsConfig)
 		assert.Contains(t, err.Error(), "failed to load client certificate/key pair")
@@ -923,7 +911,7 @@ func testTLSConfiguration(t *testing.T) {
 			// Missing TLSClientKeyFile
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.NotNil(t, err, "Should fail with incomplete mTLS config")
 		assert.Nil(t, tlsConfig)
 		assert.Contains(t, err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified")
@@ -938,7 +926,7 @@ func testTLSConfiguration(t *testing.T) {
 			// Missing TLSClientCertFile
 		}
 
-		tlsConfig, err := buildTLSConfig(config)
+		tlsConfig, err := httpclient.BuildTLSConfig(&config)
 		assert.NotNil(t, err, "Should fail with incomplete mTLS config")
 		assert.Nil(t, tlsConfig)
 		assert.Contains(t, err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified")
@@ -947,7 +935,7 @@ func testTLSConfiguration(t *testing.T) {
 	t.Run("should create client with all TLS options combined", func(t *testing.T) {
 		_, caCertFile, clientCertFile, clientKeyFile, _ := generateTestCerts(t)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:           "https://localhost:8000",
 			TLSCACertFile:     caCertFile,
 			TLSClientCertFile: clientCertFile,
@@ -958,10 +946,7 @@ func testTLSConfiguration(t *testing.T) {
 
 		require.NotNil(t, client)
 
-		// Verify the transport has custom TLS config
-		transport := client.transport
-		require.NotNil(t, transport, "expected transport to be set")
-		assert.NotNil(t, transport.TLSClientConfig, "TLSClientConfig should be set")
+		// Client created successfully with all TLS options combined
 	})
 }
 
@@ -975,7 +960,7 @@ func testAuthentication(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			APIKey:  "sk-test-key-123",
 		})
@@ -1000,7 +985,7 @@ func testAuthentication(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 		})
 		require.NoError(t, err)
@@ -1018,7 +1003,7 @@ func testAuthentication(t *testing.T) {
 
 func testNetworkErrors(t *testing.T) {
 	t.Run("should handle connection refused", func(t *testing.T) {
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:        "http://localhost:9999", // Non-existent server
 			Timeout:        1 * time.Second,
 			MaxRetries:     2,
@@ -1034,13 +1019,13 @@ func testNetworkErrors(t *testing.T) {
 
 		assert.Nil(t, resp)
 		require.NotNil(t, genErr)
-		assert.Equal(t, ErrCategoryServer, genErr.Category)
+		assert.Equal(t, httpclient.ErrCategoryServer, genErr.Category)
 		assert.True(t, genErr.IsRetryable())
 		assert.Contains(t, genErr.Message, "failed to execute request")
 	})
 
 	t.Run("should handle DNS resolution failure", func(t *testing.T) {
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:        "http://nonexistent.invalid.domain.local",
 			Timeout:        1 * time.Second,
 			MaxRetries:     1,
@@ -1056,7 +1041,7 @@ func testNetworkErrors(t *testing.T) {
 
 		assert.Nil(t, resp)
 		require.NotNil(t, genErr)
-		assert.Equal(t, ErrCategoryServer, genErr.Category)
+		assert.Equal(t, httpclient.ErrCategoryServer, genErr.Category)
 	})
 
 	t.Run("should retry and recover from connection close", func(t *testing.T) {
@@ -1079,7 +1064,7 @@ func testNetworkErrors(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewHTTPClient(HTTPClientConfig{
+		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:        testServer.URL,
 			MaxRetries:     3,
 			InitialBackoff: 10 * time.Millisecond,

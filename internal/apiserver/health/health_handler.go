@@ -28,6 +28,9 @@ const (
 	HealthPath = "/health"
 )
 
+// Compile-time check: HealthApiHandler implements common.ApiHandler.
+var _ common.ApiHandler = (*HealthApiHandler)(nil)
+
 type HealthApiHandler struct {
 }
 

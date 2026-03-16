@@ -14,35 +14,37 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package inference
+package http
 
 import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"k8s.io/klog/v2"
 )
 
-// HTTPClient implements InferenceClient interface for HTTP-based inference gateways
-// Supports both llm-d (OpenAI-compatible) and GAIE endpoints
+const (
+	HeaderNameReqID       string = "X-Request-ID"
+	HeaderNameContentType string = "Content-Type"
+)
+
+// HTTPClient implements HTTP client with retry, TLS, and observability support
 type HTTPClient struct {
 	client    *resty.Client
-	transport *http.Transport // underlying transport (before OTel wrapping), for testing
+	transport *http.Transport // underlying transport (before OTel wrapping)
 }
 
-// HTTPClientConfig holds configuration for the HTTP client
-type HTTPClientConfig struct {
-	BaseURL         string        // Base URL of the inference gateway (e.g., "http://localhost:8000")
+// Config holds configuration for the HTTP client
+type Config struct {
+	BaseURL         string        // Base URL of the HTTP server (e.g., "http://localhost:8000")
 	Timeout         time.Duration // Request timeout (default: 5 minutes)
 	MaxIdleConns    int           // Maximum idle connections (default: 100)
 	IdleConnTimeout time.Duration // Idle connection timeout (default: 90 seconds)
@@ -63,8 +65,8 @@ type HTTPClientConfig struct {
 	MaxBackoff     time.Duration // Maximum retry wait time (default: 60 seconds)
 }
 
-// NewHTTPClient creates a new HTTP-based inference client
-func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
+// NewHTTPClient creates a new HTTP client
+func NewHTTPClient(config Config) (*HTTPClient, error) {
 	// Set defaults for HTTP client
 	if config.Timeout == 0 {
 		config.Timeout = 5 * time.Minute
@@ -90,7 +92,7 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	client := resty.New().
 		SetBaseURL(config.BaseURL).
 		SetTimeout(config.Timeout).
-		SetHeader("Content-Type", "application/json")
+		SetHeader(HeaderNameContentType, "application/json")
 
 	// Set auth token if provided (adds "Authorization: Bearer <token>" to all requests)
 	if config.APIKey != "" {
@@ -108,7 +110,7 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	transport.ResponseHeaderTimeout = 30 * time.Second // Prevent hanging on slow backends
 
 	// Configure custom TLS if needed
-	tlsConfig, err := buildTLSConfig(config)
+	tlsConfig, err := BuildTLSConfig(&config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build TLS config: %w", err)
 	}
@@ -119,7 +121,7 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 
 	client.SetTransport(otelhttp.NewTransport(transport,
 		otelhttp.WithSpanNameFormatter(func(_ string, _ *http.Request) string {
-			return "inference-request"
+			return "http-request"
 		}),
 	))
 
@@ -143,7 +145,7 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 
 		// Add retry hook for logging
 		client.AddRetryHook(func(resp *resty.Response, err error) {
-			if reqID := resp.Request.Header.Get("X-Request-ID"); reqID != "" {
+			if reqID := resp.Request.Header.Get(HeaderNameReqID); reqID != "" {
 				klog.V(3).Infof("Retrying request_id=%s (attempt %d/%d)",
 					reqID, resp.Request.Attempt, config.MaxRetries)
 			}
@@ -156,122 +158,44 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	}, nil
 }
 
-// Generate makes an inference request to the HTTP gateway with automatic retry logic
-func (c *HTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*GenerateResponse, *ClientError) {
-	if req == nil {
-		return nil, &ClientError{
-			Category: ErrCategoryInvalidReq,
-			Message:  "request cannot be nil",
-		}
-	}
-
-	// Use endpoint from request (provided by caller from batch.Request.EndPoint)
-	endpoint := req.Endpoint
-	if endpoint == "" {
-		return nil, &ClientError{
-			Category: ErrCategoryInvalidReq,
-			Message:  "endpoint cannot be empty",
-			RawError: nil,
-		}
-	}
-
+// Post makes an HTTP POST request with automatic retry logic
+// Returns the response body, status code, and any error
+func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}, headers map[string]string, requestID string) ([]byte, int, error) {
 	// Create resty request with context
 	restyReq := c.client.R().SetContext(ctx)
 
 	// Set request ID header if provided
-	if req.RequestID != "" {
-		restyReq.SetHeader("X-Request-ID", req.RequestID)
+	if requestID != "" {
+		restyReq.SetHeader(HeaderNameReqID, requestID)
 	}
 
 	// Set pass-through headers
-	for k, v := range req.Headers {
+	for k, v := range headers {
 		restyReq.SetHeader(k, v)
 	}
 
 	// Set request body (resty handles JSON marshaling)
-	restyReq.SetBody(req.Params)
-
-	// Extract model from params for logging
-	model := ""
-	if m, ok := req.Params["model"]; ok {
-		if modelStr, ok := m.(string); ok {
-			model = modelStr
-		}
-	}
-	klog.V(4).Infof("Sending inference request to %s with request_id=%s, model=%s",
-		endpoint, req.RequestID, model)
+	restyReq.SetBody(body)
 
 	// Execute request (resty handles retries automatically)
 	resp, err := restyReq.Post(endpoint)
 
 	// Handle request-level errors (network, timeout, etc.)
 	if err != nil {
-		return c.handleRequestError(ctx, err, req)
-	}
-
-	// Check for non-retryable errors after all retries exhausted
-	if resp.StatusCode() != http.StatusOK {
-		return nil, c.handleErrorResponse(resp.StatusCode(), resp.Body())
+		return nil, 0, err
 	}
 
 	// Log success with retry info
 	if resp.Request.Attempt > 1 {
 		klog.V(3).Infof("Request succeeded after %d retries for request_id=%s",
-			resp.Request.Attempt-1, req.RequestID)
+			resp.Request.Attempt-1, requestID)
 	}
 
-	// Parse response body
-	var rawData interface{}
-	if len(resp.Body()) > 0 {
-		if jsonErr := json.Unmarshal(resp.Body(), &rawData); jsonErr != nil {
-			klog.Warningf("Failed to unmarshal response as JSON for request_id=%s: %v",
-				req.RequestID, jsonErr)
-			rawData = nil
-		}
-	}
-
-	if klog.V(logging.DEBUG).Enabled() {
-		promptTokens, completionTokens, totalTokens := extractUsage(rawData)
-		klog.V(logging.DEBUG).Infof("Received successful response for request_id=%s, status=%d, body_size=%d, prompt_tokens=%v, completion_tokens=%v, total_tokens=%v",
-			req.RequestID, resp.StatusCode(), len(resp.Body()), promptTokens, completionTokens, totalTokens)
-	}
-
-	return &GenerateResponse{
-		RequestID: req.RequestID,
-		Response:  resp.Body(),
-		RawData:   rawData,
-	}, nil
+	return resp.Body(), resp.StatusCode(), nil
 }
 
-// handleRequestError processes request-level errors (network, timeout, cancellation)
-func (c *HTTPClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest) (*GenerateResponse, *ClientError) {
-	if errors.Is(ctx.Err(), context.Canceled) {
-		klog.V(3).Infof("Request cancelled for request_id=%s", req.RequestID)
-		return nil, &ClientError{
-			Category: ErrCategoryUnknown,
-			Message:  "request cancelled",
-			RawError: err,
-		}
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		klog.V(3).Infof("Request timeout for request_id=%s", req.RequestID)
-		return nil, &ClientError{
-			Category: ErrCategoryServer,
-			Message:  "request timeout",
-			RawError: err,
-		}
-	}
-
-	klog.V(3).Infof("Request failed with network error for request_id=%s: %v", req.RequestID, err)
-	return nil, &ClientError{
-		Category: ErrCategoryServer,
-		Message:  fmt.Sprintf("failed to execute request: %v", err),
-		RawError: err,
-	}
-}
-
-// handleErrorResponse parses error response and maps to Error
-func (c *HTTPClient) handleErrorResponse(statusCode int, body []byte) *ClientError {
+// HandleErrorResponse parses error response and maps to Error
+func (c *HTTPClient) HandleErrorResponse(statusCode int, body []byte) *ClientError {
 	// Try to parse OpenAI-style error response
 	var errorResp struct {
 		Error struct {
@@ -288,9 +212,9 @@ func (c *HTTPClient) handleErrorResponse(statusCode int, body []byte) *ClientErr
 	}
 
 	// Map HTTP status codes to error categories
-	category := c.mapStatusCodeToCategory(statusCode)
+	category := MapStatusCodeToCategory(statusCode)
 
-	klog.V(3).Infof("Inference request failed with status=%d, category=%s, message=%s", statusCode, category, message)
+	klog.V(3).Infof("HTTP request failed with status=%d, category=%s, message=%s", statusCode, category, message)
 
 	return &ClientError{
 		Category: category,
@@ -299,8 +223,8 @@ func (c *HTTPClient) handleErrorResponse(statusCode int, body []byte) *ClientErr
 	}
 }
 
-// mapStatusCodeToCategory maps HTTP status codes to error categories
-func (c *HTTPClient) mapStatusCodeToCategory(statusCode int) ErrorCategory {
+// MapStatusCodeToCategory maps HTTP status codes to error categories
+func MapStatusCodeToCategory(statusCode int) ErrorCategory {
 	switch statusCode {
 	case http.StatusBadRequest: // 400
 		return ErrCategoryInvalidReq
@@ -318,9 +242,9 @@ func (c *HTTPClient) mapStatusCodeToCategory(statusCode int) ErrorCategory {
 	}
 }
 
-// buildTLSConfig constructs a custom TLS configuration based on provided options
+// BuildTLSConfig constructs a custom TLS configuration based on provided options
 // Returns nil if no custom TLS config is needed (use system defaults)
-func buildTLSConfig(config HTTPClientConfig) (*tls.Config, error) {
+func BuildTLSConfig(config *Config) (*tls.Config, error) {
 	if !config.TLSInsecureSkipVerify &&
 		config.TLSCACertFile == "" &&
 		config.TLSClientCertFile == "" &&
@@ -379,15 +303,4 @@ func buildTLSConfig(config HTTPClientConfig) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
-}
-
-// extractUsage pulls prompt/completion/total token counts from a parsed JSON response body.
-// Returns nil for any field not present.
-func extractUsage(rawData interface{}) (promptTokens, completionTokens, totalTokens interface{}) {
-	if m, ok := rawData.(map[string]interface{}); ok {
-		if usage, ok := m["usage"].(map[string]interface{}); ok {
-			return usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"]
-		}
-	}
-	return nil, nil, nil
 }

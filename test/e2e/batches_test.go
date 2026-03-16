@@ -16,6 +16,7 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -25,11 +26,20 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 )
 
 func testBatches(t *testing.T) {
 	t.Run("Lifecycle", doTestBatchLifecycle)
-	t.Run("Cancel", doTestBatchCancel)
+	t.Run("List", func(t *testing.T) {
+		t.Run("Pagination", doTestBatchPagination)
+	})
+	t.Run("Cancel", func(t *testing.T) {
+		t.Run("BeforeProcessing", doTestBatchCancelBeforeProcessing)
+		t.Run("InProgress", doTestBatchCancel)
+	})
+	t.Run("MixedSuccessFailure", doTestBatchMixedSuccessFailure)
+	t.Run("SharedInputFile", doTestBatchSharedInputFile)
 	t.Run("PassThroughHeaders", doTestPassThroughHeaders)
 }
 
@@ -73,6 +83,23 @@ func doTestBatchCancel(t *testing.T) {
 		finalBatch.RequestCounts.Failed,
 		finalBatch.RequestCounts.Total)
 
+	// Verify timestamps
+	if finalBatch.CancelledAt == 0 {
+		t.Error("cancelled_at should be > 0")
+	}
+	if finalBatch.CreatedAt == 0 {
+		t.Error("created_at should be > 0")
+	}
+	if finalBatch.CancelledAt < finalBatch.CreatedAt {
+		t.Errorf("cancelled_at (%d) < created_at (%d)", finalBatch.CancelledAt, finalBatch.CreatedAt)
+	}
+	if finalBatch.CancellingAt != 0 && finalBatch.CancellingAt < finalBatch.CreatedAt {
+		t.Errorf("cancelling_at (%d) < created_at (%d)", finalBatch.CancellingAt, finalBatch.CreatedAt)
+	}
+	if finalBatch.CancellingAt != 0 && finalBatch.CancelledAt < finalBatch.CancellingAt {
+		t.Errorf("cancelled_at (%d) < cancelling_at (%d)", finalBatch.CancelledAt, finalBatch.CancellingAt)
+	}
+
 	if finalBatch.RequestCounts.Total != int64(len(strings.Split(strings.TrimSpace(slowJSONL), "\n"))) {
 		t.Errorf("Total = %d, want %d", finalBatch.RequestCounts.Total, len(strings.Split(strings.TrimSpace(slowJSONL), "\n")))
 	}
@@ -101,6 +128,55 @@ func doTestBatchCancel(t *testing.T) {
 				t.Errorf("expected processor logs to contain 'Request cancelled for request_id', indicating in-flight HTTP requests were aborted")
 			}
 		}
+	}
+}
+
+// doTestBatchCancelBeforeProcessing creates a batch and cancels it immediately.
+// If the cancel arrives before the processor dequeues the batch, the response
+// is "cancelled" (PQDelete path). If the processor was faster, the response is
+// "cancelling" (cancel event path). Both are valid due to the inherent race.
+// Either way, the batch must eventually reach "cancelled".
+func doTestBatchCancelBeforeProcessing(t *testing.T) {
+	t.Helper()
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-before-%s.jsonl", testRunID), testJSONL)
+	batchID := mustCreateBatch(t, fileID)
+
+	// Cancel immediately — the batch is likely still in the queue.
+	batch, err := newClient().Batches.Cancel(context.Background(), batchID)
+	if err != nil {
+		t.Fatalf("cancel batch failed: %v", err)
+	}
+	t.Logf("cancel response status: %s", batch.Status)
+
+	switch batch.Status {
+	case openai.BatchStatusCancelled:
+		// PQDelete path: batch was still in queue, cancelled directly.
+		t.Log("batch was cancelled directly from queue (PQDelete path)")
+	case openai.BatchStatusCancelling:
+		// Cancel event path: processor already dequeued the batch.
+		t.Log("batch is cancelling via event (processor already dequeued)")
+	default:
+		t.Errorf("expected status %q or %q after immediate cancel, got %q",
+			openai.BatchStatusCancelled, openai.BatchStatusCancelling, batch.Status)
+	}
+
+	// Either way, the batch must reach "cancelled" eventually.
+	finalBatch := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
+	if finalBatch.Status != openai.BatchStatusCancelled {
+		t.Errorf("expected final status %q, got %q",
+			openai.BatchStatusCancelled, finalBatch.Status)
+	}
+
+	// Verify timestamps
+	if finalBatch.CancelledAt == 0 {
+		t.Error("cancelled_at should be > 0")
+	}
+	if finalBatch.CreatedAt == 0 {
+		t.Error("created_at should be > 0")
+	}
+	if finalBatch.CancelledAt < finalBatch.CreatedAt {
+		t.Errorf("cancelled_at (%d) < created_at (%d)", finalBatch.CancelledAt, finalBatch.CreatedAt)
 	}
 }
 
@@ -140,6 +216,13 @@ func doTestBatchLifecycle(t *testing.T) {
 	if batch.CompletionWindow != "24h" {
 		t.Errorf("expected completion_window %q, got %q", "24h", batch.CompletionWindow)
 	}
+	for k, wantV := range testBatchMetadata {
+		if gotV, ok := batch.Metadata[k]; !ok {
+			t.Errorf("metadata key %q missing from retrieve response", k)
+		} else if gotV != wantV {
+			t.Errorf("metadata[%q] = %q, want %q", k, gotV, wantV)
+		}
+	}
 
 	// Poll until completion
 	finalBatch := waitForBatchCompletion(t, batchID)
@@ -148,16 +231,47 @@ func doTestBatchLifecycle(t *testing.T) {
 		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
 	}
 
-	// Download and log output file
-	if finalBatch.OutputFileID != "" {
-		resp, err := client.Files.Content(context.Background(), finalBatch.OutputFileID)
-		if err != nil {
-			t.Fatalf("download output file failed: %v", err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		validateAndLogJSONL(t, "output file", string(body))
+	// Verify timestamps
+	if finalBatch.CreatedAt == 0 {
+		t.Error("created_at should be > 0")
 	}
+	if finalBatch.CompletedAt == 0 {
+		t.Error("completed_at should be > 0")
+	}
+	if finalBatch.CompletedAt < finalBatch.CreatedAt {
+		t.Errorf("completed_at (%d) < created_at (%d)", finalBatch.CompletedAt, finalBatch.CreatedAt)
+	}
+	if finalBatch.InProgressAt != 0 && finalBatch.InProgressAt < finalBatch.CreatedAt {
+		t.Errorf("in_progress_at (%d) < created_at (%d)", finalBatch.InProgressAt, finalBatch.CreatedAt)
+	}
+	if finalBatch.InProgressAt != 0 && finalBatch.CompletedAt < finalBatch.InProgressAt {
+		t.Errorf("completed_at (%d) < in_progress_at (%d)", finalBatch.CompletedAt, finalBatch.InProgressAt)
+	}
+
+	// Verify request counts
+	inputCount := int64(len(strings.Split(strings.TrimSpace(testJSONL), "\n")))
+	if finalBatch.RequestCounts.Total != inputCount {
+		t.Errorf("request_counts.total = %d, want %d", finalBatch.RequestCounts.Total, inputCount)
+	}
+	if finalBatch.RequestCounts.Completed != inputCount {
+		t.Errorf("request_counts.completed = %d, want %d", finalBatch.RequestCounts.Completed, inputCount)
+	}
+	if finalBatch.RequestCounts.Failed != 0 {
+		t.Errorf("request_counts.failed = %d, want 0", finalBatch.RequestCounts.Failed)
+	}
+
+	// Download and validate output file
+	if finalBatch.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set after completion")
+	}
+	resp, err := client.Files.Content(context.Background(), finalBatch.OutputFileID)
+	if err != nil {
+		t.Fatalf("download output file failed: %v", err)
+	}
+	outputBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	validateAndLogJSONL(t, "output file", string(outputBody))
+	validateOutputContent(t, string(outputBody), []string{"req-1", "req-2"})
 
 	// Download and log error file (if any)
 	if finalBatch.ErrorFileID != "" {
@@ -168,6 +282,203 @@ func doTestBatchLifecycle(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		validateAndLogJSONL(t, "error file", string(body))
+	}
+}
+
+// validateOutputContent parses the output JSONL and verifies:
+// - every expected custom_id is present
+// - each line has a 200 response with choices and model
+func validateOutputContent(t *testing.T, content string, expectedCustomIDs []string) {
+	t.Helper()
+
+	// batchOutputLine represents a single line in the batch output JSONL file.
+	type batchOutputLine struct {
+		ID       string `json:"id"`
+		CustomID string `json:"custom_id"`
+		Response *struct {
+			StatusCode int                    `json:"status_code"`
+			RequestID  string                 `json:"request_id"`
+			Body       map[string]interface{} `json:"body"`
+		} `json:"response"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+
+	seen := make(map[string]bool, len(lines))
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var out batchOutputLine
+		if err := json.Unmarshal([]byte(line), &out); err != nil {
+			t.Errorf("output line %d: invalid JSON: %v", i+1, err)
+			continue
+		}
+
+		if out.ID == "" {
+			t.Errorf("output line %d: missing id", i+1)
+		}
+		if out.CustomID == "" {
+			t.Errorf("output line %d: missing custom_id", i+1)
+			continue
+		}
+
+		if seen[out.CustomID] {
+			t.Errorf("output line %d: duplicate custom_id %q", i+1, out.CustomID)
+		}
+		seen[out.CustomID] = true
+
+		if out.Response == nil {
+			t.Errorf("output line %d (custom_id=%s): response is null", i+1, out.CustomID)
+			continue
+		}
+		if out.Response.StatusCode != 200 {
+			t.Errorf("output line %d (custom_id=%s): status_code = %d, want 200",
+				i+1, out.CustomID, out.Response.StatusCode)
+		}
+
+		body := out.Response.Body
+		if _, ok := body["choices"]; !ok {
+			t.Errorf("output line %d (custom_id=%s): response body missing 'choices'", i+1, out.CustomID)
+		}
+		if _, ok := body["model"]; !ok {
+			t.Errorf("output line %d (custom_id=%s): response body missing 'model'", i+1, out.CustomID)
+		}
+	}
+
+	for _, id := range expectedCustomIDs {
+		if !seen[id] {
+			t.Errorf("expected custom_id %q not found in output", id)
+		}
+	}
+}
+
+// doTestBatchSharedInputFile creates two batches from the same input file and
+// verifies both complete independently with correct output.
+func doTestBatchSharedInputFile(t *testing.T) {
+	t.Helper()
+
+	client := newClient()
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-shared-input-%s.jsonl", testRunID), testJSONL)
+
+	batchID1 := mustCreateBatch(t, fileID)
+	batchID2 := mustCreateBatch(t, fileID)
+	t.Logf("created batch1=%s batch2=%s from file=%s", batchID1, batchID2, fileID)
+
+	batch1 := waitForBatchCompletion(t, batchID1)
+	batch2 := waitForBatchCompletion(t, batchID2)
+
+	for i, b := range []*openai.Batch{batch1, batch2} {
+		if b.Status != openai.BatchStatusCompleted {
+			t.Errorf("batch %d (%s): expected status %q, got %q", i+1, b.ID, openai.BatchStatusCompleted, b.Status)
+			continue
+		}
+		if b.RequestCounts.Completed != 2 {
+			t.Errorf("batch %d (%s): completed = %d, want 2", i+1, b.ID, b.RequestCounts.Completed)
+		}
+		if b.OutputFileID == "" {
+			t.Errorf("batch %d (%s): output_file_id is empty", i+1, b.ID)
+			continue
+		}
+
+		resp, err := client.Files.Content(context.Background(), b.OutputFileID)
+		if err != nil {
+			t.Errorf("batch %d (%s): download output failed: %v", i+1, b.ID, err)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		validateOutputContent(t, string(body), []string{"req-1", "req-2"})
+		t.Logf("batch %d (%s): output validated", i+1, b.ID)
+	}
+
+	// Verify output files are distinct
+	if batch1.OutputFileID == batch2.OutputFileID {
+		t.Errorf("both batches produced the same output_file_id %q, expected distinct files", batch1.OutputFileID)
+	}
+}
+
+// doTestBatchMixedSuccessFailure creates a batch with a mix of valid and invalid
+// requests (invalid model), verifies the batch completes with correct
+// completed/failed counts, and that output and error files contain the right entries.
+func doTestBatchMixedSuccessFailure(t *testing.T) {
+	t.Helper()
+
+	client := newClient()
+
+	mixedJSONL := strings.Join([]string{
+		fmt.Sprintf(`{"custom_id":"good-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello"}]}}`, testModel),
+		`{"custom_id":"bad-1","method":"POST","url":"/v1/chat/completions","body":{"model":"nonexistent-model","max_tokens":5,"messages":[{"role":"user","content":"Hello"}]}}`,
+		fmt.Sprintf(`{"custom_id":"good-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"World"}]}}`, testModel),
+	}, "\n")
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-mixed-%s.jsonl", testRunID), mixedJSONL)
+	batchID := mustCreateBatch(t, fileID)
+
+	finalBatch := waitForBatchCompletion(t, batchID)
+
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Fatalf("expected status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
+	}
+
+	// Verify request counts: 2 completed, 1 failed
+	if finalBatch.RequestCounts.Total != 3 {
+		t.Errorf("total = %d, want 3", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Completed != 2 {
+		t.Errorf("completed = %d, want 2", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 1 {
+		t.Errorf("failed = %d, want 1", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.RequestCounts.Completed+finalBatch.RequestCounts.Failed != finalBatch.RequestCounts.Total {
+		t.Errorf("completed(%d) + failed(%d) != total(%d)",
+			finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
+	}
+
+	// Verify output file contains the successful requests
+	if finalBatch.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set")
+	}
+	resp, err := client.Files.Content(context.Background(), finalBatch.OutputFileID)
+	if err != nil {
+		t.Fatalf("download output file failed: %v", err)
+	}
+	outputBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	validateAndLogJSONL(t, "mixed output", string(outputBody))
+	validateOutputContent(t, string(outputBody), []string{"good-1", "good-2"})
+
+	// Verify error file contains the failed request
+	if finalBatch.ErrorFileID == "" {
+		t.Fatal("expected error_file_id to be set")
+	}
+	resp, err = client.Files.Content(context.Background(), finalBatch.ErrorFileID)
+	if err != nil {
+		t.Fatalf("download error file failed: %v", err)
+	}
+	errorBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	validateAndLogJSONL(t, "mixed error", string(errorBody))
+
+	// Verify the error file contains bad-1
+	errorLines := strings.Split(strings.TrimSpace(string(errorBody)), "\n")
+	foundBad := false
+	for _, line := range errorLines {
+		if strings.Contains(line, `"bad-1"`) {
+			foundBad = true
+			break
+		}
+	}
+	if !foundBad {
+		t.Error("error file does not contain custom_id \"bad-1\"")
 	}
 }
 
@@ -212,4 +523,85 @@ func doTestPassThroughHeaders(t *testing.T) {
 			t.Errorf("expected processor logs to contain header name %q, but it was not found", headerName)
 		}
 	}
+}
+
+// doTestBatchPagination creates 3 batches under an isolated tenant and verifies
+// that limit/after pagination returns correct pages with no duplicates.
+func doTestBatchPagination(t *testing.T) {
+	t.Helper()
+
+	tenant := fmt.Sprintf("pagination-batches-%s", testRunID)
+	client := newClientForTenant(tenant)
+	ctx := context.Background()
+
+	// Create a shared input file under this tenant.
+	filename := fmt.Sprintf("pagination-batch-input-%s.jsonl", testRunID)
+	file, err := client.Files.New(ctx, openai.FileNewParams{
+		File:    openai.File(strings.NewReader(testJSONL), filename, "application/jsonl"),
+		Purpose: openai.FilePurposeBatch,
+	})
+	if err != nil {
+		t.Fatalf("create input file failed: %v", err)
+	}
+
+	// Create 3 batches.
+	const count = 3
+	createdIDs := make([]string, count)
+	for i := range count {
+		batch, err := client.Batches.New(ctx, openai.BatchNewParams{
+			InputFileID:      file.ID,
+			Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+			CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+		})
+		if err != nil {
+			t.Fatalf("create batch %d failed: %v", i, err)
+		}
+		createdIDs[i] = batch.ID
+		t.Logf("created batch %d: %s", i, batch.ID)
+	}
+
+	// Page 1: limit=2, no after → expect 2 items, has_more=true
+	page1, err := client.Batches.List(ctx, openai.BatchListParams{
+		Limit: param.NewOpt(int64(2)),
+	})
+	if err != nil {
+		t.Fatalf("list batches page 1 failed: %v", err)
+	}
+	if len(page1.Data) != 2 {
+		t.Fatalf("page 1: expected 2 items, got %d", len(page1.Data))
+	}
+	if !page1.HasMore {
+		t.Error("page 1: expected has_more=true")
+	}
+
+	page1IDs := make([]string, len(page1.Data))
+	for i, b := range page1.Data {
+		page1IDs[i] = b.ID
+	}
+	t.Logf("page 1 IDs: %v (has_more=%v)", page1IDs, page1.HasMore)
+
+	// Page 2: limit=2, after="2" (offset) → expect 1 item, has_more=false
+	page2, err := client.Batches.List(ctx, openai.BatchListParams{
+		Limit: param.NewOpt(int64(2)),
+		After: param.NewOpt("2"),
+	})
+	if err != nil {
+		t.Fatalf("list batches page 2 failed: %v", err)
+	}
+	if len(page2.Data) != 1 {
+		t.Fatalf("page 2: expected 1 item, got %d", len(page2.Data))
+	}
+	if page2.HasMore {
+		t.Error("page 2: expected has_more=false")
+	}
+
+	page2IDs := make([]string, len(page2.Data))
+	for i, b := range page2.Data {
+		page2IDs[i] = b.ID
+	}
+	t.Logf("page 2 IDs: %v (has_more=%v)", page2IDs, page2.HasMore)
+
+	// Verify no overlap and full coverage.
+	allIDs := append(page1IDs, page2IDs...)
+	assertSliceEqual(t, createdIDs, allIDs)
 }

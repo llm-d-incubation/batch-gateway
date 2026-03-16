@@ -41,6 +41,9 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
+// Compile-time check: BatchAPIHandler implements common.ApiHandler.
+var _ common.ApiHandler = (*BatchAPIHandler)(nil)
+
 type BatchAPIHandler struct {
 	config  *common.ServerConfig
 	clients *clientset.Clientset

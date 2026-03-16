@@ -26,8 +26,8 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
-	inference "github.com/llm-d-incubation/batch-gateway/internal/inference"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
 )
 

@@ -7,9 +7,9 @@ import (
 
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 type fakeInferenceClient struct{}

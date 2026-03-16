@@ -131,6 +131,7 @@ func createTestFile(t *testing.T, handler *FileAPIHandler, ctx context.Context, 
 
 func doTestCreateFile(t *testing.T) {
 	t.Run("Success", doTestCreateFileSuccess)
+	t.Run("PurposeValidation", doTestCreateFilePurposeValidation)
 	t.Run("ExpiresAfterValidation", doTestCreateFileExpiresAfter)
 }
 
@@ -225,6 +226,53 @@ func doTestCreateFileSuccess(t *testing.T) {
 	}
 }
 
+func doTestCreateFilePurposeValidation(t *testing.T) {
+	ctx := context.Background()
+	handler := setupTestHandler(t)
+
+	cases := []struct {
+		name    string
+		purpose string // empty string means omit the field
+	}{
+		{"MissingPurpose", ""},
+		{"InvalidPurpose", "invalid"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &bytes.Buffer{}
+			writer := multipart.NewWriter(body)
+
+			fileWriter, err := writer.CreateFormFile("file", tc.name+".jsonl")
+			if err != nil {
+				t.Fatalf("failed to create form file: %v", err)
+			}
+			if _, err := io.WriteString(fileWriter, `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{}}`); err != nil {
+				t.Fatalf("failed to write file content: %v", err)
+			}
+			if tc.purpose != "" {
+				if err := writer.WriteField("purpose", tc.purpose); err != nil {
+					t.Fatalf("failed to write purpose field: %v", err)
+				}
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("failed to close multipart writer: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/files", body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			req = req.WithContext(ctx)
+
+			w := httptest.NewRecorder()
+			handler.CreateFile(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected status %d, got %d, body: %s", http.StatusBadRequest, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func doTestCreateFileExpiresAfter(t *testing.T) {
 	ctx := context.Background()
 	handler := setupTestHandler(t)
@@ -276,6 +324,10 @@ func doTestCreateFileExpiresAfter(t *testing.T) {
 		{"too large", "created_at", "2592001", http.StatusBadRequest},
 		{"negative", "created_at", "-1", http.StatusBadRequest},
 		{"zero", "created_at", "0", http.StatusBadRequest},
+		{"anchor only", "created_at", "", http.StatusBadRequest},
+		{"seconds only", "", "86400", http.StatusBadRequest},
+		{"non-numeric seconds", "created_at", "abc", http.StatusBadRequest},
+		{"invalid anchor", "updated_at", "86400", http.StatusBadRequest},
 	}
 
 	for _, tc := range tests {
@@ -485,6 +537,58 @@ func doTestListFiles(t *testing.T) {
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d for invalid after, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	// Test 7: limit=0 (below minimum)
+	t.Run("LimitZero", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/files?limit=0", nil)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.ListFiles(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d for limit=0, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	// Test 8: limit too large (above maximum)
+	t.Run("LimitTooLarge", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/files?limit=99999", nil)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.ListFiles(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d for limit=99999, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	// Test 9: Invalid limit (non-integer)
+	t.Run("InvalidLimit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/files?limit=abc", nil)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.ListFiles(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d for invalid limit, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	// Test 9: Invalid order parameter
+	t.Run("InvalidOrder", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/files?order=invalid", nil)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.ListFiles(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d for invalid order, got %d", http.StatusBadRequest, w.Code)
 		}
 	})
 }

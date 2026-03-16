@@ -26,7 +26,6 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/inference"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
@@ -34,6 +33,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
 type Processor struct {
