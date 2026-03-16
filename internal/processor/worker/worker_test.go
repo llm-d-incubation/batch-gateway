@@ -5,39 +5,9 @@ import (
 	"testing"
 	"time"
 
-	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
-
-type fakeInferenceClient struct{}
-
-func (f *fakeInferenceClient) Generate(ctx context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
-	return nil, nil
-}
-
-func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *clientset.Clientset) *Processor {
-	t.Helper()
-	p, err := NewProcessor(cfg, clients)
-	if err != nil {
-		t.Fatalf("NewProcessor: %v", err)
-	}
-	return p
-}
-
-func validProcessorClients() *clientset.Clientset {
-	return &clientset.Clientset{
-		BatchDB:   newMockBatchDBClient(),
-		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
-		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
-		Status:    mockdb.NewMockBatchStatusClient(),
-		Event:     mockdb.NewMockBatchEventChannelClient(),
-		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}
-}
 
 func TestClientsetFields_Assigned(t *testing.T) {
 	cs := validProcessorClients()
