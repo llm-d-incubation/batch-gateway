@@ -20,7 +20,7 @@ body:
       label: Problem Statement
       description: |
         What problem does this feature solve? Describe the use case or pain point.
-      placeholder: "I'm always frustrated when..."
+      placeholder: "Currently there is a use case where..."
     validations:
       required: true
 

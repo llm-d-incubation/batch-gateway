@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -119,6 +119,12 @@ lint:
 	@echo "Running linter..."
 	@which golangci-lint > /dev/null || (echo "golangci-lint not found. Run 'make install-tools' to install it." && exit 1)
 	golangci-lint run ./...
+
+## pre-commit: Run pre-commit on all files
+pre-commit:
+	@echo "Running pre-commit on all files..."
+	@which pre-commit > /dev/null || (echo "pre-commit not found. Install it with: pip install pre-commit" && exit 1)
+	pre-commit run --all-files
 
 ## fmt: Run go fmt on all files
 fmt:

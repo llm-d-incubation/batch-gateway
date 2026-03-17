@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Questions & Discussion
-    url: https://github.com/llm-d/llm-d/discussions
-    about: Ask questions and discuss ideas in the llm-d community
+  - name: Website
+    url: https://llm-d.ai/
+    about: Tutorials and community materials
+  - name: GitHub
+    url: https://github.com/llm-d
+    about: Code, issues, and discussions
   - name: Slack
-    url: https://cloud-native.slack.com/archives/llm-d
+    url: https://llm-d.slack.com/
     about: Chat with the community on Slack
