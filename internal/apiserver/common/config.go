@@ -25,6 +25,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
+	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"gopkg.in/yaml.v3"
 	"k8s.io/klog/v2"
 )
@@ -130,6 +131,10 @@ type ServerConfig struct {
 
 	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
 	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+
+	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
+	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
+	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
 
 	// OTel holds OpenTelemetry-related settings.
 	OTel struct {

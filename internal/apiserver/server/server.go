@@ -34,7 +34,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/middleware"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/readiness"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"k8s.io/klog/v2"
 )
 
@@ -50,18 +49,15 @@ type Server struct {
 func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.Clientset, error) {
 	logger := klog.FromContext(ctx)
 
-	redisCfg := &uredis.RedisClientConfig{
-		ServiceName:   "batch-apiserver",
-		EnableTracing: config.OTel.RedisTracing,
-	}
-
+	config.RedisCfg.ServiceName = "batch-apiserver"
+	config.RedisCfg.EnableTracing = config.OTel.RedisTracing
 	config.PostgreSQLCfg.EnableTracing = config.OTel.PostgresqlTracing
 
 	clients, err := clientset.NewClientset(
 		ctx,
 		config.DatabaseType,
 		&config.PostgreSQLCfg,
-		redisCfg,
+		&config.RedisCfg,
 		config.FileClientCfg.Type,
 		&config.FileClientCfg.FSConfig,
 		&config.FileClientCfg.S3Config,

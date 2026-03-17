@@ -36,7 +36,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 )
 
 func main() {
@@ -263,10 +262,8 @@ func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, w
 func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*clientset.Clientset, error) {
 	logger := klog.FromContext(ctx)
 
-	redisCfg := &uredis.RedisClientConfig{
-		ServiceName:   "batch-processor",
-		EnableTracing: cfg.OTel.RedisTracing,
-	}
+	cfg.RedisCfg.ServiceName = "batch-processor"
+	cfg.RedisCfg.EnableTracing = cfg.OTel.RedisTracing
 
 	modelGatewaysConfigs, err := config.ResolveModelGateways(cfg.ModelGateways)
 	if err != nil {
@@ -278,7 +275,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		ctx,
 		cfg.DatabaseType,
 		&cfg.PostgreSQLCfg,
-		redisCfg,
+		&cfg.RedisCfg,
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
