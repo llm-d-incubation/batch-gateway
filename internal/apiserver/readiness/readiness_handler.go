@@ -61,11 +61,11 @@ func (c *ReadinessApiHandler) ReadyHandler(w http.ResponseWriter, r *http.Reques
 	if !c.serverReady.Load() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("not ready"))
+		_, _ = w.Write([]byte("not ready"))
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }

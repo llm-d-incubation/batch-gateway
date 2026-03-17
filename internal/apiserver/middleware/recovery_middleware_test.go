@@ -39,7 +39,7 @@ func TestRecoveryMiddleware(t *testing.T) {
 func doTestRecoveryMiddlewareNoPanic(t *testing.T) {
 	handler := Recovery(dummyRoute, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("success"))
+		_, _ = w.Write([]byte("success"))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

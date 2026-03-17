@@ -52,7 +52,9 @@ func main() {
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		shutdownTracer(shutdownCtx)
+		if err := shutdownTracer(shutdownCtx); err != nil {
+			klog.Errorf("Failed to shutdown tracer: %v", err)
+		}
 	}()
 
 	// start server

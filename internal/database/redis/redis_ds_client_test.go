@@ -1188,7 +1188,6 @@ func TestRedisDSClient(t *testing.T) {
 		// Enqueue items with identical SLO values.
 		slo := time.Now().Add(time.Hour)
 		nIdentical := 5
-		itemsIdentical := make([]*db_api.BatchJobPriority, 0, nIdentical)
 		for i := 0; i < nIdentical; i++ {
 			item := &db_api.BatchJobPriority{
 				ID:   uuid.New().String(),
@@ -1200,7 +1199,6 @@ func TestRedisDSClient(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to enqueue item with identical SLO: %v", err)
 			}
-			itemsIdentical = append(itemsIdentical, item)
 		}
 
 		// Dequeue all items with identical SLO.
@@ -1214,7 +1212,6 @@ func TestRedisDSClient(t *testing.T) {
 
 		// Enqueue items and dequeue with maxItems exceeding queue size.
 		nItems := 3
-		itemsSmall := make([]*db_api.BatchJobPriority, 0, nItems)
 		for i := 0; i < nItems; i++ {
 			item := &db_api.BatchJobPriority{
 				ID:   uuid.New().String(),
@@ -1226,7 +1223,6 @@ func TestRedisDSClient(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to enqueue item: %v", err)
 			}
-			itemsSmall = append(itemsSmall, item)
 		}
 
 		// Dequeue with maxItems larger than queue size.
@@ -1273,14 +1269,14 @@ func TestRedisDSClient(t *testing.T) {
 			TTL:  1000,
 			Data: []byte("test"),
 		}
-		exchClient.PQEnqueue(context.Background(), item)
-		items, err = exchClient.PQDequeue(context.Background(), 1*time.Second, 0)
+		_ = exchClient.PQEnqueue(context.Background(), item)
+		_, err = exchClient.PQDequeue(context.Background(), 1*time.Second, 0)
 		if err == nil {
 			t.Fatalf("Dequeue with maxItems=0 should error")
 		}
 
 		// Cleanup remaining items if any.
-		exchClient.PQDequeue(context.Background(), 1*time.Second, 100)
+		_, _ = exchClient.PQDequeue(context.Background(), 1*time.Second, 100)
 	})
 
 	t.Run("includeStatic parameter - Batch", func(t *testing.T) {
@@ -1349,7 +1345,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 
 		// Cleanup.
-		batchClient.DBDelete(context.Background(), []string{batchID})
+		_, _ = batchClient.DBDelete(context.Background(), []string{batchID})
 	})
 
 	t.Run("includeStatic parameter - File", func(t *testing.T) {
@@ -1415,7 +1411,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 
 		// Cleanup.
-		fileClient.DBDelete(context.Background(), []string{fileID})
+		_, _ = fileClient.DBDelete(context.Background(), []string{fileID})
 	})
 
 	t.Run("Negative cases - Batch", func(t *testing.T) {
@@ -1492,7 +1488,7 @@ func TestRedisDSClient(t *testing.T) {
 			t.Fatalf("Update of non-existent item should not error: %v", err)
 		}
 		// Cleanup: delete the key created by the update.
-		batchClient.DBDelete(context.Background(), []string{"non-existent-update-id"})
+		_, _ = batchClient.DBDelete(context.Background(), []string{"non-existent-update-id"})
 
 		// Update with empty ID should fail validation.
 		invalidUpdate := &db_api.BatchItem{
@@ -1603,7 +1599,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 
 		// Cleanup.
-		batchClient.DBDelete(context.Background(), []string{batchID})
+		_, _ = batchClient.DBDelete(context.Background(), []string{batchID})
 	})
 
 	t.Run("Edge cases - Update with empty fields", func(t *testing.T) {
@@ -1664,7 +1660,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 
 		// Cleanup.
-		batchClient.DBDelete(context.Background(), []string{batchID})
+		_, _ = batchClient.DBDelete(context.Background(), []string{batchID})
 	})
 
 	t.Run("Get by IDs with tenant filter", func(t *testing.T) {
@@ -1695,8 +1691,8 @@ func TestRedisDSClient(t *testing.T) {
 				Status: []byte("status2"),
 			},
 		}
-		batchClient.DBStore(context.Background(), batch1)
-		batchClient.DBStore(context.Background(), batch2)
+		_ = batchClient.DBStore(context.Background(), batch1)
+		_ = batchClient.DBStore(context.Background(), batch2)
 
 		// Get by IDs with tenant filter.
 		resItems, _, _, err := batchClient.DBGet(context.Background(),
@@ -1717,7 +1713,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 
 		// Cleanup.
-		batchClient.DBDelete(context.Background(), []string{batch1ID, batch2ID})
+		_, _ = batchClient.DBDelete(context.Background(), []string{batch1ID, batch2ID})
 	})
 }
 

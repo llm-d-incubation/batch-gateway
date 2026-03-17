@@ -50,7 +50,7 @@ type s3API interface {
 }
 
 type uploaderAPI interface {
-	Upload(ctx context.Context, input *s3.PutObjectInput, opts ...func(*manager.Uploader)) (*manager.UploadOutput, error)
+	Upload(ctx context.Context, input *s3.PutObjectInput, opts ...func(*manager.Uploader)) (*manager.UploadOutput, error) //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
 }
 
 // Client implements api.BatchFilesClient using S3 storage.
@@ -114,7 +114,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	return &Client{
 		s3Client: s3Client,
-		uploader: manager.NewUploader(s3Client),
+		uploader: manager.NewUploader(s3Client), //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
 		prefix:   cfg.Prefix,
 	}, nil
 }

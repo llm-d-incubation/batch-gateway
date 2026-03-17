@@ -58,7 +58,7 @@ func newMockS3Client() *mockS3Client {
 	}
 }
 
-func (m *mockUploader) Upload(_ context.Context, params *s3.PutObjectInput, _ ...func(*manager.Uploader)) (*manager.UploadOutput, error) {
+func (m *mockUploader) Upload(_ context.Context, params *s3.PutObjectInput, _ ...func(*manager.Uploader)) (*manager.UploadOutput, error) { //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
 	if m.uploadErr != nil {
 		return nil, m.uploadErr
 	}
