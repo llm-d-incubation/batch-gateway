@@ -62,8 +62,8 @@ func TestNewHTTPClient_Defaults(t *testing.T) {
 	if client.transport.MaxIdleConnsPerHost != 100 {
 		t.Errorf("Expected Transport.MaxIdleConnsPerHost=100, got %d", client.transport.MaxIdleConnsPerHost)
 	}
-	if client.transport.ResponseHeaderTimeout != 30*time.Second {
-		t.Errorf("Expected Transport.ResponseHeaderTimeout=30s, got %v", client.transport.ResponseHeaderTimeout)
+	if client.transport.ResponseHeaderTimeout != 5*time.Minute {
+		t.Errorf("Expected Transport.ResponseHeaderTimeout=5m (same as default Timeout), got %v", client.transport.ResponseHeaderTimeout)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestPost_Success(t *testing.T) {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expectedResponse)
+		_ = json.NewEncoder(w).Encode(expectedResponse)
 	}))
 	defer server.Close()
 
@@ -192,7 +192,7 @@ func TestPost_WithRequestID(t *testing.T) {
 			t.Errorf("Expected X-Request-ID=%s, got %s", expectedRequestID, requestID)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}"))
+		_, _ = w.Write([]byte("{}"))
 	}))
 	defer server.Close()
 
@@ -225,7 +225,7 @@ func TestPost_WithCustomHeaders(t *testing.T) {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}"))
+		_, _ = w.Write([]byte("{}"))
 	}))
 	defer server.Close()
 
@@ -255,7 +255,7 @@ func TestPost_WithAPIKey(t *testing.T) {
 			t.Errorf("Expected Authorization=%s, got %s", expectedAuth, authHeader)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}"))
+		_, _ = w.Write([]byte("{}"))
 	}))
 	defer server.Close()
 
@@ -282,7 +282,7 @@ func TestPost_ContextCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}"))
+		_, _ = w.Write([]byte("{}"))
 	}))
 	defer server.Close()
 
@@ -305,7 +305,7 @@ func TestPost_ContextTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("{}"))
+		_, _ = w.Write([]byte("{}"))
 	}))
 	defer server.Close()
 
@@ -331,10 +331,10 @@ func TestPost_RetryOn500(t *testing.T) {
 		count := attemptCount.Add(1)
 		if count < 3 {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error": {"message": "server error"}}`))
+			_, _ = w.Write([]byte(`{"error": {"message": "server error"}}`))
 		} else {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result": "success"}`))
+			_, _ = w.Write([]byte(`{"result": "success"}`))
 		}
 	}))
 	defer server.Close()
@@ -371,10 +371,10 @@ func TestPost_RetryOn429(t *testing.T) {
 		count := attemptCount.Add(1)
 		if count < 2 {
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error": {"message": "rate limit exceeded"}}`))
+			_, _ = w.Write([]byte(`{"error": {"message": "rate limit exceeded"}}`))
 		} else {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result": "success"}`))
+			_, _ = w.Write([]byte(`{"result": "success"}`))
 		}
 	}))
 	defer server.Close()
@@ -410,7 +410,7 @@ func TestPost_NoRetryOn400(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attemptCount.Add(1)
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": {"message": "bad request"}}`))
+		_, _ = w.Write([]byte(`{"error": {"message": "bad request"}}`))
 	}))
 	defer server.Close()
 
@@ -749,7 +749,7 @@ func TestNewHTTPClient_TLSInsecureSkipVerify_Integration(t *testing.T) {
 	// Create HTTPS test server with self-signed cert
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result": "success"}`))
+		_, _ = w.Write([]byte(`{"result": "success"}`))
 	}))
 	defer server.Close()
 
@@ -777,7 +777,7 @@ func TestNewHTTPClient_TLSVerifyFails(t *testing.T) {
 	// Create HTTPS test server with self-signed cert
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result": "success"}`))
+		_, _ = w.Write([]byte(`{"result": "success"}`))
 	}))
 	defer server.Close()
 
@@ -805,7 +805,7 @@ func TestNewHTTPClient_WithCustomCA_Integration(t *testing.T) {
 	// Create HTTPS test server
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"result": "success"}`))
+		_, _ = w.Write([]byte(`{"result": "success"}`))
 	}))
 	defer server.Close()
 

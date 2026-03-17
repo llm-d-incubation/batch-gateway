@@ -92,6 +92,7 @@ var (
 	modelInflightRequests         *prometheus.GaugeVec
 	modelRequestExecutionDuration *prometheus.HistogramVec
 	fileUploadRetriesTotal        *prometheus.CounterVec
+	startupRecoveryTotal          *prometheus.CounterVec
 )
 
 // FileType labels for file upload metrics.
@@ -225,6 +226,24 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"file_type"},
 	)
 
+	// Startup recovery: counts jobs discovered in workdir after a container restart.
+	// Non-zero values indicate container-level crashes (OOM, panic) occurred.
+	//
+	// Operational signals:
+	//   - status="in_progress" is high → frequent crashes during inference.
+	//   - status="finalizing" is high → frequent crashes during upload.
+	//   - action="re_enqueued" is high → most crashes happen early (low wasted inference cost).
+	//   - action="failed" is high → significant inference results lost on crash.
+	//   - action="finalized" → jobs successfully completed despite crash.
+	//   - Sustained failed{status="in_progress"} suggests checkpoint/resume investment.
+	startupRecoveryTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "batch_startup_recovery_total",
+			Help: "Jobs recovered during processor startup after container restart",
+		},
+		[]string{"status", "action"},
+	)
+
 	// metrics to register
 	metricsToRegister := []prometheus.Collector{
 		jobProcessingDuration,
@@ -239,6 +258,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		modelInflightRequests,
 		modelRequestExecutionDuration,
 		fileUploadRetriesTotal,
+		startupRecoveryTotal,
 	}
 
 	for _, metric := range metricsToRegister {
@@ -318,4 +338,9 @@ func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
 // RecordFileUploadRetry increments the upload retry counter for a given file type.
 func RecordFileUploadRetry(fileType FileType) {
 	fileUploadRetriesTotal.WithLabelValues(string(fileType)).Inc()
+}
+
+// RecordStartupRecovery increments the startup recovery counter.
+func RecordStartupRecovery(status, action string) {
+	startupRecoveryTotal.WithLabelValues(status, action).Inc()
 }

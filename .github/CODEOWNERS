@@ -1,0 +1,6 @@
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# This file defines code owners for the batch-gateway repository.
+# Code owners are automatically requested for review when someone opens a pull request that modifies code that they own.
+
+# Default owners for everything in the repo
+* @lioraron @wseaton @yizhaodev @j-mok-dev @acardace @RishabhSaini

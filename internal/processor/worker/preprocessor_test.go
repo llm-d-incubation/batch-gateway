@@ -790,9 +790,9 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 // stream: true rejection
 // ---------------------------------------------------------------------------
 
-func TestExtractModelAndPrefixHash_StreamTrue_ReturnsError(t *testing.T) {
-	line := []byte(`{"body":{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
-	_, _, err := extractModelAndPrefixHash(line)
+func TestExtractAndValidateLine_StreamTrue_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","body":{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
 	if err == nil {
 		t.Fatal("expected error for stream: true, got nil")
 	}
@@ -801,25 +801,50 @@ func TestExtractModelAndPrefixHash_StreamTrue_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestExtractModelAndPrefixHash_StreamFalse_OK(t *testing.T) {
-	line := []byte(`{"body":{"model":"gpt-4","stream":false,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
-	model, _, err := extractModelAndPrefixHash(line)
+func TestExtractAndValidateLine_StreamFalse_OK(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","body":{"model":"gpt-4","stream":false,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	meta, err := extractAndValidateLine(line)
 	if err != nil {
 		t.Fatalf("unexpected error for stream: false: %v", err)
 	}
-	if model != "gpt-4" {
-		t.Fatalf("expected model gpt-4, got %s", model)
+	if meta.ModelID != "gpt-4" {
+		t.Fatalf("expected model gpt-4, got %s", meta.ModelID)
+	}
+	if meta.CustomID != "r1" {
+		t.Fatalf("expected custom_id r1, got %s", meta.CustomID)
 	}
 }
 
-func TestExtractModelAndPrefixHash_StreamOmitted_OK(t *testing.T) {
-	line := []byte(`{"body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
-	model, _, err := extractModelAndPrefixHash(line)
+func TestExtractAndValidateLine_StreamOmitted_OK(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	meta, err := extractAndValidateLine(line)
 	if err != nil {
 		t.Fatalf("unexpected error when stream is omitted: %v", err)
 	}
-	if model != "gpt-4" {
-		t.Fatalf("expected model gpt-4, got %s", model)
+	if meta.ModelID != "gpt-4" {
+		t.Fatalf("expected model gpt-4, got %s", meta.ModelID)
+	}
+}
+
+func TestExtractAndValidateLine_EmptyCustomID_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for empty custom_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "custom_id is required") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_MissingCustomID_ReturnsError(t *testing.T) {
+	line := []byte(`{"body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for missing custom_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "custom_id is required") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
 
@@ -841,9 +866,9 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 	cleanMockFilesFolder(t, folder)
 
 	var remoteBuf bytes.Buffer
-	remoteBuf.WriteString(`{"body":{"model":"m1","messages":[{"role":"user","content":"ok"}]}}` + "\n")
-	remoteBuf.WriteString(`{"body":{"model":"m1","stream":true,"messages":[{"role":"user","content":"bad"}]}}` + "\n")
-	remoteBuf.WriteString(`{"body":{"model":"m1","messages":[{"role":"user","content":"ok2"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"r1","body":{"model":"m1","messages":[{"role":"user","content":"ok"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"r2","body":{"model":"m1","stream":true,"messages":[{"role":"user","content":"bad"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"r3","body":{"model":"m1","messages":[{"role":"user","content":"ok2"}]}}` + "\n")
 
 	filename := "input.jsonl"
 	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
@@ -889,5 +914,142 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "streaming is not supported") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	tenantID := uniqueTestFolder(t, "tenantA/dup-custom-id")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	cleanMockFilesFolder(t, folder)
+
+	var remoteBuf bytes.Buffer
+	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-2","body":{"model":"m1","messages":[{"role":"user","content":"b"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
+
+	filename := "input.jsonl"
+	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+
+	inputFileID := "file-dup-custom-id"
+	fileSpec := &openai.FileObject{Filename: filename}
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, fileSpec)},
+	}
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-dup-custom-id"
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	var cancelRequested atomic.Bool
+	err = p.preProcessJob(ctx, jobInfo, &cancelRequested)
+	if err == nil {
+		t.Fatal("expected preProcessJob to fail for duplicate custom_id")
+	}
+	if !strings.Contains(err.Error(), "duplicate custom_id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "req-1") {
+		t.Fatalf("error should mention the duplicated custom_id value: %v", err)
+	}
+}
+
+func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	tenantID := uniqueTestFolder(t, "tenantA/unique-custom-id")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	cleanMockFilesFolder(t, folder)
+
+	var remoteBuf bytes.Buffer
+	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-2","body":{"model":"m1","messages":[{"role":"user","content":"b"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-3","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
+
+	filename := "input.jsonl"
+	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+
+	inputFileID := "file-unique-custom-id"
+	fileSpec := &openai.FileObject{Filename: filename}
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, fileSpec)},
+	}
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-unique-custom-id"
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	var cancelRequested atomic.Bool
+	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+		t.Fatalf("expected preProcessJob to succeed with unique custom_ids, got: %v", err)
 	}
 }

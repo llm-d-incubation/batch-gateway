@@ -63,6 +63,8 @@ global:
 apiserver:
   enabled: true
   replicaCount: 1
+  # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
+  enablePprof: false
 
   image:
     repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
@@ -188,6 +190,8 @@ processor:
   enabled: true
   replicaCount: 1
   terminationGracePeriodSeconds: 60
+  # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
+  enablePprof: false
 
   workDirVolume:
     sizeLimit: "10Gi"

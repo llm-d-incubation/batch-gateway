@@ -1,0 +1,93 @@
+# Release workflow: creates a GitHub Release on version tags (v*.*.*),
+# builds multi-arch binaries, and publishes release notes.
+# Docker images for the same tag are built by docker.yml.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build apiserver (linux/amd64)
+        run: |
+          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o bin/batch-gateway-apiserver-linux-amd64 ./cmd/apiserver
+      - name: Build apiserver (linux/arm64)
+        run: |
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o bin/batch-gateway-apiserver-linux-arm64 ./cmd/apiserver
+      - name: Build processor (linux/amd64)
+        run: |
+          GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o bin/batch-gateway-processor-linux-amd64 ./cmd/batch-processor
+      - name: Build processor (linux/arm64)
+        run: |
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o bin/batch-gateway-processor-linux-arm64 ./cmd/batch-processor
+
+      - name: Upload apiserver artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apiserver-binaries
+          path: |
+            bin/batch-gateway-apiserver-linux-amd64
+            bin/batch-gateway-apiserver-linux-arm64
+      - name: Upload processor artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: processor-binaries
+          path: |
+            bin/batch-gateway-processor-linux-amd64
+            bin/batch-gateway-processor-linux-arm64
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download apiserver artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: apiserver-binaries
+          path: dist/apiserver
+      - name: Download processor artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: processor-binaries
+          path: dist/processor
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp dist/apiserver/* release/
+          cp dist/processor/* release/
+          chmod +x release/*
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*
+          draft: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

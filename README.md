@@ -231,7 +231,7 @@ Deploy to a local Kind cluster for development:
 make dev-deploy
 ```
 
-For detailed instructions, see [Development Guide](docs/guides/development.md).
+For detailed instructions, see [Development Guide](docs/guides/development.md). To create a new version, see [Releasing](docs/guides/releasing.md).
 
 #### Production Deployment
 
@@ -336,6 +336,37 @@ For a complete list of available metrics, see [docs/guides/metrics.md](docs/guid
 
 - Health: `GET /health` (port 9090).
 - Readiness: `GET /ready` (port 9090).
+
+### Profiling (pprof)
+
+Both the API server and processor support [Go pprof](https://go.dev/blog/pprof) profiling endpoints on their observability ports. Pprof is controlled by the `ENABLE_PPROF` environment variable (or `enablePprof` in Helm values) and is **disabled by default**.
+
+**Enable via Helm:**
+
+```yaml
+apiserver:
+  enablePprof: true
+processor:
+  enablePprof: true
+```
+
+**Usage (with dev-deploy port-forwards):**
+
+```bash
+# API Server (port 8081)
+go tool pprof http://localhost:8081/debug/pprof/profile?seconds=30  # CPU
+go tool pprof http://localhost:8081/debug/pprof/heap                # Heap
+go tool pprof http://localhost:8081/debug/pprof/allocs              # Allocs
+go tool pprof http://localhost:8081/debug/pprof/goroutine           # Goroutine
+
+# Processor (port 9090)
+go tool pprof http://localhost:9090/debug/pprof/profile?seconds=30  # CPU
+go tool pprof http://localhost:9090/debug/pprof/heap                # Heap
+go tool pprof http://localhost:9090/debug/pprof/allocs              # Allocs
+go tool pprof http://localhost:9090/debug/pprof/goroutine           # Goroutine
+```
+
+All pprof endpoints are served on the observability port (not the API port), so they are not exposed to external traffic.
 
 ## Development
 

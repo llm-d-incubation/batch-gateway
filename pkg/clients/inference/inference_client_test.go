@@ -141,7 +141,7 @@ func testGenerate(t *testing.T) {
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -207,7 +207,7 @@ func testGenerate(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			endpoint = r.URL.Path
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -227,14 +227,14 @@ func testGenerate(t *testing.T) {
 			},
 		}
 
-		client.Generate(context.Background(), req)
+		_, _ = client.Generate(context.Background(), req)
 		assert.Equal(t, "/v1/chat/completions", endpoint)
 	})
 
 	t.Run("should fail when endpoint is empty", func(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -360,12 +360,12 @@ func testErrorHandling(t *testing.T) {
 				testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(tt.statusCode)
 					if tt.responseBody != nil {
-						json.NewEncoder(w).Encode(tt.responseBody)
+						_ = json.NewEncoder(w).Encode(tt.responseBody)
 					} else if tt.responseText != "" {
-						w.Write([]byte(tt.responseText))
+						_, _ = w.Write([]byte(tt.responseText))
 					} else {
 						// Default error body
-						json.NewEncoder(w).Encode(map[string]interface{}{
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
 							"error": map[string]interface{}{
 								"message": "Error message",
 							},
@@ -400,7 +400,7 @@ func testErrorHandling(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte("{invalid json"))
+			_, _ = w.Write([]byte("{invalid json"))
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -566,7 +566,7 @@ func testRetryLogic(t *testing.T) {
 					if tt.wantSuccess && attemptCount <= tt.failuresBeforeSuccess {
 						// Return error for retryable tests until we reach the success attempt
 						w.WriteHeader(tt.statusCode)
-						json.NewEncoder(w).Encode(map[string]interface{}{
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
 							"error": map[string]interface{}{
 								"code":    tt.statusCode,
 								"message": tt.errorMessage,
@@ -575,7 +575,7 @@ func testRetryLogic(t *testing.T) {
 					} else if !tt.wantSuccess {
 						// Always return error for non-retryable tests
 						w.WriteHeader(tt.statusCode)
-						json.NewEncoder(w).Encode(map[string]interface{}{
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
 							"error": map[string]interface{}{
 								"code":    tt.statusCode,
 								"message": tt.errorMessage,
@@ -584,7 +584,7 @@ func testRetryLogic(t *testing.T) {
 					} else {
 						// Return success
 						w.WriteHeader(http.StatusOK)
-						json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
 					}
 				}))
 				t.Cleanup(testServer.Close)
@@ -622,7 +622,7 @@ func testRetryLogic(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			attemptCount++
 			w.WriteHeader(http.StatusTooManyRequests)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"error": map[string]interface{}{
 					"code":    429,
 					"message": "Rate limit exceeded",
@@ -655,7 +655,7 @@ func testRetryLogic(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			attemptCount++
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -956,7 +956,7 @@ func testAuthentication(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader = r.Header.Get("Authorization")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -972,7 +972,7 @@ func testAuthentication(t *testing.T) {
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
-		client.Generate(context.Background(), req)
+		_, _ = client.Generate(context.Background(), req)
 		assert.Equal(t, "Bearer sk-test-key-123", authHeader)
 	})
 
@@ -981,7 +981,7 @@ func testAuthentication(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader = r.Header.Get("Authorization")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
 		}))
 		t.Cleanup(testServer.Close)
 
@@ -996,7 +996,7 @@ func testAuthentication(t *testing.T) {
 			Params:    map[string]interface{}{"model": "gpt-4"},
 		}
 
-		client.Generate(context.Background(), req)
+		_, _ = client.Generate(context.Background(), req)
 		assert.Empty(t, authHeader)
 	})
 }
@@ -1059,7 +1059,7 @@ func testNetworkErrors(t *testing.T) {
 				}
 			} else {
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "success"})
 			}
 		}))
 		t.Cleanup(testServer.Close)

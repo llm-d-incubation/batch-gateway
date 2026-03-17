@@ -21,6 +21,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
@@ -121,8 +122,12 @@ const DefaultModelGatewayKey = "default"
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
 // model (or the default fallback). Every entry in model_gateways must be
 // self-contained — there is no inheritance from the "default" entry.
-// api_key_name is the key name under /etc/.secrets/; empty means use the
-// default inference-api-key secret.
+//
+// API key resolution (mutually exclusive, first match wins):
+//   - api_key_file: read the token/key from an arbitrary file path
+//     (e.g. /var/run/secrets/kubernetes.io/serviceaccount/token).
+//   - api_key_name: key name under /etc/.secrets/ (mounted Kubernetes secret).
+//   - (neither set on "default"): falls back to the mounted inference-api-key secret.
 //
 // TODO: If per-model partial overrides (inherit unset fields from "default")
 // are needed in the future, introduce a separate ModelOverrideConfig type with
@@ -130,6 +135,7 @@ const DefaultModelGatewayKey = "default"
 type ModelGatewayConfig struct {
 	URL        string `yaml:"url"`
 	APIKeyName string `yaml:"api_key_name"`
+	APIKeyFile string `yaml:"api_key_file"`
 
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 	MaxRetries     int           `yaml:"max_retries"`
@@ -276,6 +282,14 @@ func (c *ProcessorConfig) Validate() error {
 		if gw.MaxBackoff < gw.InitialBackoff {
 			return fmt.Errorf("model_gateways[%s].max_backoff must be >= initial_backoff", model)
 		}
+		if gw.APIKeyName != "" && gw.APIKeyFile != "" {
+			return fmt.Errorf("model_gateways[%s]: api_key_name and api_key_file are mutually exclusive", model)
+		}
+		if gw.APIKeyFile != "" {
+			if _, err := os.Stat(gw.APIKeyFile); err != nil {
+				return fmt.Errorf("model_gateways[%s].api_key_file: %w", model, err)
+			}
+		}
 		if (gw.TLSClientCertFile == "") != (gw.TLSClientKeyFile == "") {
 			return fmt.Errorf("model_gateways[%s]: tls_client_cert_file and tls_client_key_file must both be set or both be empty", model)
 		}
@@ -323,7 +337,14 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 	resolved := make(map[string]inference.GatewayClientConfig, len(gateways))
 	for model, gw := range gateways {
 		apiKey := ""
-		if gw.APIKeyName != "" {
+		switch {
+		case gw.APIKeyFile != "":
+			data, err := os.ReadFile(gw.APIKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("read API key file for model %q: %w", model, err)
+			}
+			apiKey = strings.TrimSpace(string(data))
+		case gw.APIKeyName != "":
 			key, err := ucom.ReadSecretFile(gw.APIKeyName)
 			if err != nil {
 				return nil, fmt.Errorf("read API key for model %q: %w", model, err)

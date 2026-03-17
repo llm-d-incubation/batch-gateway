@@ -496,10 +496,8 @@ func planEntriesFromLines(raw []byte) []planEntry {
 func makeInputLines(models []string) [][]byte {
 	lines := make([][]byte, 0, len(models))
 	for i, m := range models {
-		// preProcessJob expects:
-		// { "body": { "model": "..." ... }, ... }
-		// It only reads body.model.
 		req := map[string]any{
+			"custom_id": fmt.Sprintf("req-%d", i),
 			"body": map[string]any{
 				"model": m,
 			},
@@ -508,7 +506,6 @@ func makeInputLines(models []string) [][]byte {
 			},
 		}
 		b, _ := json.Marshal(req)
-		// Intentionally vary newline handling: add '\n' here; preProcess also appends if missing.
 		b = append(b, '\n')
 		lines = append(lines, b)
 	}
@@ -530,7 +527,11 @@ func makeInputLinesWithSystemPrompts(specs []inputLineSpec) [][]byte {
 				{"role": "user", "content": fmt.Sprintf("question %d", i)},
 			}
 		}
-		req := map[string]any{"body": body, "meta": map[string]any{"i": i}}
+		req := map[string]any{
+			"custom_id": fmt.Sprintf("req-%d", i),
+			"body":      body,
+			"meta":      map[string]any{"i": i},
+		}
 		b, _ := json.Marshal(req)
 		lines = append(lines, append(b, '\n'))
 	}

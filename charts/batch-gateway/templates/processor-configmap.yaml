@@ -45,6 +45,9 @@ data:
         {{- if $cfg.apiKeyName }}
         api_key_name: {{ $cfg.apiKeyName | quote }}
         {{- end }}
+        {{- if $cfg.apiKeyFile }}
+        api_key_file: {{ $cfg.apiKeyFile | quote }}
+        {{- end }}
         {{- if $cfg.tlsCaCertFile }}
         tls_ca_cert_file: {{ $cfg.tlsCaCertFile | quote }}
         {{- end }}

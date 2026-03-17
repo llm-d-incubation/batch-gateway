@@ -27,10 +27,28 @@ GAIE_VERSION="${GAIE_VERSION:-v1.3.1}"
 GAIE_REPO=/tmp/gateway-api-inference-extension-${GAIE_VERSION#v}
 # TODO: Upgrade to GAIE v1.4.0+ when released — adds EPP request logging (logger.V(1).Info("EPP received request"))
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
-BATCH_INFERENCE_SERVICE="${BATCH_INFERENCE_SERVICE:-batch-inference}"
-BATCH_INFERENCE_PORT="${BATCH_INFERENCE_PORT:-80}"
 GATEWAY_NAME="${GATEWAY_NAME:-istio-gateway}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
+TLS_ISSUER_NAME="${TLS_ISSUER_NAME:-selfsigned-issuer}"
+GATEWAY_URL="https://localhost:${LOCAL_PORT}"
+
+# Batch Gateway configuration
+HELM_RELEASE="${HELM_RELEASE:-batch-gateway}"
+DEV_VERSION="${DEV_VERSION:-latest}"
+BATCH_INFERENCE_SERVICE="${BATCH_INFERENCE_SERVICE:-${HELM_RELEASE}-apiserver}"
+BATCH_INFERENCE_PORT="${BATCH_INFERENCE_PORT:-8000}"
+APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
+FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
+DB_TYPE="${DB_TYPE:-postgresql}"
+REDIS_RELEASE="${REDIS_RELEASE:-redis}"
+POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
+# WARNING: Default passwords are for demo only. For production, override via env vars or use K8s secrets.
+POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
+STORAGE_TYPE="${STORAGE_TYPE:-fs}"
+MINIO_RELEASE="${MINIO_RELEASE:-minio}"
+MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
+MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
+MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
 
 FREE_MODEL="${FREE_MODEL:-free-model}"
 GOLD_MODEL="${GOLD_MODEL:-gold-model}"
@@ -83,14 +101,14 @@ start_gateway_port_forward() {
         fi
     fi
 
-    step "Starting port-forward: ${gateway_svc} ${LOCAL_PORT}:80 -n ${INGRESS_NAMESPACE}..."
+    step "Starting port-forward: ${gateway_svc} ${LOCAL_PORT}:443 -n ${INGRESS_NAMESPACE}..."
 
-    kubectl port-forward "svc/${gateway_svc}" "${LOCAL_PORT}:80" -n "${INGRESS_NAMESPACE}" &
+    kubectl port-forward "svc/${gateway_svc}" "${LOCAL_PORT}:443" -n "${INGRESS_NAMESPACE}" &
     local pf_pid=$!
     disown "${pf_pid}"
 
     log "Port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
-    log "Gateway available at http://localhost:${LOCAL_PORT}"
+    log "Gateway available at https://localhost:${LOCAL_PORT}"
 }
 
 timeout_delete() {
@@ -242,9 +260,45 @@ install_istio() {
     log "Istio ${ISTIO_VERSION} installed with GAIE support."
 }
 
-create_gateway() {
-    step "Creating Istio Gateway..."
+create_selfsigned_issuer() {
+    step "Creating self-signed ClusterIssuer '${TLS_ISSUER_NAME}'..."
+    if kubectl get clusterissuer "${TLS_ISSUER_NAME}" &>/dev/null; then
+        log "ClusterIssuer '${TLS_ISSUER_NAME}' already exists. Skipping."
+        return
+    fi
+    kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${TLS_ISSUER_NAME}
+spec:
+  selfSigned: {}
+EOF
+    log "ClusterIssuer '${TLS_ISSUER_NAME}' created."
+}
 
+create_gateway_cr() {
+    step "Creating TLS certificate for Gateway..."
+    kubectl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${GATEWAY_NAME}-tls
+  namespace: ${INGRESS_NAMESPACE}
+spec:
+  secretName: ${GATEWAY_NAME}-tls
+  issuerRef:
+    name: ${TLS_ISSUER_NAME}
+    kind: ClusterIssuer
+  dnsNames:
+  - "*.${INGRESS_NAMESPACE}.svc.cluster.local"
+  - localhost
+EOF
+    kubectl wait --for=condition=Ready --timeout=60s \
+        -n "${INGRESS_NAMESPACE}" certificate/${GATEWAY_NAME}-tls || warn "Certificate not ready yet"
+    log "Gateway TLS certificate created."
+
+    step "Creating Istio Gateway (HTTPS)..."
     kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -256,9 +310,13 @@ metadata:
 spec:
   gatewayClassName: istio
   listeners:
-  - name: http
-    protocol: HTTP
-    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: ${GATEWAY_NAME}-tls
     allowedRoutes:
       namespaces:
         from: All
@@ -272,10 +330,28 @@ EOF
         -n "${INGRESS_NAMESPACE}" \
         gateway/${GATEWAY_NAME} || warn "Gateway not ready yet"
 
-    kubectl get gateway "${GATEWAY_NAME}" -n "${INGRESS_NAMESPACE}" \
-        -o=jsonpath='{.status.conditions[?(@.type=="Accepted")].message}{"\n"}{.status.conditions[?(@.type=="Programmed")].message}{"\n"}'
+    log "Gateway created (HTTPS on port 443)."
+}
 
-    log "Gateway created."
+create_batch_destinationrule() {
+    step "Creating DestinationRule for backend TLS (Gateway -> apiserver)..."
+    kubectl apply -f - <<EOF
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: ${HELM_RELEASE}-backend-tls
+  namespace: ${INGRESS_NAMESPACE}
+spec:
+  host: ${HELM_RELEASE}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+    - port:
+        number: ${BATCH_INFERENCE_PORT}
+      tls:
+        mode: SIMPLE
+        insecureSkipVerify: true
+EOF
+    log "DestinationRule created (Gateway -> apiserver: TLS re-encrypt)."
 }
 
 install_kuadrant() {
@@ -437,157 +513,6 @@ deploy_inferencepool() {
 
     wait_for_deployment "${release_name}-epp" "${LLM_NAMESPACE}" 300s
     log "GAIE InferencePool '${release_name}' installed (targeting app=${app_label})."
-}
-
-
-# NOTE: This deploys a simplified nginx stub for demo purposes only.
-# It proxies batch requests to the LLM route to demonstrate Kuadrant integration
-# (auth, rate limiting, routing). For production, replace with the actual batch-gateway service.
-install_batch_inference() {
-    step "Installing batch inference service '${BATCH_INFERENCE_SERVICE}' (demo stub)..."
-
-    if kubectl get deployment "${BATCH_INFERENCE_SERVICE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
-        log "Batch inference service '${BATCH_INFERENCE_SERVICE}' already exists. Skipping."
-        return
-    fi
-
-    local gateway_upstream="http://${GATEWAY_NAME}-istio.${INGRESS_NAMESPACE}.svc.cluster.local"
-
-    local dns_resolver
-    if kubectl get svc dns-default -n openshift-dns &>/dev/null; then
-        dns_resolver="dns-default.openshift-dns.svc.cluster.local"
-    else
-        dns_resolver="kube-dns.kube-system.svc.cluster.local"
-    fi
-    log "Using DNS resolver: ${dns_resolver}"
-
-    kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${BATCH_INFERENCE_SERVICE}-config
-  namespace: ${BATCH_NAMESPACE}
-data:
-  nginx.conf: |
-    pid /tmp/nginx.pid;
-
-    events {
-      worker_connections 1024;
-    }
-
-    http {
-      client_body_temp_path /tmp/client_temp;
-      proxy_temp_path /tmp/proxy_temp;
-      fastcgi_temp_path /tmp/fastcgi_temp;
-      uwsgi_temp_path /tmp/uwsgi_temp;
-      scgi_temp_path /tmp/scgi_temp;
-
-      log_format detailed '\$remote_addr - \$remote_user [\$time_local] '
-                         '"\$request" \$status \$body_bytes_sent '
-                         'tier:\$http_x_tier user:\$http_x_username group:\$http_x_group '
-                         'body:\$request_body';
-
-      access_log /dev/stdout detailed;
-      error_log /dev/stderr info;
-
-      server {
-        listen 8000;
-
-        resolver ${dns_resolver} valid=10s;
-
-        set \$upstream ${gateway_upstream};
-
-        # POST /v1/batches -> forward to GAIE for LLM inference
-        location /v1/batches {
-          # GET -> return dummy response
-          if (\$request_method = GET) {
-            add_header Content-Type application/json;
-            return 200 '{"status":"ok","message":"batch list (dummy)"}';
-          }
-
-          client_body_buffer_size 128k;
-          client_max_body_size 10m;
-
-          rewrite ^/v1/batches(.*)\$ /${LLM_NAMESPACE}/${E2E_MODEL}/v1/chat/completions break;
-          proxy_pass \$upstream;
-          proxy_http_version 1.1;
-          proxy_set_header Host \$host;
-          proxy_set_header X-Real-IP \$remote_addr;
-          proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto \$scheme;
-          proxy_pass_request_headers on;
-        }
-
-        # Default: pass through to gateway
-        location / {
-          client_body_buffer_size 128k;
-          client_max_body_size 10m;
-
-          proxy_pass \$upstream;
-          proxy_http_version 1.1;
-          proxy_set_header Host \$host;
-          proxy_set_header X-Real-IP \$remote_addr;
-          proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto \$scheme;
-          proxy_pass_request_headers on;
-        }
-      }
-    }
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${BATCH_INFERENCE_SERVICE}
-  namespace: ${BATCH_NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ${BATCH_INFERENCE_SERVICE}
-  template:
-    metadata:
-      labels:
-        app: ${BATCH_INFERENCE_SERVICE}
-    spec:
-      containers:
-      - name: nginx
-        image: nginxinc/nginx-unprivileged:alpine
-        ports:
-        - containerPort: 8000
-          name: http
-          protocol: TCP
-        volumeMounts:
-        - name: config
-          mountPath: /etc/nginx/nginx.conf
-          subPath: nginx.conf
-        resources:
-          requests:
-            cpu: 10m
-      volumes:
-      - name: config
-        configMap:
-          name: ${BATCH_INFERENCE_SERVICE}-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${BATCH_INFERENCE_SERVICE}
-  namespace: ${BATCH_NAMESPACE}
-  labels:
-    app: ${BATCH_INFERENCE_SERVICE}
-spec:
-  selector:
-    app: ${BATCH_INFERENCE_SERVICE}
-  ports:
-  - name: http
-    protocol: TCP
-    port: 80
-    targetPort: 8000
-  type: ClusterIP
-EOF
-
-    wait_for_deployment "${BATCH_INFERENCE_SERVICE}" "${BATCH_NAMESPACE}" 120s
-    log "Batch inference service installed (upstream: gateway llm-route)."
 }
 
 create_batch_httproute() {
@@ -768,6 +693,247 @@ EOF
     log "llm-token-ratelimit applied (gold: 2000 tokens/min, free: 150 tokens/min)."
 }
 
+# ── Database / Storage Functions ──────────────────────────────────────────────
+
+install_batch_redis() {
+    step "Installing Redis..."
+    if ! helm repo list 2>/dev/null | grep -q bitnami; then
+        helm repo add bitnami https://charts.bitnami.com/bitnami
+    fi
+    helm repo update || warn "Some Helm repo updates failed; continuing."
+    if helm status "${REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "Redis release '${REDIS_RELEASE}' is already installed. Skipping."
+        return
+    fi
+    helm install "${REDIS_RELEASE}" bitnami/redis \
+        --namespace "${BATCH_NAMESPACE}" \
+        --set auth.enabled=false \
+        --set replica.replicaCount=0 \
+        --set master.persistence.enabled=false \
+        --wait --timeout 120s
+    log "Redis installed successfully."
+}
+
+install_batch_postgresql() {
+    step "Installing PostgreSQL..."
+    if ! helm repo list 2>/dev/null | grep -q bitnami; then
+        helm repo add bitnami https://charts.bitnami.com/bitnami
+    fi
+    helm repo update || warn "Some Helm repo updates failed; continuing."
+    if helm status "${POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "PostgreSQL release '${POSTGRESQL_RELEASE}' is already installed. Skipping."
+        return
+    fi
+    helm install "${POSTGRESQL_RELEASE}" bitnami/postgresql \
+        --namespace "${BATCH_NAMESPACE}" \
+        --set auth.postgresPassword="${POSTGRESQL_PASSWORD}" \
+        --set primary.persistence.enabled=false \
+        --wait --timeout 120s
+    log "PostgreSQL installed successfully."
+}
+
+install_batch_minio() {
+    if [ "${STORAGE_TYPE}" != "s3" ]; then return; fi
+    step "Installing MinIO (S3-compatible object storage)..."
+    if kubectl get deployment "${MINIO_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "MinIO '${MINIO_RELEASE}' already exists. Skipping."
+        return
+    fi
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${MINIO_RELEASE}
+  namespace: ${BATCH_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${MINIO_RELEASE}
+  template:
+    metadata:
+      labels:
+        app: ${MINIO_RELEASE}
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:latest
+        args: ["server", "/data", "--console-address", ":9001"]
+        env:
+        - name: MINIO_ROOT_USER
+          value: "${MINIO_ROOT_USER}"
+        - name: MINIO_ROOT_PASSWORD
+          value: "${MINIO_ROOT_PASSWORD}"
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        resources:
+          requests:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${MINIO_RELEASE}
+  namespace: ${BATCH_NAMESPACE}
+spec:
+  selector:
+    app: ${MINIO_RELEASE}
+  ports:
+  - name: api
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
+EOF
+    wait_for_deployment "${MINIO_RELEASE}" "${BATCH_NAMESPACE}" 120s
+    step "Creating MinIO bucket '${MINIO_BUCKET}'..."
+    kubectl exec -n "${BATCH_NAMESPACE}" deploy/${MINIO_RELEASE} -- \
+        mc alias set local http://localhost:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" > /dev/null 2>&1
+    kubectl exec -n "${BATCH_NAMESPACE}" deploy/${MINIO_RELEASE} -- \
+        mc mb --ignore-existing "local/${MINIO_BUCKET}" > /dev/null 2>&1
+    log "MinIO installed successfully."
+}
+
+create_batch_pvc() {
+    if [ "${STORAGE_TYPE}" != "fs" ]; then return; fi
+    step "Creating PVC '${FILES_PVC_NAME}' for file storage..."
+    if kubectl get pvc "${FILES_PVC_NAME}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "PVC '${FILES_PVC_NAME}' already exists. Skipping."
+        return
+    fi
+    local default_sc
+    default_sc=$(kubectl get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{end}' 2>/dev/null)
+    if [ -z "$default_sc" ]; then
+        die "No default StorageClass found."
+    fi
+    log "Using default StorageClass: ${default_sc}"
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${FILES_PVC_NAME}
+  namespace: ${BATCH_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+    log "PVC '${FILES_PVC_NAME}' created."
+}
+
+create_batch_secret() {
+    step "Creating app secret '${APP_SECRET_NAME}'..."
+    local redis_url="redis://${REDIS_RELEASE}-master.${BATCH_NAMESPACE}.svc.cluster.local:6379/0"
+    local postgresql_url="postgresql://postgres:${POSTGRESQL_PASSWORD}@${POSTGRESQL_RELEASE}.${BATCH_NAMESPACE}.svc.cluster.local:5432/postgres"
+    local secret_args=(
+        --namespace "${BATCH_NAMESPACE}"
+        --from-literal=redis-url="${redis_url}"
+        --from-literal=postgresql-url="${postgresql_url}"
+    )
+    if [ "${STORAGE_TYPE}" = "s3" ]; then
+        secret_args+=(--from-literal=s3-secret-access-key="${MINIO_ROOT_PASSWORD}")
+    fi
+    kubectl create secret generic "${APP_SECRET_NAME}" \
+        "${secret_args[@]}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    log "Secret '${APP_SECRET_NAME}' applied."
+}
+
+# install_batch_gateway
+# Installs batch-gateway via helm chart. Processor routes inference through Gateway.
+install_batch_gateway() {
+    step "Installing batch-gateway via Helm..."
+
+    local gw_base="https://${GATEWAY_NAME}-istio.${INGRESS_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}"
+
+    local helm_args=(
+        --namespace "${BATCH_NAMESPACE}"
+        --set "apiserver.image.tag=${DEV_VERSION}"
+        --set "processor.image.tag=${DEV_VERSION}"
+        --set "global.appSecretName=${APP_SECRET_NAME}"
+        --set "global.databaseType=${DB_TYPE}"
+        --set "global.fileClient.type=${STORAGE_TYPE}"
+        --set "processor.config.modelGateways.${FREE_MODEL}.url=${gw_base}/${FREE_MODEL}"
+        --set "processor.config.modelGateways.${FREE_MODEL}.tlsInsecureSkipVerify=true"
+        --set "processor.config.modelGateways.${FREE_MODEL}.requestTimeout=5m"
+        --set "processor.config.modelGateways.${FREE_MODEL}.maxRetries=3"
+        --set "processor.config.modelGateways.${FREE_MODEL}.initialBackoff=1s"
+        --set "processor.config.modelGateways.${FREE_MODEL}.maxBackoff=60s"
+        --set "processor.config.modelGateways.${GOLD_MODEL}.url=${gw_base}/${GOLD_MODEL}"
+        --set "processor.config.modelGateways.${GOLD_MODEL}.tlsInsecureSkipVerify=true"
+        --set "processor.config.modelGateways.${GOLD_MODEL}.requestTimeout=5m"
+        --set "processor.config.modelGateways.${GOLD_MODEL}.maxRetries=3"
+        --set "processor.config.modelGateways.${GOLD_MODEL}.initialBackoff=1s"
+        --set "processor.config.modelGateways.${GOLD_MODEL}.maxBackoff=60s"
+        --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
+        --set "apiserver.tls.enabled=true"
+        --set "apiserver.tls.certManager.enabled=true"
+        --set "apiserver.tls.certManager.issuerName=${TLS_ISSUER_NAME}"
+        --set "apiserver.tls.certManager.issuerKind=ClusterIssuer"
+        --set "apiserver.tls.certManager.dnsNames={${HELM_RELEASE}-apiserver,${HELM_RELEASE}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local,localhost}"
+    )
+
+    # Storage-specific helm args
+    if [ "${STORAGE_TYPE}" = "s3" ]; then
+        local minio_endpoint="http://${MINIO_RELEASE}.${BATCH_NAMESPACE}.svc.cluster.local:9000"
+        helm_args+=(
+            --set "global.fileClient.s3.endpoint=${minio_endpoint}"
+            --set "global.fileClient.s3.region=us-east-1"
+            --set "global.fileClient.s3.accessKeyID=${MINIO_ROOT_USER}"
+            --set "global.fileClient.s3.prefix=${MINIO_BUCKET}"
+            --set "global.fileClient.s3.usePathStyle=true"
+        )
+    else
+        helm_args+=(
+            --set "global.fileClient.fs.basePath=/tmp/batch-gateway"
+            --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
+        )
+    fi
+
+    # OpenShift: clear fixed UIDs, let SCC assign them
+    if is_openshift; then
+        log "OpenShift detected, clearing podSecurityContext for SCC compatibility"
+        helm_args+=(
+            --set "apiserver.podSecurityContext=null"
+            --set "processor.podSecurityContext=null"
+        )
+    fi
+
+    local repo_root
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+    if helm status "${HELM_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "Release '${HELM_RELEASE}' already exists. Upgrading..."
+        helm upgrade "${HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "${helm_args[@]}"
+    else
+        helm install "${HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "${helm_args[@]}"
+    fi
+
+    wait_for_deployment "${HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 120s
+    wait_for_deployment "${HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 120s
+
+    log "batch-gateway installed (apiserver + processor)."
+}
+
+# deploy_batch_gateway
+# Full batch-gateway deployment: databases, storage, helm chart, TLS, and routing.
+deploy_batch_gateway() {
+    install_batch_redis
+    install_batch_postgresql
+    install_batch_minio
+    create_batch_secret
+    create_batch_pvc
+    install_batch_gateway
+    create_batch_destinationrule
+    create_batch_httproute
+}
+
 # ── Common Install / Uninstall ────────────────────────────────────────────────
 
 install_with_kuadrant() {
@@ -782,17 +948,17 @@ install_with_kuadrant() {
 
     install_crds
     install_cert_manager
+    create_selfsigned_issuer
     install_istio
     install_kuadrant
 
-    create_gateway
+    create_gateway_cr
 
     deploy_llm
     create_llm_route
     apply_llm_token_ratelimit_policy
 
-    install_batch_inference
-    create_batch_httproute
+    deploy_batch_gateway
     apply_batch_ratelimit_policy
 }
 
@@ -825,6 +991,10 @@ cmd_uninstall() {
     step "Stopping port-forward processes..."
     pkill -f "kubectl port-forward.*${GATEWAY_NAME}" 2>/dev/null || true
 
+    step "Removing TLS resources..."
+    kubectl delete clusterissuer "${TLS_ISSUER_NAME}" 2>/dev/null || true
+    kubectl delete destinationrule "${HELM_RELEASE}-backend-tls" -n "${INGRESS_NAMESPACE}" 2>/dev/null || true
+
     step "Removing gateway resources (${INGRESS_NAMESPACE})..."
     timeout_delete 30s gateway --all -n "${INGRESS_NAMESPACE}" \
         || warn "No gateway to delete in ${INGRESS_NAMESPACE}"
@@ -832,8 +1002,21 @@ cmd_uninstall() {
     step "Removing application resources (${BATCH_NAMESPACE})..."
     timeout_delete 30s httproute,authpolicy,ratelimitpolicy --all -n "${BATCH_NAMESPACE}" \
         || warn "No resources to delete in ${BATCH_NAMESPACE}"
-    timeout_delete 30s deployment,svc,configmap -l app="${BATCH_INFERENCE_SERVICE}" -n "${BATCH_NAMESPACE}" \
-        || warn "No batch-inference resources to delete"
+
+    step "Uninstalling batch-gateway..."
+    helm uninstall "${HELM_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+
+    step "Uninstalling Redis..."
+    helm uninstall "${REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+
+    step "Uninstalling PostgreSQL..."
+    helm uninstall "${POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+
+    step "Uninstalling MinIO..."
+    kubectl delete deployment,svc -l app="${MINIO_RELEASE}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
+
+    step "Deleting PVC..."
+    kubectl delete pvc "${FILES_PVC_NAME}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
 
     step "Removing LLM resources (${LLM_NAMESPACE})..."
     timeout_delete 30s httproute,authpolicy,tokenratelimitpolicy --all -n "${LLM_NAMESPACE}" \
@@ -921,7 +1104,7 @@ init_test() {
     fi
 
     step "Waiting for gateway to be accessible..."
-    local base_url="${GATEWAY_URL:-http://localhost:${LOCAL_PORT}}"
+    local base_url="${GATEWAY_URL:-https://localhost:${LOCAL_PORT}}"
     local retries=30
     for i in $(seq 1 "${retries}"); do
         if curl -sk -o /dev/null -w "%{http_code}" "${base_url}/${LLM_NAMESPACE}/${E2E_MODEL}/v1/chat/completions" &>/dev/null; then
@@ -955,52 +1138,6 @@ print_test_summary() {
     fi
     echo "  Passed: ${test_passed}  Failed: ${test_failed}  Total: ${test_total}"
     echo ""
-}
-
-# verify_nginx_headers <expect_tier> <expect_username> [expect_group]
-# Checks nginx logs for injected identity headers.
-# expect_group is optional; if omitted, only checks presence (non-empty).
-# Sets HEADER_CHECK_OK=true/false for the caller to use.
-verify_nginx_headers() {
-    local expect_tier="$1"
-    local expect_username="$2"
-    local expect_group="${3:-}"
-
-    sleep 1
-    local nginx_log
-    nginx_log=$(kubectl logs -n "${BATCH_NAMESPACE}" -l app="${BATCH_INFERENCE_SERVICE}" --tail=5 2>/dev/null)
-    echo "  Checking nginx logs for headers..."
-    HEADER_CHECK_OK=true
-
-    if echo "$nginx_log" | grep -q "tier:${expect_tier}"; then
-        echo "  x-tier: ${expect_tier} ✓"
-    else
-        echo "  x-tier: ${expect_tier} ✗ (not found)"
-        HEADER_CHECK_OK=false
-    fi
-
-    if echo "$nginx_log" | grep -q "user:.*${expect_username}"; then
-        echo "  x-username: contains ${expect_username} ✓"
-    else
-        echo "  x-username: ${expect_username} ✗ (not found)"
-        HEADER_CHECK_OK=false
-    fi
-
-    if [ -n "$expect_group" ]; then
-        if echo "$nginx_log" | grep -q "group:${expect_group}"; then
-            echo "  x-group: ${expect_group} ✓"
-        else
-            echo "  x-group: ${expect_group} ✗ (not found)"
-            HEADER_CHECK_OK=false
-        fi
-    else
-        if echo "$nginx_log" | grep -q "group:.\+"; then
-            echo "  x-group: present ✓"
-        else
-            echo "  x-group: ✗ (not found)"
-            HEADER_CHECK_OK=false
-        fi
-    fi
 }
 
 usage() {

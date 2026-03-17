@@ -44,6 +44,7 @@ model_gateways:
     # tls_client_key_file: "/path/to/client-key.pem"
   # Per-model entries (optional). Each entry must be fully specified —
   # all HTTP fields are required and are NOT inherited from "default".
+  # api_key_name and api_key_file are mutually exclusive.
   # "llama-3":
   #   url: "http://gateway-a:8000"
   #   request_timeout: "5m"
@@ -52,11 +53,18 @@ model_gateways:
   #   max_backoff: "60s"
   # "mistral":
   #   url: "http://gateway-b:8000"
-  #   api_key_name: "gateway-b-api-key"
+  #   api_key_name: "gateway-b-api-key"  # reads from /etc/.secrets/gateway-b-api-key
   #   request_timeout: "2m"
   #   max_retries: 1
   #   initial_backoff: "1s"
   #   max_backoff: "30s"
+  # "granite":
+  #   url: "http://gateway-c:8000"
+  #   api_key_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"  # reads from arbitrary file path
+  #   request_timeout: "5m"
+  #   max_retries: 3
+  #   initial_backoff: "1s"
+  #   max_backoff: "60s"
 
 # Default TTL for output/error files in seconds (0 = no expiration).
 # Used as fallback when the user does not provide output_expires_after in POST /v1/batches.

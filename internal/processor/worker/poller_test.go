@@ -192,15 +192,15 @@ func TestPoller_FetchJobItem_DBError_ReturnsErrorWithoutEnqueue(t *testing.T) {
 		SLO: time.Now().Add(1 * time.Hour),
 	}
 
-	jobItem, err := p.fetchJobItem(ctx, task)
+	jobItem, err := p.fetchJobItemByID(ctx, task.ID)
 	if err == nil {
-		t.Fatalf("FetchJobItem() err=nil, want error")
+		t.Fatalf("FetchJobItemByID() err=nil, want error")
 	}
 	if !errors.Is(err, dbErr) {
-		t.Fatalf("FetchJobItem() err=%v, want %v", err, dbErr)
+		t.Fatalf("FetchJobItemByID() err=%v, want %v", err, dbErr)
 	}
 	if jobItem != nil {
-		t.Fatalf("FetchJobItem() jobItem=%v, want nil", jobItem)
+		t.Fatalf("FetchJobItemByID() jobItem=%v, want nil", jobItem)
 	}
 	if pq.enqueueCalled != 0 {
 		t.Fatalf("PQEnqueue called=%d, want 0", pq.enqueueCalled)
@@ -224,12 +224,12 @@ func TestPoller_FetchJobItem_DBInconsistency_NoReenqueueNoDelete_ReturnsNilNil(t
 		SLO: time.Now().Add(1 * time.Hour),
 	}
 
-	jobItem, err := p.fetchJobItem(ctx, task)
+	jobItem, err := p.fetchJobItemByID(ctx, task.ID)
 	if err != nil {
-		t.Fatalf("FetchJobItem() err=%v, want nil", err)
+		t.Fatalf("FetchJobItemByID() err=%v, want nil", err)
 	}
 	if jobItem != nil {
-		t.Fatalf("FetchJobItem() jobItem=%v, want nil", jobItem)
+		t.Fatalf("FetchJobItemByID() jobItem=%v, want nil", jobItem)
 	}
 }
 
@@ -261,15 +261,15 @@ func TestPoller_FetchJobItem_Found_ReturnsJobItem(t *testing.T) {
 		t.Fatalf("DBStore() err=%v", err)
 	}
 
-	jobItem, err := p.fetchJobItem(ctx, task)
+	jobItem, err := p.fetchJobItemByID(ctx, task.ID)
 	if err != nil {
-		t.Fatalf("FetchJobItem() err=%v, want nil", err)
+		t.Fatalf("FetchJobItemByID() err=%v, want nil", err)
 	}
 	if jobItem == nil {
-		t.Fatalf("FetchJobItem() jobItem=nil, want non-nil")
+		t.Fatalf("FetchJobItemByID() jobItem=nil, want non-nil")
 	}
 	if jobItem.ID != task.ID {
-		t.Fatalf("FetchJobItem() id=%q, want %q", jobItem.ID, task.ID)
+		t.Fatalf("FetchJobItemByID() id=%q, want %q", jobItem.ID, task.ID)
 	}
 	// no re-enqueue / delete expected
 	if pq.enqueueCalled != 0 {

@@ -84,6 +84,8 @@ func (p *Processor) Run(ctx context.Context) error {
 		return err
 	}
 
+	p.recoverStaleJobs(ctx)
+
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info(
 		"Processor run started",
@@ -140,7 +142,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 		jctx := klog.NewContext(ctx, jlogger)
 
 		// get job item from db
-		jobItem, err := p.poller.fetchJobItem(jctx, task)
+		jobItem, err := p.poller.fetchJobItemByID(jctx, task.ID)
 		if err != nil {
 			jlogger.Error(err, "Failed to fetch job item from DB")
 			p.releaseForNextPoll()
