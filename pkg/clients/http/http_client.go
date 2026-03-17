@@ -107,7 +107,7 @@ func NewHTTPClient(config Config) (*HTTPClient, error) {
 	transport.MaxIdleConns = config.MaxIdleConns
 	transport.MaxIdleConnsPerHost = config.MaxIdleConns // Higher than default (17) for batch workloads
 	transport.IdleConnTimeout = config.IdleConnTimeout
-	transport.ResponseHeaderTimeout = 30 * time.Second // Prevent hanging on slow backends
+	transport.ResponseHeaderTimeout = config.Timeout // Use the same timeout as the request
 
 	// Configure custom TLS if needed
 	tlsConfig, err := BuildTLSConfig(&config)

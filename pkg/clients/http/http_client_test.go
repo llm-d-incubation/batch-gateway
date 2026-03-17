@@ -62,8 +62,8 @@ func TestNewHTTPClient_Defaults(t *testing.T) {
 	if client.transport.MaxIdleConnsPerHost != 100 {
 		t.Errorf("Expected Transport.MaxIdleConnsPerHost=100, got %d", client.transport.MaxIdleConnsPerHost)
 	}
-	if client.transport.ResponseHeaderTimeout != 30*time.Second {
-		t.Errorf("Expected Transport.ResponseHeaderTimeout=30s, got %v", client.transport.ResponseHeaderTimeout)
+	if client.transport.ResponseHeaderTimeout != 5*time.Minute {
+		t.Errorf("Expected Transport.ResponseHeaderTimeout=5m (same as default Timeout), got %v", client.transport.ResponseHeaderTimeout)
 	}
 }
 

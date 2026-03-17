@@ -1,0 +1,40 @@
+{"custom_id":"req-001","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is machine learning?"}]}}
+{"custom_id":"req-002","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain neural networks"}]}}
+{"custom_id":"req-003","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is deep learning?"}]}}
+{"custom_id":"req-004","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe supervised learning"}]}}
+{"custom_id":"req-005","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is unsupervised learning?"}]}}
+{"custom_id":"req-006","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain reinforcement learning"}]}}
+{"custom_id":"req-007","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is a convolutional neural network?"}]}}
+{"custom_id":"req-008","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe recurrent neural networks"}]}}
+{"custom_id":"req-009","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is a transformer model?"}]}}
+{"custom_id":"req-010","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain gradient descent"}]}}
+{"custom_id":"req-011","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is backpropagation?"}]}}
+{"custom_id":"req-012","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe overfitting"}]}}
+{"custom_id":"req-013","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is regularization?"}]}}
+{"custom_id":"req-014","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain dropout in neural networks"}]}}
+{"custom_id":"req-015","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is batch normalization?"}]}}
+{"custom_id":"req-016","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe activation functions"}]}}
+{"custom_id":"req-017","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is the ReLU function?"}]}}
+{"custom_id":"req-018","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain the sigmoid function"}]}}
+{"custom_id":"req-019","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is the softmax function?"}]}}
+{"custom_id":"req-020","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe cross-entropy loss"}]}}
+{"custom_id":"req-021","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is natural language processing?"}]}}
+{"custom_id":"req-022","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain tokenization"}]}}
+{"custom_id":"req-023","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is word embedding?"}]}}
+{"custom_id":"req-024","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe Word2Vec"}]}}
+{"custom_id":"req-025","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is BERT?"}]}}
+{"custom_id":"req-026","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain GPT models"}]}}
+{"custom_id":"req-027","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is sentiment analysis?"}]}}
+{"custom_id":"req-028","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe named entity recognition"}]}}
+{"custom_id":"req-029","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is machine translation?"}]}}
+{"custom_id":"req-030","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain attention mechanism"}]}}
+{"custom_id":"req-031","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is self-attention?"}]}}
+{"custom_id":"req-032","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe positional encoding"}]}}
+{"custom_id":"req-033","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is question answering?"}]}}
+{"custom_id":"req-034","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain text summarization"}]}}
+{"custom_id":"req-035","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is text generation?"}]}}
+{"custom_id":"req-036","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe language models"}]}}
+{"custom_id":"req-037","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is perplexity?"}]}}
+{"custom_id":"req-038","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain fine-tuning"}]}}
+{"custom_id":"req-039","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is transfer learning?"}]}}
+{"custom_id":"req-040","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe zero-shot learning"}]}}

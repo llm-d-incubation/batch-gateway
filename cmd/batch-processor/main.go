@@ -187,7 +187,7 @@ func startObservabilityServer(
 		m.Handle("/metrics", metrics.NewMetricsHandler())
 		m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
+			w.Write([]byte("OK"))
 		})
 		// ready endpoint - indicates the processor is ready to process requests
 		m.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +197,7 @@ func startObservabilityServer(
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
+			w.Write([]byte("OK"))
 		})
 
 		server := &http.Server{

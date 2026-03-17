@@ -1,0 +1,196 @@
+# Batch Gateway Demo
+# REST Client format for VS Code REST Client plugin
+#
+# Usage:
+# 1. Install REST Client extension in VS Code
+# 2. Click "Send Request" above each request
+# 3. Follow the sequences below
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+@baseUrl = https://localhost:8000/v1
+@tenantHeader = X-MaaS-Username
+@tenantId = demo-user
+@apiKey = unused
+@inputFile = batch_input.jsonl
+
+# ============================================================
+# DEMO SEQUENCE 1: Complete Batch Processing Flow
+# ============================================================
+
+### Upload Batch Input File
+# @name uploadFile
+POST {{baseUrl}}/files
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="purpose"
+
+batch
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="{{inputFile}}"
+Content-Type: application/jsonl
+
+< ./{{inputFile}}
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+# Set @fileIdN with the file ID returned in this step
+@fileIdN =
+
+### Get File Details
+GET {{baseUrl}}/files/{{fileIdN}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### Create Batch
+# @name createBatch
+POST {{baseUrl}}/batches
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{
+  "input_file_id": "{{fileIdN}}",
+  "endpoint": "/v1/chat/completions",
+  "completion_window": "24h"
+}
+
+# Set @batchIdN with the batch ID returned in this step
+@batchIdN =
+
+### List All Batches
+GET {{baseUrl}}/batches
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### Get Batch Status (Poll this to monitor progress)
+GET {{baseUrl}}/batches/{{batchIdN}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+# Set @outputfileIdN with the output_file_id returned in this step
+@outputfileIdN =
+
+### Download Output File (when status = completed)
+GET {{baseUrl}}/files/{{outputfileIdN}}/content
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### List All Files
+GET {{baseUrl}}/files
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+# ============================================================
+# DEMO SEQUENCE 2: Batch Cancellation Flow
+# ============================================================
+
+### Upload Batch Input File
+# @name uploadFileCancelDemo
+POST {{baseUrl}}/files
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="purpose"
+
+batch
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="{{inputFile}}"
+Content-Type: application/jsonl
+
+< ./{{inputFile}}
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+# Set @fileIdC with the file ID returned in this step
+@fileIdC =
+
+### Create Batch (To Be Cancelled)
+# @name createBatchToCancel
+POST {{baseUrl}}/batches
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{
+  "input_file_id": "{{fileIdC}}",
+  "endpoint": "/v1/chat/completions",
+  "completion_window": "24h"
+}
+
+# Set @batchIdC with the batch ID returned in this step
+@batchIdC =
+
+### Check Initial Status
+GET {{baseUrl}}/batches/{{batchIdC}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### Cancel the Batch
+POST {{baseUrl}}/batches/{{batchIdC}}/cancel
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### Verify Cancelled Status
+GET {{baseUrl}}/batches/{{batchIdC}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+# Set @outputfileIdC with the output_file_id and then the error_file_id returned in this step
+@outputfileIdC =
+
+### Download Partial Results (if any)
+GET {{baseUrl}}/files/{{outputfileIdC}}/content
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+# ============================================================
+# Monitoring and Observability
+# ============================================================
+
+### View Jaeger Traces
+# Open in browser: http://localhost:16686
+# Service: batch-gateway
+# You can correlate requests using the batch ID
+
+### Check Prometheus Metrics - Request Counts
+GET http://localhost:8081/metrics
+Accept: text/plain
+
+# Look for:
+# - batch_gateway_api_http_requests_total
+# - batch_gateway_api_batch_jobs_total
+# - batch_gateway_processor_jobs_processed_total
+
+### Check Prometheus Metrics - Processing Duration
+GET http://localhost:9090/metrics
+Accept: text/plain
+
+# Look for:
+# - batch_gateway_processor_job_duration_seconds
+# - batch_gateway_processor_inference_duration_seconds
+
+### View API Server Health
+GET http://localhost:8081/health
+Accept: application/json
+
+### View Processor Health
+GET http://localhost:9090/health
+Accept: application/json
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+# Set @fileIdN with the file ID returned in this step
+@fileIdD =
+
+### Delete File
+DELETE {{baseUrl}}/files/{{fileIdD}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}

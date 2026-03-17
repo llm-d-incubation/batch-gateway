@@ -1,38 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-log()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-step() { echo -e "${BLUE}[STEP]${NC}  $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+# Source common functions and configuration
+source "${SCRIPT_DIR}/dev-common.sh"
 
-# ── Configuration (override via env vars) ─────────────────────────────────────
+# ── Deployment-Specific Configuration ────────────────────────────────────────
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
-HELM_RELEASE="${HELM_RELEASE:-batch-gateway}"
-NAMESPACE="${NAMESPACE:-default}"
 DEV_VERSION="${DEV_VERSION:-0.0.1}"
-LOCAL_PORT="${LOCAL_PORT:-8000}"
-LOCAL_OBS_PORT="${LOCAL_OBS_PORT:-8081}"
-LOCAL_PROCESSOR_PORT="${LOCAL_PROCESSOR_PORT:-9090}"
-JAEGER_PORT="${JAEGER_PORT:-16686}"
-REDIS_RELEASE="redis"
-POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-dummy-s3-secret-access-key}"
-TLS_SECRET_NAME="${TLS_SECRET_NAME:-${HELM_RELEASE}-tls}"
-APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
-FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
-JAEGER_NAME="${JAEGER_NAME:-jaeger}"
-VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
+VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-4}"
 APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
@@ -40,9 +22,6 @@ PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor
 # USE_KIND=true  → use kind; create cluster if it doesn't exist (default)
 # USE_KIND=false → use existing kubeconfig context (OpenShift / Kubernetes)
 USE_KIND="${USE_KIND:-true}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -372,10 +351,15 @@ EOF
 # ── vLLM Simulator ────────────────────────────────────────────────────────────
 
 install_vllm_sim() {
-    step "Installing vLLM simulator '${VLLM_SIM_NAME}' (model: ${VLLM_SIM_MODEL})..."
+    local sim_name="$1"
+    local sim_model="$2"
+    local time_to_first_token="$3"
+    local inter_token_latency="$4"
 
-    if kubectl get deployment "${VLLM_SIM_NAME}" -n "${NAMESPACE}" &>/dev/null; then
-        log "vLLM simulator '${VLLM_SIM_NAME}' already exists. Skipping."
+    step "Installing vLLM simulator '${sim_name}' (model: ${sim_model})..."
+
+    if kubectl get deployment "${sim_name}" -n "${NAMESPACE}" &>/dev/null; then
+        log "vLLM simulator '${sim_name}' already exists. Skipping."
         return
     fi
 
@@ -383,17 +367,17 @@ install_vllm_sim() {
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ${VLLM_SIM_NAME}
+  name: ${sim_name}
   namespace: ${NAMESPACE}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ${VLLM_SIM_NAME}
+      app: ${sim_name}
   template:
     metadata:
       labels:
-        app: ${VLLM_SIM_NAME}
+        app: ${sim_name}
     spec:
       containers:
       - name: vllm-sim
@@ -401,11 +385,11 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - --model
-        - ${VLLM_SIM_MODEL}
+        - ${sim_model}
         - --port
         - "8000"
-        - --time-to-first-token=50ms
-        - --inter-token-latency=100ms
+        - --time-to-first-token=${time_to_first_token}
+        - --inter-token-latency=${inter_token_latency}
         - --v=5
         env:
         - name: POD_NAME
@@ -427,13 +411,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${VLLM_SIM_NAME}
+  name: ${sim_name}
   namespace: ${NAMESPACE}
   labels:
-    app: ${VLLM_SIM_NAME}
+    app: ${sim_name}
 spec:
   selector:
-    app: ${VLLM_SIM_NAME}
+    app: ${sim_name}
   ports:
   - name: http
     protocol: TCP
@@ -442,8 +426,8 @@ spec:
   type: ClusterIP
 EOF
 
-    wait_for_deployment "${VLLM_SIM_NAME}" "${NAMESPACE}" 120s
-    log "vLLM simulator installed. Service: ${VLLM_SIM_NAME}:8000"
+    wait_for_deployment "${sim_name}" "${NAMESPACE}" 120s
+    log "vLLM simulator installed. Service: ${sim_name}:8000"
 }
 
 # ── Batch Gateway ─────────────────────────────────────────────────────────────
@@ -453,6 +437,7 @@ install_batch_gateway() {
     cd "${REPO_ROOT}"
 
     local vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+    local vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
 
     local helm_args=(
         --set apiserver.image.pullPolicy=IfNotPresent
@@ -461,7 +446,17 @@ install_batch_gateway() {
         --set "processor.image.tag=${DEV_VERSION}"
         --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
         --set "global.appSecretName=${APP_SECRET_NAME}"
-        --set "processor.config.modelGateways.default.url=${vllm_sim_url}"
+        --set "processor.config.modelGateways.default.url=http://unused-default-gateway:8000"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.url=${vllm_sim_url}"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.requestTimeout=5m"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxRetries=3"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=1s"
+        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=60s"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.url=${vllm_sim_b_url}"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.requestTimeout=5m"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxRetries=3"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.initialBackoff=1s"
+        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxBackoff=60s"
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
@@ -522,25 +517,12 @@ wait_for_deployment() {
     done
 }
 
-kill_stale_port_forwards() {
-    local ports=("$@")
-    for port in "${ports[@]}"; do
-        local pids
-        pids=$(lsof -ti "tcp:${port}" 2>/dev/null || true)
-        if [[ -n "${pids}" ]]; then
-            log "Killing stale port-forward on port ${port} (PIDs: ${pids})"
-            echo "${pids}" | xargs kill 2>/dev/null || true
-            sleep 1
-        fi
-    done
-}
-
 start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
     local max_retries=3
     local health_check_attempts=30
 
-    kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
+    kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
     for retry in $(seq 1 ${max_retries}); do
         step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
@@ -568,7 +550,7 @@ start_apiserver_port_forward() {
         # Health check failed - kill the port-forward and retry
         warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
         kill "${pf_pid}" 2>/dev/null || true
-        kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
+        kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
         if [ ${retry} -lt ${max_retries} ]; then
             log "Retrying port-forward in 2 seconds..."
@@ -584,7 +566,7 @@ start_processor_port_forward() {
     local max_retries=3
     local health_check_attempts=30
 
-    kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
+    kill_ports "${LOCAL_PROCESSOR_PORT}"
 
     for retry in $(seq 1 ${max_retries}); do
         step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
@@ -612,7 +594,7 @@ start_processor_port_forward() {
         # Health check failed - kill the port-forward and retry
         warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
         kill "${pf_pid}" 2>/dev/null || true
-        kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
+        kill_ports "${LOCAL_PROCESSOR_PORT}"
 
         if [ ${retry} -lt ${max_retries} ]; then
             log "Retrying port-forward in 2 seconds..."
@@ -626,7 +608,7 @@ start_processor_port_forward() {
 start_jaeger_port_forward() {
     local svc="svc/${JAEGER_NAME}"
 
-    kill_stale_port_forwards "${JAEGER_PORT}"
+    kill_ports "${JAEGER_PORT}"
 
     step "Starting port-forward: ${svc} ${JAEGER_PORT}:16686 -n ${NAMESPACE}..."
     kubectl port-forward "${svc}" "${JAEGER_PORT}:16686" -n "${NAMESPACE}" &
@@ -657,7 +639,11 @@ print_usage() {
     echo "         -F 'purpose=batch'"
     echo ""
     echo "     Each line in the JSONL file should follow this format:"
-    echo '       {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}}'
+    echo '       {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"Hello"}]}}'
+    echo ""
+    echo "     Available models in dev environment:"
+    echo "       - sim-model   (vLLM simulator at ${VLLM_SIM_NAME})"
+    echo "       - sim-model-b (vLLM simulator at ${VLLM_SIM_B_NAME})"
     echo ""
     echo "  3. Create a batch (replace FILE_ID with the id from step 2):"
     echo ""
@@ -678,6 +664,7 @@ print_usage() {
     echo "       helm uninstall ${POSTGRESQL_RELEASE} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${JAEGER_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_NAME} -n ${NAMESPACE}"
+    echo "       kubectl delete deployment,svc ${VLLM_SIM_B_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete secret ${APP_SECRET_NAME} ${TLS_SECRET_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete pvc ${FILES_PVC_NAME} -n ${NAMESPACE}"
     echo ""
@@ -706,7 +693,8 @@ main() {
     create_pvc
     load_images
     install_jaeger
-    install_vllm_sim
+    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
+    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_batch_gateway
     verify_deployment
     print_usage
