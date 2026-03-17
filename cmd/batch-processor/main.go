@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"sync/atomic"
 	"time"
@@ -191,6 +192,14 @@ func startObservabilityServer(
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("OK"))
 		})
+		if os.Getenv("ENABLE_PPROF") == "true" {
+			m.HandleFunc("/debug/pprof/", pprof.Index)
+			m.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+			m.HandleFunc("/debug/pprof/profile", pprof.Profile)
+			m.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+			m.HandleFunc("/debug/pprof/trace", pprof.Trace)
+			logger.V(logging.INFO).Info("pprof profiling enabled on observability server")
+		}
 		// ready endpoint - indicates the processor is ready to process requests
 		m.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 			if !ready.Load() {

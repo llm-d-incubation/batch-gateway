@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -109,6 +111,15 @@ func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 	metricsHandler := metrics.NewMetricsApiHandler()
 	for _, h := range []common.ApiHandler{healthHandler, readinessHandler, metricsHandler} {
 		common.RegisterHandler(obsMux, h)
+	}
+
+	if os.Getenv("ENABLE_PPROF") == "true" {
+		obsMux.HandleFunc("/debug/pprof/", pprof.Index)
+		obsMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		obsMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		obsMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		obsMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		logger.Info("pprof profiling enabled on observability server")
 	}
 
 	return &Server{
