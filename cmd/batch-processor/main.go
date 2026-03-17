@@ -133,15 +133,16 @@ func run() error {
 		logger.V(logging.INFO).Info("Processor exited gracefully")
 	}()
 
-	// start the main polling loop
-	// ready indicates the processor can actively run the polling loop.
-	ready.Store(true)
+	// ready flips to true only after processor pre-flight checks succeed and
+	// right before the polling loop begins accepting work.
 	go func() {
 		<-ctx.Done()
 		ready.Store(false)
 	}()
-	logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
-	err = proc.Run(ctx)
+	err = proc.Run(ctx, func() {
+		ready.Store(true)
+		logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
+	})
 	if cfg.TerminateOnObservabilityFailure {
 		// Give the observability goroutine a brief chance to publish the fatal cause,
 		// so we can prefer it over a derived context-cancel error from the polling loop.

@@ -716,11 +716,11 @@ start_processor_port_forward() {
         disown "${pf_pid}"
         log "Processor port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
 
-        log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/health ..."
+        log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/ready ..."
 
         local success=false
         for i in $(seq 1 ${health_check_attempts}); do
-            if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/health" >/dev/null 2>&1; then
+            if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/ready" >/dev/null 2>&1; then
                 log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
                 success=true
                 break
