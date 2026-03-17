@@ -1,0 +1,68 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+LICENSE
+OWNERS
+
+# CI/CD
+.github
+.prowlabels.yaml
+.pre-commit-config.yaml
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+bin/
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+testdata/
+
+# Coverage reports
+coverage.out
+coverage.html
+*.coverprofile
+
+# Scripts (only if not needed for runtime)
+scripts/
+
+# Helm charts (not needed in container)
+charts/
+
+# Test data and examples
+test/
+examples/
+
+# Docker files themselves
+Dockerfile*
+.dockerignore
+docker/
+
+# Development tools
+Makefile
+_typos.toml
+
+# Temporary files
+*.tmp
+*.log
+tmp/
+temp/
+
+# OS files
+.DS_Store
+Thumbs.db
