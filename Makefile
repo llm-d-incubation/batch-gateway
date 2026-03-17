@@ -247,10 +247,8 @@ dev-rm-cluster:
 	@kind delete cluster --name batch-gateway-dev || echo "Cluster not found or already deleted"
 	@echo "✅ Kind cluster deleted"
 
-## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or port-forward)
+## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
 test-e2e:
-	@echo "Ensuring port forwards are active..."
-	@bash scripts/ensure-port-forwards.sh
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
 	cd test/e2e && $(GO) test -v -count=1 ./... 2>&1 | tee $$OUT; \
