@@ -27,5 +27,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run pre-commit
-        uses: j178/prek-action@v2
+      - name: Run pre-commit hooks
+        uses: pre-commit/action@v3.0.1
