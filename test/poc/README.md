@@ -31,77 +31,77 @@ This directory contains demo files for testing the Batch Gateway system.
 The demo environment runs the following components in a Kubernetes cluster (kind):
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Kubernetes Cluster (kind)                        │
-│                                                                          │
-│  ┌──────────────────────┐          ┌──────────────────────┐            │
-│  │   API Server         │          │   Processor          │            │
-│  │  (batch-gateway-     │          │  (batch-gateway-     │            │
-│  │   apiserver)         │          │   processor)         │            │
-│  │                      │          │                      │            │
-│  │  • REST API (8000)   │          │  • Polling worker    │            │
-│  │  • Metrics (8081)    │          │  • Metrics (9090)    │            │
-│  └──────────┬───────────┘          └──────────┬───────────┘            │
-│             │                                  │                         │
-│             │                                  │                         │
-│             ├─────────────┬────────────────────┤                         │
-│             │             │                    │                         │
-│  ┌──────────▼─────────┐   │   ┌────────────────▼─────────┐              │
-│  │   PostgreSQL       │   │   │   Redis                  │              │
-│  │                    │   │   │                          │              │
-│  │  • Batch metadata  │◄──┼───┤  • Priority queue        │              │
-│  │  • File metadata   │   │   │  • Progress tracking     │              │
-│  │  • Persistent DB   │   │   │  • Event exchange        │              │
-│  └────────────────────┘   │   └──────────────────────────┘              │
-│                           │                                              │
-│  ┌────────────────────────▼───────────────────────┐                     │
-│  │   File Storage (PVC or S3)                     │                     │
-│  │                                                 │                     │
-│  │  • Batch input files (.jsonl)                  │                     │
-│  │  • Batch output files (results)                │                     │
-│  │  • Error files (failed requests)               │                     │
-│  └─────────────────────────────────────────────────┘                    │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────┐      │
-│  │   Model Inference Services                                    │      │
-│  │                                                                │      │
-│  │   ┌────────────────────┐       ┌────────────────────┐        │      │
-│  │   │ vLLM Simulator     │       │ vLLM Simulator B   │        │      │
-│  │   │  (sim-model)       │       │  (sim-model-b)     │        │      │
-│  │   │                    │       │                    │        │      │
-│  │   │ • 50ms TTFT        │       │ • 200ms TTFT       │        │      │
-│  │   │ • 100ms token      │◄──────┤ • 500ms token      │        │      │
-│  │   └────────────────────┘       └────────────────────┘        │      │
-│  │                                                                │      │
-│  └────────────────────────────────▲───────────────────────────────┘      │
-│                                   │                                      │
-│                                   │ Inference requests                   │
-│                                   │ from Processor                       │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────┐    │
-│  │   Observability                                                  │    │
-│  │                                                                  │    │
-│  │   ┌──────────────────────┐                                      │    │
-│  │   │ Jaeger               │                                      │    │
-│  │   │                      │                                      │    │
-│  │   │ • Distributed traces │◄──── All components send traces     │    │
-│  │   │ • UI (16686)         │                                      │    │
-│  │   └──────────────────────┘                                      │    │
-│  └────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                                   ▲
-                                   │
-                                   │ Port-forwards
-                                   │
-                           ┌───────┴────────┐
-                           │  localhost      │
-                           │                 │
-                           │  :8000  (API)   │
-                           │  :8081  (Obs)   │
-                           │  :9090  (Proc)  │
-                           │  :16686 (Jaeger)│
-                           └─────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         Kubernetes Cluster (kind)                         │
+│                                                                           │
+│  ┌──────────────────────┐          ┌──────────────────────┐             │
+│  │   API Server         │          │   Processor          │             │
+│  │  (batch-gateway-     │          │  (batch-gateway-     │             │
+│  │   apiserver)         │          │   processor)         │             │
+│  │                      │          │                      │             │
+│  │  • REST API (8000)   │          │  • Polling worker    │             │
+│  │  • Metrics (8081)    │          │  • Metrics (9090)    │             │
+│  └──────────┬───────────┘          └──────────┬───────────┘             │
+│             │                                  │                          │
+│             │                                  │                          │
+│             ├─────────────┬────────────────────┤                          │
+│             │             │                    │                          │
+│  ┌──────────▼─────────┐   │   ┌────────────────▼─────────┐               │
+│  │   PostgreSQL       │◄──┼───┤   Redis                  │               │
+│  │                    │   │   │                          │               │
+│  │  • Batch metadata  │   │   │  • Priority queue        │               │
+│  │  • File metadata   │   │   │  • Progress tracking     │               │
+│  │  • Persistent DB   │   │   │  • Event exchange        │               │
+│  └────────────────────┘   │   └──────────────────────────┘               │
+│                           │                                               │
+│  ┌────────────────────────▼────────────────────────┐                     │
+│  │   File Storage (PVC or S3)                      │                     │
+│  │                                                  │                     │
+│  │  • Batch input files (.jsonl)                   │                     │
+│  │  • Batch output files (results)                 │                     │
+│  │  • Error files (failed requests)                │                     │
+│  └──────────────────────────────────────────────────┘                    │
+│                                                                           │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │   Model Inference Services                                     │      │
+│  │                                                                 │      │
+│  │   ┌────────────────────┐       ┌────────────────────┐         │      │
+│  │   │ vLLM Simulator     │       │ vLLM Simulator B   │         │      │
+│  │   │  (sim-model)       │       │  (sim-model-b)     │         │      │
+│  │   │                    │       │                    │         │      │
+│  │   │ • 50ms TTFT        │       │ • 200ms TTFT       │         │      │
+│  │   │ • 100ms token      │       │ • 500ms token      │         │      │
+│  │   └─────────▲──────────┘       └─────────▲──────────┘         │      │
+│  │             │                            │                     │      │
+│  └─────────────┼────────────────────────────┼─────────────────────┘      │
+│                │                            │                            │
+│                └────────────┬───────────────┘                            │
+│                             │                                            │
+│                             │ Inference requests from Processor          │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │   Observability                                                   │    │
+│  │                                                                   │    │
+│  │   ┌──────────────────────┐                                       │    │
+│  │   │ Jaeger               │                                       │    │
+│  │   │                      │                                       │    │
+│  │   │ • Distributed traces │◄───── All components send traces     │    │
+│  │   │ • UI (16686)         │                                       │    │
+│  │   └──────────────────────┘                                       │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                           │
+└───────────────────────────────────▲───────────────────────────────────────┘
+                                    │
+                                    │ Port-forwards
+                                    │
+                            ┌───────┴────────┐
+                            │  localhost      │
+                            │                 │
+                            │  :8000  (API)   │
+                            │  :8081  (Obs)   │
+                            │  :9090  (Proc)  │
+                            │  :16686 (Jaeger)│
+                            └─────────────────┘
 ```
 
 **Request Flow:**
@@ -229,7 +229,7 @@ Key metrics to watch:
 ### No Results After Completion
 
 - Check that mock models are configured in the gateway
-- View processor logs: `kubectl logs -l app=batch-gateway-processor -n default`
+- View processor logs: `kubectl logs -l app.kubernetes.io/component=processor -n default`
 - Check Jaeger traces for errors
 
 ### Batch Stuck in Processing
