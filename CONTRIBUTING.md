@@ -1,4 +1,4 @@
-## Contributing Guidelines
+# Contributing Guidelines
 
 Thank you for your interest in contributing to this project. Community involvement is highly valued and crucial for the project's growth and success. This project accepts contributions via GitHub pull requests. This document outlines the process to help get your contribution accepted.
 

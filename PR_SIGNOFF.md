@@ -54,11 +54,7 @@ Before starting, make sure that your user email is verified on Github. To check 
 5. To verify, click **Resend verification email** and follow its prompts
 6. Navigate back to your **Emails** page, if the "Unverified" label is no longer there, then you're good to go!
 
-<br />
-
 For Windows users, **Git Bash** is also highly recommended.
-
-<br />
 
 ## Setting up the GPG Key
 
@@ -109,8 +105,6 @@ For Windows users, **Git Bash** is also highly recommended.
     - Once done, click **Add GPG key**
 11. Your new GPG key should now be displayed under GPG keys.
 
-<br />
-
 ## Setting up the SSH Key
 
 1. Open Git Bash (or your CLI of choice) and use the following command to generate your new SSH key (make sure to replace `your_email` with your Github-verified email address):
@@ -153,8 +147,6 @@ For Windows users, **Git Bash** is also highly recommended.
     - Once you've verified the match, type `yes`
     - If the resulting message says something along the lines of `Hi [User]! You've successfully authenticated, but GitHub does not provide shell access.`, then it means your SSH key is up and ready.
     - If you get an error saying something like `Error: Permission denied (publickey)` repeat the procedure in step 6 _with the same key_ only select **Authentication Key**. Then try the test command again.
-
-<br />
 
 ## Creating Pull Requests Using the GitHub Website
 

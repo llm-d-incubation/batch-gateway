@@ -110,7 +110,7 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 1. **Create Batch**: User → API Server → PostgreSQL (metadata) + Redis (queue) + File Storage (input file)
 2. **Process Batch**: Processor polls Redis → reads batch from PostgreSQL → reads input from File Storage → sends requests to vLLM simulators → writes results to File Storage → updates PostgreSQL + Redis
 3. **Retrieve Results**: User → API Server → PostgreSQL (batch status) + File Storage (output file)
-3. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints
+4. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints
 
 ## Demo Sequences
 
