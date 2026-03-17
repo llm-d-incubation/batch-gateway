@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy dev-clean
+.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster
 
 SHELL := /usr/bin/env bash
 
