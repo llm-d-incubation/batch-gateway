@@ -92,6 +92,8 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	used := make(map[string]int)           // to prevent duplicate model IDs
 	modelToSafe := make(map[string]string) // to map the model ID to a safe file name
 
+	seenCustomIDs := make(map[string]struct{})
+
 	// streaming loop
 	var offset int64
 	var lineCount int64 // to count the number of lines in the input file for logging
@@ -129,15 +131,21 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 			return err
 		}
 
-		// extract model ID and prefix hash from the request line
-		modelID, prefixHash, err := extractModelAndPrefixHash(line)
+		requestMeta, err := extractAndValidateLine(line)
 		if err != nil {
-			logger.V(logging.ERROR).Error(err, "Failed to unmarshal request line", "lineCount", lineCount)
+			logger.V(logging.ERROR).Error(err, "Failed to validate request line", "lineCount", lineCount)
 			return err
 		}
 
+		if _, exists := seenCustomIDs[requestMeta.CustomID]; exists {
+			err := fmt.Errorf("line %d: duplicate custom_id %q", lineCount, requestMeta.CustomID)
+			logger.V(logging.ERROR).Error(err, "Duplicate custom_id in batch input")
+			return err
+		}
+		seenCustomIDs[requestMeta.CustomID] = struct{}{}
+
 		nextOffset := accumulatePlanEntry(
-			acc, modelID, modelToSafe, used, offset, uint32(len(line)), prefixHash,
+			acc, requestMeta.ModelID, modelToSafe, used, offset, uint32(len(line)), requestMeta.PrefixHash,
 		)
 		offset = nextOffset
 	}
@@ -197,20 +205,28 @@ func readNormalizedLine(r *bufio.Reader) ([]byte, bool, error) {
 	return line, false, nil
 }
 
-// extractModelAndPrefixHash parses a request line and returns the model ID
-// and a FNV-32a hash of the first system prompt's content (NoPrefixHash if absent).
-func extractModelAndPrefixHash(line []byte) (string, uint32, error) {
+type requestMeta struct {
+	CustomID   string
+	ModelID    string
+	PrefixHash uint32
+}
+
+// extractAndValidateLine parses and validates a request line and returns the
+// metadata needed during ingestion.
+func extractAndValidateLine(line []byte) (requestMeta, error) {
 	var req planRequestLine
 	trimmedLine := bytes.TrimSuffix(line, []byte{'\n'})
 	if err := json.Unmarshal(trimmedLine, &req); err != nil {
-		return "", NoPrefixHash, err
+		return requestMeta{}, err
 	}
-	modelID := req.Body.Model
-	if modelID == "" {
-		return "", NoPrefixHash, fmt.Errorf("model id is empty")
+	if req.CustomID == "" {
+		return requestMeta{}, fmt.Errorf("custom_id is required")
+	}
+	if req.Body.Model == "" {
+		return requestMeta{}, fmt.Errorf("model id is empty")
 	}
 	if req.Body.Stream != nil && *req.Body.Stream {
-		return "", NoPrefixHash, fmt.Errorf("streaming is not supported in batch requests (model: %s)", modelID)
+		return requestMeta{}, fmt.Errorf("streaming is not supported in batch requests (model: %s)", req.Body.Model)
 	}
 
 	prefixHash := NoPrefixHash
@@ -223,7 +239,11 @@ func extractModelAndPrefixHash(line []byte) (string, uint32, error) {
 		}
 	}
 
-	return modelID, prefixHash, nil
+	return requestMeta{
+		CustomID:   req.CustomID,
+		ModelID:    req.Body.Model,
+		PrefixHash: prefixHash,
+	}, nil
 }
 
 func writeModelMappings(jobRootDir string, modelToSafe map[string]string, lineCount int64) error {

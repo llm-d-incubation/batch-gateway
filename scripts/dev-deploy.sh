@@ -348,6 +348,145 @@ EOF
     log "Jaeger installed. OTLP gRPC: ${JAEGER_NAME}:4317, UI: ${JAEGER_NAME}:16686"
 }
 
+# ── Prometheus ────────────────────────────────────────────────────────────────
+
+install_prometheus() {
+    step "Installing Prometheus '${PROMETHEUS_NAME}'..."
+
+    if kubectl get deployment "${PROMETHEUS_NAME}" -n "${NAMESPACE}" &>/dev/null; then
+        log "Prometheus '${PROMETHEUS_NAME}' already exists. Skipping."
+        return
+    fi
+
+    local apiserver_svc="${HELM_RELEASE}-apiserver.${NAMESPACE}.svc.cluster.local"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${PROMETHEUS_NAME}
+  namespace: ${NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${PROMETHEUS_NAME}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${PROMETHEUS_NAME}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${PROMETHEUS_NAME}
+subjects:
+- kind: ServiceAccount
+  name: ${PROMETHEUS_NAME}
+  namespace: ${NAMESPACE}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${PROMETHEUS_NAME}-config
+  namespace: ${NAMESPACE}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    scrape_configs:
+    - job_name: 'batch-gateway-apiserver'
+      metrics_path: /metrics
+      static_configs:
+      - targets: ['${apiserver_svc}:8081']
+        labels:
+          component: apiserver
+    - job_name: 'batch-gateway-processor'
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['${NAMESPACE}']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+        regex: processor
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+        regex: ${HELM_RELEASE}
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: \$1:9090
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${PROMETHEUS_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${PROMETHEUS_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${PROMETHEUS_NAME}
+    spec:
+      serviceAccountName: ${PROMETHEUS_NAME}
+      containers:
+      - name: prometheus
+        image: prom/prometheus:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --config.file=/etc/prometheus/prometheus.yml
+        - --storage.tsdb.retention.time=1d
+        - --web.enable-lifecycle
+        ports:
+        - containerPort: 9090
+          name: http
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        resources:
+          requests:
+            cpu: 10m
+            memory: 128Mi
+      volumes:
+      - name: config
+        configMap:
+          name: ${PROMETHEUS_NAME}-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${PROMETHEUS_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${PROMETHEUS_NAME}
+spec:
+  selector:
+    app: ${PROMETHEUS_NAME}
+  ports:
+  - name: http
+    protocol: TCP
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+EOF
+
+    wait_for_deployment "${PROMETHEUS_NAME}" "${NAMESPACE}" 120s
+    log "Prometheus installed. UI: ${PROMETHEUS_NAME}:9090"
+}
+
 # ── vLLM Simulator ────────────────────────────────────────────────────────────
 
 install_vllm_sim() {
@@ -668,17 +807,25 @@ print_usage() {
     echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/goroutine          # Goroutine"
     echo ""
     echo "  5. Jaeger UI (trace visualization):"
+    echo "  5. Prometheus (metrics):"
+    echo ""
+    echo "       http://localhost:${PROMETHEUS_PORT}"
+    echo ""
+    echo "  6. Jaeger UI (trace visualization):"
     echo ""
     echo "       http://localhost:${JAEGER_PORT}"
     echo ""
     echo "     Select service 'batch-gateway' to view traces."
     echo ""
     echo "  6. Cleanup:"
+    echo "  7. Cleanup:"
     echo ""
     echo "       helm uninstall ${HELM_RELEASE} -n ${NAMESPACE}"
     echo "       helm uninstall ${REDIS_RELEASE} -n ${NAMESPACE}"
     echo "       helm uninstall ${POSTGRESQL_RELEASE} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${JAEGER_NAME} -n ${NAMESPACE}"
+    echo "       kubectl delete deployment,svc,configmap,sa ${PROMETHEUS_NAME} ${PROMETHEUS_NAME}-config -n ${NAMESPACE}"
+    echo "       kubectl delete clusterrole,clusterrolebinding ${PROMETHEUS_NAME}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_B_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete secret ${APP_SECRET_NAME} ${TLS_SECRET_NAME} -n ${NAMESPACE}"
@@ -709,6 +856,7 @@ main() {
     create_pvc
     load_images
     install_jaeger
+    install_prometheus
     install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
     install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_batch_gateway
@@ -717,6 +865,7 @@ main() {
     start_apiserver_port_forward
     start_processor_port_forward
     start_jaeger_port_forward
+    start_prometheus_port_forward
 
     log "Deployment complete!"
 }
