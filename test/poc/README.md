@@ -26,6 +26,91 @@ This directory contains demo files for testing the Batch Gateway system.
    - **Using demo.http**: Install the REST Client for Visual Studio Code extension (Ctrl+Shift+X / Cmd+Shift+X)
    - **Using curl_demo.md**: Ensure `curl` and `jq` are available on your system
 
+## Architecture
+
+The demo environment runs the following components in a Kubernetes cluster (kind):
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Kubernetes Cluster (kind)                        │
+│                                                                          │
+│  ┌──────────────────────┐          ┌──────────────────────┐            │
+│  │   API Server         │          │   Processor          │            │
+│  │  (batch-gateway-     │          │  (batch-gateway-     │            │
+│  │   apiserver)         │          │   processor)         │            │
+│  │                      │          │                      │            │
+│  │  • REST API (8000)   │          │  • Polling worker    │            │
+│  │  • Metrics (8081)    │          │  • Metrics (9090)    │            │
+│  └──────────┬───────────┘          └──────────┬───────────┘            │
+│             │                                  │                         │
+│             │                                  │                         │
+│             ├─────────────┬────────────────────┤                         │
+│             │             │                    │                         │
+│  ┌──────────▼─────────┐   │   ┌────────────────▼─────────┐              │
+│  │   PostgreSQL       │   │   │   Redis                  │              │
+│  │                    │   │   │                          │              │
+│  │  • Batch metadata  │◄──┼───┤  • Priority queue        │              │
+│  │  • File metadata   │   │   │  • Progress tracking     │              │
+│  │  • Persistent DB   │   │   │  • Event exchange        │              │
+│  └────────────────────┘   │   └──────────────────────────┘              │
+│                           │                                              │
+│  ┌────────────────────────▼───────────────────────┐                     │
+│  │   File Storage (PVC or S3)                     │                     │
+│  │                                                 │                     │
+│  │  • Batch input files (.jsonl)                  │                     │
+│  │  • Batch output files (results)                │                     │
+│  │  • Error files (failed requests)               │                     │
+│  └─────────────────────────────────────────────────┘                    │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────┐      │
+│  │   Model Inference Services                                    │      │
+│  │                                                                │      │
+│  │   ┌────────────────────┐       ┌────────────────────┐        │      │
+│  │   │ vLLM Simulator     │       │ vLLM Simulator B   │        │      │
+│  │   │  (sim-model)       │       │  (sim-model-b)     │        │      │
+│  │   │                    │       │                    │        │      │
+│  │   │ • 50ms TTFT        │       │ • 200ms TTFT       │        │      │
+│  │   │ • 100ms token      │◄──────┤ • 500ms token      │        │      │
+│  │   └────────────────────┘       └────────────────────┘        │      │
+│  │                                                                │      │
+│  └────────────────────────────────▲───────────────────────────────┘      │
+│                                   │                                      │
+│                                   │ Inference requests                   │
+│                                   │ from Processor                       │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────┐    │
+│  │   Observability                                                  │    │
+│  │                                                                  │    │
+│  │   ┌──────────────────────┐                                      │    │
+│  │   │ Jaeger               │                                      │    │
+│  │   │                      │                                      │    │
+│  │   │ • Distributed traces │◄──── All components send traces     │    │
+│  │   │ • UI (16686)         │                                      │    │
+│  │   └──────────────────────┘                                      │    │
+│  └────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                   ▲
+                                   │
+                                   │ Port-forwards
+                                   │
+                           ┌───────┴────────┐
+                           │  localhost      │
+                           │                 │
+                           │  :8000  (API)   │
+                           │  :8081  (Obs)   │
+                           │  :9090  (Proc)  │
+                           │  :16686 (Jaeger)│
+                           └─────────────────┘
+```
+
+**Request Flow:**
+
+1. **Create Batch**: User → API Server → PostgreSQL (metadata) + Redis (queue) + File Storage (input file)
+2. **Process Batch**: Processor polls Redis → reads batch from PostgreSQL → reads input from File Storage → sends requests to vLLM simulators → writes results to File Storage → updates PostgreSQL + Redis
+3. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints
+4. **Retrieve Results**: User → API Server → PostgreSQL (batch status) + File Storage (output file)
+
 ## Demo Sequences
 
 ### Sequence 1: Complete Batch Processing Flow
