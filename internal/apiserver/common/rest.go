@@ -88,7 +88,7 @@ func WriteJSONResponse(w http.ResponseWriter, r *http.Request, status int, obj i
 	data, err := json.Marshal(obj)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"Internal Server Error"}`))
+		_, _ = w.Write([]byte(`{"error":"Internal Server Error"}`))
 		logger.Error(err, "failed to marshal JSON response", "status", status, "type", fmt.Sprintf("%T", obj))
 		return
 	}
