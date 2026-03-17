@@ -374,10 +374,15 @@ EOF
 # ── vLLM Simulator ────────────────────────────────────────────────────────────
 
 install_vllm_sim() {
-    step "Installing vLLM simulator '${VLLM_SIM_NAME}' (model: ${VLLM_SIM_MODEL})..."
+    local sim_name="$1"
+    local sim_model="$2"
+    local time_to_first_token="$3"
+    local inter_token_latency="$4"
 
-    if kubectl get deployment "${VLLM_SIM_NAME}" -n "${NAMESPACE}" &>/dev/null; then
-        log "vLLM simulator '${VLLM_SIM_NAME}' already exists. Skipping."
+    step "Installing vLLM simulator '${sim_name}' (model: ${sim_model})..."
+
+    if kubectl get deployment "${sim_name}" -n "${NAMESPACE}" &>/dev/null; then
+        log "vLLM simulator '${sim_name}' already exists. Skipping."
         return
     fi
 
@@ -385,17 +390,17 @@ install_vllm_sim() {
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ${VLLM_SIM_NAME}
+  name: ${sim_name}
   namespace: ${NAMESPACE}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ${VLLM_SIM_NAME}
+      app: ${sim_name}
   template:
     metadata:
       labels:
-        app: ${VLLM_SIM_NAME}
+        app: ${sim_name}
     spec:
       containers:
       - name: vllm-sim
@@ -403,11 +408,11 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - --model
-        - ${VLLM_SIM_MODEL}
+        - ${sim_model}
         - --port
         - "8000"
-        - --time-to-first-token=50ms
-        - --inter-token-latency=100ms
+        - --time-to-first-token=${time_to_first_token}
+        - --inter-token-latency=${inter_token_latency}
         - --v=5
         env:
         - name: POD_NAME
@@ -429,13 +434,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${VLLM_SIM_NAME}
+  name: ${sim_name}
   namespace: ${NAMESPACE}
   labels:
-    app: ${VLLM_SIM_NAME}
+    app: ${sim_name}
 spec:
   selector:
-    app: ${VLLM_SIM_NAME}
+    app: ${sim_name}
   ports:
   - name: http
     protocol: TCP
@@ -444,83 +449,8 @@ spec:
   type: ClusterIP
 EOF
 
-    wait_for_deployment "${VLLM_SIM_NAME}" "${NAMESPACE}" 120s
-    log "vLLM simulator installed. Service: ${VLLM_SIM_NAME}:8000"
-}
-
-install_vllm_sim_b() {
-    step "Installing vLLM simulator '${VLLM_SIM_B_NAME}' (model: ${VLLM_SIM_B_MODEL})..."
-
-    if kubectl get deployment "${VLLM_SIM_B_NAME}" -n "${NAMESPACE}" &>/dev/null; then
-        log "vLLM simulator '${VLLM_SIM_B_NAME}' already exists. Skipping."
-        return
-    fi
-
-    kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${VLLM_SIM_B_NAME}
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ${VLLM_SIM_B_NAME}
-  template:
-    metadata:
-      labels:
-        app: ${VLLM_SIM_B_NAME}
-    spec:
-      containers:
-      - name: vllm-sim
-        image: ${VLLM_SIM_IMAGE}
-        imagePullPolicy: IfNotPresent
-        args:
-        - --model
-        - ${VLLM_SIM_B_MODEL}
-        - --port
-        - "8000"
-        - --time-to-first-token=200ms
-        - --inter-token-latency=500ms
-        - --v=5
-        env:
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
-        ports:
-        - containerPort: 8000
-          name: http
-          protocol: TCP
-        resources:
-          requests:
-            cpu: 10m
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${VLLM_SIM_B_NAME}
-  namespace: ${NAMESPACE}
-  labels:
-    app: ${VLLM_SIM_B_NAME}
-spec:
-  selector:
-    app: ${VLLM_SIM_B_NAME}
-  ports:
-  - name: http
-    protocol: TCP
-    port: 8000
-    targetPort: 8000
-  type: ClusterIP
-EOF
-
-    wait_for_deployment "${VLLM_SIM_B_NAME}" "${NAMESPACE}" 120s
-    log "vLLM simulator '${VLLM_SIM_B_NAME}' installed. Service: ${VLLM_SIM_B_NAME}:8000"
+    wait_for_deployment "${sim_name}" "${NAMESPACE}" 120s
+    log "vLLM simulator installed. Service: ${sim_name}:8000"
 }
 
 # ── Batch Gateway ─────────────────────────────────────────────────────────────
@@ -799,8 +729,8 @@ main() {
     create_pvc
     load_images
     install_jaeger
-    install_vllm_sim
-    install_vllm_sim_b
+    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
+    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_batch_gateway
     verify_deployment
     print_usage
