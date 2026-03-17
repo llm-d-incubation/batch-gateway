@@ -9,6 +9,8 @@ aks = "aks"
 IST = "IST"
 # Abbreviation (e.g., 2nd -> ND)
 ND = "ND"
+# HashiCorp prefix
+Hashi = "Hashi"
 
 # Add repo-specific false positives here:
 # word = "word"
