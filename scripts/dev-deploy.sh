@@ -1,39 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-log()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-step() { echo -e "${BLUE}[STEP]${NC}  $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+# Source common functions and configuration
+source "${SCRIPT_DIR}/dev-common.sh"
 
-# ── Configuration (override via env vars) ─────────────────────────────────────
+# ── Deployment-Specific Configuration ────────────────────────────────────────
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
-HELM_RELEASE="${HELM_RELEASE:-batch-gateway}"
-NAMESPACE="${NAMESPACE:-default}"
 DEV_VERSION="${DEV_VERSION:-0.0.1}"
-LOCAL_PORT="${LOCAL_PORT:-8000}"
-LOCAL_OBS_PORT="${LOCAL_OBS_PORT:-8081}"
-LOCAL_PROCESSOR_PORT="${LOCAL_PROCESSOR_PORT:-9090}"
-JAEGER_PORT="${JAEGER_PORT:-16686}"
-REDIS_RELEASE="redis"
-POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-dummy-s3-secret-access-key}"
-TLS_SECRET_NAME="${TLS_SECRET_NAME:-${HELM_RELEASE}-tls}"
-APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
-FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
-JAEGER_NAME="${JAEGER_NAME:-jaeger}"
-VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
-VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-4}"
@@ -42,9 +22,6 @@ PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor
 # USE_KIND=true  → use kind; create cluster if it doesn't exist (default)
 # USE_KIND=false → use existing kubeconfig context (OpenShift / Kubernetes)
 USE_KIND="${USE_KIND:-true}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -540,25 +517,12 @@ wait_for_deployment() {
     done
 }
 
-kill_stale_port_forwards() {
-    local ports=("$@")
-    for port in "${ports[@]}"; do
-        local pids
-        pids=$(lsof -ti "tcp:${port}" 2>/dev/null || true)
-        if [[ -n "${pids}" ]]; then
-            log "Killing stale port-forward on port ${port} (PIDs: ${pids})"
-            echo "${pids}" | xargs kill 2>/dev/null || true
-            sleep 1
-        fi
-    done
-}
-
 start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
     local max_retries=3
     local health_check_attempts=30
 
-    kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
+    kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
     for retry in $(seq 1 ${max_retries}); do
         step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
@@ -586,7 +550,7 @@ start_apiserver_port_forward() {
         # Health check failed - kill the port-forward and retry
         warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
         kill "${pf_pid}" 2>/dev/null || true
-        kill_stale_port_forwards "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
+        kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
         if [ ${retry} -lt ${max_retries} ]; then
             log "Retrying port-forward in 2 seconds..."
@@ -602,7 +566,7 @@ start_processor_port_forward() {
     local max_retries=3
     local health_check_attempts=30
 
-    kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
+    kill_ports "${LOCAL_PROCESSOR_PORT}"
 
     for retry in $(seq 1 ${max_retries}); do
         step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
@@ -630,7 +594,7 @@ start_processor_port_forward() {
         # Health check failed - kill the port-forward and retry
         warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
         kill "${pf_pid}" 2>/dev/null || true
-        kill_stale_port_forwards "${LOCAL_PROCESSOR_PORT}"
+        kill_ports "${LOCAL_PROCESSOR_PORT}"
 
         if [ ${retry} -lt ${max_retries} ]; then
             log "Retrying port-forward in 2 seconds..."
@@ -644,7 +608,7 @@ start_processor_port_forward() {
 start_jaeger_port_forward() {
     local svc="svc/${JAEGER_NAME}"
 
-    kill_stale_port_forwards "${JAEGER_PORT}"
+    kill_ports "${JAEGER_PORT}"
 
     step "Starting port-forward: ${svc} ${JAEGER_PORT}:16686 -n ${NAMESPACE}..."
     kubectl port-forward "${svc}" "${JAEGER_PORT}:16686" -n "${NAMESPACE}" &

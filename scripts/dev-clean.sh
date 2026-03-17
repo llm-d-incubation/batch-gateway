@@ -1,29 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-log()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-step() { echo -e "${BLUE}[STEP]${NC}  $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
-
-# ── Configuration (must match dev-deploy.sh defaults) ────────────────────────
-HELM_RELEASE="${HELM_RELEASE:-batch-gateway}"
-NAMESPACE="${NAMESPACE:-default}"
-REDIS_RELEASE="redis"
-POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
-TLS_SECRET_NAME="${TLS_SECRET_NAME:-${HELM_RELEASE}-tls}"
-APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
-FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
-JAEGER_NAME="${JAEGER_NAME:-jaeger}"
-VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
-VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
+# Source common functions and configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/dev-common.sh"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
@@ -95,21 +75,6 @@ cleanup_kubernetes_resources() {
     log "Kubernetes resources cleaned up."
 }
 
-kill_port_forwards() {
-    step "Killing port-forward processes..."
-
-    local ports=(8000 8081 9090 16686)
-    for port in "${ports[@]}"; do
-        local pids=$(lsof -ti tcp:${port} 2>/dev/null || true)
-        if [ -n "${pids}" ]; then
-            log "Killing processes on port ${port}: ${pids}"
-            kill ${pids} 2>/dev/null || true
-        fi
-    done
-
-    log "Port-forwards cleaned up."
-}
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 main() {
@@ -126,7 +91,9 @@ main() {
 
     step "Cleaning all batch-gateway resources from namespace '${NAMESPACE}'..."
 
+    step "Killing port-forward processes..."
     kill_port_forwards
+
     cleanup_kubernetes_resources
 
     log ""
