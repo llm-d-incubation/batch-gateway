@@ -19,6 +19,9 @@ cleanup_kubernetes_resources() {
     # Delete deployments and services
     log "Deleting deployments and services..."
     kubectl delete deployment,svc "${JAEGER_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete deployment,svc,configmap,sa "${PROMETHEUS_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete configmap "${PROMETHEUS_NAME}-config" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete clusterrole,clusterrolebinding "${PROMETHEUS_NAME}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_B_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
 

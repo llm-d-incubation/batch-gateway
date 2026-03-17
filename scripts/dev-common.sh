@@ -29,6 +29,8 @@ JAEGER_PORT="${JAEGER_PORT:-16686}"
 REDIS_RELEASE="${REDIS_RELEASE:-redis}"
 POSTGRESQL_RELEASE="${POSTGRESQL_RELEASE:-postgresql}"
 JAEGER_NAME="${JAEGER_NAME:-jaeger}"
+PROMETHEUS_NAME="${PROMETHEUS_NAME:-prometheus}"
+PROMETHEUS_PORT="${PROMETHEUS_PORT:-9091}"
 VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
 
@@ -40,7 +42,7 @@ FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
 # ── Common Functions ──────────────────────────────────────────────────────────
 
 kill_port_forwards() {
-    local ports=(8000 8081 9090 16686)
+    local ports=(8000 8081 9090 9091 16686)
     for port in "${ports[@]}"; do
         local pids=$(lsof -ti tcp:${port} 2>/dev/null || true)
         if [ -n "${pids}" ]; then
@@ -125,4 +127,15 @@ start_jaeger_port_forward() {
     local pf_pid=$!
     disown "${pf_pid}"
     log "Jaeger port-forward PID: ${pf_pid}"
+}
+
+start_prometheus_port_forward() {
+    local svc="svc/${PROMETHEUS_NAME}"
+
+    log "Starting port-forward: ${svc} ${PROMETHEUS_PORT}:9090 -n ${NAMESPACE}..."
+    kubectl port-forward "${svc}" "${PROMETHEUS_PORT}:9090" -n "${NAMESPACE}" &>/dev/null &
+    local pf_pid=$!
+    disown "${pf_pid}"
+    log "Prometheus port-forward PID: ${pf_pid}"
+    log "Prometheus UI available at http://localhost:${PROMETHEUS_PORT}"
 }
