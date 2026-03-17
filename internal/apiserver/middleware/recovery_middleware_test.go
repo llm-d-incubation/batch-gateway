@@ -29,23 +29,23 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
+var dummyRoute = common.Route{Method: http.MethodGet, Pattern: "/test"}
+
 func TestRecoveryMiddleware(t *testing.T) {
 	t.Run("NoPanic", doTestRecoveryMiddlewareNoPanic)
 	t.Run("WithPanic", doTestRecoveryMiddlewareWithPanic)
 }
 
 func doTestRecoveryMiddlewareNoPanic(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Recovery(dummyRoute, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("success"))
 	})
 
-	middleware := RecoveryMiddleware(handler)
-
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
 
-	middleware.ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
@@ -86,11 +86,9 @@ func doTestRecoveryMiddlewareWithPanic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := Recovery(dummyRoute, func(w http.ResponseWriter, r *http.Request) {
 				panic(tt.panicValue)
 			})
-
-			middleware := RecoveryMiddleware(handler)
 
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			ctx := context.WithValue(req.Context(), common.RequestIDKey, "test-request-id-123")
@@ -98,7 +96,7 @@ func doTestRecoveryMiddlewareWithPanic(t *testing.T) {
 
 			w := httptest.NewRecorder()
 
-			middleware.ServeHTTP(w, req)
+			handler.ServeHTTP(w, req)
 
 			// Check status code
 			if w.Code != http.StatusInternalServerError {
@@ -144,31 +142,27 @@ func doTestRecoveryMiddlewareWithPanic(t *testing.T) {
 }
 
 func BenchmarkRecoveryMiddleware_NoPanic(b *testing.B) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Recovery(dummyRoute, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-
-	middleware := RecoveryMiddleware(handler)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
-		middleware.ServeHTTP(w, req)
+		handler.ServeHTTP(w, req)
 	}
 }
 
 func BenchmarkRecoveryMiddleware_WithPanic(b *testing.B) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Recovery(dummyRoute, func(w http.ResponseWriter, r *http.Request) {
 		panic("benchmark panic")
 	})
-
-	middleware := RecoveryMiddleware(handler)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
-		middleware.ServeHTTP(w, req)
+		handler.ServeHTTP(w, req)
 	}
 }

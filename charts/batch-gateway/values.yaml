@@ -15,6 +15,21 @@ global:
   # Database backend type: "redis", or "postgresql"
   databaseType: "postgresql"
 
+  # Redis client settings (shared by apiserver and processor).
+  # The connection URL is read from the app secret (redis-url key), not from here.
+  # 0 (or "0s") means go-redis library default.
+  redis:
+    dbIdx: 0
+    enableTLS: false
+    insecure: false
+    timeout: "0s"
+    maxRetries: 0
+    minRetryBackoff: "0s"
+    maxRetryBackoff: "0s"
+    poolTimeout: "0s"
+    connMaxIdleTime: "0s"
+    connMaxLifetime: "0s"
+
   # OpenTelemetry configuration
   otel:
     # OTLP gRPC endpoint (e.g. "http://jaeger.default.svc.cluster.local:4317")

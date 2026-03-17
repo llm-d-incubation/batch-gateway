@@ -27,6 +27,7 @@ import (
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
 )
@@ -88,6 +89,10 @@ type ProcessorConfig struct {
 
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
+
+	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
+	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
+	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
 
 	// OTel holds OpenTelemetry-related settings.
 	OTel struct {
