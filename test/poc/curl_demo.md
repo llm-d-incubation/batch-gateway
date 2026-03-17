@@ -154,10 +154,10 @@ watch -n 5 "curl -s http://localhost:8081/metrics | grep -E '(batch_gateway_api_
 watch -n 5 "curl -s http://localhost:9090/metrics | grep -E '(batch_gateway_processor_jobs_processed_total|batch_gateway_processor_job_duration_seconds)'"
 
 # View processor logs
-kubectl logs -l app=batch-gateway-processor -n default -f
+kubectl logs -l app.kubernetes.io/component=processor -n default -f
 
 # View API server logs
-kubectl logs -l app=batch-gateway-apiserver -n default -f
+kubectl logs -l app.kubernetes.io/component=apiserver -n default -f
 ```
 
 ## Cleanup
