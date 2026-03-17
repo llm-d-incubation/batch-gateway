@@ -49,6 +49,22 @@ This demo shows how to cancel a running batch job:
 5. **Verify cancelled status**
 6. **Download partial results** (completed requests before cancellation)
 
+## Batch Status Flow
+
+```text
+validating → in_progress → finalizing → completed
+            ↓
+         cancelling → cancelled
+            ↓
+         failed
+```
+
+## Expected Timings
+
+- **File upload**: < 1 second
+- **Batch creation**: < 1 second
+- **Processing 40 requests**: ~15-30 seconds (depends on mock simulator settings)
+
 ## Request Format
 
 Each line in the JSONL files follows the OpenAI Batch API format:

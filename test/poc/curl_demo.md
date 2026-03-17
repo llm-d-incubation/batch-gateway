@@ -120,12 +120,12 @@ curl -k -s https://localhost:8000/v1/files \
   -H "Authorization: Bearer unused" | jq
 
 # Get batch status
-curl -k -s https://localhost:8000/v1/batches/BATCH_ID \
+curl -k -s https://localhost:8000/v1/batches/$BATCH_ID \
   -H "X-MaaS-Username: demo-user" \
   -H "Authorization: Bearer unused" | jq '.status'
 
 # Download file content
-curl -k -s https://localhost:8000/v1/files/FILE_ID/content \
+curl -k -s https://localhost:8000/v1/files/$FILE_ID/content \
   -H "X-MaaS-Username: demo-user" \
   -H "Authorization: Bearer unused"
 
@@ -160,22 +160,6 @@ kubectl logs -l app=batch-gateway-processor -n default -f
 kubectl logs -l app=batch-gateway-apiserver -n default -f
 ```
 
-## Expected Timings
-
-- **File upload**: < 1 second
-- **Batch creation**: < 1 second
-- **Processing 40 requests**: ~15-30 seconds (depends on mock simulator settings)
-
-## Batch Status Flow
-
-```
-validating → in_progress → finalizing → completed
-            ↓
-         cancelling → cancelled
-            ↓
-         failed
-```
-
 ## Cleanup
 
 ```bash
@@ -187,7 +171,8 @@ curl -k -s -X DELETE https://localhost:8000/v1/files/$FILE_ID \
 
 ## Troubleshooting
 
-**Q: Connection refused**
+### Q: Connection refused
+
 ```bash
 # Check if port-forward is running
 ps aux | grep port-forward
@@ -196,7 +181,8 @@ ps aux | grep port-forward
 make dev-deploy
 ```
 
-**Q: Batch stuck in validating**
+### Q: Batch stuck in validating
+
 ```bash
 # Check processor is running
 kubectl get pods -l app=batch-gateway-processor -n default
@@ -205,7 +191,8 @@ kubectl get pods -l app=batch-gateway-processor -n default
 kubectl logs -l app=batch-gateway-processor -n default --tail=50
 ```
 
-**Q: Need to reset everything**
+### Q: Need to reset everything
+
 ```bash
 # Delete all resources and redeploy
 make dev-clean
