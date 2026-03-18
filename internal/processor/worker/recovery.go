@@ -19,8 +19,10 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -37,9 +39,12 @@ const (
 	recoveryActionFinalized = "finalized"
 	recoveryActionCancelled = "cancelled"
 	recoveryActionFailed    = "failed"
+	recoveryActionExpired   = "expired"
 	recoveryActionReEnqueue = "re_enqueued"
 	recoveryActionCleanedUp = "cleaned_up"
 	recoveryActionError     = "error"
+
+	recoveryUnknownStatus openai.BatchStatus = "unknown"
 )
 
 // recoverStaleJobs scans the workdir for leftover job directories from a previous
@@ -95,7 +100,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 	// becomes an orphan that only an external entity can detect.
 	if err != nil {
 		logger.Error(err, "Startup recovery: DB lookup failed, skipping (will retry on next restart)")
-		metrics.RecordStartupRecovery("unknown", recoveryActionError)
+		metrics.RecordStartupRecovery(string(recoveryUnknownStatus), recoveryActionError)
 		return err
 	}
 
@@ -103,7 +108,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 	// tenantID is unknown (directory uses SHA256 hash), so we glob for the jobID.
 	if dbItem == nil {
 		logger.V(logging.WARNING).Info("Startup recovery: job not found in DB, cleaning up stale directory")
-		metrics.RecordStartupRecovery("unknown", recoveryActionCleanedUp)
+		metrics.RecordStartupRecovery(string(recoveryUnknownStatus), recoveryActionCleanedUp)
 		p.cleanupStaleJobDir(ctx, jobID)
 		return nil
 	}
@@ -226,14 +231,25 @@ func (p *Processor) recoverInProgressWithPartial(ctx context.Context, dbItem *db
 func (p *Processor) recoverInProgressReEnqueue(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
 	logger := klog.FromContext(ctx)
 
-	slo := p.extractSLO(jobInfo)
+	slo, err := p.extractRecoverySLO(dbItem, jobInfo)
+	if err != nil {
+		logger.Error(err, "Startup recovery: failed to recover SLO for re-enqueue")
+		return p.recoverWithFailed(ctx, dbItem, err, nil)
+	}
+	if time.Now().After(*slo) {
+		return p.recoverExpired(ctx, dbItem, "in_progress")
+	}
 
 	if err := p.updater.UpdatePersistentStatus(ctx, dbItem, openai.BatchStatusValidating, nil, slo); err != nil {
 		logger.Error(err, "Startup recovery: failed to reset status to validating")
 		return p.recoverWithFailed(ctx, dbItem, err, nil)
 	}
 
-	task := p.buildRecoveryTask(dbItem, slo)
+	task, err := p.buildRecoveryTask(dbItem, slo)
+	if err != nil {
+		logger.Error(err, "Startup recovery: failed to build recovery task")
+		return p.recoverWithFailed(ctx, dbItem, err, nil)
+	}
 	if err := p.poller.enqueueOne(ctx, task); err != nil {
 		logger.Error(err, "Startup recovery: failed to re-enqueue job")
 		return p.recoverWithFailed(ctx, dbItem, err, nil)
@@ -249,8 +265,20 @@ func (p *Processor) recoverInProgressReEnqueue(ctx context.Context, dbItem *db.B
 func (p *Processor) recoverValidating(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
 	logger := klog.FromContext(ctx)
 
-	slo := p.extractSLO(jobInfo)
-	task := p.buildRecoveryTask(dbItem, slo)
+	slo, err := p.extractRecoverySLO(dbItem, jobInfo)
+	if err != nil {
+		logger.Error(err, "Startup recovery: failed to recover SLO for re-enqueue")
+		return p.recoverWithFailed(ctx, dbItem, err, nil)
+	}
+	if time.Now().After(*slo) {
+		return p.recoverExpired(ctx, dbItem, "validating")
+	}
+
+	task, err := p.buildRecoveryTask(dbItem, slo)
+	if err != nil {
+		logger.Error(err, "Startup recovery: failed to build recovery task")
+		return p.recoverWithFailed(ctx, dbItem, err, nil)
+	}
 
 	if err := p.poller.enqueueOne(ctx, task); err != nil {
 		logger.Error(err, "Startup recovery: failed to re-enqueue validating job")
@@ -297,6 +325,20 @@ func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem,
 	return nil
 }
 
+func (p *Processor) recoverExpired(ctx context.Context, dbItem *db.BatchItem, previousStatus string) error {
+	logger := klog.FromContext(ctx)
+
+	if err := p.updater.UpdatePersistentStatus(ctx, dbItem, openai.BatchStatusExpired, nil, nil); err != nil {
+		logger.Error(err, "Startup recovery: failed to update expired status")
+		return p.recoverWithFailed(ctx, dbItem, err, nil)
+	}
+
+	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
+	metrics.RecordStartupRecovery(previousStatus, recoveryActionExpired)
+	logger.V(logging.INFO).Info("Startup recovery: marked job as expired because SLO already passed")
+	return nil
+}
+
 // outputFileHasContent checks whether the output.jsonl file exists and has content.
 func (p *Processor) outputFileHasContent(jobID, tenantID string) (bool, error) {
 	outputPath, err := p.jobOutputFilePath(jobID, tenantID)
@@ -328,34 +370,48 @@ func (p *Processor) extractRequestCounts(dbItem *db.BatchItem) *openai.BatchRequ
 	return &info.RequestCounts
 }
 
-// extractSLO recovers the SLO deadline from the DB status ExpiresAt field.
-func (p *Processor) extractSLO(jobInfo *batch_types.JobInfo) *time.Time {
-	if jobInfo.BatchJob.ExpiresAt == nil {
-		return nil
+// extractRecoverySLO recovers the exact SLO deadline for queue re-enqueue.
+// Prefer the stored microsecond tag so later CancelBatch can reconstruct the same queue score.
+func (p *Processor) extractRecoverySLO(dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) (*time.Time, error) {
+	if dbItem != nil {
+		if sloStr, ok := dbItem.Tags[batch_types.TagSLO]; ok {
+			sloMicro, err := strconv.ParseInt(sloStr, 10, 64)
+			if err == nil {
+				slo := time.UnixMicro(sloMicro).UTC()
+				return &slo, nil
+			}
+		}
 	}
-	t := time.Unix(*jobInfo.BatchJob.ExpiresAt, 0)
-	return &t
+
+	if jobInfo.BatchJob.ExpiresAt != nil {
+		slo := time.Unix(*jobInfo.BatchJob.ExpiresAt, 0).UTC()
+		return &slo, nil
+	}
+
+	return nil, fmt.Errorf("missing recovery SLO for job %s", dbItem.ID)
 }
 
 // buildRecoveryTask constructs a BatchJobPriority for re-enqueue.
-func (p *Processor) buildRecoveryTask(dbItem *db.BatchItem, slo *time.Time) *db.BatchJobPriority {
+func (p *Processor) buildRecoveryTask(dbItem *db.BatchItem, slo *time.Time) (*db.BatchJobPriority, error) {
+	if slo == nil || slo.IsZero() {
+		return nil, fmt.Errorf("missing recovery SLO for job %s", dbItem.ID)
+	}
+
 	task := &db.BatchJobPriority{
-		ID: dbItem.ID,
+		ID:  dbItem.ID,
+		SLO: slo.UTC(),
 	}
-	if slo != nil {
-		task.SLO = *slo
-	}
-	return task
+	return task, nil
 }
 
 // getJobStatus parses the status from a BatchItem's Status JSON.
 func (p *Processor) getJobStatus(dbItem *db.BatchItem) openai.BatchStatus {
 	if len(dbItem.Status) == 0 {
-		return "unknown"
+		return recoveryUnknownStatus
 	}
 	var info openai.BatchStatusInfo
 	if err := json.Unmarshal(dbItem.Status, &info); err != nil {
-		return "unknown"
+		return recoveryUnknownStatus
 	}
 	return info.Status
 }

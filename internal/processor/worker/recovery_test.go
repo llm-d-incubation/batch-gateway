@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
@@ -51,7 +53,14 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 func seedDBJobWithStatus(t *testing.T, dbClient db.BatchDBClient, jobID, tenantID string, status openai.BatchStatus, counts *openai.BatchRequestCounts) {
 	t.Helper()
 
-	expiresAt := time.Now().Add(24 * time.Hour).Unix()
+	slo := time.Now().UTC().Add(24 * time.Hour)
+	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID, status, counts, slo)
+}
+
+func seedDBJobWithStatusAndSLO(t *testing.T, dbClient db.BatchDBClient, jobID, tenantID string, status openai.BatchStatus, counts *openai.BatchRequestCounts, slo time.Time) {
+	t.Helper()
+
+	expiresAt := slo.Unix()
 	statusInfo := openai.BatchStatusInfo{
 		Status:    status,
 		ExpiresAt: &expiresAt,
@@ -72,7 +81,9 @@ func seedDBJobWithStatus(t *testing.T, dbClient db.BatchDBClient, jobID, tenantI
 		BaseIndexes: db.BaseIndexes{
 			ID:       jobID,
 			TenantID: tenantID,
-			Tags:     db.Tags{},
+			Tags: db.Tags{
+				batch_types.TagSLO: fmt.Sprintf("%d", slo.UTC().UnixMicro()),
+			},
 		},
 		BaseContents: db.BaseContents{
 			Status: statusBytes,
@@ -310,6 +321,36 @@ func TestRecoverJob_InProgress_NoOutputFile_ReEnqueues(t *testing.T) {
 	assertJobDirRemoved(t, p, jobID, tenantID)
 }
 
+func TestRecoverJob_InProgress_EmptyOutput_ExpiredSLO_MarksExpiredWithoutEnqueue(t *testing.T) {
+	workDir := t.TempDir()
+	p, dbClient, spyQueue := newRecoveryTestProcessor(t, workDir)
+
+	jobID := "job-in-progress-empty-expired"
+	tenantID := "tenant-1"
+	expiredSLO := time.Now().UTC().Add(-1 * time.Minute)
+
+	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID, openai.BatchStatusInProgress, nil, expiredSLO)
+
+	jobDir := createJobDir(t, p, jobID, tenantID)
+	createOutputFile(t, jobDir, "")
+
+	ctx := testLoggerCtx()
+	if err := p.recoverJob(ctx, jobID); err != nil {
+		t.Fatalf("recoverJob: %v", err)
+	}
+
+	status := getDBJobStatus(t, dbClient, jobID)
+	if status != openai.BatchStatusExpired {
+		t.Fatalf("expected expired, got %s", status)
+	}
+
+	if spyQueue.EnqueueCalls() != 0 {
+		t.Fatalf("expected 0 enqueue calls, got %d", spyQueue.EnqueueCalls())
+	}
+
+	assertJobDirRemoved(t, p, jobID, tenantID)
+}
+
 func TestRecoverJob_Validating_ReEnqueues(t *testing.T) {
 	workDir := t.TempDir()
 	p, dbClient, spyQueue := newRecoveryTestProcessor(t, workDir)
@@ -328,6 +369,114 @@ func TestRecoverJob_Validating_ReEnqueues(t *testing.T) {
 
 	if spyQueue.EnqueueCalls() != 1 {
 		t.Errorf("expected 1 enqueue call, got %d", spyQueue.EnqueueCalls())
+	}
+
+	assertJobDirRemoved(t, p, jobID, tenantID)
+}
+
+func TestRecoverJob_Validating_ReEnqueuesWithExactTaggedSLO(t *testing.T) {
+	workDir := t.TempDir()
+	p, dbClient, spyQueue := newRecoveryTestProcessor(t, workDir)
+
+	jobID := "job-validating-precise-slo"
+	tenantID := "tenant-1"
+	wantSLO := time.UnixMicro(time.Now().UTC().Add(24*time.Hour).UnixMicro() + 321).UTC()
+
+	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID, openai.BatchStatusValidating, nil, wantSLO)
+	createJobDir(t, p, jobID, tenantID)
+
+	ctx := testLoggerCtx()
+	if err := p.recoverJob(ctx, jobID); err != nil {
+		t.Fatalf("recoverJob: %v", err)
+	}
+
+	tasks, err := spyQueue.PQDequeue(ctx, 0, 1)
+	if err != nil {
+		t.Fatalf("PQDequeue: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 re-enqueued task, got %d", len(tasks))
+	}
+	if !tasks[0].SLO.Equal(wantSLO) {
+		t.Fatalf("re-enqueued SLO = %v, want %v", tasks[0].SLO, wantSLO)
+	}
+
+	assertJobDirRemoved(t, p, jobID, tenantID)
+}
+
+func TestRecoverJob_Validating_ExpiredSLO_MarksExpiredWithoutEnqueue(t *testing.T) {
+	workDir := t.TempDir()
+	p, dbClient, spyQueue := newRecoveryTestProcessor(t, workDir)
+
+	jobID := "job-validating-expired"
+	tenantID := "tenant-1"
+	expiredSLO := time.Now().UTC().Add(-1 * time.Minute)
+
+	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID, openai.BatchStatusValidating, nil, expiredSLO)
+	createJobDir(t, p, jobID, tenantID)
+
+	ctx := testLoggerCtx()
+	if err := p.recoverJob(ctx, jobID); err != nil {
+		t.Fatalf("recoverJob: %v", err)
+	}
+
+	status := getDBJobStatus(t, dbClient, jobID)
+	if status != openai.BatchStatusExpired {
+		t.Fatalf("expected expired, got %s", status)
+	}
+
+	if spyQueue.EnqueueCalls() != 0 {
+		t.Fatalf("expected 0 enqueue calls, got %d", spyQueue.EnqueueCalls())
+	}
+
+	assertJobDirRemoved(t, p, jobID, tenantID)
+}
+
+func TestRecoverJob_Validating_MissingSLO_FallsBackToFailed(t *testing.T) {
+	workDir := t.TempDir()
+	p, dbClient, spyQueue := newRecoveryTestProcessor(t, workDir)
+
+	jobID := "job-validating-missing-slo"
+	tenantID := "tenant-1"
+
+	statusInfo := openai.BatchStatusInfo{Status: openai.BatchStatusValidating}
+	statusBytes, _ := json.Marshal(statusInfo)
+	specInfo := openai.BatchSpec{
+		InputFileID:      "file-input-1",
+		Endpoint:         "/v1/chat/completions",
+		CompletionWindow: "24h",
+	}
+	specBytes, _ := json.Marshal(specInfo)
+
+	item := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: tenantID,
+			Tags:     db.Tags{},
+		},
+		BaseContents: db.BaseContents{
+			Status: statusBytes,
+			Spec:   specBytes,
+		},
+	}
+	if err := dbClient.DBStore(context.Background(), item); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	createJobDir(t, p, jobID, tenantID)
+
+	ctx := testLoggerCtx()
+	if err := p.recoverJob(ctx, jobID); err != nil {
+		t.Fatalf("recoverJob: %v", err)
+	}
+
+	status := getDBJobStatus(t, dbClient, jobID)
+	if status != openai.BatchStatusFailed {
+		t.Fatalf("expected failed, got %s", status)
+	}
+
+	if spyQueue.EnqueueCalls() != 0 {
+		t.Fatalf("expected 0 enqueue calls, got %d", spyQueue.EnqueueCalls())
 	}
 
 	assertJobDirRemoved(t, p, jobID, tenantID)
