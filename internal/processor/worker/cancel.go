@@ -25,7 +25,6 @@ import (
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
@@ -59,19 +58,8 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 				// freeing downstream resources.
 				params.inferCancelFn()
 
-				// update status to cancelling
-				params.cancellingOnce.Do(func() {
-					err := params.updater.UpdatePersistentStatus(
-						ctx,
-						params.jobItem,
-						openai.BatchStatusCancelling,
-						nil,
-						nil,
-					)
-					if err != nil {
-						logger.V(logging.ERROR).Error(err, "Failed to update status to cancelling in DB")
-					}
-				})
+				// Note: We don't update the DB status to 'cancelling' here because
+				// the API server already wrote 'cancelling' to the DB before sending this event.
 			}
 		}
 	}

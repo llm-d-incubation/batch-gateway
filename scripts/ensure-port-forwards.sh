@@ -27,7 +27,7 @@ main() {
         need_apiserver=true
     fi
 
-    if ! check_endpoint "http://localhost:${LOCAL_PROCESSOR_PORT}/health" "Processor"; then
+    if ! check_endpoint "http://localhost:${LOCAL_PROCESSOR_PORT}/ready" "Processor"; then
         need_processor=true
     fi
 

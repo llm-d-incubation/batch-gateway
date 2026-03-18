@@ -341,7 +341,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 	}
 }
 
-func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
+func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 	ctx := testLoggerCtx()
 
 	dbClient := newSpyBatchDB(newMockBatchDBClient())
@@ -377,77 +377,9 @@ func TestWatchCancel_SetsFlag_AndUpdatesCancellingOnce(t *testing.T) {
 
 	var cancelRequested atomic.Bool
 	var cancellingOnce sync.Once
-
-	// Start watching cancel in background
-	params := &jobExecutionParams{
-		eventWatcher:    evCh,
-		updater:         updater,
-		jobItem:         jobItem,
-		inferCancelFn:   func() {},
-		cancelRequested: &cancelRequested,
-		cancellingOnce:  &cancellingOnce,
-	}
-	go p.watchCancel(ctx, params)
-
-	// Send cancel twice; status update should still happen once due to sync.Once.
-	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
-		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
-	})
-	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
-		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
-	})
-
-	deadline := time.Now().Add(2 * time.Second)
-	for !params.cancelRequested.Load() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !params.cancelRequested.Load() {
-		t.Fatalf("cancelRequested was not set")
-	}
-
-	deadline = time.Now().Add(2 * time.Second)
-	for dbClient.StatusCalls(openai.BatchStatusCancelling) < 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if dbClient.StatusCalls(openai.BatchStatusCancelling) != 1 {
-		t.Fatalf("expected cancelling update exactly once, got=%d", dbClient.StatusCalls(openai.BatchStatusCancelling))
-	}
-}
-
-// TestWatchCancel_CancelsInferContext verifies that when a cancel event arrives,
-// watchCancel calls the inferCancelFn, which cancels the inference context so that
-// in-flight HTTP requests are aborted immediately.
-func TestWatchCancel_CancelsInferContext(t *testing.T) {
-	ctx := testLoggerCtx()
-
-	dbClient := newMockBatchDBClient()
-	statusClient := mockdb.NewMockBatchStatusClient()
-	eventClient := mockdb.NewMockBatchEventChannelClient()
-
-	jobID := "job-cancel-infer-ctx"
-	jobItem := &db.BatchItem{
-		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: "tenantA"},
-		BaseContents: db.BaseContents{
-			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
-		},
-	}
-	if err := dbClient.DBStore(ctx, jobItem); err != nil {
-		t.Fatalf("DBStore: %v", err)
-	}
-
-	updater := NewStatusUpdater(dbClient, statusClient, 86400)
-
-	evCh, err := eventClient.ECConsumerGetChannel(ctx, jobID)
-	if err != nil {
-		t.Fatalf("ECConsumerGetChannel: %v", err)
-	}
-	defer evCh.CloseFn()
-
-	var cancelRequested atomic.Bool
-	var cancellingOnce sync.Once
-
 	inferCtx, inferCancelFn := context.WithCancel(ctx)
 
+	// Start watching cancel in background
 	params := &jobExecutionParams{
 		eventWatcher:    evCh,
 		updater:         updater,
@@ -456,14 +388,23 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 		cancelRequested: &cancelRequested,
 		cancellingOnce:  &cancellingOnce,
 	}
-	go p_watchCancelHelper(t, ctx, params)
+	go p.watchCancel(ctx, params)
 
 	// Send cancel event
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
 		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
 	})
 
-	// Wait for inferCtx to be cancelled
+	// Verify cancelRequested flag was set
+	deadline := time.Now().Add(2 * time.Second)
+	for !params.cancelRequested.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !params.cancelRequested.Load() {
+		t.Fatalf("cancelRequested was not set")
+	}
+
+	// Verify inference context was cancelled
 	select {
 	case <-inferCtx.Done():
 		// success — inferCancelFn was called
@@ -471,8 +412,11 @@ func TestWatchCancel_CancelsInferContext(t *testing.T) {
 		t.Fatal("inferCtx was not cancelled within 2s after cancel event")
 	}
 
-	if !params.cancelRequested.Load() {
-		t.Fatal("cancelRequested was not set")
+	// Verify that watchCancel does NOT update status to cancelling
+	// (API server already did that before sending the event)
+	time.Sleep(100 * time.Millisecond)
+	if dbClient.StatusCalls(openai.BatchStatusCancelling) > 0 {
+		t.Fatalf("watchCancel should not update status to cancelling, got=%d calls", dbClient.StatusCalls(openai.BatchStatusCancelling))
 	}
 }
 

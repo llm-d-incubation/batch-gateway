@@ -109,14 +109,14 @@ start_processor_port_forward() {
 
     # Wait for it to be ready
     for i in {1..30}; do
-        if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/health" >/dev/null 2>&1; then
+        if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/ready" >/dev/null 2>&1; then
             log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
             return 0
         fi
         sleep 1
     done
 
-    warn "Processor health check timed out, but port-forward is running"
+    warn "Processor readiness check timed out, but port-forward is running"
 }
 
 start_jaeger_port_forward() {

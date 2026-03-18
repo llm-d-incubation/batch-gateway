@@ -177,7 +177,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	}
 
 	// finalization: upload output, update status to completed
-	if err := p.finalizeJob(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
+	if err := p.finalizeJob(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts, params.cancelRequested); err != nil {
 		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "finalize failed")

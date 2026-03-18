@@ -51,7 +51,7 @@ func TestProcessorRun_ContextCanceled_ReturnsNil(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := p.Run(ctx); err != nil {
+	if err := p.Run(ctx, nil); err != nil {
 		t.Fatalf("expected nil on canceled context run, got %v", err)
 	}
 }

@@ -2,6 +2,9 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -233,5 +236,91 @@ func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
 	_, err := p.uploadOutputFile(ctx, jobInfo, "output.jsonl")
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
+	}
+}
+
+func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
+	ctx := testLoggerCtx()
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobID := "job-late-cancel"
+	tenantID := "tenant-1"
+
+	// Simulate a late cancel that was already persisted by the API server,
+	// while the worker still has a stale in-memory in_progress job item.
+	dbJob := seedDBJob(t, dbClient, jobID)
+	// We need to set TenantID and update so DBGet can find it by TenantID
+	dbJob.TenantID = tenantID
+	dbJob.Status = mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusCancelling})
+	// DBStore again to ensure it's indexed correctly with TenantID in the mock DB
+	if err := dbClient.DBStore(ctx, dbJob); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	// Double check it's actually there
+	jobsCheck, _, _, errCheck := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}, TenantID: tenantID}}, true, 0, 1)
+	if errCheck != nil || len(jobsCheck) == 0 {
+		t.Fatalf("Failed to seed job for test: %v", errCheck)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  newMockFileDBClient(),
+		File:    &failNTimesFilesClient{failCount: 0},
+		Status:  statusClient,
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, dbClient)
+
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
+
+	// Setup job dir manually instead of using setupJobWithOutputFile which creates a new DB
+	jobDir, _ := p.jobRootDir(jobID, tenantID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte("test output\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
+
+	// The worker's in-memory job state is stale and still says in_progress.
+	staleJob := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID},
+		BaseContents: db.BaseContents{
+			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
+		},
+	}
+
+	// Simulate that the worker observed the cancel request before writing the final status.
+	var cancelRequested atomic.Bool
+	cancelRequested.Store(true)
+
+	err := p.finalizeJob(ctx, updater, staleJob, jobInfo, counts, &cancelRequested)
+	if err != nil {
+		t.Fatalf("finalizeJob error: %v", err)
+	}
+
+	// Verify that the final status written to the DB is cancelled, not completed.
+	jobsFinal, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(jobsFinal) == 0 {
+		t.Fatalf("DBGet failed: err=%v len=%d", err, len(jobsFinal))
+	}
+
+	var finalStatus openai.BatchStatusInfo
+	if err := json.Unmarshal(jobsFinal[0].Status, &finalStatus); err != nil {
+		t.Fatalf("Unmarshal status: %v", err)
+	}
+
+	if finalStatus.Status != openai.BatchStatusCancelled {
+		t.Fatalf("expected final status to be %s, got %s", openai.BatchStatusCancelled, finalStatus.Status)
 	}
 }

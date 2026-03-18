@@ -485,8 +485,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
-	// Check if batch can be cancelled
-	if batch.Status.IsFinal() {
+	if !batch.Status.IsCancellable() {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
 		common.WriteAPIError(w, r, apiErr)
 		return
@@ -524,21 +523,19 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		batch.Status = openai.BatchStatusCancelling
 		cancellingAt := time.Now().UTC().Unix()
 		batch.CancellingAt = &cancellingAt
-
-		event := []api.BatchEvent{
-			{
-				ID:   batch.ID,
-				Type: api.BatchEventCancel,
-				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
-			},
-		}
-		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
-		if err != nil {
-			logger.Error(err, "failed to send cancel event")
-			common.WriteInternalServerError(w, r)
-			return
-		}
 	}
+
+	// Persist the status change *before* sending the cancel event to prevent a
+	// write-write race between the API server and the worker.
+	//
+	// Without this ordering:
+	//   1. API server sends cancel event to worker
+	//   2. Worker receives event, cancels job, writes "cancelled" to DB
+	//   3. API server writes "cancelling" to DB (still processing the cancel request)
+	//   Result: status regresses from "cancelled" back to "cancelling"
+	//
+	// By writing first, the API server's "cancelling" is already in the DB before the
+	// worker can act, so any subsequent worker write is the final state.
 
 	tenantID := common.GetTenantIDFromContext(ctx)
 
@@ -553,6 +550,23 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		logger.Error(err, "failed to update batch in database")
 		common.WriteInternalServerError(w, r)
 		return
+	}
+
+	// If the job is being processed, send the cancel event *after* DB update succeeds.
+	if !removedFromQueue {
+		event := []api.BatchEvent{
+			{
+				ID:   batch.ID,
+				Type: api.BatchEventCancel,
+				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
+			},
+		}
+		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
+		if err != nil {
+			logger.Error(err, "failed to send cancel event")
+			common.WriteInternalServerError(w, r)
+			return
+		}
 	}
 
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)

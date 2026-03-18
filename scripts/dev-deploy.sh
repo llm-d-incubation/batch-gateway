@@ -661,7 +661,7 @@ wait_for_deployment() {
 start_apiserver_port_forward() {
     local svc="svc/${HELM_RELEASE}-apiserver"
     local max_retries=3
-    local health_check_attempts=30
+    local readiness_check_attempts=30
 
     kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
@@ -675,7 +675,7 @@ start_apiserver_port_forward() {
         log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
 
         local success=false
-        for i in $(seq 1 ${health_check_attempts}); do
+        for i in $(seq 1 ${readiness_check_attempts}); do
             if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
                 log "API server is ready at https://localhost:${LOCAL_PORT}"
                 success=true
@@ -688,8 +688,8 @@ start_apiserver_port_forward() {
             return 0
         fi
 
-        # Health check failed - kill the port-forward and retry
-        warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
+        # Readiness check failed - kill the port-forward and retry
+        warn "Port-forward readiness check failed on attempt ${retry}/${max_retries}"
         kill "${pf_pid}" 2>/dev/null || true
         kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
 
@@ -705,7 +705,7 @@ start_apiserver_port_forward() {
 start_processor_port_forward() {
     local deploy="deployment/${HELM_RELEASE}-processor"
     local max_retries=3
-    local health_check_attempts=30
+    local readiness_check_attempts=30
 
     kill_ports "${LOCAL_PROCESSOR_PORT}"
 
@@ -716,11 +716,11 @@ start_processor_port_forward() {
         disown "${pf_pid}"
         log "Processor port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
 
-        log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/health ..."
+        log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/ready ..."
 
         local success=false
-        for i in $(seq 1 ${health_check_attempts}); do
-            if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/health" >/dev/null 2>&1; then
+        for i in $(seq 1 ${readiness_check_attempts}); do
+            if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/ready" >/dev/null 2>&1; then
                 log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
                 success=true
                 break
@@ -732,8 +732,8 @@ start_processor_port_forward() {
             return 0
         fi
 
-        # Health check failed - kill the port-forward and retry
-        warn "Port-forward health check failed on attempt ${retry}/${max_retries}"
+        # Readiness check failed - kill the port-forward and retry
+        warn "Port-forward readiness check failed on attempt ${retry}/${max_retries}"
         kill "${pf_pid}" 2>/dev/null || true
         kill_ports "${LOCAL_PROCESSOR_PORT}"
 

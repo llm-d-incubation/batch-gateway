@@ -62,6 +62,10 @@ func (s BatchStatus) IsFinal() bool {
 	return s == BatchStatusCompleted || s == BatchStatusFailed || s == BatchStatusExpired || s == BatchStatusCancelled
 }
 
+func (s BatchStatus) IsCancellable() bool {
+	return s == BatchStatusValidating || s == BatchStatusInProgress
+}
+
 type BatchSpec struct {
 	// required. The object type, which is always `batch`.
 	Object string `json:"object"`

@@ -121,15 +121,9 @@ func doTestFilePagination(t *testing.T) {
 	createdIDs := make([]string, count)
 	for i := range count {
 		filename := fmt.Sprintf("pagination-file-%d-%s.jsonl", i, testRunID)
-		file, err := client.Files.New(ctx, openai.FileNewParams{
-			File:    openai.File(strings.NewReader(testJSONL), filename, "application/jsonl"),
-			Purpose: openai.FilePurposeBatch,
-		})
-		if err != nil {
-			t.Fatalf("create file %d failed: %v", i, err)
-		}
-		createdIDs[i] = file.ID
-		t.Logf("created file %d: %s", i, file.ID)
+		fileID := mustCreateUniqueFileWithClient(t, client, filename, testJSONL)
+		createdIDs[i] = fileID
+		t.Logf("created file %d: %s", i, fileID)
 	}
 
 	// Page 1: limit=2, no after → expect 2 items, has_more=true
@@ -189,13 +183,7 @@ func doTestFilePurposeFilter(t *testing.T) {
 
 	// Create a file with purpose=batch
 	filename := fmt.Sprintf("purpose-filter-%s.jsonl", testRunID)
-	file, err := client.Files.New(ctx, openai.FileNewParams{
-		File:    openai.File(strings.NewReader(testJSONL), filename, "application/jsonl"),
-		Purpose: openai.FilePurposeBatch,
-	})
-	if err != nil {
-		t.Fatalf("create file failed: %v", err)
-	}
+	fileID := mustCreateUniqueFileWithClient(t, client, filename, testJSONL)
 
 	// List with purpose=batch → should contain our file
 	batchPage, err := client.Files.List(ctx, openai.FileListParams{
@@ -206,13 +194,13 @@ func doTestFilePurposeFilter(t *testing.T) {
 	}
 	found := false
 	for _, f := range batchPage.Data {
-		if f.ID == file.ID {
+		if f.ID == fileID {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("file %s not found when listing with purpose=batch", file.ID)
+		t.Errorf("file %s not found when listing with purpose=batch", fileID)
 	}
 
 	// List with purpose=fine-tune → should NOT contain our file
@@ -223,8 +211,8 @@ func doTestFilePurposeFilter(t *testing.T) {
 		t.Fatalf("list files with purpose=fine-tune failed: %v", err)
 	}
 	for _, f := range ftPage.Data {
-		if f.ID == file.ID {
-			t.Errorf("file %s should not appear when listing with purpose=fine-tune", file.ID)
+		if f.ID == fileID {
+			t.Errorf("file %s should not appear when listing with purpose=fine-tune", fileID)
 		}
 	}
 }

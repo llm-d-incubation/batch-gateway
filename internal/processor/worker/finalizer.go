@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -84,11 +85,14 @@ func (p *Processor) finalizeJob(
 	dbJob *db.BatchItem,
 	jobInfo *batch_types.JobInfo,
 	requestCounts *openai.BatchRequestCounts,
+	cancelRequested *atomic.Bool,
 ) error {
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
 	// in_progress → finalizing
+	// Written before file uploads so the API server can reject cancel requests once
+	// finalization has begun, narrowing the cancel-vs-complete race window.
 	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
 		return fmt.Errorf("failed to update job status to finalizing: %w", err)
 	}
@@ -104,6 +108,21 @@ func (p *Processor) finalizeJob(
 	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
 	if err != nil {
 		return err
+	}
+
+	// Best-effort cancel check: if a cancel event arrived during file uploads,
+	// finalize as cancelled instead of completed. This covers the narrow window
+	// between executeJob's last cancelRequested check and this point.
+	// A residual TOCTOU race remains (cancel arriving between this check and the
+	// completed write below), but at this stage all requests have already completed
+	// and output files are uploaded — the user receives the same results either way.
+	if cancelRequested != nil && cancelRequested.Load() {
+		logger.V(logging.INFO).Info("Cancel requested during finalization; finalizing as cancelled")
+		if err := updater.UpdateCancelledStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
+			return fmt.Errorf("failed to update job status to cancelled: %w", err)
+		}
+		setRequestCountAttrs(ctx, requestCounts)
+		return nil
 	}
 
 	// finalizing → completed

@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/v3"
@@ -44,17 +43,11 @@ func doTestMultiTenantIsolation(t *testing.T) {
 
 	// Tenant A creates a file
 	filenameA := fmt.Sprintf("tenant-a-file-%s.jsonl", testRunID)
-	fileA, err := clientA.Files.New(ctx, openai.FileNewParams{
-		File:    openai.File(strings.NewReader(testJSONL), filenameA, "application/jsonl"),
-		Purpose: openai.FilePurposeBatch,
-	})
-	if err != nil {
-		t.Fatalf("tenant A: create file failed: %v", err)
-	}
-	t.Logf("tenant A created file: %s", fileA.ID)
+	fileAID := mustCreateUniqueFileWithClient(t, clientA, filenameA, testJSONL)
+	t.Logf("tenant A created file: %s", fileAID)
 
 	// Tenant B should not see tenant A's file
-	_, err = clientB.Files.Get(ctx, fileA.ID)
+	_, err := clientB.Files.Get(ctx, fileAID)
 	if err == nil {
 		t.Error("tenant B was able to retrieve tenant A's file; expected 404")
 	} else {
@@ -70,14 +63,14 @@ func doTestMultiTenantIsolation(t *testing.T) {
 		t.Fatalf("tenant B: list files failed: %v", err)
 	}
 	for _, f := range pageB.Data {
-		if f.ID == fileA.ID {
+		if f.ID == fileAID {
 			t.Error("tenant B's file list contains tenant A's file")
 		}
 	}
 
 	// Tenant B should not be able to create a batch using tenant A's file
 	_, err = clientB.Batches.New(ctx, openai.BatchNewParams{
-		InputFileID:      fileA.ID,
+		InputFileID:      fileAID,
 		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
 		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
 	})
@@ -94,7 +87,7 @@ func doTestMultiTenantIsolation(t *testing.T) {
 
 	// Tenant A creates a batch
 	batchA, err := clientA.Batches.New(ctx, openai.BatchNewParams{
-		InputFileID:      fileA.ID,
+		InputFileID:      fileAID,
 		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
 		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
 	})

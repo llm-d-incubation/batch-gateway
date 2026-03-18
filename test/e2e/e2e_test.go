@@ -104,9 +104,13 @@ func newClientForTenant(tenant string) *openai.Client {
 }
 
 func mustCreateFile(t *testing.T, filename, content string) string {
+	return mustCreateFileWithClient(t, newClient(), filename, content)
+}
+
+func mustCreateFileWithClient(t *testing.T, client *openai.Client, filename, content string) string {
 	t.Helper()
 
-	file, err := newClient().Files.New(context.Background(),
+	file, err := client.Files.New(context.Background(),
 		openai.FileNewParams{
 			File:    openai.File(strings.NewReader(content), filename, "application/jsonl"),
 			Purpose: openai.FilePurposeBatch,
@@ -124,6 +128,15 @@ func mustCreateFile(t *testing.T, filename, content string) string {
 		t.Errorf("expected purpose %q, got %q", openai.FileObjectPurposeBatch, file.Purpose)
 	}
 	return file.ID
+}
+
+func mustCreateUniqueFileWithClient(t *testing.T, client *openai.Client, filename, content string) string {
+	// Add unique suffix to prevent conflicts when running tests multiple times
+	uniqueFilename := fmt.Sprintf("%s-%d.jsonl",
+		strings.TrimSuffix(filename, ".jsonl"),
+		time.Now().UnixNano())
+
+	return mustCreateFileWithClient(t, client, uniqueFilename, content)
 }
 
 func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) string {

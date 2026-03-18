@@ -93,11 +93,13 @@ func (ep *executionProgress) record(ctx context.Context, success bool) {
 		ep.failed.Add(1)
 	}
 	// best-effort: status store failure should not block request processing
-	_ = ep.updater.UpdateProgressCounts(ctx, ep.jobID, &openai.BatchRequestCounts{
+	if err := ep.updater.UpdateProgressCounts(ctx, ep.jobID, &openai.BatchRequestCounts{
 		Total:     ep.total,
 		Completed: ep.completed.Load(),
 		Failed:    ep.failed.Load(),
-	})
+	}); err != nil {
+		klog.FromContext(ctx).V(logging.DEBUG).Error(err, "Failed to update progress counts (best-effort)")
+	}
 }
 
 func (ep *executionProgress) counts() *openai.BatchRequestCounts {
