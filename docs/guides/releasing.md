@@ -4,25 +4,36 @@ This guide describes how to create a new release of Batch Gateway using the rele
 
 ## Overview
 
-- **Release workflow** (`.github/workflows/release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It builds Linux binaries (amd64, arm64), creates a GitHub Release with auto-generated notes, and uploads the binaries as assets.
+- **Release workflow** (`.github/workflows/release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main`**, then builds Linux binaries (amd64, arm64), packages them as **`.tar.gz`** (so execute permission survives browser download), writes **`SHA256SUMS`**, creates a GitHub Release with auto-generated notes, uploads those assets, and marks the release as **Latest**.
 - **Docker workflow** (`.github/workflows/docker.yml`): Also runs on the same tag and builds/pushes container images to GHCR. No extra step needed.
 - **Release notes config** (`.github/release.yml`): Defines how PRs are grouped in auto-generated release notes (e.g. Features, Bug fixes, Documentation).
 - **Release template** (`.github/RELEASE_TEMPLATE.md`): Optional template you can copy into a release description (e.g. Docker image names, upgrade notes).
+
+## Tagging policy (main only)
+
+**The tagged commit must already be on `main`** (merged via PR). The workflow checks that the tag’s commit is an ancestor of `origin/main`.
+
+- **Do:** merge to `main`, then tag that release line (e.g. `git checkout main && git pull && git tag v1.0.0 && git push origin v1.0.0`).
+- **Don’t:** push a release tag that points at a commit that only exists on a feature branch.
+
+Pushing `v*.*.*` **always** triggers the workflow if the check passes; there is no way to “tag only on main” from GitHub’s side without this check—so follow the process above.
 
 ## How to cut a release
 
 1. **Ensure `main` is in a good state**
    CI and tests should be passing.
 
-2. **Create and push a version tag** (semantic version with `v` prefix):
+2. **Create and push a version tag** from **`main`** (semantic version with `v` prefix):
 
    ```bash
+   git checkout main
+   git pull origin main
    git tag v1.0.0
    git push origin v1.0.0
    ```
 
 3. **Let automation run**
-   - **release.yml**: Builds binaries, creates the GitHub Release with generated notes, attaches the binaries.
+   - **release.yml**: Packages binaries as `.tar.gz`, creates the GitHub Release with generated notes, attaches archives and `SHA256SUMS`.
    - **docker.yml**: Builds and pushes `batch-gateway-apiserver` and `batch-gateway-processor` images for that tag to `ghcr.io/llm-d-incubation/...`.
 
 4. **Optional: edit the release**
@@ -38,13 +49,27 @@ Release notes are generated from merged PRs and grouped by labels. Configuration
 
 To get consistent notes, label PRs with at least one of: `enhancement`, `feature`, `bug`, `bugfix`, `documentation`, `docs`, `dependencies`, or use `*` (Other changes) by default.
 
+## Verifying binary checksums
+
+Each release includes **`SHA256SUMS`** for every **`.tar.gz`** asset. After downloading into one directory:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+Extract a binary (execute bit preserved):
+
+```bash
+tar xzf batch-gateway-apiserver-linux-amd64.tar.gz
+```
+
 ## Release template
 
 `.github/RELEASE_TEMPLATE.md` is for human use when drafting or editing a release. It reminds you to mention:
 
 - Docker image names and tag
 - Upgrade or migration notes
-- That Linux binaries are attached
+- That Linux binaries are attached as `.tar.gz` with `SHA256SUMS`
 
 The workflow does **not** automatically inject this file into the release body; it only uses GitHub’s auto-generated notes. Paste the template content manually if you want it in the description.
 
@@ -52,12 +77,13 @@ The workflow does **not** automatically inject this file into the release body; 
 
 To verify the release workflow without affecting a real version:
 
-1. **Use a test tag** that matches `v*.*.*` but is clearly not a real release, for example:
+1. **Use a test tag** on **`main`** that matches `v*.*.*`, for example merge a doc fix then:
    ```bash
+   git checkout main && git pull
    git tag v0.0.0-test
    git push origin v0.0.0-test
    ```
-   Or use something like `v99.99.99` if you prefer.
+   The **main-only** check still applies—the commit must be on `main`.
 
 2. **Check that workflows run** in the **Actions** tab: **Release** and **Docker Build and Push** should run for that tag. When they finish, a new release and new image tags will exist.
 

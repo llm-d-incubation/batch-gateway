@@ -1,5 +1,5 @@
 # Release workflow: creates a GitHub Release on version tags (v*.*.*),
-# builds multi-arch binaries, and publishes release notes.
+# builds multi-arch binaries (as .tar.gz to preserve execute bit), and publishes release notes.
 # Docker images for the same tag are built by docker.yml.
 
 name: Release
@@ -13,8 +13,27 @@ permissions:
   contents: write
 
 jobs:
+  verify-tag-on-main:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tagged commit is reachable from main
+        run: |
+          git fetch origin main
+          TAG_SHA="${GITHUB_SHA}"
+          if ! git merge-base --is-ancestor "$TAG_SHA" "origin/main"; then
+            echo "::error::Release tags must point to a commit on main (merged into origin/main before tagging)."
+            exit 1
+          fi
+
   build:
     name: Build binaries
+    needs: verify-tag-on-main
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -74,13 +93,21 @@ jobs:
           name: processor-binaries
           path: dist/processor
 
-      - name: Prepare release assets
+      - name: Package binaries as tar.gz (preserves execute bit on extract)
         run: |
           mkdir -p release
-          cp dist/apiserver/* release/
-          cp dist/processor/* release/
-          chmod +x release/*
-          ls -la release/
+          cp dist/apiserver/* dist/processor/* release/
+          cd release
+          for f in batch-gateway-*; do
+            if [ -f "$f" ]; then
+              chmod +x "$f"
+              tar czf "${f}.tar.gz" "$f"
+              rm -f "$f"
+            fi
+          done
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
