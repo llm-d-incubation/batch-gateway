@@ -485,12 +485,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
-	// Check if batch can be cancelled.
-	// Final statuses are terminal and cannot be cancelled.
-	// Finalizing means the worker has committed to completing the batch (uploading
-	// output files and writing the terminal status). Rejecting cancel here narrows
-	// the race window between the API server and the worker during finalization.
-	if batch.Status.IsFinal() || batch.Status == openai.BatchStatusFinalizing {
+	if !batch.Status.IsCancellable() {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
 		common.WriteAPIError(w, r, apiErr)
 		return
