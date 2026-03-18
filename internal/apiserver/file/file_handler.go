@@ -40,7 +40,7 @@ import (
 )
 
 const (
-	defaultListFilesLimit = 10000
+	defaultListFilesLimit = 20
 	maxListFilesLimit     = 10000
 )
 
@@ -381,7 +381,7 @@ func (c *FileAPIHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 		start = parsedStart
 	}
 
-	// Validate and parse limit (default: 10000, range: 1-10000)
+	// Validate and parse limit (default: 20, range: 1-10000)
 	limit := defaultListFilesLimit
 	if limitStr != "" {
 		parsedLimit, err := strconv.Atoi(limitStr)
