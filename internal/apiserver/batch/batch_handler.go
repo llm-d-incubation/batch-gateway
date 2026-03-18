@@ -137,6 +137,18 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if fileItems[0].Purpose != string(openai.FileObjectPurposeBatch) {
+		logger.Info("input file has wrong purpose", "file_id", batchReq.InputFileID, "purpose", fileItems[0].Purpose)
+		apiErr := openai.NewAPIError(
+			http.StatusBadRequest,
+			"invalid_request_error",
+			fmt.Sprintf("Input file '%s' has purpose '%s', but must have purpose 'batch'", batchReq.InputFileID, fileItems[0].Purpose),
+			nil,
+		)
+		common.WriteAPIError(w, r, apiErr)
+		return
+	}
+
 	batchID := ucom.NewBatchID()
 
 	// add attributes to span

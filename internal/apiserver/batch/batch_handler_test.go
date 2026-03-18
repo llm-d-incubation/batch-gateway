@@ -103,6 +103,7 @@ func TestBatchHandler(t *testing.T) {
 
 					if err := handler.clients.FileDB.DBStore(ctx, &dbapi.FileItem{
 						BaseIndexes: dbapi.BaseIndexes{ID: tc.fileID, TenantID: common.DefaultTenantID},
+						Purpose:     string(openai.FileObjectPurposeBatch),
 					}); err != nil {
 						t.Fatalf("Failed to store file: %v", err)
 					}
@@ -180,10 +181,11 @@ func TestBatchHandler(t *testing.T) {
 
 		t.Run("Negative", func(t *testing.T) {
 			negativeCases := []struct {
-				name    string
-				fileID  string // if non-empty, pre-store this file before the request
-				reqBody string // raw JSON request body
-				wantMsg string // if non-empty, verify error message
+				name        string
+				fileID      string // if non-empty, pre-store this file before the request
+				filePurpose string // purpose to set on the pre-stored file (default: "batch")
+				reqBody     string // raw JSON request body
+				wantMsg     string // if non-empty, verify error message
 			}{
 				{
 					name:    "InvalidEndpoint",
@@ -213,14 +215,26 @@ func TestBatchHandler(t *testing.T) {
 					reqBody: `{"input_file_id":"file-nonexistent","endpoint":"/v1/chat/completions","completion_window":"24h"}`,
 					wantMsg: "Input file with ID 'file-nonexistent' not found",
 				},
+				{
+					name:        "WrongFilePurpose",
+					fileID:      "file-wrong-purpose",
+					filePurpose: "fine-tune",
+					reqBody:     `{"input_file_id":"file-wrong-purpose","endpoint":"/v1/chat/completions","completion_window":"24h"}`,
+					wantMsg:     "Input file 'file-wrong-purpose' has purpose 'fine-tune', but must have purpose 'batch'",
+				},
 			}
 			for _, tc := range negativeCases {
 				t.Run(tc.name, func(t *testing.T) {
 					handler := setupTestHandler()
 
 					if tc.fileID != "" {
+						purpose := string(openai.FileObjectPurposeBatch)
+						if tc.filePurpose != "" {
+							purpose = tc.filePurpose
+						}
 						if err := handler.clients.FileDB.DBStore(context.Background(), &dbapi.FileItem{
 							BaseIndexes: dbapi.BaseIndexes{ID: tc.fileID, TenantID: common.DefaultTenantID},
+							Purpose:     purpose,
 						}); err != nil {
 							t.Fatalf("Failed to store file: %v", err)
 						}
@@ -265,6 +279,7 @@ func TestBatchHandler(t *testing.T) {
 
 						if err := handler.clients.FileDB.DBStore(context.Background(), &dbapi.FileItem{
 							BaseIndexes: dbapi.BaseIndexes{ID: tc.fileID, TenantID: common.DefaultTenantID},
+							Purpose:     string(openai.FileObjectPurposeBatch),
 						}); err != nil {
 							t.Fatalf("Failed to store file: %v", err)
 						}
@@ -305,6 +320,7 @@ func TestBatchHandler(t *testing.T) {
 						ID:       "file-pth-single",
 						TenantID: common.DefaultTenantID,
 					},
+					Purpose: string(openai.FileObjectPurposeBatch),
 				}
 				ctx := context.Background()
 				if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
@@ -370,6 +386,7 @@ func TestBatchHandler(t *testing.T) {
 						ID:       "file-pth-multi",
 						TenantID: common.DefaultTenantID,
 					},
+					Purpose: string(openai.FileObjectPurposeBatch),
 				}
 				ctx := context.Background()
 				if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
@@ -438,6 +455,7 @@ func TestBatchHandler(t *testing.T) {
 						ID:       "file-pth-empty",
 						TenantID: common.DefaultTenantID,
 					},
+					Purpose: string(openai.FileObjectPurposeBatch),
 				}
 				ctx := context.Background()
 				if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
@@ -504,6 +522,7 @@ func TestBatchHandler(t *testing.T) {
 						ID:       "file-pth-missing",
 						TenantID: common.DefaultTenantID,
 					},
+					Purpose: string(openai.FileObjectPurposeBatch),
 				}
 				ctx := context.Background()
 				if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
@@ -566,6 +585,7 @@ func TestBatchHandler(t *testing.T) {
 						ID:       "file-pth-multiple",
 						TenantID: common.DefaultTenantID,
 					},
+					Purpose: string(openai.FileObjectPurposeBatch),
 				}
 				ctx := context.Background()
 				if err := handler.clients.FileDB.DBStore(ctx, fileItem); err != nil {
