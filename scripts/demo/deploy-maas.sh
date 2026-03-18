@@ -16,11 +16,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Override common.sh defaults to match MaaS conventions BEFORE sourcing
-GATEWAY_NAME="${GATEWAY_NAME:-maas-default-gateway}"
-INGRESS_NAMESPACE="${INGRESS_NAMESPACE:-openshift-ingress}"
-
 source "${SCRIPT_DIR}/common.sh"
+
+# ── Configuration (set before sourcing common.sh to override its defaults) ──
+GATEWAY_NAME="${GATEWAY_NAME:-maas-default-gateway}"
+GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-openshift-ingress}"
+
+LLM_NAMESPACE="${LLM_NAMESPACE:-llm}"
 
 # ── MaaS-specific Configuration ─────────────────────────────────────────────
 MAAS_REPO="${MAAS_REPO:-https://github.com/opendatahub-io/models-as-a-service.git}"
@@ -31,10 +33,13 @@ MAAS_NAMESPACE="${MAAS_NAMESPACE:-opendatahub}"
 # CRs created in other namespaces (e.g. opendatahub) will be ignored by the controller.
 MAAS_POLICY_NAMESPACE="${MAAS_POLICY_NAMESPACE:-models-as-a-service}"
 
-# MaaS test user
+# MaaS test users
 MAAS_TEST_USER="${MAAS_TEST_USER:-testuser}"
 MAAS_TEST_PASS="${MAAS_TEST_PASS:-testpass}"
 MAAS_TEST_GROUP="${MAAS_TEST_GROUP:-tier-free-users}"
+# Unauthorized user (valid OpenShift user, NOT in the authorized group)
+MAAS_UNAUTH_USER="${MAAS_UNAUTH_USER:-testuser-unauth}"
+MAAS_UNAUTH_PASS="${MAAS_UNAUTH_PASS:-testpass}"
 
 # Model served by MaaS simulator sample
 MAAS_MODEL_NAME="${MAAS_MODEL_NAME:-facebook/opt-125m}"
@@ -61,13 +66,10 @@ install_maas() {
     (cd "${MAAS_DIR}" && MAAS_REF="${MAAS_REF}" ./scripts/deploy.sh)
 
     # TODO: Remove this RBAC patch once the ODH operator includes these permissions natively.
-    # The ODH operator creates the maas-api ServiceAccount and its ClusterRole,
-    # but the maas-controller CRDs (MaaSModelRef, MaaSAuthPolicy, MaaSSubscription)
-    # are installed AFTER the operator finishes. This means the operator's ClusterRole
-    # does not include permissions for these CRDs, causing maas-api to crash with:
-    #   "maassubscriptions.maas.opendatahub.io is forbidden"
-    #   "secrets is forbidden"
-    # This patch adds the missing permissions until the operator is updated to include them.
+    # In operator mode, ODH creates the maas-api SA but not the ClusterRole from
+    # deployment/base/maas-api/rbac/clusterrole.yaml (that only applies in kustomize mode).
+    # This patch adds the subset of permissions that the operator doesn't provide.
+    # Ref: models-as-a-service/deployment/base/maas-api/rbac/clusterrole.yaml
     step "Patching maas-api RBAC for MaaS CRDs..."
     kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
@@ -79,18 +81,13 @@ rules:
   # and model listing. These CRDs come from maas-controller, not the ODH operator,
   # so the operator-managed ClusterRole doesn't include them.
 - apiGroups: ["maas.opendatahub.io"]
-  resources: ["maassubscriptions", "maasmodelrefs", "maasauthpolicies"]
+  resources: ["maassubscriptions", "maasmodelrefs"]
   verbs: ["get", "list", "watch"]
   # maas-api reads the maas-db-config secret for the PostgreSQL connection URL.
-  # The operator creates the SA but doesn't grant secret read access in the namespace.
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["get", "list", "watch"]
-  # maas-api reads the cluster-scoped Auth CR (services.opendatahub.io/v1alpha1)
-  # to determine admin groups for API key management authorization.
-- apiGroups: ["services.opendatahub.io"]
-  resources: ["auths"]
-  verbs: ["get", "list", "watch"]
+  resourceNames: ["maas-db-config"]
+  verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -108,20 +105,7 @@ EOF
     kubectl rollout restart deploy/maas-api -n "${MAAS_NAMESPACE}"
     kubectl rollout status deploy/maas-api -n "${MAAS_NAMESPACE}" --timeout=120s
 
-    # MaaS installs OpenShift cert-manager operator, but does not create a ClusterIssuer.
-    # batch-gateway needs one for apiserver TLS certificates.
-    if ! kubectl get clusterissuer "${TLS_ISSUER_NAME}" &>/dev/null; then
-        step "Creating ClusterIssuer '${TLS_ISSUER_NAME}' for batch-gateway TLS..."
-        kubectl apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: ${TLS_ISSUER_NAME}
-spec:
-  selfSigned: {}
-EOF
-        log "ClusterIssuer '${TLS_ISSUER_NAME}' created."
-    fi
+    create_selfsigned_issuer
 
     log "MaaS platform installed."
 }
@@ -146,13 +130,20 @@ deploy_sample_model() {
         die "MaaS samples not found at ${samples_dir}. Run install first."
     fi
 
+    # Ensure spec.router.scheduler is set so RHOAI creates InferencePool + EPP
+    local model_yaml="${samples_dir}/model.yaml"
+    if [ -f "${model_yaml}" ] && ! yq -e 'select(.kind == "LLMInferenceService").spec.router.scheduler' "${model_yaml}" &>/dev/null; then
+        yq -i '(select(.kind == "LLMInferenceService") | .spec.router.scheduler) = {}' "${model_yaml}"
+        log "Added 'spec.router.scheduler: {}' to ${model_yaml}"
+    fi
+
     kustomize build "${samples_dir}" | kubectl apply -f -
     wait_for_deployment "${isvc_name}-kserve" "${LLM_NAMESPACE}" 300s
 
     step "Waiting for LLMInferenceService to be ready..."
     if ! oc wait "llminferenceservice/${isvc_name}" -n "${LLM_NAMESPACE}" \
             --for=condition=Ready --timeout=300s 2>/dev/null; then
-        warn "LLMInferenceService not ready after 300s"
+        die "LLMInferenceService not ready after 300s"
         oc get "llminferenceservice/${isvc_name}" -n "${LLM_NAMESPACE}" -o yaml 2>/dev/null || true
         oc get events -n "${LLM_NAMESPACE}" --sort-by='.lastTimestamp' 2>/dev/null | tail -10 || true
         die "Model '${isvc_name}' did not become ready"
@@ -160,52 +151,25 @@ deploy_sample_model() {
     log "Sample model '${isvc_name}' is ready."
 }
 
-# ── Override install_batch_gateway to use MaaS model routing ─────────────────
+# ── Batch Gateway (MaaS) ──────────────────────────────────────────────────────
 
-install_batch_gateway() {
-    step "Installing batch-gateway via Helm..."
+deploy_batch_gateway_maas() {
+    banner "Installing Batch Gateway"
 
     # MaaS gateway routes: /<namespace>/<isvc-name>/v1/...
-    local gw_base="https://${GATEWAY_NAME}-istio.${INGRESS_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/facebook-opt-125m-simulated"
+    # Use external hostname because the gateway listener requires SNI matching.
+    # Internal service FQDN causes TLS handshake failure (connection reset).
+    local gw_host
+    gw_host=$(get_maas_gateway_host)
+    local gw_base="${gw_host}/${LLM_NAMESPACE}/facebook-opt-125m-simulated"
 
     local helm_args=(
-        --namespace "${BATCH_NAMESPACE}"
-        --set "apiserver.image.tag=${DEV_VERSION}"
-        --set "processor.image.tag=${DEV_VERSION}"
-        --set "global.secretName=${APP_SECRET_NAME}"
-        --set "global.databaseType=${DB_TYPE}"
-        --set "global.fileClient.type=${STORAGE_TYPE}"
-        --set "global.fileClient.fs.basePath=/tmp/batch-gateway"
-        --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
         --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.url=${gw_base}"
         --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.tlsInsecureSkipVerify=true"
-        --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.requestTimeout=5m"
-        --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.maxRetries=3"
-        --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.initialBackoff=1s"
-        --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.maxBackoff=60s"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization,X-MaaS-Subscription}"
-        --set "apiserver.tls.enabled=true"
-        --set "apiserver.tls.certManager.enabled=true"
-        --set "apiserver.tls.certManager.issuerName=${TLS_ISSUER_NAME}"
-        --set "apiserver.tls.certManager.issuerKind=ClusterIssuer"
-        --set "apiserver.tls.certManager.dnsNames={${HELM_RELEASE}-apiserver,${HELM_RELEASE}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local,localhost}"
-        --set "apiserver.podSecurityContext=null"
-        --set "processor.podSecurityContext=null"
     )
 
-    local repo_root
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-    if helm status "${HELM_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
-        log "Release '${HELM_RELEASE}' already exists. Upgrading..."
-        helm upgrade "${HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "${helm_args[@]}"
-    else
-        helm install "${HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "${helm_args[@]}"
-    fi
-
-    wait_for_deployment "${HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 120s
-    wait_for_deployment "${HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 120s
-    log "batch-gateway installed."
+    do_deploy_batch_gateway "${helm_args[@]}"
 }
 
 # ── MaaS Model Policies (MaaSModelRef + MaaSAuthPolicy + MaaSSubscription) ───
@@ -295,7 +259,7 @@ EOF
     if ${mr_ready}; then
         log "MaaSModelRef ready."
     else
-        warn "MaaSModelRef still not ready after bounce, continuing anyway."
+        die "MaaSModelRef still not ready after bounce."
     fi
 
     # Wait for all AuthPolicies to be enforced (Authorino reconcile)
@@ -310,7 +274,7 @@ EOF
         fi
         sleep 5
     done
-    warn "TokenRateLimitPolicy not found after 30 attempts."
+    die "TokenRateLimitPolicy not found after 30 attempts."
 }
 
 # Wait for all Kuadrant AuthPolicies to be enforced across model namespaces
@@ -335,19 +299,19 @@ wait_for_auth_policies_enforced() {
         echo "  Waiting... (${total} policies found, not all enforced yet)"
         sleep 10
     done
-    warn "AuthPolicies not all enforced after ${timeout}s, tests may fail."
+    die "AuthPolicies not all enforced after ${timeout}s."
     kubectl get authpolicy -A -o wide 2>/dev/null || true
 }
 
 # ── Batch Policies (MaaS API key auth + request rate limit) ──────────────────
 
-create_batch_policies() {
+apply_batch_auth_policy() {
     local api_key_url="https://maas-api.${MAAS_NAMESPACE}.svc.cluster.local:8443/internal/v1/api-keys/validate"
 
     step "Creating AuthPolicy for batch-route (MaaS API key validation)..."
     # Uses the same API key HTTP callback as MaaS-generated model AuthPolicies.
     # Authorino calls maas-api to validate the API key and extract user identity.
-    # Any user with a valid MaaS API key can access the batch API.
+    # No model-level authorization here; that happens when batch processor calls the LLM route.
     kubectl apply -f - <<EOF
 apiVersion: kuadrant.io/v1
 kind: AuthPolicy
@@ -421,7 +385,9 @@ spec:
           value: "Access denied"
 EOF
     log "batch-auth AuthPolicy applied (MaaS API key validation, targets batch-route)."
+}
 
+apply_batch_request_rate_limit() {
     step "Creating RateLimitPolicy for batch-route (per-user request count)..."
     kubectl apply -f - <<EOF
 apiVersion: kuadrant.io/v1
@@ -448,12 +414,19 @@ EOF
 # ── Create MaaS Test User ───────────────────────────────────────────────────
 
 create_maas_test_user() {
-    step "Creating MaaS test user '${MAAS_TEST_USER}' in group '${MAAS_TEST_GROUP}'..."
+    step "Creating MaaS test users..."
 
+    local need_oauth_update=false
     if oc get user "${MAAS_TEST_USER}" &>/dev/null 2>&1; then
         log "User '${MAAS_TEST_USER}' already exists. Skipping user creation."
     else
+        need_oauth_update=true
+    fi
+
+    if ${need_oauth_update}; then
+        # Create htpasswd with both authorized and unauthorized test users
         htpasswd -cbB /tmp/htpasswd "${MAAS_TEST_USER}" "${MAAS_TEST_PASS}"
+        htpasswd -bB  /tmp/htpasswd "${MAAS_UNAUTH_USER}" "${MAAS_UNAUTH_PASS}"
         oc create secret generic htpass-secret \
             --from-file=htpasswd=/tmp/htpasswd \
             -n openshift-config \
@@ -473,8 +446,10 @@ spec:
     if ! oc get group "${MAAS_TEST_GROUP}" &>/dev/null 2>&1; then
         oc adm groups new "${MAAS_TEST_GROUP}"
     fi
+    # Add only the authorized user to the group; unauth user is NOT in the group
     oc adm groups add-users "${MAAS_TEST_GROUP}" "${MAAS_TEST_USER}" 2>/dev/null || true
     log "User '${MAAS_TEST_USER}' added to group '${MAAS_TEST_GROUP}'."
+    log "User '${MAAS_UNAUTH_USER}' created (NOT in group '${MAAS_TEST_GROUP}')."
 }
 
 get_maas_gateway_host() {
@@ -520,11 +495,7 @@ get_maas_api_key() {
 # ── Install ──────────────────────────────────────────────────────────────────
 
 cmd_install() {
-    echo ""
-    echo "  ╔═══════════════════════════════════════════════════════╗"
-    echo "  ║   MaaS + Batch Gateway Setup                          ║"
-    echo "  ╚═══════════════════════════════════════════════════════╝"
-    echo ""
+    banner "MaaS + Batch Gateway Setup"
 
     step "Checking prerequisites..."
     local missing=()
@@ -538,13 +509,13 @@ cmd_install() {
 
     install_maas
     deploy_sample_model
+    create_maas_model_policies
+
+    deploy_batch_gateway_maas
+    apply_batch_auth_policy
+    apply_batch_request_rate_limit
 
     create_maas_test_user
-
-    kubectl get namespace "${BATCH_NAMESPACE}" &>/dev/null || kubectl create namespace "${BATCH_NAMESPACE}"
-    deploy_batch_gateway
-    create_batch_policies
-    create_maas_model_policies
 
     local host
     host=$(get_maas_gateway_host)
@@ -559,184 +530,32 @@ cmd_install() {
 # ── Test ─────────────────────────────────────────────────────────────────────
 
 cmd_test() {
-    echo ""
-    echo "  ╔═════════════════════════════════════╗"
-    echo "  ║  Testing: MaaS + Batch Gateway      ║"
-    echo "  ╚═════════════════════════════════════╝"
-    echo ""
+    banner "Testing: MaaS + Batch Gateway"
 
-    local host
-    host=$(get_maas_gateway_host)
-    log "MaaS Gateway: ${host}"
+    local gw_url
+    gw_url=$(get_maas_gateway_host)
+    log "MaaS Gateway: ${gw_url}"
 
-    local test_total=0 test_passed=0 test_failed=0 failed_tests=""
-    pass_test() { test_total=$((test_total + 1)); test_passed=$((test_passed + 1)); log "PASSED: $*"; }
-    fail_test() { test_total=$((test_total + 1)); test_failed=$((test_failed + 1)); failed_tests="${failed_tests}\n  - $*"; warn "FAILED: $*"; }
-
-    local response http_code body
-
-    # ── Get MaaS API key ──────────────────────────────────────
-    step "Obtaining MaaS API key..."
+    # Get MaaS API keys
+    step "Obtaining MaaS API key for authorized user '${MAAS_TEST_USER}'..."
     local api_key
-    api_key=$(get_maas_api_key "${host}")
-    log "API key obtained: ${api_key:0:20}..."
+    api_key=$(get_maas_api_key "${gw_url}")
+    log "API key obtained"
 
-    # ── Test 1: Batch API authentication (no key) ────────────
-    echo ""
-    echo "── Test 1: Batch API - No API key -> 401 ──"
-    response=$(curl -sSk -w "\n%{http_code}" -X GET "${host}/v1/batches")
-    http_code=$(echo "$response" | tail -n1)
-    if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
-        pass_test "Test 1: ${http_code} (unauthenticated rejected)"
-    else
-        fail_test "Test 1: Expected 401/403, got $http_code"
-    fi
+    step "Obtaining MaaS API key for unauthorized user '${MAAS_UNAUTH_USER}'..."
+    local unauth_api_key
+    unauth_api_key=$(MAAS_TEST_USER="${MAAS_UNAUTH_USER}" MAAS_TEST_PASS="${MAAS_UNAUTH_PASS}" \
+        get_maas_api_key "${gw_url}")
+    log "Unauthorized user API key obtained"
 
-    sleep 1
+    local llm_url="${gw_url}/${LLM_NAMESPACE}/facebook-opt-125m-simulated/v1/chat/completions"
+    local inference_payload="{\"model\":\"${MAAS_MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":10}"
 
-    # ── Test 2: Batch API authentication (with key) ──────────
-    echo ""
-    echo "── Test 2: Batch API - With API key -> 200 ──"
-    response=$(curl -sSk -w "\n%{http_code}" -X GET "${host}/v1/batches" \
-        -H "Authorization: Bearer ${api_key}")
-    http_code=$(echo "$response" | tail -n1)
-    body=$(echo "$response" | sed '$d')
-    if [ "$http_code" = "200" ]; then
-        pass_test "Test 2: 200 OK (batch list)"
-    else
-        fail_test "Test 2: Expected 200, got $http_code"
-        echo "  Response: $body"
-    fi
-
-    sleep 1
-
-    # ── Test 3: Batch request rate limiting ───────────────────
-    echo ""
-    echo "── Test 3: Batch API - Rate limiting (20 req/min per user) ──"
-    local rl_success=0 rl_limited=0
-    for i in $(seq 1 25); do
-        http_code=$(curl -sSk -o /dev/null -w "%{http_code}" \
-            -X GET "${host}/v1/batches" \
-            -H "Authorization: Bearer ${api_key}")
-        if [ "$http_code" = "429" ]; then
-            rl_limited=$((rl_limited + 1))
-            echo "  Request $i: 429 Rate Limited"
-        else
-            rl_success=$((rl_success + 1))
-            [ "$i" -le 3 ] || [ "$http_code" = "429" ] && echo "  Request $i: $http_code"
-        fi
-        sleep 0.1
-    done
-    echo "  Result: $rl_success passed, $rl_limited rate-limited"
-    if [ "$rl_limited" -ge 3 ]; then
-        pass_test "Test 3: Rate limiting is working"
-    else
-        fail_test "Test 3: Rate limiting not triggered (expected at least 3 x 429)"
-    fi
-
-    # Wait for rate limit window to reset before next tests
-    step "Waiting 60s for rate limit window to reset..."
-    sleep 60
-
-    # ── Test 4: Model token rate limiting ────────────────────
-    echo ""
-    echo "── Test 4: Model token rate limit (${MAAS_TOKEN_RATE_LIMIT} tokens/${MAAS_TOKEN_RATE_WINDOW}) ──"
-    echo "  Goal: Direct model inference hits TokenRateLimitPolicy after token budget exhausted"
-
-    local model_endpoint="${host}/${LLM_NAMESPACE}/facebook-opt-125m-simulated/v1/chat/completions"
-    local subscription_name="batch-test-subscription"
-    local trl_success=0 trl_limited=0
-    for i in $(seq 1 15); do
-        http_code=$(curl -sSk -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${api_key}" \
-            -H "X-MaaS-Subscription: ${subscription_name}" \
-            -H "Content-Type: application/json" \
-            -d "{\"model\":\"${MAAS_MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":100}" \
-            "${model_endpoint}")
-        if [ "$http_code" = "429" ]; then
-            trl_limited=$((trl_limited + 1))
-            echo "  Request $i: 429 Token Rate Limited"
-        else
-            trl_success=$((trl_success + 1))
-            [ "$i" -le 3 ] && echo "  Request $i: $http_code"
-        fi
-        sleep 0.2
-    done
-    echo "  Result: $trl_success passed, $trl_limited token-rate-limited"
-    if [ "$trl_limited" -ge 1 ]; then
-        pass_test "Test 4: Token rate limiting is working on model route"
-    else
-        fail_test "Test 4: Token rate limit not triggered (sent 15 requests, expected 429)"
-    fi
-
-    # Wait for rate limit windows to reset before E2E batch test
-    step "Waiting 60s for rate limit windows to reset..."
-    sleep 60
-
-    # ── Test 5: Batch E2E lifecycle ──────────────────────────
-    echo ""
-    echo "── Test 5: E2E - Upload file + create batch ──"
-    local input_file="/tmp/batch-test-input-$$.jsonl"
-    cat > "${input_file}" <<JSONL
-{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"${MAAS_MODEL_NAME}","messages":[{"role":"user","content":"Hello from MaaS"}],"max_tokens":10}}
-JSONL
-    response=$(curl -sSk -w "\n%{http_code}" -X POST "${host}/v1/files" \
-        -H "Authorization: Bearer ${api_key}" \
-        -F "purpose=batch" -F "file=@${input_file}")
-    http_code=$(echo "$response" | tail -n1)
-    body=$(echo "$response" | sed '$d')
-    rm -f "${input_file}"
-    local file_id="" batch_id=""
-    if [ "$http_code" = "200" ]; then
-        file_id=$(echo "$body" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-        echo "  File uploaded: ${file_id}"
-    else
-        fail_test "Test 5: File upload failed (HTTP $http_code)"
-        echo "  Response: $body"
-    fi
-
-    if [ -n "$file_id" ]; then
-        response=$(curl -sSk -w "\n%{http_code}" -X POST "${host}/v1/batches" \
-            -H "Authorization: Bearer ${api_key}" \
-            -H "X-MaaS-Subscription: batch-test-subscription" \
-            -H 'Content-Type: application/json' \
-            -d "{\"input_file_id\":\"${file_id}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}")
-        http_code=$(echo "$response" | tail -n1)
-        body=$(echo "$response" | sed '$d')
-        if [ "$http_code" = "200" ]; then
-            batch_id=$(echo "$body" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-            pass_test "Test 5: File uploaded + batch created (batch: ${batch_id})"
-        else
-            fail_test "Test 5: Batch creation failed (HTTP $http_code)"
-            echo "  Response: $body"
-        fi
-    fi
-
-    # ── Test 6: Batch completion ─────────────────────────────
-    echo ""
-    echo "── Test 6: E2E - Batch completion (passThroughHeaders -> MaaS gateway -> model) ──"
-    echo "  Goal: Verify processor forwards API key through MaaS gateway to model"
-    if [ -n "$batch_id" ]; then
-        local status="unknown" poll_count=0
-        while [ "$poll_count" -lt 60 ]; do
-            response=$(curl -sSk "${host}/v1/batches/${batch_id}" \
-                -H "Authorization: Bearer ${api_key}")
-            status=$(echo "$response" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
-            echo "  Poll $((poll_count+1)): status=${status}"
-            case "$status" in completed|failed|expired|cancelled) break ;; esac
-            poll_count=$((poll_count + 1))
-            sleep 5
-        done
-        if [ "$status" = "completed" ]; then
-            pass_test "Test 6: Batch completed (MaaS auth passthrough working)"
-        else
-            fail_test "Test 6: Batch ended with status=${status} (expected completed)"
-        fi
-    else
-        fail_test "Test 6: Skipped (no batch_id from Test 5)"
-    fi
-
-    print_test_summary "$test_total" "$test_passed" "$test_failed" "$failed_tests"
+    run_tests "${llm_url}" "${gw_url}" "${MAAS_MODEL_NAME}" \
+        "Authorization: Bearer ${api_key}" \
+        "Authorization: Bearer ${unauth_api_key}" \
+        "${inference_payload}" \
+        "X-MaaS-Subscription: batch-test-subscription"
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
@@ -746,11 +565,7 @@ cleanup_auth_resources() { true; }
 cmd_uninstall() {
     set +e
 
-    echo ""
-    echo "  ╔══════════════════════════════════════════════════════╗"
-    echo "  ║   Uninstalling All (Batch Gateway + MaaS)            ║"
-    echo "  ╚══════════════════════════════════════════════════════╝"
-    echo ""
+    banner "Uninstalling All (Batch Gateway + MaaS)"
 
     # Batch gateway
     # Batch gateway resources
@@ -758,11 +573,11 @@ cmd_uninstall() {
     kubectl delete ratelimitpolicy batch-ratelimit -n "${BATCH_NAMESPACE}" 2>/dev/null || true
     kubectl delete authpolicy batch-auth -n "${BATCH_NAMESPACE}" 2>/dev/null || true
     kubectl delete httproute batch-route -n "${BATCH_NAMESPACE}" 2>/dev/null || true
-    kubectl delete destinationrule "${HELM_RELEASE}-backend-tls" -n "${INGRESS_NAMESPACE}" 2>/dev/null || true
-    helm uninstall "${HELM_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
-    helm uninstall "${REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
-    helm uninstall "${POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
-    kubectl delete pvc "${FILES_PVC_NAME}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
+    kubectl delete destinationrule "${BATCH_HELM_RELEASE}-backend-tls" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
+    helm uninstall "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    helm uninstall "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    helm uninstall "${BATCH_POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    kubectl delete pvc "${BATCH_FILES_PVC_NAME}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
     kubectl delete namespace "${BATCH_NAMESPACE}" --timeout=60s 2>/dev/null || true
     log "Batch gateway uninstalled."
 
@@ -772,10 +587,12 @@ cmd_uninstall() {
     kubectl delete clusterissuer "${TLS_ISSUER_NAME}" 2>/dev/null || true
 
     # Test user
-    step "Removing test user..."
+    step "Removing test users..."
     oc delete group "${MAAS_TEST_GROUP}" 2>/dev/null || true
     oc delete user "${MAAS_TEST_USER}" 2>/dev/null || true
     oc delete identity "htpasswd:${MAAS_TEST_USER}" 2>/dev/null || true
+    oc delete user "${MAAS_UNAUTH_USER}" 2>/dev/null || true
+    oc delete identity "htpasswd:${MAAS_UNAUTH_USER}" 2>/dev/null || true
 
     # MaaS platform (reuse cleanup-odh.sh from MaaS repo)
     step "Removing MaaS platform..."
@@ -790,7 +607,7 @@ cmd_uninstall() {
         kubectl delete namespace "${MAAS_NAMESPACE}" --timeout=120s 2>/dev/null || true
         kubectl delete namespace "${MAAS_POLICY_NAMESPACE}" --timeout=60s 2>/dev/null || true
         kubectl delete namespace kuadrant-system --timeout=60s 2>/dev/null || true
-        kubectl delete gateway "${GATEWAY_NAME}" -n "${INGRESS_NAMESPACE}" 2>/dev/null || true
+        kubectl delete gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
     fi
 
     # Operators not covered by cleanup-odh.sh
