@@ -123,6 +123,74 @@ func TestProcessorConfig_Validate_MissingDefaultGateway(t *testing.T) {
 	}
 }
 
+func TestProcessorConfig_Validate_APIKeyFile(t *testing.T) {
+	t.Run("name_and_file_mutually_exclusive", func(t *testing.T) {
+		c := NewConfig()
+		gw := c.ModelGateways[DefaultModelGatewayKey]
+		gw.APIKeyName = "my-key"
+		gw.APIKeyFile = "/some/file"
+		c.ModelGateways[DefaultModelGatewayKey] = gw
+		if err := c.Validate(); err == nil {
+			t.Fatal("Validate() expected error when both api_key_name and api_key_file are set, got nil")
+		}
+	})
+
+	t.Run("file_not_found", func(t *testing.T) {
+		c := NewConfig()
+		gw := c.ModelGateways[DefaultModelGatewayKey]
+		gw.APIKeyFile = "/nonexistent/path/to/key"
+		c.ModelGateways[DefaultModelGatewayKey] = gw
+		if err := c.Validate(); err == nil {
+			t.Fatal("Validate() expected error when api_key_file does not exist, got nil")
+		}
+	})
+
+	t.Run("valid_file", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "token")
+		if err := os.WriteFile(keyFile, []byte("my-secret-token"), 0o600); err != nil {
+			t.Fatalf("failed to write key file: %v", err)
+		}
+
+		c := NewConfig()
+		gw := c.ModelGateways[DefaultModelGatewayKey]
+		gw.APIKeyFile = keyFile
+		c.ModelGateways[DefaultModelGatewayKey] = gw
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error with valid api_key_file: %v", err)
+		}
+	})
+
+	t.Run("resolve_reads_and_trims_file", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "token")
+		if err := os.WriteFile(keyFile, []byte("  file-based-token  \n"), 0o600); err != nil {
+			t.Fatalf("failed to write key file: %v", err)
+		}
+
+		gateways := map[string]ModelGatewayConfig{
+			DefaultModelGatewayKey: {
+				URL:            "http://gateway:8000",
+				APIKeyFile:     keyFile,
+				RequestTimeout: 5 * time.Minute,
+				MaxRetries:     3,
+				InitialBackoff: 1 * time.Second,
+				MaxBackoff:     60 * time.Second,
+			},
+		}
+
+		resolved, err := ResolveModelGateways(gateways)
+		if err != nil {
+			t.Fatalf("ResolveModelGateways() error: %v", err)
+		}
+
+		got := resolved[DefaultModelGatewayKey].APIKey
+		if got != "file-based-token" {
+			t.Fatalf("APIKey = %q, want %q", got, "file-based-token")
+		}
+	})
+}
+
 func TestProcessorConfig_Validate_GatewayTLSPartialConfigRejected(t *testing.T) {
 	c := NewConfig()
 	gw := c.ModelGateways[DefaultModelGatewayKey]
