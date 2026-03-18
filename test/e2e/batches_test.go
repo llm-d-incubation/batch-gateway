@@ -536,20 +536,14 @@ func doTestBatchPagination(t *testing.T) {
 
 	// Create a shared input file under this tenant.
 	filename := fmt.Sprintf("pagination-batch-input-%s.jsonl", testRunID)
-	file, err := client.Files.New(ctx, openai.FileNewParams{
-		File:    openai.File(strings.NewReader(testJSONL), filename, "application/jsonl"),
-		Purpose: openai.FilePurposeBatch,
-	})
-	if err != nil {
-		t.Fatalf("create input file failed: %v", err)
-	}
+	fileID := mustCreateUniqueFileWithClient(t, client, filename, testJSONL)
 
 	// Create 3 batches.
 	const count = 3
 	createdIDs := make([]string, count)
 	for i := range count {
 		batch, err := client.Batches.New(ctx, openai.BatchNewParams{
-			InputFileID:      file.ID,
+			InputFileID:      fileID,
 			Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
 			CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
 		})

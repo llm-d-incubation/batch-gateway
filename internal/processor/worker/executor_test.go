@@ -866,7 +866,8 @@ func TestFinalizeJob_Success(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
 	ctx := testLoggerCtx()
-	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts)
+	var cancelRequested atomic.Bool
+	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested)
 	if err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
 	}
@@ -916,7 +917,8 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1}
 
 	ctx := testLoggerCtx()
-	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts)
+	var cancelRequested atomic.Bool
+	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested)
 	if err == nil {
 		t.Fatalf("expected error from upload failure")
 	}
@@ -1024,7 +1026,8 @@ func TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 0, Failed: 1}
 
 	ctx := testLoggerCtx()
-	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+	var cancelRequested atomic.Bool
+	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested); err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
 	}
 
@@ -1079,7 +1082,8 @@ func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
 	ctx := testLoggerCtx()
-	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
+	var cancelRequested atomic.Bool
+	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested); err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
 	}
 

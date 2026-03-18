@@ -524,21 +524,12 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		batch.Status = openai.BatchStatusCancelling
 		cancellingAt := time.Now().UTC().Unix()
 		batch.CancellingAt = &cancellingAt
-
-		event := []api.BatchEvent{
-			{
-				ID:   batch.ID,
-				Type: api.BatchEventCancel,
-				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
-			},
-		}
-		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
-		if err != nil {
-			logger.Error(err, "failed to send cancel event")
-			common.WriteInternalServerError(w, r)
-			return
-		}
 	}
+
+	// DB update then send cancel event if the job is not in queue
+	// Update the cancelling (or cancelled) status to DB *before* sending the event.
+	// This prevents a race condition where the worker receives the event, finishes cancelling,
+	// and writes 'cancelled' to the DB, only to have this API server overwrite it back to 'cancelling'.
 
 	tenantID := common.GetTenantIDFromContext(ctx)
 
@@ -553,6 +544,23 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		logger.Error(err, "failed to update batch in database")
 		common.WriteInternalServerError(w, r)
 		return
+	}
+
+	// If the job is being processed, send the cancel event *after* DB update succeeds.
+	if !removedFromQueue {
+		event := []api.BatchEvent{
+			{
+				ID:   batch.ID,
+				Type: api.BatchEventCancel,
+				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
+			},
+		}
+		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
+		if err != nil {
+			logger.Error(err, "failed to send cancel event")
+			common.WriteInternalServerError(w, r)
+			return
+		}
 	}
 
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)

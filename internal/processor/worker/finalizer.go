@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -84,15 +85,12 @@ func (p *Processor) finalizeJob(
 	dbJob *db.BatchItem,
 	jobInfo *batch_types.JobInfo,
 	requestCounts *openai.BatchRequestCounts,
+	cancelRequested *atomic.Bool,
 ) error {
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
-	// in_progress → finalizing
-	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
-		return fmt.Errorf("failed to update job status to finalizing: %w", err)
-	}
-
+	// Upload files first (needed for both cancelled and completed paths)
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
@@ -104,6 +102,22 @@ func (p *Processor) finalizeJob(
 	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
 	if err != nil {
 		return err
+	}
+
+	// Cancellation is best-effort during execution. If it was already requested
+	// by the time uploads finish, finalize the job as cancelled.
+	if cancelRequested != nil && cancelRequested.Load() {
+		logger.V(logging.INFO).Info("Cancel was requested before final status transition; finalizing as cancelled")
+		if err := updater.UpdateCancelledStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
+			return fmt.Errorf("failed to update job status to cancelled: %w", err)
+		}
+		setRequestCountAttrs(ctx, requestCounts)
+		return nil
+	}
+
+	// in_progress → finalizing
+	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
+		return fmt.Errorf("failed to update job status to finalizing: %w", err)
 	}
 
 	// finalizing → completed

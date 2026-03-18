@@ -306,7 +306,7 @@ func seedDBJob(t *testing.T, dbClient db.BatchDBClient, jobID string) *db.BatchI
 	statusInfo := openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}
 	statusBytes, _ := json.Marshal(statusInfo)
 	item := &db.BatchItem{
-		BaseIndexes:  db.BaseIndexes{ID: jobID, Tags: db.Tags{}},
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: "tenant-1", Tags: db.Tags{}},
 		BaseContents: db.BaseContents{Status: statusBytes},
 	}
 	if err := dbClient.DBStore(context.Background(), item); err != nil {
