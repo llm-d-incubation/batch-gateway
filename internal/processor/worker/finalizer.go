@@ -90,7 +90,13 @@ func (p *Processor) finalizeJob(
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
-	// Upload files first (needed for both cancelled and completed paths)
+	// in_progress → finalizing
+	// Written before file uploads so the API server can reject cancel requests once
+	// finalization has begun, narrowing the cancel-vs-complete race window.
+	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
+		return fmt.Errorf("failed to update job status to finalizing: %w", err)
+	}
+
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
@@ -104,20 +110,19 @@ func (p *Processor) finalizeJob(
 		return err
 	}
 
-	// Cancellation is best-effort during execution. If it was already requested
-	// by the time uploads finish, finalize the job as cancelled.
+	// Best-effort cancel check: if a cancel event arrived during file uploads,
+	// finalize as cancelled instead of completed. This covers the narrow window
+	// between executeJob's last cancelRequested check and this point.
+	// A residual TOCTOU race remains (cancel arriving between this check and the
+	// completed write below), but at this stage all requests have already completed
+	// and output files are uploaded — the user receives the same results either way.
 	if cancelRequested != nil && cancelRequested.Load() {
-		logger.V(logging.INFO).Info("Cancel was requested before final status transition; finalizing as cancelled")
+		logger.V(logging.INFO).Info("Cancel requested during finalization; finalizing as cancelled")
 		if err := updater.UpdateCancelledStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
 			return fmt.Errorf("failed to update job status to cancelled: %w", err)
 		}
 		setRequestCountAttrs(ctx, requestCounts)
 		return nil
-	}
-
-	// in_progress → finalizing
-	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
-		return fmt.Errorf("failed to update job status to finalizing: %w", err)
 	}
 
 	// finalizing → completed

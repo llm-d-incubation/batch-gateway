@@ -485,8 +485,12 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
-	// Check if batch can be cancelled
-	if batch.Status.IsFinal() {
+	// Check if batch can be cancelled.
+	// Final statuses are terminal and cannot be cancelled.
+	// Finalizing means the worker has committed to completing the batch (uploading
+	// output files and writing the terminal status). Rejecting cancel here narrows
+	// the race window between the API server and the worker during finalization.
+	if batch.Status.IsFinal() || batch.Status == openai.BatchStatusFinalizing {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
 		common.WriteAPIError(w, r, apiErr)
 		return
@@ -526,10 +530,17 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		batch.CancellingAt = &cancellingAt
 	}
 
-	// DB update then send cancel event if the job is not in queue
-	// Update the cancelling (or cancelled) status to DB *before* sending the event.
-	// This prevents a race condition where the worker receives the event, finishes cancelling,
-	// and writes 'cancelled' to the DB, only to have this API server overwrite it back to 'cancelling'.
+	// Persist the status change *before* sending the cancel event to prevent a
+	// write-write race between the API server and the worker.
+	//
+	// Without this ordering:
+	//   1. API server sends cancel event to worker
+	//   2. Worker receives event, cancels job, writes "cancelled" to DB
+	//   3. API server writes "cancelling" to DB (still processing the cancel request)
+	//   Result: status regresses from "cancelled" back to "cancelling"
+	//
+	// By writing first, the API server's "cancelling" is already in the DB before the
+	// worker can act, so any subsequent worker write is the final state.
 
 	tenantID := common.GetTenantIDFromContext(ctx)
 

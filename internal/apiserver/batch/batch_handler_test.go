@@ -36,6 +36,16 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 )
 
+// failingEventClient wraps MockBatchEventChannelClient but returns an error on ECProducerSendEvents.
+type failingEventClient struct {
+	*mockapi.MockBatchEventChannelClient
+	sendErr error
+}
+
+func (f *failingEventClient) ECProducerSendEvents(_ context.Context, _ []dbapi.BatchEvent) ([]string, error) {
+	return nil, f.sendErr
+}
+
 func setupTestHandler() *BatchAPIHandler {
 	return setupTestHandlerWithConfig(&common.ServerConfig{})
 }
@@ -906,6 +916,96 @@ func TestBatchHandler(t *testing.T) {
 			}
 			if respBatch.CancellingAt == nil {
 				t.Error("Expected cancelling_at to be set")
+			}
+		})
+
+		t.Run("CancelFinalizingBatch", func(t *testing.T) {
+			handler := setupTestHandler()
+
+			batchID := "batch-test-cancel-finalizing"
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
+				},
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status: openai.BatchStatusFinalizing,
+				},
+			}
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to DB item: %v", err)
+			}
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+			}
+		})
+
+		t.Run("CancelBatch_EventSendFailure", func(t *testing.T) {
+			failingEvent := &failingEventClient{
+				MockBatchEventChannelClient: mockapi.NewMockBatchEventChannelClient(),
+				sendErr:                     fmt.Errorf("event broker unavailable"),
+			}
+			clients := &clientset.Clientset{
+				BatchDB: mockapi.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
+					func(b *dbapi.BatchItem) string { return b.ID },
+					func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+				),
+				FileDB: mockapi.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
+					func(f *dbapi.FileItem) string { return f.ID },
+					func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+				),
+				Queue:  mockapi.NewMockBatchPriorityQueueClient(),
+				Event:  failingEvent,
+				Status: mockapi.NewMockBatchStatusClient(),
+			}
+			handler := NewBatchAPIHandler(&common.ServerConfig{}, clients)
+
+			batchID := "batch-test-cancel-event-fail"
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
+				},
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status: openai.BatchStatusInProgress,
+				},
+			}
+			slo := time.Now().UTC().Add(24 * time.Hour)
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
+				batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+			})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to DB item: %v", err)
+			}
+			if err := clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
+
+			if rr.Code != http.StatusInternalServerError {
+				t.Errorf("expected status %d, got %d: %s", http.StatusInternalServerError, rr.Code, rr.Body.String())
 			}
 		})
 	})
