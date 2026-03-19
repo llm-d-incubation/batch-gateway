@@ -19,6 +19,7 @@ limitations under the License.
 package file
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
@@ -303,9 +305,33 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	}
 	fileMeta, err := c.clients.File.Store(ctx, fileName, folderName, c.config.FileAPI.GetMaxSizeBytes(), c.config.FileAPI.GetMaxLineCount(), fileReader)
 	if err != nil {
-		logger.Error(err, "failed to store file content")
-		common.WriteInternalServerError(w, r)
-		return
+		switch {
+		case errors.Is(err, fsapi.ErrFileTooLarge):
+			logger.V(logging.DEBUG).Info("file size exceeds limit during upload", "limit", maxFileSize)
+			apiErr := openai.NewAPIError(
+				http.StatusBadRequest,
+				"",
+				fmt.Sprintf("File size exceeds the maximum allowed size of %d bytes", maxFileSize),
+				nil,
+			)
+			common.WriteAPIError(w, r, apiErr)
+			return
+		case errors.Is(err, fsapi.ErrTooManyLines):
+			maxLines := c.config.FileAPI.GetMaxLineCount()
+			logger.V(logging.DEBUG).Info("file line count exceeds limit during upload", "limit", maxLines)
+			apiErr := openai.NewAPIError(
+				http.StatusBadRequest,
+				"",
+				fmt.Sprintf("File exceeds the maximum allowed line count of %d", maxLines),
+				nil,
+			)
+			common.WriteAPIError(w, r, apiErr)
+			return
+		default:
+			logger.Error(err, "failed to store file content")
+			common.WriteInternalServerError(w, r)
+			return
+		}
 	}
 	logger.V(logging.DEBUG).Info("file content stored successfully", "file_id", fileID, "size", fileMeta.Size)
 

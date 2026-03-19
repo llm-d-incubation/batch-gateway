@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -32,6 +33,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	dbmock "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
@@ -133,6 +135,116 @@ func doTestCreateFile(t *testing.T) {
 	t.Run("Success", doTestCreateFileSuccess)
 	t.Run("PurposeValidation", doTestCreateFilePurposeValidation)
 	t.Run("ExpiresAfterValidation", doTestCreateFileExpiresAfter)
+	t.Run("StoreValidationErrors", doTestCreateFileStoreValidationErrors)
+}
+
+// errStoreFileClient implements fsapi.BatchFilesClient and returns a fixed error from Store.
+type errStoreFileClient struct {
+	storeErr error
+}
+
+func (c *errStoreFileClient) Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (*fsapi.BatchFileMetadata, error) {
+	_, _ = io.Copy(io.Discard, reader)
+	return nil, c.storeErr
+}
+
+func (c *errStoreFileClient) Retrieve(ctx context.Context, fileName, folderName string) (io.ReadCloser, *fsapi.BatchFileMetadata, error) {
+	return nil, nil, errors.New("not implemented")
+}
+
+func (c *errStoreFileClient) Delete(ctx context.Context, fileName, folderName string) error {
+	return nil
+}
+
+func (c *errStoreFileClient) Close() error {
+	return nil
+}
+
+func doTestCreateFileStoreValidationErrors(t *testing.T) {
+	ctx := context.Background()
+	dbClient := dbmock.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
+		func(f *dbapi.FileItem) string { return f.ID },
+		func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+	)
+	// Use default max file size so the multipart request body is under the Content-Length
+	// pre-check; Store() errors are injected by errStoreFileClient.
+	config := &common.ServerConfig{
+		FileAPI: common.FileAPIConfig{
+			MaxSizeBytes:             common.DefaultMaxFileSizeBytes,
+			MaxLineCount:             10,
+			DefaultExpirationSeconds: 30 * 24 * 60 * 60,
+		},
+	}
+
+	buildCreateRequest := func(t *testing.T) *http.Request {
+		t.Helper()
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		fileWriter, err := writer.CreateFormFile("file", "test.jsonl")
+		if err != nil {
+			t.Fatalf("failed to create form file: %v", err)
+		}
+		if _, err := io.WriteString(fileWriter, `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{}}`+"\n"); err != nil {
+			t.Fatalf("failed to write file content: %v", err)
+		}
+		if err := writer.WriteField("purpose", "batch"); err != nil {
+			t.Fatalf("failed to write purpose field: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("failed to close multipart writer: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/files", body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req.WithContext(ctx)
+	}
+
+	cases := []struct {
+		name        string
+		storeErr    error
+		wantMessage string
+	}{
+		{
+			name:        "file too large",
+			storeErr:    fsapi.ErrFileTooLarge,
+			wantMessage: fmt.Sprintf("File size exceeds the maximum allowed size of %d bytes", common.DefaultMaxFileSizeBytes),
+		},
+		{
+			name:        "too many lines",
+			storeErr:    fsapi.ErrTooManyLines,
+			wantMessage: "File exceeds the maximum allowed line count of 10",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clients := &clientset.Clientset{
+				File:    &errStoreFileClient{storeErr: tc.storeErr},
+				FileDB:  dbClient,
+				BatchDB: nil,
+				Queue:   nil,
+				Event:   nil,
+				Status:  nil,
+			}
+			handler := NewFileAPIHandler(config, clients)
+			req := buildCreateRequest(t)
+			w := httptest.NewRecorder()
+			handler.CreateFile(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d, body: %s", http.StatusBadRequest, w.Code, w.Body.String())
+			}
+			var errResp openai.ErrorResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+				t.Fatalf("failed to parse error response: %v", err)
+			}
+			if errResp.Error.Code != http.StatusBadRequest {
+				t.Errorf("expected error code %d, got %d", http.StatusBadRequest, errResp.Error.Code)
+			}
+			if errResp.Error.Message != tc.wantMessage {
+				t.Errorf("expected message %q, got %q", tc.wantMessage, errResp.Error.Message)
+			}
+		})
+	}
 }
 
 func doTestCreateFileSuccess(t *testing.T) {
