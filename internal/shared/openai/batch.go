@@ -281,6 +281,18 @@ func (r *CreateBatchRequest) Validate() error {
 		return errors.New("input_file_id is required")
 	}
 
+	if len(r.Metadata) > 16 {
+		return fmt.Errorf("metadata: too many keys (max 16, got %d)", len(r.Metadata))
+	}
+	for k, v := range r.Metadata {
+		if len(k) > 64 {
+			return fmt.Errorf("metadata: key exceeds 64 characters")
+		}
+		if len(v) > 512 {
+			return fmt.Errorf("metadata: value for key %q exceeds 512 characters", k)
+		}
+	}
+
 	if r.OutputExpiresAfter != nil {
 		if r.OutputExpiresAfter.Anchor != "created_at" {
 			return errors.New("output_expires_after.anchor must be 'created_at'")
