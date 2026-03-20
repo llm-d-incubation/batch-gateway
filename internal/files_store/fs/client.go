@@ -202,8 +202,10 @@ func (c *Client) Delete(ctx context.Context, fileName, folderName string) error 
 	logger := klog.FromContext(ctx).V(logging.INFO)
 	logger.Info("File deleted successfully", "path", relPath)
 
-	if err := c.root.Remove(folderName); err == nil {
-		logger.Info("Empty directory removed", "dir", folderName)
+	if folderName != "" {
+		if err := c.root.Remove(folderName); err == nil {
+			logger.Info("Empty directory removed", "dir", folderName)
+		}
 	}
 
 	return nil

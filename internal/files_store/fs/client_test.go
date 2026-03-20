@@ -256,6 +256,24 @@ func TestDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("empty folder name does not attempt root removal", func(t *testing.T) {
+		client := newTestClient(t)
+
+		_, err := client.Store(ctx, "root-file.txt", "", 1024, 0, bytes.NewReader([]byte("data")))
+		if err != nil {
+			t.Fatalf("failed to store: %v", err)
+		}
+
+		if err := client.Delete(ctx, "root-file.txt", ""); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		rootPath := client.root.Name()
+		if _, err := os.Stat(rootPath); os.IsNotExist(err) {
+			t.Fatal("root directory must not be removed")
+		}
+	})
+
 	t.Run("keeps parent directory when other files remain", func(t *testing.T) {
 		client := newTestClient(t)
 		folder := "gc-tenant-multi"
