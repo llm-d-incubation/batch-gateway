@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor run-apiserver build-gc run-processor run-apiserver-dev run-processor-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -8,14 +8,19 @@ TARGETARCH ?= $(shell go env GOARCH)
 DEV_VERSION ?= 0.0.1
 APISERVER_BINARY=batch-gateway-apiserver
 PROCESSOR_BINARY=batch-gateway-processor
+GC_BINARY=batch-gateway-gc
 APISERVER_PATH=./bin/$(APISERVER_BINARY)
 PROCESSOR_PATH=./bin/$(PROCESSOR_BINARY)
+GC_PATH=./bin/$(GC_BINARY)
 CMD_APISERVER=./cmd/apiserver
 CMD_PROCESSOR=./cmd/batch-processor
+CMD_GC=./cmd/batch-gc
 APISERVER_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(APISERVER_BINARY)
 APISERVER_IMG = $(APISERVER_IMAGE_TAG_BASE):$(DEV_VERSION)
 PROCESSOR_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(PROCESSOR_BINARY)
 PROCESSOR_IMG = $(PROCESSOR_IMAGE_TAG_BASE):$(DEV_VERSION)
+GC_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(GC_BINARY)
+GC_IMG = $(GC_IMAGE_TAG_BASE):$(DEV_VERSION)
 GO=go
 GOFLAGS=
 LDFLAGS=-ldflags "-s -w"
@@ -48,8 +53,15 @@ build-processor:
 	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(PROCESSOR_PATH) $(CMD_PROCESSOR)
 	@echo "Binary built at $(PROCESSOR_PATH)"
 
+## build-gc: Build the garbage collector binary
+build-gc:
+	@echo "Building $(GC_BINARY)..."
+	@mkdir -p bin
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(GC_PATH) $(CMD_GC)
+	@echo "Binary built at $(GC_PATH)"
+
 ## build: Build all binaries
-build: build-apiserver build-processor
+build: build-apiserver build-processor build-gc
 	@echo "All binaries built successfully"
 
 ## run-apiserver: Run the apiserver
@@ -186,8 +198,18 @@ image-build-processor: check-container-tool
 		-f docker/Dockerfile.processor \
 		-t $(PROCESSOR_IMG) .
 
+## image-build-gc: Build garbage collector Docker image
+image-build-gc: check-container-tool
+	@printf "\033[33;1m==== Building Docker image $(GC_IMG) ====\033[0m\n"
+	$(CONTAINER_TOOL) build \
+		--platform linux/$(TARGETARCH) \
+		--build-arg TARGETOS=linux \
+		--build-arg TARGETARCH=$(TARGETARCH) \
+		-f docker/Dockerfile.gc \
+		-t $(GC_IMG) .
+
 ## image-build: Build all Docker images
-image-build: image-build-apiserver image-build-processor
+image-build: image-build-apiserver image-build-processor image-build-gc
 
 ## deps-get: Download dependencies
 deps-get:
@@ -209,6 +231,8 @@ test-integration:
 ## test-all: Run all tests (unit + integration)
 test-all: test test-integration
 
+KIND_CLUSTER_NAME ?= batch-gateway-dev
+
 ## deploy: Deploy batch-gateway to a local kind cluster and start port-forward
 dev-deploy:
 	@bash scripts/dev-deploy.sh
@@ -223,10 +247,8 @@ dev-rm-cluster:
 	@kind delete cluster --name batch-gateway-dev || echo "Cluster not found or already deleted"
 	@echo "✅ Kind cluster deleted"
 
-## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or port-forward)
+## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
 test-e2e:
-	@echo "Ensuring port forwards are active..."
-	@bash scripts/ensure-port-forwards.sh
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
 	cd test/e2e && $(GO) test -v -count=1 ./... 2>&1 | tee $$OUT; \

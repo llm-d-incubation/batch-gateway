@@ -17,8 +17,14 @@ VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-4}"
+APISERVER_NODE_PORT="${APISERVER_NODE_PORT:-30080}"
+APISERVER_OBS_NODE_PORT="${APISERVER_OBS_NODE_PORT:-30081}"
+PROCESSOR_NODE_PORT="${PROCESSOR_NODE_PORT:-30090}"
+JAEGER_NODE_PORT="${JAEGER_NODE_PORT:-30086}"
+PROMETHEUS_NODE_PORT="${PROMETHEUS_NODE_PORT:-30091}"
 APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
 PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:${DEV_VERSION}}"
+GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${DEV_VERSION}}"
 # USE_KIND=true  → use kind; create cluster if it doesn't exist (default)
 # USE_KIND=false → use existing kubeconfig context (OpenShift / Kubernetes)
 USE_KIND="${USE_KIND:-true}"
@@ -69,8 +75,28 @@ ensure_cluster() {
             log "Kind cluster '${KIND_CLUSTER_NAME}' already exists. Switching context..."
             kubectl config use-context "kind-${KIND_CLUSTER_NAME}"
         else
-            kind create cluster --name "${KIND_CLUSTER_NAME}"
-            kubectl cluster-info --context "kind-${KIND_CLUSTER_NAME}"
+            kind create cluster --name "${KIND_CLUSTER_NAME}" --config=- <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: ${APISERVER_NODE_PORT}
+    hostPort: ${LOCAL_PORT}
+    protocol: TCP
+  - containerPort: ${APISERVER_OBS_NODE_PORT}
+    hostPort: ${LOCAL_OBS_PORT}
+    protocol: TCP
+  - containerPort: ${PROCESSOR_NODE_PORT}
+    hostPort: ${LOCAL_PROCESSOR_PORT}
+    protocol: TCP
+  - containerPort: ${JAEGER_NODE_PORT}
+    hostPort: ${JAEGER_PORT}
+    protocol: TCP
+  - containerPort: ${PROMETHEUS_NODE_PORT}
+    hostPort: ${PROMETHEUS_PORT}
+    protocol: TCP
+EOF
         fi
 
         KIND_CLUSTER="${KIND_CLUSTER_NAME}"
@@ -213,26 +239,16 @@ load_images() {
         if [ "${CONTAINER_TOOL}" = "docker" ]; then
             kind load docker-image "${APISERVER_IMG}" --name "${KIND_CLUSTER}"
             kind load docker-image "${PROCESSOR_IMG}" --name "${KIND_CLUSTER}"
+            kind load docker-image "${GC_IMG}" --name "${KIND_CLUSTER}"
         else
-            # Podman: save to tar archives then load into kind
-            local tmp_apiserver tmp_processor
-            tmp_apiserver="/tmp/apiserver.tar"
-            tmp_processor="/tmp/processor.tar"
-            rm -f "${tmp_apiserver}" "${tmp_processor}"
-
-            log "Saving Podman images to tar archives..."
-            podman save -o "${tmp_apiserver}" "${APISERVER_IMG}"
-            podman save -o "${tmp_processor}" "${PROCESSOR_IMG}"
-
-            kind load image-archive "${tmp_apiserver}" --name "${KIND_CLUSTER}"
-            kind load image-archive "${tmp_processor}" --name "${KIND_CLUSTER}"
-
-            rm -f "${tmp_apiserver}" "${tmp_processor}"
+            podman save "${APISERVER_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
+            podman save "${PROCESSOR_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
+            podman save "${GC_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
         fi
         log "Images loaded into kind."
     else
         warn "Not a kind cluster — skipping image load."
-        warn "Ensure '${APISERVER_IMG}' and '${PROCESSOR_IMG}' are accessible from the cluster."
+        warn "Ensure '${APISERVER_IMG}', '${PROCESSOR_IMG}', and '${GC_IMG}' are accessible from the cluster."
     fi
 }
 
@@ -337,11 +353,12 @@ spec:
     protocol: TCP
     port: 16686
     targetPort: 16686
+    nodePort: ${JAEGER_NODE_PORT}
   - name: query-grpc
     protocol: TCP
     port: 16685
     targetPort: 16685
-  type: ClusterIP
+  type: NodePort
 EOF
 
     wait_for_deployment "${JAEGER_NAME}" "${NAMESPACE}" 120s
@@ -608,6 +625,10 @@ install_batch_gateway() {
         --set "global.databaseType=postgresql"
         --set "apiserver.enablePprof=true"
         --set "processor.enablePprof=true"
+        --set "gc.enabled=true"
+        --set "gc.image.pullPolicy=IfNotPresent"
+        --set "gc.image.tag=${DEV_VERSION}"
+        --set "gc.config.interval=5s"
         --namespace "${NAMESPACE}"
     )
 
@@ -626,6 +647,7 @@ install_batch_gateway() {
 
     wait_for_deployment "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
     wait_for_deployment "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
+    wait_for_deployment "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
 
     log "batch-gateway installed."
 }
@@ -643,121 +665,87 @@ wait_for_deployment() {
     local name="$1"
     local ns="$2"
     local timeout="${3:-120s}"
-    local retries=5
 
     step "Waiting for deployment '${name}' to be ready..."
-    for i in $(seq 1 "${retries}"); do
-        if kubectl rollout status deployment/"${name}" \
-            -n "${ns}" --timeout="${timeout}"; then
-            log "Deployment '${name}' is ready."
-            return 0
-        fi
-        [ "${i}" -eq "${retries}" ] && die "Deployment '${name}' did not become ready"
-        warn "Deployment not yet visible, retrying in 2s... (${i}/${retries})"
-        sleep 2
-    done
+    if ! kubectl wait deployment/"${name}" \
+        -n "${ns}" --for=condition=Available --timeout="${timeout}"; then
+        die "Deployment '${name}' did not become ready within ${timeout}"
+    fi
+    log "Deployment '${name}' is ready."
 }
 
-start_apiserver_port_forward() {
-    local svc="svc/${HELM_RELEASE}-apiserver"
-    local max_retries=3
-    local readiness_check_attempts=30
+create_nodeport_services() {
+    step "Creating NodePort services for local access..."
 
-    kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
+    kubectl apply -n "${NAMESPACE}" -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${HELM_RELEASE}-apiserver-nodeport
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: batch-gateway-apiserver
+    app.kubernetes.io/instance: ${HELM_RELEASE}
+    app.kubernetes.io/component: apiserver
+  ports:
+  - name: https
+    protocol: TCP
+    port: 8000
+    targetPort: http
+    nodePort: ${APISERVER_NODE_PORT}
+  - name: observability
+    protocol: TCP
+    port: 8081
+    targetPort: observability
+    nodePort: ${APISERVER_OBS_NODE_PORT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${HELM_RELEASE}-processor-nodeport
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: batch-gateway-processor
+    app.kubernetes.io/instance: ${HELM_RELEASE}
+    app.kubernetes.io/component: processor
+  ports:
+  - name: metrics
+    protocol: TCP
+    port: 9090
+    targetPort: metrics
+    nodePort: ${PROCESSOR_NODE_PORT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${PROMETHEUS_NAME}-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: ${PROMETHEUS_NAME}
+  ports:
+  - name: http
+    protocol: TCP
+    port: 9090
+    targetPort: 9090
+    nodePort: ${PROMETHEUS_NODE_PORT}
+EOF
 
-    for retry in $(seq 1 ${max_retries}); do
-        step "Starting port-forward: ${svc} ${LOCAL_PORT}:8000 ${LOCAL_OBS_PORT}:8081 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
-        kubectl port-forward "${svc}" "${LOCAL_PORT}:8000" "${LOCAL_OBS_PORT}:8081" -n "${NAMESPACE}" &
-        local pf_pid=$!
-        disown "${pf_pid}"
-        log "Port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
+    log "NodePort services created."
 
-        log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
+    log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
 
-        local success=false
-        for i in $(seq 1 ${readiness_check_attempts}); do
-            if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
-                log "API server is ready at https://localhost:${LOCAL_PORT}"
-                success=true
-                break
-            fi
-            sleep 1
-        done
-
-        if [ "${success}" = true ]; then
+    for i in $(seq 1 30); do
+        if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
+            log "API server is ready at https://localhost:${LOCAL_PORT}"
             return 0
         fi
-
-        # Readiness check failed - kill the port-forward and retry
-        warn "Port-forward readiness check failed on attempt ${retry}/${max_retries}"
-        kill "${pf_pid}" 2>/dev/null || true
-        kill_ports "${LOCAL_PORT}" "${LOCAL_OBS_PORT}"
-
-        if [ ${retry} -lt ${max_retries} ]; then
-            log "Retrying port-forward in 2 seconds..."
-            sleep 2
-        fi
+        sleep 1
     done
 
-    die "Timed out waiting for API server to become ready after ${max_retries} attempts"
-}
-
-start_processor_port_forward() {
-    local deploy="deployment/${HELM_RELEASE}-processor"
-    local max_retries=3
-    local readiness_check_attempts=30
-
-    kill_ports "${LOCAL_PROCESSOR_PORT}"
-
-    for retry in $(seq 1 ${max_retries}); do
-        step "Starting port-forward: ${deploy} ${LOCAL_PROCESSOR_PORT}:9090 -n ${NAMESPACE} (attempt ${retry}/${max_retries})..."
-        kubectl port-forward "${deploy}" "${LOCAL_PROCESSOR_PORT}:9090" -n "${NAMESPACE}" &
-        local pf_pid=$!
-        disown "${pf_pid}"
-        log "Processor port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
-
-        log "Waiting for http://localhost:${LOCAL_PROCESSOR_PORT}/ready ..."
-
-        local success=false
-        for i in $(seq 1 ${readiness_check_attempts}); do
-            if curl -sf "http://localhost:${LOCAL_PROCESSOR_PORT}/ready" >/dev/null 2>&1; then
-                log "Processor is ready at http://localhost:${LOCAL_PROCESSOR_PORT}"
-                success=true
-                break
-            fi
-            sleep 1
-        done
-
-        if [ "${success}" = true ]; then
-            return 0
-        fi
-
-        # Readiness check failed - kill the port-forward and retry
-        warn "Port-forward readiness check failed on attempt ${retry}/${max_retries}"
-        kill "${pf_pid}" 2>/dev/null || true
-        kill_ports "${LOCAL_PROCESSOR_PORT}"
-
-        if [ ${retry} -lt ${max_retries} ]; then
-            log "Retrying port-forward in 2 seconds..."
-            sleep 2
-        fi
-    done
-
-    die "Timed out waiting for Processor to become ready after ${max_retries} attempts"
-}
-
-start_jaeger_port_forward() {
-    local svc="svc/${JAEGER_NAME}"
-
-    kill_ports "${JAEGER_PORT}"
-
-    step "Starting port-forward: ${svc} ${JAEGER_PORT}:16686 -n ${NAMESPACE}..."
-    kubectl port-forward "${svc}" "${JAEGER_PORT}:16686" -n "${NAMESPACE}" &
-    local pf_pid=$!
-    disown "${pf_pid}"
-
-    log "Jaeger port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
-    log "Jaeger UI available at http://localhost:${JAEGER_PORT}"
+    die "Timed out waiting for API server to become ready"
 }
 
 print_usage() {
@@ -806,7 +794,6 @@ print_usage() {
     echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/allocs             # Allocs"
     echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/goroutine          # Goroutine"
     echo ""
-    echo "  5. Jaeger UI (trace visualization):"
     echo "  5. Prometheus (metrics):"
     echo ""
     echo "       http://localhost:${PROMETHEUS_PORT}"
@@ -817,9 +804,11 @@ print_usage() {
     echo ""
     echo "     Select service 'batch-gateway' to view traces."
     echo ""
-    echo "  6. Cleanup:"
     echo "  7. Cleanup:"
     echo ""
+    if [ "${USE_KIND}" = true ]; then
+    echo "       make dev-rm-cluster"
+    else
     echo "       helm uninstall ${HELM_RELEASE} -n ${NAMESPACE}"
     echo "       helm uninstall ${REDIS_RELEASE} -n ${NAMESPACE}"
     echo "       helm uninstall ${POSTGRESQL_RELEASE} -n ${NAMESPACE}"
@@ -830,10 +819,6 @@ print_usage() {
     echo "       kubectl delete deployment,svc ${VLLM_SIM_B_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete secret ${APP_SECRET_NAME} ${TLS_SECRET_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete pvc ${FILES_PVC_NAME} -n ${NAMESPACE}"
-    echo ""
-    if [ "${USE_KIND}" = true ]; then
-    echo "       kind delete cluster --name ${KIND_CLUSTER}"
-    echo ""
     fi
 }
 
@@ -861,11 +846,10 @@ main() {
     install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_batch_gateway
     verify_deployment
+    if [ "${USE_KIND}" = true ]; then
+        create_nodeport_services
+    fi
     print_usage
-    start_apiserver_port_forward
-    start_processor_port_forward
-    start_jaeger_port_forward
-    start_prometheus_port_forward
 
     log "Deployment complete!"
 }

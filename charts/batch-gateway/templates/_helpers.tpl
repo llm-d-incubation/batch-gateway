@@ -180,3 +180,43 @@ Processor image string
 {{- $tag := .Values.processor.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" .Values.processor.image.repository $tag }}
 {{- end }}
+
+{{/* ========== Garbage Collector Helpers ========== */}}
+
+{{/*
+GC fullname
+*/}}
+{{- define "batch-gateway.gc.fullname" -}}
+{{- if contains .Chart.Name .Release.Name }}
+{{- printf "%s-gc" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s-gc" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+
+{{/*
+GC labels
+*/}}
+{{- define "batch-gateway.gc.labels" -}}
+{{ include "batch-gateway.labels" . }}
+app.kubernetes.io/name: {{ include "batch-gateway.name" . }}-gc
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: gc
+{{- end }}
+
+{{/*
+GC selector labels
+*/}}
+{{- define "batch-gateway.gc.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "batch-gateway.name" . }}-gc
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: gc
+{{- end }}
+
+{{/*
+GC image string
+*/}}
+{{- define "batch-gateway.gc.image" -}}
+{{- $tag := .Values.gc.image.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" .Values.gc.image.repository $tag }}
+{{- end }}

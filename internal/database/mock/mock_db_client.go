@@ -153,6 +153,17 @@ func (m *MockDBClient[T, Q]) matchesFilters(item T, query *api.BaseQuery) bool {
 		}
 	}
 
+	// Filter by expiry if specified
+	if query.Expired {
+		expiryField := val.FieldByName("Expiry")
+		if expiryField.IsValid() && expiryField.Kind() == reflect.Int64 {
+			expiry := expiryField.Int()
+			if expiry == 0 || expiry > time.Now().Unix() {
+				return false
+			}
+		}
+	}
+
 	// Filter by tag selectors if specified
 	if len(query.TagSelectors) > 0 {
 		tagsField := val.FieldByName("Tags")

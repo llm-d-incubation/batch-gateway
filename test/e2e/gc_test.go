@@ -1,0 +1,145 @@
+// Copyright 2026 The llm-d Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package e2e_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/openai/openai-go/v3"
+)
+
+func testGarbageCollection(t *testing.T) {
+	t.Run("CollectsExpiredFile", doTestGCCollectsExpiredFile)
+	t.Run("CollectsExpiredBatch", doTestGCCollectsExpiredBatch)
+}
+
+// expireInDB uses kubectl exec to run a SQL UPDATE against the PostgreSQL pod,
+// setting the expiry of the given item to 1 (epoch second 1 = long past).
+func expireInDB(t *testing.T, table, id string) {
+	t.Helper()
+
+	sql := fmt.Sprintf("UPDATE %s SET expiry = 1 WHERE id = '%s'", table, id)
+	cmd := fmt.Sprintf(`PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")" psql -U postgres -d postgres -c %q`, sql)
+	out, err := exec.Command("kubectl", "exec",
+		fmt.Sprintf("%s-0", testPostgresqlRelease),
+		"-n", testNamespace,
+		"--", "bash", "-c", cmd,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl exec psql failed: %v\n%s", err, out)
+	}
+	t.Logf("expired %s/%s in DB: %s", table, id, strings.TrimSpace(string(out)))
+}
+
+// doTestGCCollectsExpiredFile creates a file, force-expires it in the DB,
+// then waits for the GC to delete it.
+func doTestGCCollectsExpiredFile(t *testing.T) {
+	t.Helper()
+
+	if !testKubectlAvailable {
+		t.Skip("kubectl not available, skipping GC test")
+	}
+
+	client := newClient()
+	ctx := context.Background()
+
+	// Create a file
+	filename := fmt.Sprintf("test-gc-file-%s.jsonl", testRunID)
+	fileID := mustCreateFile(t, filename, testJSONL)
+
+	// Verify it exists
+	_, err := client.Files.Get(ctx, fileID)
+	if err != nil {
+		t.Fatalf("expected file to exist before GC: %v", err)
+	}
+
+	// Force-expire it in the database
+	expireInDB(t, "file_items", fileID)
+
+	// Wait for the GC to collect it (GC interval is 5s in dev-deploy)
+	const (
+		pollInterval = 2 * time.Second
+		maxWait      = 1 * time.Minute
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		_, err := client.Files.Get(ctx, fileID)
+		if err != nil {
+			var apiErr *openai.Error
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+				t.Logf("file %s was collected by GC", fileID)
+				return
+			}
+		}
+		time.Sleep(pollInterval)
+	}
+	t.Fatalf("file %s was not collected by GC within %v", fileID, maxWait)
+}
+
+// doTestGCCollectsExpiredBatch creates a batch, waits for completion,
+// force-expires it in the DB, then waits for the GC to delete it.
+func doTestGCCollectsExpiredBatch(t *testing.T) {
+	t.Helper()
+
+	if !testKubectlAvailable {
+		t.Skip("kubectl not available, skipping GC test")
+	}
+
+	client := newClient()
+	ctx := context.Background()
+
+	// Create a file and batch, wait for completion
+	fileID := mustCreateFile(t, fmt.Sprintf("test-gc-batch-%s.jsonl", testRunID), testJSONL)
+	batchID := mustCreateBatch(t, fileID)
+	finalBatch := waitForBatchCompletion(t, batchID)
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
+	}
+
+	// Verify it exists
+	_, err := client.Batches.Get(ctx, batchID)
+	if err != nil {
+		t.Fatalf("expected batch to exist before GC: %v", err)
+	}
+
+	// Force-expire it in the database
+	expireInDB(t, "batch_items", batchID)
+
+	// Wait for the GC to collect it (GC interval is 5s in dev-deploy)
+	const (
+		pollInterval = 2 * time.Second
+		maxWait      = 1 * time.Minute
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		_, err := client.Batches.Get(ctx, batchID)
+		if err != nil {
+			var apiErr *openai.Error
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+				t.Logf("batch %s was collected by GC", batchID)
+				return
+			}
+		}
+		time.Sleep(pollInterval)
+	}
+	t.Fatalf("batch %s was not collected by GC within %v", batchID, maxWait)
+}

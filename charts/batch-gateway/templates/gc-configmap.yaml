@@ -1,0 +1,35 @@
+{{- if .Values.gc.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "batch-gateway.gc.fullname" . }}-config
+  labels:
+    {{- include "batch-gateway.gc.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Garbage Collector configuration
+    dry_run: {{ .Values.gc.config.dry_run }}
+    interval: {{ .Values.gc.config.interval | quote }}
+    database_type: {{ .Values.global.databaseType | quote }}
+    redis:
+      db_idx: {{ .Values.global.redis.dbIdx }}
+      enable_tls: {{ .Values.global.redis.enableTLS }}
+      insecure: {{ .Values.global.redis.insecure }}
+      timeout: {{ .Values.global.redis.timeout | quote }}
+      max_retries: {{ .Values.global.redis.maxRetries }}
+      min_retry_backoff: {{ .Values.global.redis.minRetryBackoff | quote }}
+      max_retry_backoff: {{ .Values.global.redis.maxRetryBackoff | quote }}
+      pool_timeout: {{ .Values.global.redis.poolTimeout | quote }}
+      conn_max_idle_time: {{ .Values.global.redis.connMaxIdleTime | quote }}
+      conn_max_lifetime: {{ .Values.global.redis.connMaxLifetime | quote }}
+    file_client:
+      type: {{ .Values.global.fileClient.type | quote }}
+      fs:
+        base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
+      s3:
+        region: {{ .Values.global.fileClient.s3.region | quote }}
+        endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyID | quote }}
+        prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
+        use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+{{- end }}
