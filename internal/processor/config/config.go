@@ -421,4 +421,3 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 
 	return resolved, nil
 }
-
