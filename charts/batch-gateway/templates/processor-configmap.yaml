@@ -22,7 +22,7 @@ data:
 
     database_type: {{ .Values.global.databaseType | quote }}
     redis:
-      db_idx: {{ .Values.global.redis.dbIdx }}
+      db: {{ .Values.global.redis.db }}
       enable_tls: {{ .Values.global.redis.enableTLS }}
       insecure: {{ .Values.global.redis.insecure }}
       timeout: {{ .Values.global.redis.timeout | quote }}
@@ -74,19 +74,19 @@ data:
       s3:
         region: {{ .Values.global.fileClient.s3.region | quote }}
         endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
-        access_key_id: {{ .Values.global.fileClient.s3.accessKeyID | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
         prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
         use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
 
     queue_time_bucket:
-      bucket_start: {{ .Values.processor.config.queueTimeBucket.bucketStart }}
-      bucket_factor: {{ .Values.processor.config.queueTimeBucket.bucketFactor }}
-      bucket_count: {{ .Values.processor.config.queueTimeBucket.bucketCount }}
+      start: {{ .Values.processor.config.queueTimeBucket.start }}
+      factor: {{ .Values.processor.config.queueTimeBucket.factor }}
+      count: {{ .Values.processor.config.queueTimeBucket.count }}
 
     process_time_bucket:
-      bucket_start: {{ .Values.processor.config.processTimeBucket.bucketStart }}
-      bucket_factor: {{ .Values.processor.config.processTimeBucket.bucketFactor }}
-      bucket_count: {{ .Values.processor.config.processTimeBucket.bucketCount }}
+      start: {{ .Values.processor.config.processTimeBucket.start }}
+      factor: {{ .Values.processor.config.processTimeBucket.factor }}
+      count: {{ .Values.processor.config.processTimeBucket.count }}
 
     otel:
       redis_tracing: {{ .Values.global.otel.redisTracing }}

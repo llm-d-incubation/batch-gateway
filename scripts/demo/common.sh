@@ -856,7 +856,7 @@ install_batch_gateway() {
         --namespace "${BATCH_NAMESPACE}"
         --set "apiserver.image.tag=${DEV_VERSION}"
         --set "processor.image.tag=${DEV_VERSION}"
-        --set "global.appSecretName=${APP_SECRET_NAME}"
+        --set "global.secretName=${APP_SECRET_NAME}"
         --set "global.databaseType=${DB_TYPE}"
         --set "global.fileClient.type=${STORAGE_TYPE}"
         --set "processor.config.modelGateways.${FREE_MODEL}.url=${gw_base}/${FREE_MODEL}"
@@ -885,7 +885,7 @@ install_batch_gateway() {
         helm_args+=(
             --set "global.fileClient.s3.endpoint=${minio_endpoint}"
             --set "global.fileClient.s3.region=us-east-1"
-            --set "global.fileClient.s3.accessKeyID=${MINIO_ROOT_USER}"
+            --set "global.fileClient.s3.accessKeyId=${MINIO_ROOT_USER}"
             --set "global.fileClient.s3.prefix=${MINIO_BUCKET}"
             --set "global.fileClient.s3.usePathStyle=true"
         )

@@ -85,15 +85,26 @@ func New(basePath string) (*Client, error) {
 }
 
 // resolvePath returns the relative path within the root.
-func (c *Client) resolvePath(folderName, fileName string) string {
-	return filepath.Join(folderName, fileName)
+// Both folderName and fileName must be non-empty to prevent operations
+// directly on the root directory.
+func (c *Client) resolvePath(folderName, fileName string) (string, error) {
+	if folderName == "" {
+		return "", fmt.Errorf("folderName must not be empty")
+	}
+	if fileName == "" {
+		return "", fmt.Errorf("fileName must not be empty")
+	}
+	return filepath.Join(folderName, fileName), nil
 }
 
 // Store stores a file in the filesystem.
 func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
 	*api.BatchFileMetadata, error,
 ) {
-	relPath := c.resolvePath(folderName, fileName)
+	relPath, err := c.resolvePath(folderName, fileName)
+	if err != nil {
+		return nil, err
+	}
 
 	if _, err := c.root.Stat(relPath); err == nil {
 		return nil, fmt.Errorf("%w: %s", api.ErrFileExists, relPath)
@@ -164,7 +175,10 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 // Retrieve retrieves a file from the filesystem.
 // The returned io.Reader is also an io.ReadCloser; callers should close it when done.
 func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.ReadCloser, *api.BatchFileMetadata, error) {
-	relPath := c.resolvePath(folderName, fileName)
+	relPath, err := c.resolvePath(folderName, fileName)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	file, err := c.root.Open(relPath)
 	if err != nil {
@@ -190,15 +204,24 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 }
 
 // Delete deletes a file from the filesystem.
+// After removing the file, it attempts to remove the parent directory if empty.
+// The directory cleanup is best-effort and does not fail the operation. (e.g. if the directory is not empty, it will not be removed)
 func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
-	relPath := c.resolvePath(folderName, fileName)
+	relPath, err := c.resolvePath(folderName, fileName)
+	if err != nil {
+		return err
+	}
 
 	if err := c.root.Remove(relPath); err != nil {
 		return err
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File deleted successfully",
-		"path", relPath)
+	logger := klog.FromContext(ctx).V(logging.INFO)
+	logger.Info("File deleted successfully", "path", relPath)
+
+	if err := c.root.Remove(folderName); err == nil {
+		logger.Info("Empty directory removed", "dir", folderName)
+	}
 
 	return nil
 }

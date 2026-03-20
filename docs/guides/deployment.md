@@ -341,7 +341,7 @@ Deploy batch-gateway via Helm chart with TLS enabled on the apiserver:
 ```bash
 helm install batch-gateway ./charts/batch-gateway \
     --namespace batch-api \
-    --set global.appSecretName=batch-gateway-secrets \
+    --set global.secretName=batch-gateway-secrets \
     --set global.databaseType=postgresql \
     --set global.fileClient.type=fs \
     --set global.fileClient.fs.pvcName=batch-gateway-files \
@@ -354,6 +354,18 @@ helm install batch-gateway ./charts/batch-gateway \
 ```
 
 > **OpenShift**: Add `--set apiserver.podSecurityContext=null --set processor.podSecurityContext=null` to let OpenShift SCC assign UIDs.
+
+#### Upgrading: removing model gateways
+
+`modelGateways` is a map type. Helm's 3-way strategic merge **merges** maps rather than replacing them. If you previously added a per-model gateway via `--set` and later remove it, the old entry persists in the release values.
+
+To cleanly remove a model gateway entry, use `--reset-values` so Helm discards all previous values and applies only the ones you provide:
+
+```bash
+helm upgrade batch-gateway ./charts/batch-gateway --reset-values \
+    --set processor.config.modelGateways.default.url=http://vllm:8000 \
+    ...
+```
 
 Verify batch-gateway is running:
 

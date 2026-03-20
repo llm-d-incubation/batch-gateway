@@ -79,7 +79,7 @@ spec:
         {{- with .Values.apiserver.volumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        {{- if .Values.global.appSecretName }}
+        {{- if .Values.global.secretName }}
         - name: secrets
           mountPath: /etc/.secrets
           readOnly: true
@@ -98,12 +98,12 @@ spec:
           secretName: {{ include "batch-gateway.apiserver.fullname" . }}-tls
           {{- end }}
       {{- end }}
-      {{- if .Values.global.appSecretName }}
+      {{- if .Values.global.secretName }}
       - name: secrets
         projected:
           sources:
           - secret:
-              name: {{ .Values.global.appSecretName }}
+              name: {{ .Values.global.secretName }}
       {{- end }}
       {{- with .Values.apiserver.volumes }}
       {{- toYaml . | nindent 6 }}

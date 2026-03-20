@@ -13,7 +13,7 @@ database_type: "postgresql"
 # Redis client settings (connection URL is read from the app secret, not here).
 # 0 (or "0s") means go-redis library default.
 # redis:
-#   db_idx: 0
+#   db: 0
 #   enable_tls: false
 #   insecure: false
 #   timeout: "0s"

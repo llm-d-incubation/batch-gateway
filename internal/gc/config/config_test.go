@@ -100,7 +100,7 @@ func TestLoad_RedisDatabase(t *testing.T) {
 	path := writeTempConfig(t, `
 database_type: "redis"
 redis:
-  db_idx: 2
+  db: 2
   enable_tls: true
 file_client:
   type: "fs"
@@ -114,8 +114,8 @@ file_client:
 	if cfg.DatabaseType != "redis" {
 		t.Errorf("expected database_type redis, got %s", cfg.DatabaseType)
 	}
-	if cfg.RedisCfg.DbIdx != 2 {
-		t.Errorf("expected redis db_idx 2, got %d", cfg.RedisCfg.DbIdx)
+	if cfg.RedisCfg.DB != 2 {
+		t.Errorf("expected redis db 2, got %d", cfg.RedisCfg.DB)
 	}
 	if !cfg.RedisCfg.EnableTLS {
 		t.Error("expected redis enable_tls to be true")
@@ -145,7 +145,7 @@ func TestLoad_BothDatabaseConfigs(t *testing.T) {
 	path := writeTempConfig(t, `
 database_type: "postgresql"
 redis:
-  db_idx: 1
+  db: 1
   enable_tls: false
 postgresql: {}
 file_client:
@@ -160,8 +160,8 @@ file_client:
 	if cfg.DatabaseType != "postgresql" {
 		t.Errorf("expected database_type postgresql, got %s", cfg.DatabaseType)
 	}
-	if cfg.RedisCfg.DbIdx != 1 {
-		t.Errorf("expected redis db_idx 1, got %d", cfg.RedisCfg.DbIdx)
+	if cfg.RedisCfg.DB != 1 {
+		t.Errorf("expected redis db 1, got %d", cfg.RedisCfg.DB)
 	}
 }
 
@@ -283,7 +283,7 @@ func TestLoad_RedisConfigTuning(t *testing.T) {
 	path := writeTempConfig(t, `
 database_type: "redis"
 redis:
-  db_idx: 3
+  db: 3
   enable_tls: true
   insecure: true
   timeout: "5s"
@@ -302,8 +302,8 @@ file_client:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.RedisCfg.DbIdx != 3 {
-		t.Errorf("expected db_idx 3, got %d", cfg.RedisCfg.DbIdx)
+	if cfg.RedisCfg.DB != 3 {
+		t.Errorf("expected db 3, got %d", cfg.RedisCfg.DB)
 	}
 	if !cfg.RedisCfg.EnableTLS {
 		t.Error("expected enable_tls to be true")
