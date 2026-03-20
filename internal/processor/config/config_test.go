@@ -60,11 +60,11 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if defaultGW.URL != "http://localhost:8000" {
 		t.Fatalf("default URL = %q, want %q", defaultGW.URL, "http://localhost:8000")
 	}
-	if defaultGW.RequestTimeout != 5*time.Minute {
-		t.Fatalf("default RequestTimeout = %v, want %v", defaultGW.RequestTimeout, 5*time.Minute)
+	if defaultGW.RequestTimeout == nil || *defaultGW.RequestTimeout != 5*time.Minute {
+		t.Fatalf("default RequestTimeout = %v, want 5m", defaultGW.RequestTimeout)
 	}
-	if defaultGW.MaxRetries != 3 {
-		t.Fatalf("default MaxRetries = %d, want 3", defaultGW.MaxRetries)
+	if defaultGW.MaxRetries == nil || *defaultGW.MaxRetries != 3 {
+		t.Fatalf("default MaxRetries = %v, want 3", defaultGW.MaxRetries)
 	}
 
 	// upload retry spot-check
@@ -170,16 +170,16 @@ progress_ttl_seconds: 86400
 	if llama.URL != "http://llama-gw:8000" {
 		t.Fatalf("llama-3 URL = %q, want %q", llama.URL, "http://llama-gw:8000")
 	}
-	if llama.RequestTimeout != 5*time.Minute {
+	if llama.RequestTimeout == nil || *llama.RequestTimeout != 5*time.Minute {
 		t.Fatalf("llama-3 RequestTimeout = %v, want 5m (inherited from default)", llama.RequestTimeout)
 	}
-	if llama.MaxRetries != 3 {
-		t.Fatalf("llama-3 MaxRetries = %d, want 3 (inherited from default)", llama.MaxRetries)
+	if llama.MaxRetries == nil || *llama.MaxRetries != 3 {
+		t.Fatalf("llama-3 MaxRetries = %v, want 3 (inherited from default)", llama.MaxRetries)
 	}
-	if llama.InitialBackoff != 1*time.Second {
+	if llama.InitialBackoff == nil || *llama.InitialBackoff != 1*time.Second {
 		t.Fatalf("llama-3 InitialBackoff = %v, want 1s (inherited from default)", llama.InitialBackoff)
 	}
-	if llama.MaxBackoff != 60*time.Second {
+	if llama.MaxBackoff == nil || *llama.MaxBackoff != 60*time.Second {
 		t.Fatalf("llama-3 MaxBackoff = %v, want 60s (inherited from default)", llama.MaxBackoff)
 	}
 
@@ -187,21 +187,87 @@ progress_ttl_seconds: 86400
 	if !ok {
 		t.Fatal("ModelGateways missing mistral")
 	}
-	if mistral.RequestTimeout != 2*time.Minute {
+	if mistral.RequestTimeout == nil || *mistral.RequestTimeout != 2*time.Minute {
 		t.Fatalf("mistral RequestTimeout = %v, want 2m (explicit override)", mistral.RequestTimeout)
 	}
-	if mistral.MaxRetries != 1 {
-		t.Fatalf("mistral MaxRetries = %d, want 1 (explicit override)", mistral.MaxRetries)
+	if mistral.MaxRetries == nil || *mistral.MaxRetries != 1 {
+		t.Fatalf("mistral MaxRetries = %v, want 1 (explicit override)", mistral.MaxRetries)
 	}
-	if mistral.InitialBackoff != 1*time.Second {
+	if mistral.InitialBackoff == nil || *mistral.InitialBackoff != 1*time.Second {
 		t.Fatalf("mistral InitialBackoff = %v, want 1s (inherited from default)", mistral.InitialBackoff)
 	}
-	if mistral.MaxBackoff != 60*time.Second {
+	if mistral.MaxBackoff == nil || *mistral.MaxBackoff != 60*time.Second {
 		t.Fatalf("mistral MaxBackoff = %v, want 60s (inherited from default)", mistral.MaxBackoff)
 	}
 
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate() should pass after default inheritance: %v", err)
+	}
+}
+
+func TestProcessorConfig_LoadFromYAML_ExplicitZeroMaxRetries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.yaml")
+
+	yamlData := []byte(`
+poll_interval: 5s
+task_wait_time: 1s
+num_workers: 1
+global_concurrency: 100
+per_model_max_concurrency: 10
+work_dir: "` + dir + `/work"
+addr: ":9090"
+shutdown_timeout: 30s
+queue_time_bucket:
+  bucket_start: 0.1
+  bucket_factor: 2
+  bucket_count: 10
+process_time_bucket:
+  bucket_start: 0.1
+  bucket_factor: 2
+  bucket_count: 15
+model_gateways:
+  "default":
+    url: "http://default-gw:8000"
+    request_timeout: 5m
+    max_retries: 3
+    initial_backoff: 1s
+    max_backoff: 60s
+  "no-retry-model":
+    url: "http://no-retry-gw:8000"
+    max_retries: 0
+upload_retry:
+  max_retries: 3
+  initial_backoff: 1s
+  max_backoff: 10s
+progress_ttl_seconds: 86400
+`)
+
+	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
+		t.Fatalf("failed to write yaml: %v", err)
+	}
+
+	c := &ProcessorConfig{}
+	if err := c.LoadFromYAML(path); err != nil {
+		t.Fatalf("LoadFromYAML() error: %v", err)
+	}
+
+	noRetry, ok := c.ModelGateways["no-retry-model"]
+	if !ok {
+		t.Fatal("ModelGateways missing no-retry-model")
+	}
+	if noRetry.MaxRetries == nil {
+		t.Fatal("no-retry-model MaxRetries should not be nil after YAML parse")
+	}
+	if *noRetry.MaxRetries != 0 {
+		t.Fatalf("no-retry-model MaxRetries = %d, want 0 (explicit zero must not be overwritten by default)", *noRetry.MaxRetries)
+	}
+	if noRetry.RequestTimeout == nil || *noRetry.RequestTimeout != 5*time.Minute {
+		t.Fatalf("no-retry-model RequestTimeout = %v, want 5m (inherited from default)", noRetry.RequestTimeout)
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() should pass with explicit max_retries=0: %v", err)
 	}
 }
 
@@ -264,10 +330,10 @@ func TestProcessorConfig_Validate_APIKeyFile(t *testing.T) {
 			DefaultModelGatewayKey: {
 				URL:            "http://gateway:8000",
 				APIKeyFile:     keyFile,
-				RequestTimeout: 5 * time.Minute,
-				MaxRetries:     3,
-				InitialBackoff: 1 * time.Second,
-				MaxBackoff:     60 * time.Second,
+				RequestTimeout: durationPtr(5 * time.Minute),
+				MaxRetries:     intPtr(3),
+				InitialBackoff: durationPtr(1 * time.Second),
+				MaxBackoff:     durationPtr(60 * time.Second),
 			},
 		}
 
@@ -329,10 +395,10 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 
 	c = NewConfig()
 	gw := c.ModelGateways[DefaultModelGatewayKey]
-	gw.RequestTimeout = 0
+	gw.RequestTimeout = nil
 	c.ModelGateways[DefaultModelGatewayKey] = gw
 	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error for request_timeout <= 0, got nil")
+		t.Fatalf("Validate() expected error for nil request_timeout, got nil")
 	}
 }
 
@@ -402,16 +468,16 @@ progress_ttl_seconds: 3600
 	if defaultGW.URL != "http://example:8000" {
 		t.Fatalf("default URL = %q, want %q", defaultGW.URL, "http://example:8000")
 	}
-	if defaultGW.RequestTimeout != 30*time.Second {
+	if defaultGW.RequestTimeout == nil || *defaultGW.RequestTimeout != 30*time.Second {
 		t.Fatalf("default RequestTimeout = %v, want 30s", defaultGW.RequestTimeout)
 	}
-	if defaultGW.MaxRetries != 9 {
-		t.Fatalf("default MaxRetries = %d, want 9", defaultGW.MaxRetries)
+	if defaultGW.MaxRetries == nil || *defaultGW.MaxRetries != 9 {
+		t.Fatalf("default MaxRetries = %v, want 9", defaultGW.MaxRetries)
 	}
-	if defaultGW.InitialBackoff != 250*time.Millisecond {
+	if defaultGW.InitialBackoff == nil || *defaultGW.InitialBackoff != 250*time.Millisecond {
 		t.Fatalf("default InitialBackoff = %v, want 250ms", defaultGW.InitialBackoff)
 	}
-	if defaultGW.MaxBackoff != 10*time.Second {
+	if defaultGW.MaxBackoff == nil || *defaultGW.MaxBackoff != 10*time.Second {
 		t.Fatalf("default MaxBackoff = %v, want 10s", defaultGW.MaxBackoff)
 	}
 	if !defaultGW.TLSInsecureSkipVerify {

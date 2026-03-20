@@ -120,10 +120,13 @@ type RetryConfig struct {
 const DefaultModelGatewayKey = "default"
 
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
-// model (or the default fallback). Per-model entries inherit zero-valued HTTP
-// fields (RequestTimeout, MaxRetries, InitialBackoff, MaxBackoff) from the
-// "default" entry via applyModelGatewayDefaults, so only fields that differ
+// model (or the default fallback). Per-model entries inherit unset fields from
+// the "default" entry via applyModelGatewayDefaults, so only fields that differ
 // from the default need to be specified.
+//
+// HTTP fields use pointers so that nil (unset → inherit from default) is
+// distinguishable from explicit zero values (e.g. MaxRetries=0 means "no
+// retries", RequestTimeout=0 means "no timeout").
 //
 // API key resolution (mutually exclusive, first match wins):
 //   - api_key_file: read the token/key from an arbitrary file path
@@ -135,10 +138,10 @@ type ModelGatewayConfig struct {
 	APIKeyName string `yaml:"api_key_name"`
 	APIKeyFile string `yaml:"api_key_file"`
 
-	RequestTimeout time.Duration `yaml:"request_timeout"`
-	MaxRetries     int           `yaml:"max_retries"`
-	InitialBackoff time.Duration `yaml:"initial_backoff"`
-	MaxBackoff     time.Duration `yaml:"max_backoff"`
+	RequestTimeout *time.Duration `yaml:"request_timeout"`
+	MaxRetries     *int           `yaml:"max_retries"`
+	InitialBackoff *time.Duration `yaml:"initial_backoff"`
+	MaxBackoff     *time.Duration `yaml:"max_backoff"`
 
 	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify"`
 	TLSCACertFile         string `yaml:"tls_ca_cert_file,omitempty"`
@@ -169,7 +172,7 @@ func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	return nil
 }
 
-// applyModelGatewayDefaults fills zero-valued fields in per-model gateway
+// applyModelGatewayDefaults fills unset (nil) fields in per-model gateway
 // entries with the corresponding value from the "default" entry.
 // This lets users add a per-model entry with only the fields that differ.
 func (pc *ProcessorConfig) applyModelGatewayDefaults() {
@@ -181,16 +184,16 @@ func (pc *ProcessorConfig) applyModelGatewayDefaults() {
 		if model == DefaultModelGatewayKey {
 			continue
 		}
-		if gw.RequestTimeout == 0 {
+		if gw.RequestTimeout == nil {
 			gw.RequestTimeout = dflt.RequestTimeout
 		}
-		if gw.MaxRetries == 0 {
+		if gw.MaxRetries == nil {
 			gw.MaxRetries = dflt.MaxRetries
 		}
-		if gw.InitialBackoff == 0 {
+		if gw.InitialBackoff == nil {
 			gw.InitialBackoff = dflt.InitialBackoff
 		}
-		if gw.MaxBackoff == 0 {
+		if gw.MaxBackoff == nil {
 			gw.MaxBackoff = dflt.MaxBackoff
 		}
 		pc.ModelGateways[model] = gw
@@ -233,10 +236,10 @@ func NewConfig() *ProcessorConfig {
 		ModelGateways: map[string]ModelGatewayConfig{
 			DefaultModelGatewayKey: {
 				URL:            "http://localhost:8000",
-				RequestTimeout: 5 * time.Minute,
-				MaxRetries:     3,
-				InitialBackoff: 1 * time.Second,
-				MaxBackoff:     60 * time.Second,
+				RequestTimeout: durationPtr(5 * time.Minute),
+				MaxRetries:     intPtr(3),
+				InitialBackoff: durationPtr(1 * time.Second),
+				MaxBackoff:     durationPtr(60 * time.Second),
 			},
 		},
 		UploadRetry: RetryConfig{
@@ -295,19 +298,31 @@ func (c *ProcessorConfig) Validate() error {
 		if gw.URL == "" {
 			return fmt.Errorf("model_gateways[%s].url cannot be empty", model)
 		}
-		if gw.RequestTimeout <= 0 {
-			return fmt.Errorf("model_gateways[%s].request_timeout must be > 0", model)
+		if gw.RequestTimeout == nil {
+			return fmt.Errorf("model_gateways[%s].request_timeout must be set", model)
 		}
-		if gw.MaxRetries < 0 {
+		if *gw.RequestTimeout < 0 {
+			return fmt.Errorf("model_gateways[%s].request_timeout must be >= 0", model)
+		}
+		if gw.MaxRetries == nil {
+			return fmt.Errorf("model_gateways[%s].max_retries must be set", model)
+		}
+		if *gw.MaxRetries < 0 {
 			return fmt.Errorf("model_gateways[%s].max_retries must be >= 0", model)
 		}
-		if gw.InitialBackoff <= 0 {
-			return fmt.Errorf("model_gateways[%s].initial_backoff must be > 0", model)
+		if gw.InitialBackoff == nil {
+			return fmt.Errorf("model_gateways[%s].initial_backoff must be set", model)
 		}
-		if gw.MaxBackoff <= 0 {
-			return fmt.Errorf("model_gateways[%s].max_backoff must be > 0", model)
+		if *gw.InitialBackoff < 0 {
+			return fmt.Errorf("model_gateways[%s].initial_backoff must be >= 0", model)
 		}
-		if gw.MaxBackoff < gw.InitialBackoff {
+		if gw.MaxBackoff == nil {
+			return fmt.Errorf("model_gateways[%s].max_backoff must be set", model)
+		}
+		if *gw.MaxBackoff < 0 {
+			return fmt.Errorf("model_gateways[%s].max_backoff must be >= 0", model)
+		}
+		if *gw.MaxBackoff < *gw.InitialBackoff {
 			return fmt.Errorf("model_gateways[%s].max_backoff must be >= initial_backoff", model)
 		}
 		if gw.APIKeyName != "" && gw.APIKeyFile != "" {
@@ -382,10 +397,10 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 		resolved[model] = inference.GatewayClientConfig{
 			URL:                   gw.URL,
 			APIKey:                apiKey,
-			Timeout:               gw.RequestTimeout,
-			MaxRetries:            gw.MaxRetries,
-			InitialBackoff:        gw.InitialBackoff,
-			MaxBackoff:            gw.MaxBackoff,
+			Timeout:               derefDuration(gw.RequestTimeout),
+			MaxRetries:            derefInt(gw.MaxRetries),
+			InitialBackoff:        derefDuration(gw.InitialBackoff),
+			MaxBackoff:            derefDuration(gw.MaxBackoff),
 			TLSInsecureSkipVerify: gw.TLSInsecureSkipVerify,
 			TLSCACertFile:         gw.TLSCACertFile,
 			TLSClientCertFile:     gw.TLSClientCertFile,
@@ -404,4 +419,21 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 	}
 
 	return resolved, nil
+}
+
+func intPtr(v int) *int                          { return &v }
+func durationPtr(v time.Duration) *time.Duration { return &v }
+
+func derefInt(p *int) int {
+	if p != nil {
+		return *p
+	}
+	return 0
+}
+
+func derefDuration(p *time.Duration) time.Duration {
+	if p != nil {
+		return *p
+	}
+	return 0
 }

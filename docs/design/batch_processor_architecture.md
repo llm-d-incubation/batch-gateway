@@ -474,11 +474,11 @@ model_gateways:
 
 **Lookup order:** `model_gateways[model]` → `model_gateways["default"]` (fallback).
 
-Each entry is fully self-contained. The required fields are `url`, `request_timeout`, `max_retries`, `initial_backoff`, and `max_backoff`. There is no field inheritance between entries — per-model entries must specify all HTTP settings explicitly. The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`). TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
+Per-model entries inherit unset HTTP fields (`request_timeout`, `max_retries`, `initial_backoff`, `max_backoff`) from the `"default"` entry via `applyModelGatewayDefaults`, so only `url` and any fields that differ need to be specified. All HTTP fields use pointers so that `nil` (unset → inherit from default) is distinguishable from explicit zero values (e.g. `max_retries: 0` means "no retries", `request_timeout: 0` means "no timeout").
+
+The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`). TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
 
 API key resolution order: explicit `api_key_name` → default `inference-api-key` secret (read from default `api_key_name`) → no auth.
-
-> **Note:** Per-model partial overrides (inheriting unset fields from `"default"`) are not currently supported. If needed in the future, a separate `ModelOverrideConfig` type with pointer fields and a merge step can be introduced. See the `TODO` comment in `ModelGatewayConfig`.
 
 `GatewayResolver` (in `internal/inference/gateway_resolver.go`) manages the client pool. Clients with identical settings (URL, API key, and all HTTP/TLS fields) share a single `HTTPClient` instance to reuse connection pools.
 
