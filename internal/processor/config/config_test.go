@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
 )
 
 func TestNewConfig_Defaults(t *testing.T) {
@@ -330,10 +332,10 @@ func TestProcessorConfig_Validate_APIKeyFile(t *testing.T) {
 			DefaultModelGatewayKey: {
 				URL:            "http://gateway:8000",
 				APIKeyFile:     keyFile,
-				RequestTimeout: durationPtr(5 * time.Minute),
-				MaxRetries:     intPtr(3),
-				InitialBackoff: durationPtr(1 * time.Second),
-				MaxBackoff:     durationPtr(60 * time.Second),
+				RequestTimeout: ptr.To(5 * time.Minute),
+				MaxRetries:     ptr.To(3),
+				InitialBackoff: ptr.To(1 * time.Second),
+				MaxBackoff:     ptr.To(60 * time.Second),
 			},
 		}
 

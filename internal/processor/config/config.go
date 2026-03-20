@@ -28,6 +28,7 @@ import (
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
@@ -236,10 +237,10 @@ func NewConfig() *ProcessorConfig {
 		ModelGateways: map[string]ModelGatewayConfig{
 			DefaultModelGatewayKey: {
 				URL:            "http://localhost:8000",
-				RequestTimeout: durationPtr(5 * time.Minute),
-				MaxRetries:     intPtr(3),
-				InitialBackoff: durationPtr(1 * time.Second),
-				MaxBackoff:     durationPtr(60 * time.Second),
+				RequestTimeout: ptr.To(5 * time.Minute),
+				MaxRetries:     ptr.To(3),
+				InitialBackoff: ptr.To(1 * time.Second),
+				MaxBackoff:     ptr.To(60 * time.Second),
 			},
 		},
 		UploadRetry: RetryConfig{
@@ -397,10 +398,10 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 		resolved[model] = inference.GatewayClientConfig{
 			URL:                   gw.URL,
 			APIKey:                apiKey,
-			Timeout:               derefDuration(gw.RequestTimeout),
-			MaxRetries:            derefInt(gw.MaxRetries),
-			InitialBackoff:        derefDuration(gw.InitialBackoff),
-			MaxBackoff:            derefDuration(gw.MaxBackoff),
+			Timeout:               ptr.Deref(gw.RequestTimeout),
+			MaxRetries:            ptr.Deref(gw.MaxRetries),
+			InitialBackoff:        ptr.Deref(gw.InitialBackoff),
+			MaxBackoff:            ptr.Deref(gw.MaxBackoff),
 			TLSInsecureSkipVerify: gw.TLSInsecureSkipVerify,
 			TLSCACertFile:         gw.TLSCACertFile,
 			TLSClientCertFile:     gw.TLSClientCertFile,
@@ -421,19 +422,3 @@ func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]in
 	return resolved, nil
 }
 
-func intPtr(v int) *int                          { return &v }
-func durationPtr(v time.Duration) *time.Duration { return &v }
-
-func derefInt(p *int) int {
-	if p != nil {
-		return *p
-	}
-	return 0
-}
-
-func derefDuration(p *time.Duration) time.Duration {
-	if p != nil {
-		return *p
-	}
-	return 0
-}
