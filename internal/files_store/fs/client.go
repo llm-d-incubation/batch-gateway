@@ -190,6 +190,8 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 }
 
 // Delete deletes a file from the filesystem.
+// After removing the file, it attempts to remove the parent directory if empty.
+// The directory cleanup is best-effort and does not fail the operation. (e.g. if the directory is not empty, it will not be removed)
 func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
 	relPath := c.resolvePath(folderName, fileName)
 
@@ -197,8 +199,12 @@ func (c *Client) Delete(ctx context.Context, fileName, folderName string) error 
 		return err
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File deleted successfully",
-		"path", relPath)
+	logger := klog.FromContext(ctx).V(logging.INFO)
+	logger.Info("File deleted successfully", "path", relPath)
+
+	if err := c.root.Remove(folderName); err == nil {
+		logger.Info("Empty directory removed", "dir", folderName)
+	}
 
 	return nil
 }

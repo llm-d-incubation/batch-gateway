@@ -233,6 +233,52 @@ func TestDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("removes empty parent directory after last file deleted", func(t *testing.T) {
+		client := newTestClient(t)
+		folder := "gc-tenant"
+
+		_, err := client.Store(ctx, "only-file.txt", folder, 1024, 0, bytes.NewReader([]byte("data")))
+		if err != nil {
+			t.Fatalf("failed to store: %v", err)
+		}
+
+		dirPath := filepath.Join(client.root.Name(), folder)
+		if _, err := os.Stat(dirPath); err != nil {
+			t.Fatalf("expected directory to exist before delete: %v", err)
+		}
+
+		if err := client.Delete(ctx, "only-file.txt", folder); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, err := os.Stat(dirPath); !os.IsNotExist(err) {
+			t.Error("expected empty directory to be removed after last file deleted")
+		}
+	})
+
+	t.Run("keeps parent directory when other files remain", func(t *testing.T) {
+		client := newTestClient(t)
+		folder := "gc-tenant-multi"
+
+		_, err := client.Store(ctx, "file1.txt", folder, 1024, 0, bytes.NewReader([]byte("data1")))
+		if err != nil {
+			t.Fatalf("failed to store file1: %v", err)
+		}
+		_, err = client.Store(ctx, "file2.txt", folder, 1024, 0, bytes.NewReader([]byte("data2")))
+		if err != nil {
+			t.Fatalf("failed to store file2: %v", err)
+		}
+
+		if err := client.Delete(ctx, "file1.txt", folder); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		dirPath := filepath.Join(client.root.Name(), folder)
+		if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+			t.Error("expected directory to still exist when other files remain")
+		}
+	})
+
 }
 
 func TestGetContext(t *testing.T) {
