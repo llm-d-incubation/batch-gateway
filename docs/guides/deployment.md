@@ -341,7 +341,7 @@ Deploy batch-gateway via Helm chart with TLS enabled on the apiserver:
 ```bash
 helm install batch-gateway ./charts/batch-gateway \
     --namespace batch-api \
-    --set global.appSecretName=batch-gateway-secrets \
+    --set global.secretName=batch-gateway-secrets \
     --set global.databaseType=postgresql \
     --set global.fileClient.type=fs \
     --set global.fileClient.fs.pvcName=batch-gateway-files \

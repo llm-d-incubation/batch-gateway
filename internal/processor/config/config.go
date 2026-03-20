@@ -151,9 +151,9 @@ type ModelGatewayConfig struct {
 }
 
 type BucketConfig struct {
-	BucketStart  float64 `yaml:"bucket_start"`
-	BucketFactor float64 `yaml:"bucket_factor"`
-	BucketCount  int     `yaml:"bucket_count"`
+	BucketStart  float64 `yaml:"start"`
+	BucketFactor float64 `yaml:"factor"`
+	BucketCount  int     `yaml:"count"`
 }
 
 // LoadFromYaml loads the configuration from a YAML file.
@@ -286,10 +286,10 @@ func (c *ProcessorConfig) Validate() error {
 	}
 
 	if c.QueueTimeBucket.BucketStart <= 0 || c.QueueTimeBucket.BucketFactor <= 1 || c.QueueTimeBucket.BucketCount <= 0 {
-		return fmt.Errorf("queue_time_bucket must satisfy: bucket_start > 0, bucket_factor > 1, bucket_count > 0")
+		return fmt.Errorf("queue_time_bucket must satisfy: start > 0, factor > 1, count > 0")
 	}
 	if c.ProcessTimeBucket.BucketStart <= 0 || c.ProcessTimeBucket.BucketFactor <= 1 || c.ProcessTimeBucket.BucketCount <= 0 {
-		return fmt.Errorf("process_time_bucket must satisfy: bucket_start > 0, bucket_factor > 1, bucket_count > 0")
+		return fmt.Errorf("process_time_bucket must satisfy: start > 0, factor > 1, count > 0")
 	}
 
 	if _, ok := c.ModelGateways[DefaultModelGatewayKey]; !ok {

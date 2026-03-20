@@ -73,7 +73,7 @@ spec:
         {{- with .Values.processor.volumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        {{- if .Values.global.appSecretName }}
+        {{- if .Values.global.secretName }}
         - name: secrets
           mountPath: /etc/.secrets
           readOnly: true
@@ -91,12 +91,12 @@ spec:
           sizeLimit: {{ .Values.processor.workDirVolume.sizeLimit | quote }}
           {{- end }}
       {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
-      {{- if .Values.global.appSecretName }}
+      {{- if .Values.global.secretName }}
       - name: secrets
         projected:
           sources:
           - secret:
-              name: {{ .Values.global.appSecretName }}
+              name: {{ .Values.global.secretName }}
       {{- end }}
       {{- with .Values.processor.volumes }}
       {{- toYaml . | nindent 6 }}

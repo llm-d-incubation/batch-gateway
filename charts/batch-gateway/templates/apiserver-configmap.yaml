@@ -20,7 +20,7 @@ data:
     idle_timeout_seconds: {{ .Values.apiserver.config.idleTimeoutSeconds }}
     database_type: {{ .Values.global.databaseType | quote }}
     redis:
-      db_idx: {{ .Values.global.redis.dbIdx }}
+      db: {{ .Values.global.redis.db }}
       enable_tls: {{ .Values.global.redis.enableTLS }}
       insecure: {{ .Values.global.redis.insecure }}
       timeout: {{ .Values.global.redis.timeout | quote }}
@@ -37,11 +37,11 @@ data:
       s3:
         region: {{ .Values.global.fileClient.s3.region | quote }}
         endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
-        access_key_id: {{ .Values.global.fileClient.s3.accessKeyID | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
         prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
         use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
     batch_api:
-      batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.batchEventTTLSeconds }}
+      batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.eventTTLSeconds }}
       {{- if .Values.apiserver.config.batchAPI.passThroughHeaders }}
       pass_through_headers:
         {{- range .Values.apiserver.config.batchAPI.passThroughHeaders }}

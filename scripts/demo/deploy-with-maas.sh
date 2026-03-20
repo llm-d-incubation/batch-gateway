@@ -172,7 +172,7 @@ install_batch_gateway() {
         --namespace "${BATCH_NAMESPACE}"
         --set "apiserver.image.tag=${DEV_VERSION}"
         --set "processor.image.tag=${DEV_VERSION}"
-        --set "global.appSecretName=${APP_SECRET_NAME}"
+        --set "global.secretName=${APP_SECRET_NAME}"
         --set "global.databaseType=${DB_TYPE}"
         --set "global.fileClient.type=${STORAGE_TYPE}"
         --set "global.fileClient.fs.basePath=/tmp/batch-gateway"

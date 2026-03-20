@@ -10,7 +10,7 @@ global:
   #   inference-api-key     — API key for the inference gateway (optional; omit if not required)
   #   s3-secret-access-key  — S3 secret access key (required when file_client.type is "s3")
   # Create with: kubectl create secret generic <name> --from-literal=redis-url=redis://...
-  appSecretName: "batch-gateway-secrets"
+  secretName: "batch-gateway-secrets"
 
   # Database backend type: "redis", or "postgresql"
   databaseType: "postgresql"
@@ -19,7 +19,7 @@ global:
   # The connection URL is read from the app secret (redis-url key), not from here.
   # 0 (or "0s") means go-redis library default.
   redis:
-    dbIdx: 0
+    db: 0
     enableTLS: false
     insecure: false
     timeout: "0s"
@@ -55,7 +55,7 @@ global:
     s3:
       region: ""
       endpoint: ""
-      accessKeyID: ""
+      accessKeyId: ""
       prefix: ""
       usePathStyle: false
 
@@ -164,7 +164,7 @@ apiserver:
     writeTimeoutSeconds: 120
     idleTimeoutSeconds: 90
     batchAPI:
-      batchEventTTLSeconds: 2592000
+      eventTTLSeconds: 2592000
       passThroughHeaders: []
     fileAPI:
       defaultExpirationSeconds: 7776000
@@ -273,13 +273,13 @@ processor:
     globalConcurrency: 100
     perModelMaxConcurrency: 10
     queueTimeBucket:
-      bucketStart: 0.1
-      bucketFactor: 2
-      bucketCount: 10
+      start: 0.1
+      factor: 2
+      count: 10
     processTimeBucket:
-      bucketStart: 0.1
-      bucketFactor: 2
-      bucketCount: 15
+      start: 0.1
+      factor: 2
+      count: 15
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
@@ -331,7 +331,7 @@ gc:
 
   # GC application config (rendered into a ConfigMap and mounted as config.yaml)
   config:
-    dry_run: false
+    dryRun: false
     # Interval between garbage collection cycles (Go duration format)
     interval: "30m"
 

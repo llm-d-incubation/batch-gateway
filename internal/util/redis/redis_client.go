@@ -43,7 +43,7 @@ type RedisClientConfig struct {
 	Certificates    *utls.Certificates `yaml:"-"` // Set programmatically for mTLS
 	EnableTracing   bool               `yaml:"-"` // Set from OTel config
 	ServiceName     string             `yaml:"-"` // Set per component (e.g. "batch-apiserver")
-	DbIdx           int                `yaml:"db_idx"`
+	DB              int                `yaml:"db"`
 	EnableTLS       bool               `yaml:"enable_tls"`
 	Insecure        bool               `yaml:"insecure"`
 	Timeout         time.Duration      `yaml:"timeout"`            // Timeout for socket operations: dial, read, write.
@@ -88,8 +88,8 @@ func NewRedisClient(ctx context.Context, cnf *RedisClientConfig) (*gredis.Client
 			redisOps.ClientName = fmt.Sprintf("%s-%d-%s", hostname, os.Getpid(), ucom.RandString(6))
 		}
 	}
-	if cnf.DbIdx >= 0 {
-		redisOps.DB = cnf.DbIdx
+	if cnf.DB >= 0 {
+		redisOps.DB = cnf.DB
 	}
 	if cnf.Timeout != 0 {
 		redisOps.DialTimeout = cnf.Timeout

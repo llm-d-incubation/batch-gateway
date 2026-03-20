@@ -39,7 +39,7 @@ spec:
           mountPath: /etc/batch-gc
           readOnly: true
         {{- include "batch-gateway.filesStorage.volumeMount" . | nindent 8 }}
-        {{- if .Values.global.appSecretName }}
+        {{- if .Values.global.secretName }}
         - name: secrets
           mountPath: /etc/.secrets
           readOnly: true
@@ -49,12 +49,12 @@ spec:
         configMap:
           name: {{ include "batch-gateway.gc.fullname" . }}-config
       {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
-      {{- if .Values.global.appSecretName }}
+      {{- if .Values.global.secretName }}
       - name: secrets
         projected:
           sources:
           - secret:
-              name: {{ .Values.global.appSecretName }}
+              name: {{ .Values.global.secretName }}
       {{- end }}
       {{- with .Values.gc.nodeSelector }}
       nodeSelector:
