@@ -129,13 +129,13 @@ work_dir: "` + dir + `/work"
 addr: ":9090"
 shutdown_timeout: 30s
 queue_time_bucket:
-  bucket_start: 0.1
-  bucket_factor: 2
-  bucket_count: 10
+  start: 0.1
+  factor: 2
+  count: 10
 process_time_bucket:
-  bucket_start: 0.1
-  bucket_factor: 2
-  bucket_count: 15
+  start: 0.1
+  factor: 2
+  count: 15
 model_gateways:
   "default":
     url: "http://default-gw:8000"
@@ -221,13 +221,13 @@ work_dir: "` + dir + `/work"
 addr: ":9090"
 shutdown_timeout: 30s
 queue_time_bucket:
-  bucket_start: 0.1
-  bucket_factor: 2
-  bucket_count: 10
+  start: 0.1
+  factor: 2
+  count: 10
 process_time_bucket:
-  bucket_start: 0.1
-  bucket_factor: 2
-  bucket_count: 15
+  start: 0.1
+  factor: 2
+  count: 15
 model_gateways:
   "default":
     url: "http://default-gw:8000"
