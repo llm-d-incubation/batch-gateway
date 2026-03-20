@@ -641,13 +641,19 @@ install_batch_gateway() {
         kubectl rollout restart deployment \
             -l "app.kubernetes.io/instance=${HELM_RELEASE}" \
             -n "${NAMESPACE}"
+        # rollout status blocks until new ReplicaSet pods are Ready.
+        # wait_for_deployment (condition=Available) is insufficient here because
+        # the old ReplicaSet satisfies Available immediately after restart.
+        wait_for_rollout "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
+        wait_for_rollout "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
+        wait_for_rollout "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
+        wait_for_http_ready
     else
         helm install "${HELM_RELEASE}" ./charts/batch-gateway "${helm_args[@]}"
+        wait_for_deployment "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
+        wait_for_deployment "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
+        wait_for_deployment "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
     fi
-
-    wait_for_deployment "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
-    wait_for_deployment "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
-    wait_for_deployment "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
 
     log "batch-gateway installed."
 }
@@ -661,6 +667,7 @@ verify_deployment() {
 }
 
 # wait_for_deployment <name> <namespace> <timeout>
+# Suitable for initial install where no old ReplicaSet exists.
 wait_for_deployment() {
     local name="$1"
     local ns="$2"
@@ -672,6 +679,39 @@ wait_for_deployment() {
         die "Deployment '${name}' did not become ready within ${timeout}"
     fi
     log "Deployment '${name}' is ready."
+}
+
+# wait_for_rollout <name> <namespace> <timeout>
+# Blocks until the latest rollout (new ReplicaSet) is fully complete.
+# Use after rollout restart; condition=Available can pass prematurely
+# when the old ReplicaSet still satisfies the Available condition.
+wait_for_rollout() {
+    local name="$1"
+    local ns="$2"
+    local timeout="${3:-120s}"
+
+    step "Waiting for rollout of '${name}' to complete..."
+    if ! kubectl rollout status deployment/"${name}" \
+        -n "${ns}" --timeout="${timeout}"; then
+        die "Rollout of '${name}' did not complete within ${timeout}"
+    fi
+    log "Rollout of '${name}' complete."
+}
+
+# wait_for_http_ready polls the apiserver health endpoint via localhost
+# to confirm end-to-end connectivity (NodePort -> pod) is working.
+wait_for_http_ready() {
+    log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
+
+    for i in $(seq 1 30); do
+        if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
+            log "API server is ready at https://localhost:${LOCAL_PORT}"
+            return 0
+        fi
+        sleep 1
+    done
+
+    die "Timed out waiting for API server to become ready"
 }
 
 create_nodeport_services() {
@@ -734,18 +774,7 @@ spec:
 EOF
 
     log "NodePort services created."
-
-    log "Waiting for http://localhost:${LOCAL_OBS_PORT}/health ..."
-
-    for i in $(seq 1 30); do
-        if curl -sf "http://localhost:${LOCAL_OBS_PORT}/health" >/dev/null 2>&1; then
-            log "API server is ready at https://localhost:${LOCAL_PORT}"
-            return 0
-        fi
-        sleep 1
-    done
-
-    die "Timed out waiting for API server to become ready"
+    wait_for_http_ready
 }
 
 print_usage() {
