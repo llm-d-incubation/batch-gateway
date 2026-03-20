@@ -34,14 +34,15 @@ data:
       conn_max_lifetime: {{ .Values.global.redis.connMaxLifetime | quote }}
 
     model_gateways:
+      {{- $defaults := index .Values.processor.config.modelGateways "default" }}
       {{- range $model, $cfg := .Values.processor.config.modelGateways }}
       {{ $model | quote }}:
         url: {{ $cfg.url | quote }}
-        request_timeout: {{ $cfg.requestTimeout | quote }}
-        max_retries: {{ $cfg.maxRetries }}
-        initial_backoff: {{ $cfg.initialBackoff | quote }}
-        max_backoff: {{ $cfg.maxBackoff | quote }}
-        tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify }}
+        request_timeout: {{ $cfg.requestTimeout | default $defaults.requestTimeout | quote }}
+        max_retries: {{ $cfg.maxRetries | default $defaults.maxRetries }}
+        initial_backoff: {{ $cfg.initialBackoff | default $defaults.initialBackoff | quote }}
+        max_backoff: {{ $cfg.maxBackoff | default $defaults.maxBackoff | quote }}
+        tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify | default false }}
         {{- if $cfg.apiKeyName }}
         api_key_name: {{ $cfg.apiKeyName | quote }}
         {{- end }}

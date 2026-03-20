@@ -120,18 +120,16 @@ type RetryConfig struct {
 const DefaultModelGatewayKey = "default"
 
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
-// model (or the default fallback). Every entry in model_gateways must be
-// self-contained — there is no inheritance from the "default" entry.
+// model (or the default fallback). Per-model entries inherit zero-valued HTTP
+// fields (RequestTimeout, MaxRetries, InitialBackoff, MaxBackoff) from the
+// "default" entry via applyModelGatewayDefaults, so only fields that differ
+// from the default need to be specified.
 //
 // API key resolution (mutually exclusive, first match wins):
 //   - api_key_file: read the token/key from an arbitrary file path
 //     (e.g. /var/run/secrets/kubernetes.io/serviceaccount/token).
 //   - api_key_name: key name under /etc/.secrets/ (mounted Kubernetes secret).
 //   - (neither set on "default"): falls back to the mounted inference-api-key secret.
-//
-// TODO: If per-model partial overrides (inherit unset fields from "default")
-// are needed in the future, introduce a separate ModelOverrideConfig type with
-// pointer fields and a merge step in BuildGatewayResolver.
 type ModelGatewayConfig struct {
 	URL        string `yaml:"url"`
 	APIKeyName string `yaml:"api_key_name"`
@@ -166,7 +164,37 @@ func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	if err := decoder.Decode(pc); err != nil {
 		return err
 	}
+
+	pc.applyModelGatewayDefaults()
 	return nil
+}
+
+// applyModelGatewayDefaults fills zero-valued fields in per-model gateway
+// entries with the corresponding value from the "default" entry.
+// This lets users add a per-model entry with only the fields that differ.
+func (pc *ProcessorConfig) applyModelGatewayDefaults() {
+	dflt, ok := pc.ModelGateways[DefaultModelGatewayKey]
+	if !ok {
+		return
+	}
+	for model, gw := range pc.ModelGateways {
+		if model == DefaultModelGatewayKey {
+			continue
+		}
+		if gw.RequestTimeout == 0 {
+			gw.RequestTimeout = dflt.RequestTimeout
+		}
+		if gw.MaxRetries == 0 {
+			gw.MaxRetries = dflt.MaxRetries
+		}
+		if gw.InitialBackoff == 0 {
+			gw.InitialBackoff = dflt.InitialBackoff
+		}
+		if gw.MaxBackoff == 0 {
+			gw.MaxBackoff = dflt.MaxBackoff
+		}
+		pc.ModelGateways[model] = gw
+	}
 }
 
 // NewConfig returns a new ProcessorConfig with default values.
@@ -330,7 +358,7 @@ func (c *ProcessorConfig) Validate() error {
 
 // ResolveModelGateways resolves API keys for all model gateways and returns a
 // fully-populated GatewayClientConfig map ready to pass to clientset.NewClientset.
-// Each entry is self-contained (no field inheritance between entries).
+// HTTP fields have already been inherited from "default" by applyModelGatewayDefaults.
 // Falls back to the mounted inference-api-key secret if the default gateway
 // has no explicit API key configured.
 func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]inference.GatewayClientConfig, error) {

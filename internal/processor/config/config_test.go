@@ -113,6 +113,98 @@ func TestProcessorConfig_Validate_TaskWaitTimeMustBeShorterThanPollInterval(t *t
 	}
 }
 
+func TestProcessorConfig_LoadFromYAML_PerModelInheritsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.yaml")
+
+	yamlData := []byte(`
+poll_interval: 5s
+task_wait_time: 1s
+num_workers: 1
+global_concurrency: 100
+per_model_max_concurrency: 10
+work_dir: "` + dir + `/work"
+addr: ":9090"
+shutdown_timeout: 30s
+queue_time_bucket:
+  bucket_start: 0.1
+  bucket_factor: 2
+  bucket_count: 10
+process_time_bucket:
+  bucket_start: 0.1
+  bucket_factor: 2
+  bucket_count: 15
+model_gateways:
+  "default":
+    url: "http://default-gw:8000"
+    request_timeout: 5m
+    max_retries: 3
+    initial_backoff: 1s
+    max_backoff: 60s
+  "llama-3":
+    url: "http://llama-gw:8000"
+  "mistral":
+    url: "http://mistral-gw:8000"
+    request_timeout: 2m
+    max_retries: 1
+upload_retry:
+  max_retries: 3
+  initial_backoff: 1s
+  max_backoff: 10s
+progress_ttl_seconds: 86400
+`)
+
+	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
+		t.Fatalf("failed to write yaml: %v", err)
+	}
+
+	c := &ProcessorConfig{}
+	if err := c.LoadFromYAML(path); err != nil {
+		t.Fatalf("LoadFromYAML() error: %v", err)
+	}
+
+	llama, ok := c.ModelGateways["llama-3"]
+	if !ok {
+		t.Fatal("ModelGateways missing llama-3")
+	}
+	if llama.URL != "http://llama-gw:8000" {
+		t.Fatalf("llama-3 URL = %q, want %q", llama.URL, "http://llama-gw:8000")
+	}
+	if llama.RequestTimeout != 5*time.Minute {
+		t.Fatalf("llama-3 RequestTimeout = %v, want 5m (inherited from default)", llama.RequestTimeout)
+	}
+	if llama.MaxRetries != 3 {
+		t.Fatalf("llama-3 MaxRetries = %d, want 3 (inherited from default)", llama.MaxRetries)
+	}
+	if llama.InitialBackoff != 1*time.Second {
+		t.Fatalf("llama-3 InitialBackoff = %v, want 1s (inherited from default)", llama.InitialBackoff)
+	}
+	if llama.MaxBackoff != 60*time.Second {
+		t.Fatalf("llama-3 MaxBackoff = %v, want 60s (inherited from default)", llama.MaxBackoff)
+	}
+
+	mistral, ok := c.ModelGateways["mistral"]
+	if !ok {
+		t.Fatal("ModelGateways missing mistral")
+	}
+	if mistral.RequestTimeout != 2*time.Minute {
+		t.Fatalf("mistral RequestTimeout = %v, want 2m (explicit override)", mistral.RequestTimeout)
+	}
+	if mistral.MaxRetries != 1 {
+		t.Fatalf("mistral MaxRetries = %d, want 1 (explicit override)", mistral.MaxRetries)
+	}
+	if mistral.InitialBackoff != 1*time.Second {
+		t.Fatalf("mistral InitialBackoff = %v, want 1s (inherited from default)", mistral.InitialBackoff)
+	}
+	if mistral.MaxBackoff != 60*time.Second {
+		t.Fatalf("mistral MaxBackoff = %v, want 60s (inherited from default)", mistral.MaxBackoff)
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() should pass after default inheritance: %v", err)
+	}
+}
+
 func TestProcessorConfig_Validate_MissingDefaultGateway(t *testing.T) {
 	c := NewConfig()
 	c.ModelGateways = map[string]ModelGatewayConfig{
