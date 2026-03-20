@@ -7,12 +7,7 @@
 
 ## Docker images
 
-Images are published to GitHub Container Registry for this tag:
-
-- `ghcr.io/llm-d-incubation/batch-gateway-apiserver:$TAG`
-- `ghcr.io/llm-d-incubation/batch-gateway-processor:$TAG`
-
-Replace `$TAG` with this release's tag (e.g. `v1.0.0`).
+Images (apiserver, processor, gc) are published to GitHub Container Registry. For this release, use the tag `$TAG` (e.g. `v1.0.0`).
 
 ## Upgrade notes
 

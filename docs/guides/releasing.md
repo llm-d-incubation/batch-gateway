@@ -4,10 +4,14 @@ This guide describes how to create a new release of Batch Gateway using the rele
 
 ## Overview
 
-- **Release workflow** (`.github/workflows/release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main`**, then builds Linux binaries (amd64, arm64), packages them as **`.tar.gz`** (so execute permission survives browser download), writes **`SHA256SUMS`**, creates a GitHub Release with auto-generated notes, uploads those assets, and marks the release as **Latest**.
-- **Docker workflow** (`.github/workflows/docker.yml`): Also runs on the same tag and builds/pushes container images to GHCR. No extra step needed.
+- **Release workflow** (`.github/workflows/create-release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main`**, then builds Linux binaries (amd64, arm64), packages them as **`.tar.gz`** (so execute permission survives browser download), writes **`SHA256SUMS`**, creates a GitHub Release with auto-generated notes, uploads those assets, and marks the release as **Latest**.
+- **Docker workflow** (`.github/workflows/ci-release.yaml`): Builds and pushes container images (apiserver, processor, gc) to GHCR. It runs on:
+  - **Push to `main`**: Images are tagged `latest` and with the commit SHA.
+  - **Push of version tag** (`v*.*.*`): Images are tagged with the version (e.g. `v1.0.0`) and with the commit SHA.
 - **Release notes config** (`.github/release.yml`): Defines how PRs are grouped in auto-generated release notes (e.g. Features, Bug fixes, Documentation).
 - **Release template** (`.github/RELEASE_TEMPLATE.md`): Optional template you can copy into a release description (e.g. Docker image names, upgrade notes).
+
+**Docker image tags:** On push to `main`, images use `latest` and the commit SHA. On push of a version tag, images use the version (e.g. `v1.0.0`) and the commit SHA.
 
 ## Tagging policy (main only)
 
@@ -16,38 +20,28 @@ This guide describes how to create a new release of Batch Gateway using the rele
 - **Do:** merge to `main`, then tag that release line (e.g. `git checkout main && git pull && git tag v1.0.0 && git push origin v1.0.0`).
 - **Don’t:** push a release tag that points at a commit that only exists on a feature branch.
 
-Pushing `v*.*.*` **always** triggers the workflow if the check passes; there is no way to “tag only on main” from GitHub’s side without this check—so follow the process above.
+Pushing `v*.*.*` **always** triggers the workflow if the check passes; there is no way to “tag only on main” from GitHub’s side without this check - so follow the process above.
 
-## How to cut a release
+## How to generate a release
 
 1. **Ensure `main` is in a good state**
-   CI and tests should be passing.
+   CI and tests should be passing on `main` before tagging.
 
 2. **Create and push a version tag** from **`main`** (semantic version with `v` prefix):
-
-   ```bash
-   git checkout main
-   git pull origin main
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
+  ```bash
+  ./scripts/generate-release.sh 1.0.0
+  ```
 
 3. **Let automation run**
-   - **release.yml**: Packages binaries as `.tar.gz`, creates the GitHub Release with generated notes, attaches archives and `SHA256SUMS`.
-   - **docker.yml**: Builds and pushes `batch-gateway-apiserver` and `batch-gateway-processor` images for that tag to `ghcr.io/llm-d-incubation/...`.
-
+  - **create-release.yml**: Packages binaries as `.tar.gz`, creates the GitHub Release with generated notes, attaches archives and `SHA256SUMS`.
+  - **ci-release.yaml**: Builds and pushes apiserver, processor, and gc images for that tag to GHCR.
 4. **Optional: edit the release**
-   - In GitHub: **Releases** → open the new release → **Edit**.
-   - You can paste content from `.github/RELEASE_TEMPLATE.md` (Docker image section, upgrade notes) and adjust the generated notes if needed.
+  - In GitHub: **Releases** → open the new release → **Edit**.
+  - You can paste content from `.github/RELEASE_TEMPLATE.md` (Docker image section, upgrade notes) and adjust the generated notes if needed.
 
 ## Release notes (auto-generated)
 
-Release notes are generated from merged PRs and grouped by labels. Configuration is in `.github/release.yml`:
-
-- **Excluded**: PRs with labels `release-note-none` or `skip-changelog`, and PRs by `dependabot` / `dependabot[bot]`.
-- **Categories**: Breaking changes, Features, Bug fixes, Documentation, Dependencies, Other changes. Assign the right labels to PRs so they appear in the correct section.
-
-To get consistent notes, label PRs with at least one of: `enhancement`, `feature`, `bug`, `bugfix`, `documentation`, `docs`, `dependencies`, or use `*` (Other changes) by default.
+Release notes are generated from merged PRs and grouped by labels. See `.github/release.yml` for exclusions and categories. Assign appropriate labels to PRs so they appear in the correct section.
 
 ## Verifying binary checksums
 
@@ -77,27 +71,19 @@ The workflow does **not** automatically inject this file into the release body; 
 
 To verify the release workflow without affecting a real version:
 
-1. **Use a test tag** on **`main`** that matches `v*.*.*`, for example merge a doc fix then:
+1. **Create a test tag** on **`main`** (the main-only check still applies):
+
    ```bash
-   git checkout main && git pull
-   git tag v0.0.0-test
-   git push origin v0.0.0-test
+   ./scripts/test/test-generate-release.sh
    ```
-   The **main-only** check still applies—the commit must be on `main`.
 
-2. **Check that workflows run** in the **Actions** tab: **Release** and **Docker Build and Push** should run for that tag. When they finish, a new release and new image tags will exist.
+   This creates and pushes `v0.0.0-test`. Use `./scripts/test/test-generate-release.sh v0.0.1-test` for a different tag.
 
-3. **Important:** Re-running a failed workflow uses the workflow file from the **original trigger commit**. To run with updated workflow code (e.g. after fixing docker.yml), you must push the fix and then **re-push the tag** from the new commit so a fresh run is triggered.
+2. **Check that workflows run** in the **Actions** tab: **Release** and **CI Release** should run for that tag. When they finish, a new release and new image tags will exist.
 
-4. **Clean up when done.** You can delete the tag and the release:
+3. **Important:** Re-running a failed workflow uses the workflow file from the **original trigger commit**. To run with updated workflow code (e.g. after fixing ci-release.yaml), you must push the fix and then **re-push the tag** from the new commit so a fresh run is triggered.
 
-   - **Delete the GitHub Release** (required before deleting the tag if the release exists):
-     - In the repo: **Releases** → open the test release → **Delete this release**.
-     - Or with GitHub CLI: `gh release delete v0.0.0-test --yes`
-   - **Delete the tag** (local and remote):
-     ```bash
-     git tag -d v0.0.0-test
-     git push origin --delete v0.0.0-test
-     ```
-
-   **Note:** Deleting the release and tag does **not** remove Docker images already pushed to GHCR for that tag. You can delete those in the **Packages** area of the repo (or leave them; they are just another tag in the package).
+4. **Clean up when done:**
+   - Run `./scripts/test/test-delete-release.sh`. This deletes `v0.0.0-test` by default; if you used a different tag, pass it as an argument (e.g. `./scripts/test/test-delete-release.sh v0.0.1-test`). Requires [GitHub CLI](https://cli.github.com/) (`gh`).
+   - Or manually: delete the GitHub Release first (Releases → open the test release → Delete this release, or `gh release delete v0.0.0-test --yes`), then delete the tag (`git tag -d v0.0.0-test` and `git push origin --delete v0.0.0-test`).
+   - Deleting the release and tag does **not** remove Docker images already pushed to GHCR for that tag; delete those in the **Packages** area if needed.

@@ -1,0 +1,85 @@
+# Release workflow: creates a GitHub Release on version tags (v*.*.*),
+# builds multi-arch binaries (as .tar.gz to preserve execute bit), and publishes release notes.
+# Docker images for the same tag are built by ci-release.yaml.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-tag-on-main:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tagged commit is reachable from main
+        run: |
+          git fetch origin main
+          TAG_SHA="${GITHUB_SHA}"
+          if ! git merge-base --is-ancestor "$TAG_SHA" "origin/main"; then
+            echo "::error::Release tags must point to a commit on main (merged into origin/main before tagging)."
+            exit 1
+          fi
+
+  build:
+    name: Build binaries
+    needs: verify-tag-on-main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release binaries (linux/amd64)
+        run: GOOS=linux GOARCH=amd64 make build-release
+      - name: Build release binaries (linux/arm64)
+        run: GOOS=linux GOARCH=arm64 make build-release
+
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: bin/batch-gateway-*
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/binaries
+
+      - name: Package binaries as tar.gz (preserves execute bit on extract)
+        run: make package-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*
+          draft: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
