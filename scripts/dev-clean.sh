@@ -56,9 +56,6 @@ main() {
 
     step "Cleaning all batch-gateway resources from namespace '${NAMESPACE}'..."
 
-    step "Killing port-forward processes..."
-    kill_port_forwards
-
     cleanup_kubernetes_resources
 
     log ""

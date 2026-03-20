@@ -38,16 +38,3 @@ VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
 TLS_SECRET_NAME="${TLS_SECRET_NAME:-${HELM_RELEASE}-tls}"
 APP_SECRET_NAME="${APP_SECRET_NAME:-${HELM_RELEASE}-secrets}"
 FILES_PVC_NAME="${FILES_PVC_NAME:-${HELM_RELEASE}-files}"
-
-# ── Common Functions ──────────────────────────────────────────────────────────
-
-kill_port_forwards() {
-    local ports=(8000 8081 9090 9091 16686)
-    for port in "${ports[@]}"; do
-        local pids=$(lsof -ti tcp:${port} 2>/dev/null || true)
-        if [ -n "${pids}" ]; then
-            log "Killing processes on port ${port}: ${pids}"
-            kill ${pids} 2>/dev/null || true
-        fi
-    done
-}
