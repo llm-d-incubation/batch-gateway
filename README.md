@@ -2,6 +2,9 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![apiserver](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-apiserver)
+[![processor](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-processor)
+[![gc](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-gc)
 
 ## Overview
 
