@@ -72,6 +72,12 @@ global:
       prefix: ""
       usePathStyle: false
       autoCreateBucket: false
+    # Retry configuration for file storage operations (Store, Retrieve, Delete).
+    # Set maxRetries to 0 to disable (default). Useful for S3 transient errors.
+    retry:
+      maxRetries: 0
+      initialBackoff: "1s"
+      maxBackoff: "10s"
 
 # API Server configuration
 apiserver:

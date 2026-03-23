@@ -41,6 +41,10 @@ data:
         prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
         use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
         auto_create_bucket: {{ .Values.global.fileClient.s3.autoCreateBucket }}
+      retry:
+        max_retries: {{ .Values.global.fileClient.retry.maxRetries }}
+        initial_backoff: {{ .Values.global.fileClient.retry.initialBackoff | quote }}
+        max_backoff: {{ .Values.global.fileClient.retry.maxBackoff | quote }}
     batch_api:
       batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.eventTTLSeconds }}
       {{- if .Values.apiserver.config.batchAPI.passThroughHeaders }}
