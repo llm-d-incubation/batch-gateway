@@ -104,13 +104,8 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
 
 ### Design Documents
 
-For detailed architecture information see:
+For detailed architecture information see the [design folder](docs/design/).
 
-- [Batch Inference Architecture](docs/design/batch_inference_architecture.md) - Overall system design and requirements.
-- [Batch Processor Architecture](docs/design/batch_processor_architecture.md) - Detailed batch processor design.
-- [Batch Dispatcher](docs/design/batch-dispatcher.md) - Dispatch flow control mechanism.
-- [MaaS integration](docs/design/maas-integration.md) - Integration with the MaaS component.
-- [Resource Lifecycle](docs/design/resource-lifecycle.md) - Job and file state management.
 
 ## Repository Structure
 
@@ -458,4 +453,3 @@ For help and support:
 - Open an issue on GitHub.
 - Review the [design documentation](docs/design/).
 - Check the [development guide](docs/guides/development.md).
-- To create a new version, see [Releasing](docs/guides/releasing.md).

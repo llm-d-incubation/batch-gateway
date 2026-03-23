@@ -7,7 +7,7 @@
 
 ## Docker images
 
-Images (apiserver, processor, gc) are published to GitHub Container Registry. For this release, use the tag `$TAG` (e.g. `v1.0.0`).
+Images are published to GitHub Container Registry. For this release, use the tag `$TAG` (e.g. `v1.0.0`).
 
 ## Upgrade notes
 
