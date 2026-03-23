@@ -224,7 +224,7 @@ deps-verify:
 ## test-integration: Run integration tests (each test spawns its own mock server)
 test-integration:
 	@echo "Running integration tests..."
-	@$(GO) test -v -tags=integration ./internal/inference/... || \
+	@$(GO) test -v -tags=integration ./... || \
 		(echo "\n❌ Integration tests failed" && exit 1)
 	@echo "\n✅ Integration tests passed!"
 

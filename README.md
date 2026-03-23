@@ -185,21 +185,25 @@ make build
 # Or build individually
 make build-apiserver
 make build-processor
+make build-gc
 ```
 
 #### 2. Run Tests
 
 ```bash
-# Run all unit tests
+# Run unit tests
 make test
 
-# Run with coverage
+# Run unit tests with coverage
 make test-coverage
 
 # Run integration tests
 make test-integration
 
-# Run E2E tests (requires running server)
+# Run unit tests and integration tests
+make test-all
+
+# Run E2E tests (requires a kind cluster)
 make test-e2e
 ```
 
