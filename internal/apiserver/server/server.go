@@ -24,7 +24,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -113,7 +112,7 @@ func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 		common.RegisterHandler(obsMux, h)
 	}
 
-	if os.Getenv("ENABLE_PPROF") == "true" {
+	if config.EnablePprof {
 		obsMux.HandleFunc("/debug/pprof/", pprof.Index)
 		obsMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		obsMux.HandleFunc("/debug/pprof/profile", pprof.Profile)

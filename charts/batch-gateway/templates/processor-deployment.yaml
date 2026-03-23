@@ -40,18 +40,12 @@ spec:
         args:
         - --config=/etc/config/config.yaml
         - --v={{ .Values.processor.logging.verbosity }}
-        {{- if or .Values.global.otel.endpoint .Values.processor.enablePprof }}
-        env:
         {{- if .Values.global.otel.endpoint }}
+        env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: {{ .Values.global.otel.endpoint | quote }}
         - name: OTEL_EXPORTER_OTLP_INSECURE
           value: {{ .Values.global.otel.insecure | quote }}
-        {{- end }}
-        {{- if .Values.processor.enablePprof }}
-        - name: ENABLE_PPROF
-          value: "true"
-        {{- end }}
         {{- end }}
         ports:
         - name: metrics

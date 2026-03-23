@@ -339,15 +339,17 @@ For a complete list of available metrics, see [docs/guides/metrics.md](docs/guid
 
 ### Profiling (pprof)
 
-Both the API server and processor support [Go pprof](https://go.dev/blog/pprof) profiling endpoints on their observability ports. Pprof is controlled by the `ENABLE_PPROF` environment variable (or `enablePprof` in Helm values) and is **disabled by default**.
+Both the API server and processor support [Go pprof](https://go.dev/blog/pprof) profiling endpoints on their observability ports. Pprof is controlled by the `enable_pprof` config option (or `config.enablePprof` in Helm values) and is **disabled by default**.
 
 **Enable via Helm:**
 
 ```yaml
 apiserver:
-  enablePprof: true
+  config:
+    enablePprof: true
 processor:
-  enablePprof: true
+  config:
+    enablePprof: true
 ```
 
 **Usage (with dev-deploy port-forwards):**

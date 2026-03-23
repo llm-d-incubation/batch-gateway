@@ -96,6 +96,9 @@ type ProcessorConfig struct {
 	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
 	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
 
+	// EnablePprof enables pprof profiling endpoints on the observability server.
+	EnablePprof bool `yaml:"enable_pprof"`
+
 	// OTel holds OpenTelemetry-related settings.
 	OTel struct {
 		RedisTracing      bool `yaml:"redis_tracing"`

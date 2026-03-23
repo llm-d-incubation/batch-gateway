@@ -63,9 +63,6 @@ global:
 apiserver:
   enabled: true
   replicaCount: 1
-  # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
-  enablePprof: false
-
   image:
     repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
     pullPolicy: Always
@@ -170,6 +167,8 @@ apiserver:
       defaultExpirationSeconds: 7776000
       maxSizeBytes: 209715200
       maxLineCount: 50000
+    # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
+    enablePprof: false
 
   # TLS/SSL Configuration
   tls:
@@ -190,8 +189,6 @@ processor:
   enabled: true
   replicaCount: 1
   terminationGracePeriodSeconds: 60
-  # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
-  enablePprof: false
 
   workDirVolume:
     sizeLimit: "10Gi"
@@ -313,6 +310,8 @@ processor:
       maxBackoff: "10s"
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
+    # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
+    enablePprof: false
 
   # Logging configuration
   logging:

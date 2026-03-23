@@ -86,7 +86,7 @@ func doTestOtelTraces(t *testing.T) {
 }
 
 // testPprof verifies that pprof endpoints are reachable on both observability
-// servers when ENABLE_PPROF=true is set in the deployment.
+// servers when enable_pprof is set to true in the config.
 func testPprof(t *testing.T) {
 	t.Helper()
 
@@ -100,11 +100,11 @@ func testPprof(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := http.Get(tc.obsURL + "/debug/pprof/")
 			if err != nil {
-				t.Skipf("pprof not reachable at %s (ENABLE_PPROF may not be set): %v", tc.obsURL, err)
+				t.Skipf("pprof not reachable at %s (enable_pprof may not be set): %v", tc.obsURL, err)
 			}
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusNotFound {
-				t.Skipf("pprof not enabled at %s (ENABLE_PPROF not set)", tc.obsURL)
+				t.Skipf("pprof not enabled at %s (enable_pprof not set)", tc.obsURL)
 			}
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("expected 200 from /debug/pprof/, got %d", resp.StatusCode)

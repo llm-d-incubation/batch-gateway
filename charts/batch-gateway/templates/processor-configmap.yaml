@@ -88,6 +88,7 @@ data:
       factor: {{ .Values.processor.config.processTimeBucket.factor }}
       count: {{ .Values.processor.config.processTimeBucket.count }}
 
+    enable_pprof: {{ .Values.processor.config.enablePprof }}
     otel:
       redis_tracing: {{ .Values.global.otel.redisTracing }}
       postgresql_tracing: {{ .Values.global.otel.postgresqlTracing }}
