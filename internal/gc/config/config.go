@@ -35,17 +35,18 @@ type Config struct {
 	DryRun   bool          `yaml:"dry_run"`
 	Interval time.Duration `yaml:"interval"`
 
-	// DatabaseType selects which backend stores persistent data (batch_items, file_items).
-	// Must be "redis" or "postgresql".
-	DatabaseType string `yaml:"database_type"`
-
-	// RedisCfg holds Redis client connection and tuning settings.
-	// URL is resolved from a mounted K8s Secret at runtime, not from this config.
-	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
-
-	// PostgreSQLCfg holds PostgreSQL connection settings.
-	// URL is resolved from a mounted K8s Secret at runtime, not from this config.
-	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+	// DB client configuration
+	DBClientCfg struct {
+		// Type selects which backend stores persistent data (batch_items, file_items).
+		// Must be "redis" or "postgresql".
+		Type string `yaml:"type"`
+		// PostgreSQLCfg holds PostgreSQL connection settings.
+		// URL is resolved from a mounted K8s Secret at runtime, not from this config.
+		PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+		// RedisCfg holds Redis client connection and tuning settings.
+		// URL is resolved from a mounted K8s Secret at runtime, not from this config.
+		RedisCfg uredis.RedisClientConfig `yaml:"redis"`
+	} `yaml:"db_client"`
 
 	// FileClientCfg holds the file storage backend configuration.
 	FileClientCfg FileClientConfig `yaml:"file_client"`
@@ -79,13 +80,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("interval must be positive, got %v", cfg.Interval)
 	}
 
-	switch cfg.DatabaseType {
+	switch cfg.DBClientCfg.Type {
 	case "redis", "postgresql":
 		// valid
 	case "":
 		return nil, fmt.Errorf("database_type is required (must be \"redis\" or \"postgresql\")")
 	default:
-		return nil, fmt.Errorf("database_type must be \"redis\" or \"postgresql\", got %q", cfg.DatabaseType)
+		return nil, fmt.Errorf("database_type must be \"redis\" or \"postgresql\", got %q", cfg.DBClientCfg.Type)
 	}
 
 	switch cfg.FileClientCfg.Type {

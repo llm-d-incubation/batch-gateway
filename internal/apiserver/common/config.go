@@ -126,15 +126,16 @@ type ServerConfig struct {
 		S3Config s3client.Config `yaml:"s3"`
 	} `yaml:"file_client"`
 
-	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
-	DatabaseType string `yaml:"database_type"`
-
-	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
-	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
-
-	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
-	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
-	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
+	// DB client configuration
+	DBClientCfg struct {
+		// Type specifies the database backend: "mock", "redis", or "postgresql".
+		Type string `yaml:"type"`
+		// PostgreSQLCfg holds PostgreSQL connection settings (used when Type is "postgresql").
+		PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+		// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
+		// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
+		RedisCfg uredis.RedisClientConfig `yaml:"redis"`
+	} `yaml:"db_client"`
 
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
@@ -216,8 +217,8 @@ func (c *ServerConfig) applyDefaults() {
 	if c.ObservabilityPort == "" {
 		c.ObservabilityPort = "8081"
 	}
-	if c.DatabaseType == "" {
-		c.DatabaseType = "redis"
+	if c.DBClientCfg.Type == "" {
+		c.DBClientCfg.Type = "redis"
 	}
 	if c.TenantHeader == "" {
 		c.TenantHeader = DefaultTenantHeader

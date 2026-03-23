@@ -59,11 +59,16 @@ type ProcessorConfig struct {
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
 
-	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
-	DatabaseType string `yaml:"database_type"`
-
-	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
-	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+	// DB client configuration
+	DBClientCfg struct {
+		// Type specifies the database backend: "mock", "redis", or "postgresql".
+		Type string `yaml:"type"`
+		// PostgreSQLCfg holds PostgreSQL connection settings (used when Type is "postgresql").
+		PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+		// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
+		// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
+		RedisCfg uredis.RedisClientConfig `yaml:"redis"`
+	} `yaml:"db_client"`
 
 	Addr string `yaml:"addr"`
 	// TerminateOnObservabilityFailure controls whether observability server failures should terminate the processor.
@@ -91,10 +96,6 @@ type ProcessorConfig struct {
 
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
-
-	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
-	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
-	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
 
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
@@ -229,7 +230,13 @@ func NewConfig() *ProcessorConfig {
 		TerminateOnObservabilityFailure: false,
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
-		DatabaseType:                    "redis",
+		DBClientCfg: struct {
+			Type          string                        `yaml:"type"`
+			PostgreSQLCfg postgresql.PostgreSQLConfig   `yaml:"postgresql"`
+			RedisCfg      uredis.RedisClientConfig      `yaml:"redis"`
+		}{
+			Type: "redis",
+		},
 		FileClientCfg: struct {
 			Type     string          `yaml:"type"`
 			FSConfig fsclient.Config `yaml:"fs"`

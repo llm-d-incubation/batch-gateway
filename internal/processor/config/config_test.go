@@ -50,8 +50,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.WorkDir == "" {
 		t.Fatalf("WorkDir should not be empty")
 	}
-	if c.DatabaseType != "redis" {
-		t.Fatalf("DatabaseType = %q, want %q", c.DatabaseType, "redis")
+	if c.DBClientCfg.Type != "redis" {
+		t.Fatalf("DatabaseType = %q, want %q", c.DBClientCfg.Type, "redis")
 	}
 
 	// default gateway spot-check
@@ -102,7 +102,7 @@ func TestProcessorConfig_Validate_WorkDirEmpty(t *testing.T) {
 
 func TestProcessorConfig_Validate_TaskWaitTimeMustBeShorterThanPollInterval(t *testing.T) {
 	c := NewConfig()
-	c.DatabaseType = "mock"
+	c.DBClientCfg.Type = "mock"
 	c.PollInterval = 1 * time.Second
 	c.TaskWaitTime = 1 * time.Second
 	if err := c.Validate(); err == nil {
