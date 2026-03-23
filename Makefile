@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -15,6 +15,10 @@ GC_PATH=./bin/$(GC_BINARY)
 CMD_APISERVER=./cmd/apiserver
 CMD_PROCESSOR=./cmd/batch-processor
 CMD_GC=./cmd/batch-gc
+# Release binaries: name:cmd-path (single source of truth for create-release workflow)
+RELEASE_BINARIES := apiserver:$(CMD_APISERVER) processor:$(CMD_PROCESSOR) gc:$(CMD_GC)
+BINARIES_DIR ?= dist/binaries
+RELEASE_DIR ?= release
 APISERVER_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(APISERVER_BINARY)
 APISERVER_IMG = $(APISERVER_IMAGE_TAG_BASE):$(DEV_VERSION)
 PROCESSOR_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(PROCESSOR_BINARY)
@@ -63,6 +67,43 @@ build-gc:
 ## build: Build all binaries
 build: build-apiserver build-processor build-gc
 	@echo "All binaries built successfully"
+
+## build-release: Build all release binaries for GOOS/GOARCH (e.g. GOOS=linux GOARCH=amd64 make build-release)
+build-release:
+	@if [ -z "$${GOOS}" ] || [ -z "$${GOARCH}" ]; then \
+	  echo "GOOS and GOARCH must be set (e.g. GOOS=linux GOARCH=amd64 make build-release)"; exit 1; \
+	fi
+	@mkdir -p bin
+	@for item in $(RELEASE_BINARIES); do \
+	  name=$$(echo $$item | cut -d: -f1); \
+	  cmd=$$(echo $$item | cut -d: -f2); \
+	  echo "Building batch-gateway-$$name-$${GOOS}-$${GOARCH}..."; \
+	  $(GO) build $(GOFLAGS) $(LDFLAGS) -o bin/batch-gateway-$$name-$${GOOS}-$${GOARCH} $$cmd; \
+	done
+	@echo "Release binaries built successfully"
+
+## package-release: Package binaries as .tar.gz with SHA256SUMS (BINARIES_DIR=dist/binaries RELEASE_DIR=release)
+package-release:
+	@mkdir -p $(RELEASE_DIR)
+	@cp $(BINARIES_DIR)/* $(RELEASE_DIR)/
+	@cd $(RELEASE_DIR) && \
+	  for f in batch-gateway-*; do \
+	    if [ -f "$$f" ]; then \
+	      chmod +x "$$f"; \
+	      tar czf "$$f.tar.gz" "$$f"; \
+	      rm -f "$$f"; \
+	    fi; \
+	  done && \
+	  sha256sum *.tar.gz > SHA256SUMS && \
+	  cat SHA256SUMS && \
+	  ls -la
+
+## generate-release: Create and push a release tag from main (requires REL_VERSION, e.g. make generate-release REL_VERSION=0.0.1)
+generate-release:
+	@if [ -z "$(REL_VERSION)" ]; then \
+	  echo "Error: REL_VERSION is required. Example: make generate-release REL_VERSION=0.0.1"; exit 1; \
+	fi
+	@./scripts/generate-release.sh $(REL_VERSION)
 
 ## run-apiserver: Run the apiserver
 run-apiserver: build-apiserver
