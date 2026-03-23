@@ -647,13 +647,11 @@ install_batch_gateway() {
         wait_for_rollout "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
         wait_for_rollout "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
         wait_for_rollout "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
-        wait_for_http_ready
     else
         helm install "${HELM_RELEASE}" ./charts/batch-gateway "${helm_args[@]}"
         wait_for_deployment "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
         wait_for_deployment "${HELM_RELEASE}-processor" "${NAMESPACE}" 120s
         wait_for_deployment "${HELM_RELEASE}-gc" "${NAMESPACE}" 120s
-        wait_for_http_ready
     fi
 
     log "batch-gateway installed."
