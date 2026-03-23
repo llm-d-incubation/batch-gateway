@@ -109,13 +109,7 @@ User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
 
 ### Design Documents
 
-For detailed architecture information see:
-
-- [Batch Inference Architecture](docs/design/batch_inference_architecture.md) - Overall system design and requirements.
-- [Batch Processor Architecture](docs/design/batch_processor_architecture.md) - Detailed batch processor design.
-- [Batch Dispatcher](docs/design/batch-dispatcher.md) - Dispatch flow control mechanism.
-- [MaaS integration](docs/design/maas-integration.md) - Integration with the MaaS component.
-- [Resource Lifecycle](docs/design/resource-lifecycle.md) - Job and file state management.
+For detailed architecture information see the [design directory](docs/design/).
 
 ## Repository Structure
 
@@ -166,7 +160,7 @@ batch-gateway/
 - **`cmd/`**: Contains `main.go` entry points for the components' binaries.
 - **`internal/`**: All private application code, organized by component.
 - **`charts/`**: Helm chart for deploying the components in Kubernetes.
-- **`docs/design/`**: Detailed architecture documents with diagrams explaining the batch processing system.
+- **`docs/`**: Contains architecture documents and development / usage guides.
 - **`test/`**: Integration and E2E test suites for validating the full system.
 
 ## Getting Started
@@ -228,6 +222,11 @@ make run-processor-dev
 ### Kubernetes Deployment
 
 #### Quick Start with Kind
+
+**Prerequisites:**
+
+- [kind](https://kind.sigs.k8s.io/) v0.20+ (Kubernetes in Docker)
+- Docker or Podman
 
 Deploy to a local Kind cluster for development:
 
