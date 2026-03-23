@@ -193,7 +193,7 @@ func startObservabilityServer(
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("OK"))
 		})
-		if os.Getenv("ENABLE_PPROF") == "true" {
+		if cfg.EnablePprof {
 			m.HandleFunc("/debug/pprof/", pprof.Index)
 			m.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 			m.HandleFunc("/debug/pprof/profile", pprof.Profile)

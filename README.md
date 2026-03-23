@@ -2,6 +2,9 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![apiserver](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-apiserver)
+[![processor](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-processor)
+[![gc](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-gc)
 
 ## Overview
 
@@ -334,15 +337,17 @@ For a complete list of available metrics, see [docs/guides/metrics.md](docs/guid
 
 ### Profiling (pprof)
 
-Both the API server and processor support [Go pprof](https://go.dev/blog/pprof) profiling endpoints on their observability ports. Pprof is controlled by the `ENABLE_PPROF` environment variable (or `enablePprof` in Helm values) and is **disabled by default**.
+Both the API server and processor support [Go pprof](https://go.dev/blog/pprof) profiling endpoints on their observability ports. Pprof is controlled by the `enable_pprof` config option (or `config.enablePprof` in Helm values) and is **disabled by default**.
 
 **Enable via Helm:**
 
 ```yaml
 apiserver:
-  enablePprof: true
+  config:
+    enablePprof: true
 processor:
-  enablePprof: true
+  config:
+    enablePprof: true
 ```
 
 **Usage (with dev-deploy port-forwards):**
