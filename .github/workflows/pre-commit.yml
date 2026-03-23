@@ -33,7 +33,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.62.2
+          version: v1.64.8
 
       - name: Run pre-commit hooks
         uses: pre-commit/action@v3.0.1
