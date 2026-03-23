@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor run-apiserver build-gc run-processor run-apiserver-dev run-processor-dev build-release package-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -117,6 +117,16 @@ run-apiserver-dev: build-apiserver
 run-processor-dev: build-processor
 	@echo "Starting $(PROCESSOR_BINARY) in development mode..."
 	$(PROCESSOR_PATH) --v=5
+
+## run-gc: Run the garbage collector
+run-gc: build-gc
+	@echo "Starting $(GC_BINARY)..."
+	$(GC_PATH)
+
+## run-gc-dev: Run the garbage collector with verbose logging
+run-gc-dev: build-gc
+	@echo "Starting $(GC_BINARY) in development mode..."
+	$(GC_PATH) --v=5
 
 ## test: Run tests with summary
 test:
@@ -258,7 +268,7 @@ deps-verify:
 ## test-integration: Run integration tests (each test spawns its own mock server)
 test-integration:
 	@echo "Running integration tests..."
-	@$(GO) test -v -tags=integration ./internal/inference/... || \
+	@$(GO) test -v -tags=integration ./... || \
 		(echo "\n❌ Integration tests failed" && exit 1)
 	@echo "\n✅ Integration tests passed!"
 
