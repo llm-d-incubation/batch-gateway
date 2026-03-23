@@ -1,7 +1,9 @@
 # Batch Gateway
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/llm-d-incubation/batch-gateway)](https://goreportcard.com/report/github.com/llm-d-incubation/batch-gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://llm-d.slack.com/archives/C0AA8772H7T)
 
 ## Overview
 
