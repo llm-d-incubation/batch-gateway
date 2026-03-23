@@ -218,9 +218,13 @@ make run-apiserver
 # Run processor (in another terminal)
 make run-processor
 
+# Run gc (in another terminal)
+make run-gc
+
 # Or with verbose logging
 make run-apiserver-dev
 make run-processor-dev
+make run-gc-dev
 ```
 
 ### Kubernetes Deployment
@@ -229,8 +233,8 @@ make run-processor-dev
 
 **Prerequisites:**
 
-- [kind](https://kind.sigs.k8s.io/) v0.20+ (Kubernetes in Docker)
 - Docker or Podman
+- [kind](https://kind.sigs.k8s.io/) v0.20+ (Kubernetes in Docker)
 
 Deploy to a local Kind cluster for development:
 
@@ -264,12 +268,14 @@ make image-build
 # Or build individually
 make image-build-apiserver
 make image-build-processor
+make image-build-gc
 ```
 
 Images are published to:
 
 - `ghcr.io/llm-d-incubation/batch-gateway-apiserver`
 - `ghcr.io/llm-d-incubation/batch-gateway-processor`
+- `ghcr.io/llm-d-incubation/batch-gateway-gc`
 
 ## API Usage
 
@@ -325,6 +331,10 @@ See configuration example in `cmd/apiserver/config.yaml`.
 ### Batch Processor Configuration
 
 See configuration example in `cmd/batch-processor/config.yaml`.
+
+### Garbage Collector Configuration
+
+See configuration example in `cmd/batch-gc/config.yaml`.
 
 ## Monitoring
 
@@ -383,17 +393,14 @@ All pprof endpoints are served on the observability port (not the API port), so 
 ### Code Quality
 
 ```bash
-# Format code
-make fmt
+# Run all pre-commit checks (formatting, linting, tests, security)
+make pre-commit
 
-# Run linter
-make lint
-
-# Run static analysis
-make vet
-
-# Run all checks
-make ci
+# Or run individual checks:
+make fmt   # Format code only
+make lint  # Run linter only (requires golangci-lint)
+make vet   # Run static analysis only
+make ci    # Run fmt + vet + lint + test
 ```
 
 ### Install Development Tools
@@ -418,11 +425,11 @@ This installs:
 
 Contributions are welcome! Please ensure:
 
-1. All tests pass: `make test-all`.
-2. Code is formatted: `make fmt`.
-3. Linter passes: `make lint`.
-4. New features include tests and documentation.
-5. Commits follow conventional commit format.
+1. New features include tests and documentation.
+2. Pre-commit checks pass: `make pre-commit`.
+3. E2E tests pass: `make test-e2e`.
+4. Commits are signed off (`git commit -s`) and follow conventional commit format.
+5. Code follows project [contributing guidelines](CONTRIBUTING.md).
 
 ## Security
 
@@ -467,4 +474,4 @@ For help and support:
 
 - Open an issue on GitHub.
 - Review the [design documentation](docs/design/).
-- Check the [development guide](docs/guides/development.md).
+- Review the [development and usage guides](docs/guides/).
