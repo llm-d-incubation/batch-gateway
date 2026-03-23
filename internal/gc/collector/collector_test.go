@@ -253,7 +253,7 @@ func TestCollector_Run_DryRunDoesNotDelete(t *testing.T) {
 	filesClient := newTestFilesClient()
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	batchDB.DBStore(ctx, createTestJob("expired-job-dry", expiredTime))
+	_ = batchDB.DBStore(ctx, createTestJob("expired-job-dry", expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, true, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -275,10 +275,10 @@ func TestCollector_Run_MixedJobs(t *testing.T) {
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
 
-	batchDB.DBStore(ctx, createTestJob("expired-1", expiredTime))
-	batchDB.DBStore(ctx, createTestJob("expired-2", expiredTime))
-	batchDB.DBStore(ctx, createTestJob("active-1", futureTime))
-	batchDB.DBStore(ctx, createTestJob("no-expiry", 0))
+	_ = batchDB.DBStore(ctx, createTestJob("expired-1", expiredTime))
+	_ = batchDB.DBStore(ctx, createTestJob("expired-2", expiredTime))
+	_ = batchDB.DBStore(ctx, createTestJob("active-1", futureTime))
+	_ = batchDB.DBStore(ctx, createTestJob("no-expiry", 0))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -481,7 +481,7 @@ func TestCollector_Run_SkipsFilesWithNoExpiry(t *testing.T) {
 	fileDB := newTestFileDBClient()
 	filesClient := newTestFilesClient()
 
-	fileDB.DBStore(ctx, createTestFile("no-expiry-file", 0))
+	_ = fileDB.DBStore(ctx, createTestFile("no-expiry-file", 0))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -501,7 +501,7 @@ func TestCollector_Run_DryRunDoesNotDeleteFiles(t *testing.T) {
 	filesClient := newTestFilesClient()
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-dry", t.Name(), expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-dry", t.Name(), expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, true, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -524,10 +524,10 @@ func TestCollector_Run_MixedFiles(t *testing.T) {
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
 
 	tenant := t.Name()
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-1", tenant, expiredTime))
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-2", tenant, expiredTime))
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file-1", tenant, futureTime))
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "no-expiry-file", tenant, 0))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-1", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-2", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file-1", tenant, futureTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "no-expiry-file", tenant, 0))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
