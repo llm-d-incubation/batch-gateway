@@ -30,6 +30,7 @@ import (
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
 )
@@ -82,7 +83,7 @@ type ProcessorConfig struct {
 	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
 	// UploadRetry controls retry behaviour when uploading output files to shared storage.
-	UploadRetry RetryConfig `yaml:"upload_retry"`
+	UploadRetry retry.Config `yaml:"upload_retry"`
 
 	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
 	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
@@ -113,11 +114,6 @@ type ProcessorConfig struct {
 	} `yaml:"file_client"`
 }
 
-type RetryConfig struct {
-	MaxRetries     int           `yaml:"max_retries"`
-	InitialBackoff time.Duration `yaml:"initial_backoff"`
-	MaxBackoff     time.Duration `yaml:"max_backoff"`
-}
 
 // DefaultModelGatewayKey is the reserved key in ModelGateways that acts as
 // the fallback gateway for any model without an explicit mapping.
@@ -246,7 +242,7 @@ func NewConfig() *ProcessorConfig {
 				MaxBackoff:     ptr.To(60 * time.Second),
 			},
 		},
-		UploadRetry: RetryConfig{
+		UploadRetry: retry.Config{
 			MaxRetries:     3,
 			InitialBackoff: 1 * time.Second,
 			MaxBackoff:     10 * time.Second,
@@ -355,17 +351,8 @@ func (c *ProcessorConfig) Validate() error {
 		}
 	}
 
-	if c.UploadRetry.MaxRetries < 0 {
-		return fmt.Errorf("upload_retry.max_retries must be >= 0")
-	}
-	if c.UploadRetry.InitialBackoff <= 0 {
-		return fmt.Errorf("upload_retry.initial_backoff must be > 0")
-	}
-	if c.UploadRetry.MaxBackoff <= 0 {
-		return fmt.Errorf("upload_retry.max_backoff must be > 0")
-	}
-	if c.UploadRetry.MaxBackoff < c.UploadRetry.InitialBackoff {
-		return fmt.Errorf("upload_retry.max_backoff must be >= upload_retry.initial_backoff")
+	if err := c.UploadRetry.Validate(); err != nil {
+		return fmt.Errorf("upload_retry: %w", err)
 	}
 
 	if c.ProgressTTLSeconds <= 0 {

@@ -16,6 +16,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
 // --- resolveOutputExpiration ---
@@ -257,7 +258,7 @@ func TestUploadOutputFile_UsesFileStorageName(t *testing.T) {
 func TestUploadOutputFile_RetriesAndSucceeds(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
+	cfg.UploadRetry = retry.Config{
 		MaxRetries:     3,
 		InitialBackoff: 1 * time.Millisecond,
 		MaxBackoff:     10 * time.Millisecond,
@@ -284,7 +285,7 @@ func TestUploadOutputFile_RetriesAndSucceeds(t *testing.T) {
 func TestUploadOutputFile_ExhaustsRetries(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
+	cfg.UploadRetry = retry.Config{
 		MaxRetries:     2,
 		InitialBackoff: 1 * time.Millisecond,
 		MaxBackoff:     10 * time.Millisecond,
@@ -308,7 +309,7 @@ func TestUploadOutputFile_ExhaustsRetries(t *testing.T) {
 func TestUploadOutputFile_ContextCancelledDuringRetry(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.UploadRetry = config.RetryConfig{
+	cfg.UploadRetry = retry.Config{
 		MaxRetries:     5,
 		InitialBackoff: 1 * time.Hour,
 		MaxBackoff:     1 * time.Hour,
