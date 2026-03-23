@@ -214,14 +214,14 @@ clean:
 ## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec)
 install-pre-commit-tools:
 	@echo "Installing pre-commit tools..."
-	$(GO) install golang.org/x/tools/cmd/goimports@v0.28.0
-	$(GO) install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+	$(GO) install golang.org/x/tools/cmd/goimports@v0.43.0
+	$(GO) install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
 	@echo "Pre-commit tools installed"
 
 ## install-tools: Install all development tools (includes pre-commit tools + golangci-lint)
 install-tools: install-pre-commit-tools
 	@echo "Installing additional development tools..."
-	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 	@echo "All tools installed"
 
 ## check: Run fmt, vet, and test
