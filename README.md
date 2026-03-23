@@ -412,6 +412,8 @@ make install-tools
 This installs:
 
 - `golangci-lint` - Linting and static analysis
+- `goimports` - Import formatting and organization
+- `gosec` - Security vulnerability scanner
 
 ### Project Structure Conventions
 

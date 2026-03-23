@@ -54,7 +54,7 @@ func run() error {
 	flagSet := flag.NewFlagSet("batch-gc", flag.ExitOnError)
 	configFile := flagSet.String("config", "./config.yaml", "path to YAML config file")
 	klog.InitFlags(flagSet)
-	flagSet.Parse(os.Args[1:])
+	_ = flagSet.Parse(os.Args[1:]) // ExitOnError mode handles errors
 
 	cfg, err := gcconfig.Load(*configFile)
 	if err != nil {

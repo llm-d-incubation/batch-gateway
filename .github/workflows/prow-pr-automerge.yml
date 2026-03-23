@@ -1,7 +1,8 @@
 name: Prow Auto-merge
 on:
-  schedule:
-    - cron: "*/15 * * * *"
+  workflow_dispatch:  # Manual trigger only - automerge disabled for manual control
+  # schedule:
+  #   - cron: "*/15 * * * *"
 
 permissions:
   contents: write

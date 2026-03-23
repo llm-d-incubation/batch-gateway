@@ -420,13 +420,6 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 	}
 }
 
-// p_watchCancelHelper is a test helper that calls watchCancel on a fresh Processor.
-func p_watchCancelHelper(t *testing.T, ctx context.Context, params *jobExecutionParams) {
-	t.Helper()
-	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
-	p.watchCancel(ctx, params)
-}
-
 func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	ctx := testLoggerCtx()
 

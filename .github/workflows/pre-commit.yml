@@ -27,5 +27,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install Go tools (goimports, gosec)
+        run: make install-pre-commit-tools
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+
       - name: Run pre-commit hooks
         uses: pre-commit/action@v3.0.1
