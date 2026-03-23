@@ -33,7 +33,7 @@ Pushing `v*.*.`* **always** triggers the workflow if the check passes; there is 
    Or using the Makefile (for admins):
 
   ```bash
-  make create-release REL_VERSION=1.0.0
+  make generate-release REL_VERSION=1.0.0
   ```
 
 3. **Let automation run**

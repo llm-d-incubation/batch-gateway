@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release create-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -98,10 +98,10 @@ package-release:
 	  cat SHA256SUMS && \
 	  ls -la
 
-## create-release: Create and push a release tag from main (requires REL_VERSION, e.g. make create-release REL_VERSION=0.0.1)
-create-release:
+## generate-release: Create and push a release tag from main (requires REL_VERSION, e.g. make generate-release REL_VERSION=0.0.1)
+generate-release:
 	@if [ -z "$(REL_VERSION)" ]; then \
-	  echo "Error: REL_VERSION is required. Example: make create-release REL_VERSION=0.0.1"; exit 1; \
+	  echo "Error: REL_VERSION is required. Example: make generate-release REL_VERSION=0.0.1"; exit 1; \
 	fi
 	@./scripts/generate-release.sh $(REL_VERSION)
 
