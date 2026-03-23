@@ -194,7 +194,7 @@ func TestCollector_Run_DeletesExpiredJobs(t *testing.T) {
 	filesClient := newTestFilesClient()
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	batchDB.DBStore(ctx, createTestJob("expired-job", expiredTime))
+	_ = batchDB.DBStore(ctx, createTestJob("expired-job", expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -214,7 +214,7 @@ func TestCollector_Run_SkipsNonExpiredJobs(t *testing.T) {
 	filesClient := newTestFilesClient()
 
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
-	batchDB.DBStore(ctx, createTestJob("active-job", futureTime))
+	_ = batchDB.DBStore(ctx, createTestJob("active-job", futureTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -233,7 +233,7 @@ func TestCollector_Run_SkipsJobsWithNoExpiresAt(t *testing.T) {
 	fileDB := newTestFileDBClient()
 	filesClient := newTestFilesClient()
 
-	batchDB.DBStore(ctx, createTestJob("no-expiry-job", 0))
+	_ = batchDB.DBStore(ctx, createTestJob("no-expiry-job", 0))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -418,7 +418,7 @@ func TestCollector_Run_DeletesExpiredFiles(t *testing.T) {
 	filesClient := newTestFilesClient()
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", t.Name(), expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", t.Name(), expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -442,7 +442,7 @@ func TestCollector_Run_DeletesMetadataWhenPhysicalFileAlreadyGone(t *testing.T) 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	file := createTestFile("no-physical-file", expiredTime)
 	file.TenantID = t.Name()
-	fileDB.DBStore(ctx, file)
+	_ = fileDB.DBStore(ctx, file)
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
@@ -462,7 +462,7 @@ func TestCollector_Run_SkipsNonExpiredFiles(t *testing.T) {
 	filesClient := newTestFilesClient()
 
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
-	fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file", t.Name(), futureTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file", t.Name(), futureTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, nil)
 	result := gc.run(ctx)
