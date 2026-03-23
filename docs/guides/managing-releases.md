@@ -79,4 +79,3 @@ To verify the release workflow without affecting a real version:
   - Run `./scripts/test/test-delete-release.sh`. This deletes `v0.0.0-test` by default; if you used a different tag, pass it as an argument (e.g. `./scripts/test/test-delete-release.sh v0.0.1-test`). Requires [GitHub CLI](https://cli.github.com/) (`gh`).
   - Or manually: delete the GitHub Release first (Releases → open the test release → Delete this release, or `gh release delete v0.0.0-test --yes`), then delete the tag (`git tag -d v0.0.0-test` and `git push origin --delete v0.0.0-test`).
   - Deleting the release and tag does **not** remove Docker images already pushed to GHCR for that tag; delete those in the **Packages** area if needed.
-
