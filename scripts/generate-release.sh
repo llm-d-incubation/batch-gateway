@@ -5,8 +5,9 @@
 # Usage: ./scripts/generate-release.sh <version>
 # Example: ./scripts/generate-release.sh 1.0.0
 #          ./scripts/generate-release.sh v1.0.0
+#          ./scripts/generate-release.sh v0.0.0-test   # for testing the workflow
 #
-# The version must match v*.*.* (e.g. v1.0.0). The 'v' prefix is added if omitted.
+# The version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test). The 'v' prefix is added if omitted.
 
 set -euo pipefail
 
@@ -16,8 +17,9 @@ usage() {
     echo "Creates and pushes a release tag from main. Triggers create-release and ci-release workflows."
     echo ""
     echo "Examples:"
-    echo "  $0 1.0.0    # tags as v1.0.0"
-    echo "  $0 v1.0.0   # tags as v1.0.0"
+    echo "  $0 1.0.0         # tags as v1.0.0"
+    echo "  $0 v1.0.0        # tags as v1.0.0"
+    echo "  $0 v0.0.0-test   # tags as v0.0.0-test (for testing the release workflow)"
     echo ""
     echo "The tagged commit must already be on main (merge your changes first)."
     exit 1
@@ -33,9 +35,9 @@ if [[ ! "$VERSION" =~ ^v ]]; then
     VERSION="v${VERSION}"
 fi
 
-# Validate semver-like format (v*.*.*)
-if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-    echo "Error: version must match v*.*.* (e.g. v1.0.0)" >&2
+# Validate semver-like format (v*.*.* or v*.*.*-suffix for test tags)
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+    echo "Error: version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test)" >&2
     exit 1
 fi
 
