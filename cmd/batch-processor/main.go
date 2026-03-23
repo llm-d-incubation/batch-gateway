@@ -291,6 +291,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
+		&cfg.FileClientCfg.Retry,
 		modelGatewaysConfigs,
 	)
 	if err != nil {

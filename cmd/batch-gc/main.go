@@ -30,6 +30,7 @@ import (
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/files_store/retryclient"
 	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
 	"github.com/llm-d-incubation/batch-gateway/internal/gc/collector"
 	gcconfig "github.com/llm-d-incubation/batch-gateway/internal/gc/config"
@@ -78,6 +79,9 @@ func run() error {
 	}
 	if err != nil {
 		return fmt.Errorf("failed to initialize files storage client: %w", err)
+	}
+	if cfg.FileClientCfg.Retry.MaxRetries > 0 {
+		filesClient = retryclient.New(filesClient, cfg.FileClientCfg.Retry)
 	}
 	filesClient = fstracing.Wrap(filesClient, cfg.FileClientCfg.Type)
 	defer func() { _ = filesClient.Close() }()

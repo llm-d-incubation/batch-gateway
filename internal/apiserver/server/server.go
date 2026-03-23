@@ -62,6 +62,7 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 		config.FileClientCfg.Type,
 		&config.FileClientCfg.FSConfig,
 		&config.FileClientCfg.S3Config,
+		&config.FileClientCfg.Retry,
 		nil,
 	)
 	if err != nil {

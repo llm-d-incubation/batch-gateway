@@ -28,6 +28,7 @@ import (
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
 // Config holds the garbage collector configuration.
@@ -59,6 +60,7 @@ type FileClientConfig struct {
 	Type     string          `yaml:"type"`
 	FSConfig fsclient.Config `yaml:"fs"`
 	S3Config s3client.Config `yaml:"s3"`
+	Retry    retry.Config    `yaml:"retry"`
 }
 
 // Load reads and validates a Config from the given YAML file path.

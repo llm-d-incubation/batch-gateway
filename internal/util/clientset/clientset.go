@@ -29,10 +29,12 @@ import (
 	dbRedis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
+	"github.com/llm-d-incubation/batch-gateway/internal/files_store/retryclient"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"k8s.io/klog/v2"
 )
@@ -139,6 +141,7 @@ func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfi
 }
 
 // NewClientset creates all clients.
+// fileRetryCfg, if non-nil with MaxRetries > 0, wraps the file client with retry logic.
 func NewClientset(
 	ctx context.Context,
 	dbType string,
@@ -147,6 +150,7 @@ func NewClientset(
 	fileClientType string,
 	fsCfg *fsclient.Config,
 	s3Cfg *s3client.Config,
+	fileRetryCfg *retry.Config,
 	modelGatewaysConfigs map[string]inference.GatewayClientConfig,
 ) (*Clientset, error) {
 
@@ -196,6 +200,10 @@ func NewClientset(
 		cs.File = fstracing.Wrap(c, "s3")
 	default:
 		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", fileClientType)
+	}
+	if fileRetryCfg != nil && fileRetryCfg.MaxRetries > 0 {
+		cs.File = retryclient.New(cs.File, *fileRetryCfg)
+		logger.Info("File client wrapped with retry", "maxRetries", fileRetryCfg.MaxRetries)
 	}
 
 	// build database client

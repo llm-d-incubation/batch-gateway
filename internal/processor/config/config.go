@@ -111,6 +111,7 @@ type ProcessorConfig struct {
 		Type     string          `yaml:"type"`
 		FSConfig fsclient.Config `yaml:"fs"`
 		S3Config s3client.Config `yaml:"s3"`
+		Retry    retry.Config    `yaml:"retry"`
 	} `yaml:"file_client"`
 }
 
@@ -230,6 +231,7 @@ func NewConfig() *ProcessorConfig {
 			Type     string          `yaml:"type"`
 			FSConfig fsclient.Config `yaml:"fs"`
 			S3Config s3client.Config `yaml:"s3"`
+			Retry    retry.Config    `yaml:"retry"`
 		}{
 			Type: "mock",
 		},
