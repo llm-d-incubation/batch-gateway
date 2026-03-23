@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,40 @@ func retryCfg() retry.Config {
 	return retry.Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}
 }
 
+type nonSeekableReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *nonSeekableReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+type failingSeekerReader struct {
+	data      []byte
+	pos       int
+	seekCalls int
+}
+
+func (r *failingSeekerReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *failingSeekerReader) Seek(offset int64, whence int) (int64, error) {
+	r.seekCalls++
+	return 0, errors.New("seek failed")
+}
+
 func TestStore_SucceedsAfterRetry(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 2}
 	c := New(mock, retryCfg())
@@ -104,6 +139,40 @@ func TestStore_NoRetryOnZeroConfig(t *testing.T) {
 	}
 	if mock.storeCalls != 1 {
 		t.Fatalf("expected 1 store call, got %d", mock.storeCalls)
+	}
+}
+
+func TestStore_NonSeekableReaderDoesNotRetry(t *testing.T) {
+	mock := &mockFilesClient{failUntil: 10}
+	c := New(mock, retryCfg())
+
+	reader := &nonSeekableReader{data: []byte("data")}
+	_, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, reader)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if mock.storeCalls != 1 {
+		t.Fatalf("expected 1 store call for non-seekable reader, got %d", mock.storeCalls)
+	}
+}
+
+func TestStore_SeekFailureAbortsImmediately(t *testing.T) {
+	mock := &mockFilesClient{failUntil: 1}
+	c := New(mock, retryCfg())
+
+	reader := &failingSeekerReader{data: []byte("data")}
+	_, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, reader)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "seek failed") {
+		t.Fatalf("expected seek failure error, got %v", err)
+	}
+	if mock.storeCalls != 1 {
+		t.Fatalf("expected abort after first failed store, got %d calls", mock.storeCalls)
+	}
+	if reader.seekCalls != 1 {
+		t.Fatalf("expected 1 seek attempt, got %d", reader.seekCalls)
 	}
 }
 

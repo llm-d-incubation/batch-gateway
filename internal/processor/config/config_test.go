@@ -69,17 +69,6 @@ func TestNewConfig_Defaults(t *testing.T) {
 		t.Fatalf("default MaxRetries = %v, want 3", defaultGW.MaxRetries)
 	}
 
-	// upload retry spot-check
-	if c.UploadRetry.MaxRetries != 3 {
-		t.Fatalf("UploadRetry.MaxRetries = %d, want %d", c.UploadRetry.MaxRetries, 3)
-	}
-	if c.UploadRetry.InitialBackoff != 1*time.Second {
-		t.Fatalf("UploadRetry.InitialBackoff = %v, want %v", c.UploadRetry.InitialBackoff, 1*time.Second)
-	}
-	if c.UploadRetry.MaxBackoff != 10*time.Second {
-		t.Fatalf("UploadRetry.MaxBackoff = %v, want %v", c.UploadRetry.MaxBackoff, 10*time.Second)
-	}
-
 	// output expiration default: 90 days
 	want90Days := int64(90 * 24 * 60 * 60)
 	if c.DefaultOutputExpirationSeconds != want90Days {
@@ -149,10 +138,6 @@ model_gateways:
     url: "http://mistral-gw:8000"
     request_timeout: 2m
     max_retries: 1
-upload_retry:
-  max_retries: 3
-  initial_backoff: 1s
-  max_backoff: 10s
 progress_ttl_seconds: 86400
 `)
 
@@ -238,10 +223,6 @@ model_gateways:
   "no-retry-model":
     url: "http://no-retry-gw:8000"
     max_retries: 0
-upload_retry:
-  max_retries: 3
-  initial_backoff: 1s
-  max_backoff: 10s
 progress_ttl_seconds: 86400
 `)
 
@@ -424,10 +405,6 @@ model_gateways:
     initial_backoff: 250ms
     max_backoff: 10s
     tls_insecure_skip_verify: true
-upload_retry:
-  max_retries: 5
-  initial_backoff: 500ms
-  max_backoff: 30s
 default_output_expiration_seconds: 86400
 progress_ttl_seconds: 3600
 `)
@@ -484,16 +461,6 @@ progress_ttl_seconds: 3600
 	}
 	if !defaultGW.TLSInsecureSkipVerify {
 		t.Fatalf("default TLSInsecureSkipVerify = false, want true")
-	}
-
-	if c.UploadRetry.MaxRetries != 5 {
-		t.Fatalf("UploadRetry.MaxRetries = %d, want %d", c.UploadRetry.MaxRetries, 5)
-	}
-	if c.UploadRetry.InitialBackoff != 500*time.Millisecond {
-		t.Fatalf("UploadRetry.InitialBackoff = %v, want %v", c.UploadRetry.InitialBackoff, 500*time.Millisecond)
-	}
-	if c.UploadRetry.MaxBackoff != 30*time.Second {
-		t.Fatalf("UploadRetry.MaxBackoff = %v, want %v", c.UploadRetry.MaxBackoff, 30*time.Second)
 	}
 
 	if c.DefaultOutputExpirationSeconds != 86400 {

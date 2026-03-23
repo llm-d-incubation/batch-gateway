@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -30,7 +29,6 @@ import (
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -38,7 +36,6 @@ import (
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
 // uploadFileAndStoreFileRecord uploads a job output or error file to shared storage and creates a file
@@ -154,7 +151,7 @@ func (p *Processor) uploadOutputFile(
 	if err != nil {
 		return 0, err
 	}
-	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeOutput)
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID)
 }
 
 // uploadErrorFile uploads the local error file to shared storage with retry.
@@ -169,18 +166,16 @@ func (p *Processor) uploadErrorFile(
 	if err != nil {
 		return 0, err
 	}
-	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeError)
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID)
 }
 
-// uploadJobFile uploads a local file to shared storage with retry.
+// uploadJobFile uploads a local file to shared storage.
 // Returns the file size; returns 0 without error if the file does not exist or is empty.
+// Retry logic is handled by the retryclient decorator wrapping the file storage client.
 func (p *Processor) uploadJobFile(
 	ctx context.Context,
 	filePath, fileName, tenantID string,
-	fileType metrics.FileType,
 ) (int64, error) {
-	logger := klog.FromContext(ctx)
-
 	stat, err := os.Stat(filePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
@@ -203,20 +198,7 @@ func (p *Processor) uploadJobFile(
 		return 0, fmt.Errorf("failed to get folder name: %w", err)
 	}
 
-	var fileMeta *filesapi.BatchFileMetadata
-	err = retry.Do(ctx, p.cfg.UploadRetry, func() error {
-		var storeErr error
-		fileMeta, storeErr = p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
-		return storeErr
-	}, func(attempt int, retryErr error) {
-		metrics.RecordFileUploadRetry(fileType)
-		logger.V(logging.WARNING).Info("Retrying file upload",
-			"file", fileName, "attempt", attempt+1, "maxAttempts", p.cfg.UploadRetry.MaxRetries+1,
-			"error", retryErr)
-		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
-			logger.Error(seekErr, "failed to seek file for retry", "file", fileName)
-		}
-	})
+	fileMeta, err := p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload file %s: %w", fileName, err)
 	}

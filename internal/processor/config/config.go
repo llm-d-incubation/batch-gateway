@@ -82,9 +82,6 @@ type ProcessorConfig struct {
 	// Lookup order: ModelGateways[model] -> ModelGateways["default"].
 	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
-	// UploadRetry controls retry behaviour when uploading output files to shared storage.
-	UploadRetry retry.Config `yaml:"upload_retry"`
-
 	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
 	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
 	// 0 means no expiration (keep until explicitly deleted).
@@ -114,7 +111,6 @@ type ProcessorConfig struct {
 		Retry    retry.Config    `yaml:"retry"`
 	} `yaml:"file_client"`
 }
-
 
 // DefaultModelGatewayKey is the reserved key in ModelGateways that acts as
 // the fallback gateway for any model without an explicit mapping.
@@ -244,11 +240,6 @@ func NewConfig() *ProcessorConfig {
 				MaxBackoff:     ptr.To(60 * time.Second),
 			},
 		},
-		UploadRetry: retry.Config{
-			MaxRetries:     3,
-			InitialBackoff: 1 * time.Second,
-			MaxBackoff:     10 * time.Second,
-		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 	}
@@ -353,8 +344,8 @@ func (c *ProcessorConfig) Validate() error {
 		}
 	}
 
-	if err := c.UploadRetry.Validate(); err != nil {
-		return fmt.Errorf("upload_retry: %w", err)
+	if err := c.FileClientCfg.Retry.Validate(); err != nil {
+		return fmt.Errorf("file_client.retry: %w", err)
 	}
 
 	if c.ProgressTTLSeconds <= 0 {

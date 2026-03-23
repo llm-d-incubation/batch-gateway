@@ -91,7 +91,6 @@ var (
 	planBuildDuration             *prometheus.HistogramVec
 	modelInflightRequests         *prometheus.GaugeVec
 	modelRequestExecutionDuration *prometheus.HistogramVec
-	fileUploadRetriesTotal        *prometheus.CounterVec
 	startupRecoveryTotal          *prometheus.CounterVec
 )
 
@@ -217,15 +216,6 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		}, []string{"tenantID"},
 	)
 
-	// upload retries by file type (output / error)
-	fileUploadRetriesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "file_upload_retries_total",
-			Help: "Total number of file upload retry attempts by file type",
-		},
-		[]string{"file_type"},
-	)
-
 	// Startup recovery: counts jobs discovered in workdir after a container restart.
 	// Non-zero values indicate container-level crashes (OOM, panic) occurred.
 	//
@@ -257,7 +247,6 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		planBuildDuration,
 		modelInflightRequests,
 		modelRequestExecutionDuration,
-		fileUploadRetriesTotal,
 		startupRecoveryTotal,
 	}
 
@@ -333,11 +322,6 @@ func DecModelInflightRequests(model string) {
 // RecordModelRequestExecutionDuration observes per-request execution duration by model.
 func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
 	modelRequestExecutionDuration.WithLabelValues(model).Observe(duration.Seconds())
-}
-
-// RecordFileUploadRetry increments the upload retry counter for a given file type.
-func RecordFileUploadRetry(fileType FileType) {
-	fileUploadRetriesTotal.WithLabelValues(string(fileType)).Inc()
 }
 
 // RecordStartupRecovery increments the startup recovery counter.

@@ -630,11 +630,11 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 - `request_errors_by_model_total{model}` (counter)
   Counts inference request errors grouped by model.
 
-- `file_upload_retries_total{file_type}` (counter)
-  Counts file upload retry attempts by file type (`output` or `error`).
-  Useful for detecting storage instability.
-
 #### Metrics (Deferred / Not in MVP)
+
+- `file_storage_retries_total{operation,tenant_id}` (counter)
+  Counts file storage retry attempts by operation and tenant.
+  Planned for the `retryclient` decorator (see issue backlog).
 
 - `model_queue_depth{model}`
   Per-model remaining plan entries.

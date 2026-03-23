@@ -19,6 +19,7 @@ package retryclient
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"k8s.io/klog/v2"
@@ -36,8 +37,10 @@ type Client struct {
 
 var _ api.BatchFilesClient = (*Client)(nil)
 
-// New creates a retry-wrapping Client. If cfg.MaxRetries is 0, operations
-// are forwarded to inner without any retry overhead.
+// New creates a retry-wrapping Client.
+// Callers should only wrap when cfg.MaxRetries > 0; with MaxRetries == 0
+// retry.Do still calls fn exactly once, so there is no functional difference
+// but an unnecessary layer of indirection.
 func New(inner api.BatchFilesClient, cfg retry.Config) *Client {
 	return &Client{inner: inner, cfg: cfg}
 }
@@ -46,20 +49,24 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 	*api.BatchFileMetadata, error,
 ) {
 	rs, seekable := reader.(io.ReadSeeker)
+	if !seekable {
+		return c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, reader)
+	}
 
 	var meta *api.BatchFileMetadata
 	err := retry.Do(ctx, c.cfg, func() error {
 		var storeErr error
-		meta, storeErr = c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, reader)
+		meta, storeErr = c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, rs)
 		return storeErr
-	}, func(attempt int, retryErr error) {
+	}, func(attempt int, retryErr error) error {
 		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file store",
-			"file", fileName, "attempt", attempt+1, "error", retryErr)
-		if seekable {
-			if _, seekErr := rs.Seek(0, io.SeekStart); seekErr != nil {
-				klog.FromContext(ctx).Error(seekErr, "failed to seek reader for retry")
-			}
+			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
+		// Seek failure means the reader cannot be rewound, so subsequent
+		// Store attempts would send partial/empty data. Abort immediately.
+		if _, seekErr := rs.Seek(0, io.SeekStart); seekErr != nil {
+			return fmt.Errorf("aborting retry, seek failed: %w", seekErr)
 		}
+		return nil
 	})
 	return meta, err
 }
@@ -73,9 +80,10 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 		var retrieveErr error
 		rc, meta, retrieveErr = c.inner.Retrieve(ctx, fileName, folderName)
 		return retrieveErr
-	}, func(attempt int, retryErr error) {
+	}, func(attempt int, retryErr error) error {
 		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file retrieve",
-			"file", fileName, "attempt", attempt+1, "error", retryErr)
+			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
+		return nil
 	})
 	return rc, meta, err
 }
@@ -83,9 +91,10 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
 	return retry.Do(ctx, c.cfg, func() error {
 		return c.inner.Delete(ctx, fileName, folderName)
-	}, func(attempt int, retryErr error) {
+	}, func(attempt int, retryErr error) error {
 		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file delete",
-			"file", fileName, "attempt", attempt+1, "error", retryErr)
+			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
+		return nil
 	})
 }
 

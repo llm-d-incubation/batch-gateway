@@ -52,15 +52,20 @@ func (c *Config) Validate() error {
 // Do executes fn and retries on error with exponential backoff.
 // If MaxRetries is 0, fn is called exactly once.
 // The onRetry callback, if non-nil, is called before each retry sleep
-// with the attempt number (1-based) and the error from the previous attempt.
-func Do(ctx context.Context, cfg Config, fn func() error, onRetry func(attempt int, err error)) error {
+// with the zero-based retry index and the error from the previous attempt.
+// If onRetry returns a non-nil error, the retry loop is aborted immediately
+// and that error is returned (useful for non-recoverable preparation failures
+// such as a failed Seek).
+func Do(ctx context.Context, cfg Config, fn func() error, onRetry func(attempt int, err error) error) error {
 	err := fn()
-	for attempt := 1; err != nil && attempt <= cfg.MaxRetries; attempt++ {
+	for attempt := 0; err != nil && attempt < cfg.MaxRetries; attempt++ {
 		if onRetry != nil {
-			onRetry(attempt, err)
+			if abortErr := onRetry(attempt, err); abortErr != nil {
+				return abortErr
+			}
 		}
 
-		backoff := cfg.InitialBackoff * (1 << (attempt - 1))
+		backoff := cfg.InitialBackoff * (1 << attempt)
 		if backoff > cfg.MaxBackoff {
 			backoff = cfg.MaxBackoff
 		}

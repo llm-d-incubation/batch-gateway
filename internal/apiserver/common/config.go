@@ -194,6 +194,10 @@ func (c *ServerConfig) Validate() error {
 		}
 	}
 
+	if err := c.FileClientCfg.Retry.Validate(); err != nil {
+		return fmt.Errorf("file_client.retry: %w", err)
+	}
+
 	return nil
 }
 

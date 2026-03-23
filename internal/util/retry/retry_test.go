@@ -105,8 +105,9 @@ func TestDo_OnRetryCallback(t *testing.T) {
 			return errors.New("fail")
 		}
 		return nil
-	}, func(attempt int, _ error) {
+	}, func(attempt int, _ error) error {
 		retryAttempts = append(retryAttempts, attempt)
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -114,8 +115,24 @@ func TestDo_OnRetryCallback(t *testing.T) {
 	if len(retryAttempts) != 2 {
 		t.Fatalf("expected 2 retry callbacks, got %d", len(retryAttempts))
 	}
-	if retryAttempts[0] != 1 || retryAttempts[1] != 2 {
-		t.Fatalf("expected attempts [1,2], got %v", retryAttempts)
+	if retryAttempts[0] != 0 || retryAttempts[1] != 1 {
+		t.Fatalf("expected attempts [0,1], got %v", retryAttempts)
+	}
+}
+
+func TestDo_OnRetryAbort(t *testing.T) {
+	calls := 0
+	err := Do(context.Background(), Config{MaxRetries: 5, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+		calls++
+		return errors.New("fail")
+	}, func(_ int, _ error) error {
+		return errors.New("abort: non-recoverable")
+	})
+	if err == nil || err.Error() != "abort: non-recoverable" {
+		t.Fatalf("expected abort error, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 call (no retry after abort), got %d", calls)
 	}
 }
 

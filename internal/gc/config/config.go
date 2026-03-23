@@ -99,5 +99,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("file_client.type must be \"fs\" or \"s3\", got %q", cfg.FileClientCfg.Type)
 	}
 
+	if err := cfg.FileClientCfg.Retry.Validate(); err != nil {
+		return nil, fmt.Errorf("file_client.retry: %w", err)
+	}
+
 	return cfg, nil
 }

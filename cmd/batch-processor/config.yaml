@@ -72,9 +72,3 @@ default_output_expiration_seconds: 7776000  # 90 days
 
 # TTL for temporary progress updates in the status store (Redis), in seconds.
 progress_ttl_seconds: 86400  # 24 hours
-
-# Retry configuration for uploading output files to shared storage
-upload_retry:
-  max_retries: 3
-  initial_backoff: "1s"
-  max_backoff: "10s"
