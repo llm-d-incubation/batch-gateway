@@ -164,6 +164,8 @@ clean:
 install-tools:
 	@echo "Installing development tools..."
 	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	$(GO) install golang.org/x/tools/cmd/goimports@latest
+	$(GO) install github.com/securego/gosec/v2/cmd/gosec@latest
 	@echo "Tools installed"
 
 ## check: Run fmt, vet, and test
