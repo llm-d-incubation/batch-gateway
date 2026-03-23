@@ -231,9 +231,9 @@ func NewConfig() *ProcessorConfig {
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
 		DBClientCfg: struct {
-			Type          string                        `yaml:"type"`
-			PostgreSQLCfg postgresql.PostgreSQLConfig   `yaml:"postgresql"`
-			RedisCfg      uredis.RedisClientConfig      `yaml:"redis"`
+			Type          string                      `yaml:"type"`
+			PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+			RedisCfg      uredis.RedisClientConfig    `yaml:"redis"`
 		}{
 			Type: "redis",
 		},
