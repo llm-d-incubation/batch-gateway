@@ -77,34 +77,20 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@v4
+        with:
+          version: '3.16.4'
 
       - name: Install yq
-        uses: frenck/action-setup-yq@v1
+        uses: frenck/action-setup-yq@v1.0.2
+        with:
+          version: v4.52.4
 
       - name: Package and publish Helm chart
-        run: |
-          VERSION="${{ github.ref_name }}"
-          CHART_VERSION="${VERSION#v}"
-          export VERSION
-          export CHART_VERSION
-
-          # Pin image tags in values.yaml to the release version (structured edits; avoids brittle sed)
-          yq -i '.apiserver.image.tag = strenv(VERSION) | .processor.image.tag = strenv(VERSION) | .gc.image.tag = strenv(VERSION)' charts/batch-gateway/values.yaml
-
-          # Update Chart.yaml version and appVersion
-          yq -i '.version = strenv(CHART_VERSION) | .appVersion = strenv(CHART_VERSION)' charts/batch-gateway/Chart.yaml
-
-          # Package the chart
-          helm package charts/batch-gateway -d release/
-
-          # Append chart digest (package-release only hashes binary *.tar.gz)
-          (cd release && sha256sum "batch-gateway-${CHART_VERSION}.tgz" >> SHA256SUMS && cat SHA256SUMS)
-
-          # Login to GHCR and push chart to OCI registry
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-          helm push release/batch-gateway-${CHART_VERSION}.tgz oci://ghcr.io/llm-d-incubation/charts
-
-          echo "Helm chart published: oci://ghcr.io/llm-d-incubation/charts/batch-gateway:${CHART_VERSION}"
+        env:
+          VERSION: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: make publish-helm-chart
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
