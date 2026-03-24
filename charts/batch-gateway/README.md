@@ -19,6 +19,18 @@ The processor is a background worker component that polls for and processes batc
 
 ## Installing the Chart
 
+### From OCI registry (recommended for releases)
+
+The chart is published to GitHub Container Registry for each release. Use `--version` with the **chart semver** (same as `Chart.yaml` `version`: the git tag **without** `v`, e.g. `v1.0.0` → `1.0.0`):
+
+```bash
+helm install batch-gateway oci://ghcr.io/llm-d-incubation/charts/batch-gateway --version 1.0.0
+```
+
+Replace `1.0.0` with the version you need. Image tags in the published chart are pinned to the release version.
+
+### From source
+
 To install the chart with the release name `my-release`:
 
 ```bash

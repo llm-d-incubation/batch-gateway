@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   verify-tag-on-main:
@@ -73,6 +74,30 @@ jobs:
 
       - name: Package binaries as tar.gz (preserves execute bit on extract)
         run: make package-release
+
+      - name: Package and publish Helm chart
+        run: |
+          VERSION="${{ github.ref_name }}"
+          CHART_VERSION="${VERSION#v}"
+
+          # Install Helm
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+          # Pin image tags in values.yaml to the release version
+          sed -i "s|tag: \"latest\"|tag: \"${VERSION}\"|g" charts/batch-gateway/values.yaml
+
+          # Update Chart.yaml version and appVersion
+          sed -i "s/^version: .*/version: ${CHART_VERSION}/" charts/batch-gateway/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${CHART_VERSION}\"/" charts/batch-gateway/Chart.yaml
+
+          # Package the chart
+          helm package charts/batch-gateway -d release/
+
+          # Login to GHCR and push chart to OCI registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+          helm push release/batch-gateway-${CHART_VERSION}.tgz oci://ghcr.io/llm-d-incubation/charts
+
+          echo "Helm chart published: oci://ghcr.io/llm-d-incubation/charts/batch-gateway:${CHART_VERSION}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

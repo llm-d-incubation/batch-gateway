@@ -4,7 +4,7 @@ This guide describes how to create a new release of Batch Gateway and manage rel
 
 ## Overview
 
-- **Release workflow** (`.github/workflows/create-release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main`**, then builds Linux binaries (amd64, arm64), packages them as `**.tar.gz**` (so execute permission survives browser download), writes `**SHA256SUMS**`, creates a GitHub Release with notes generated automatically, uploads those assets, and marks the release as **Latest**.
+- **Release workflow** (`.github/workflows/create-release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main`**, then builds Linux binaries (amd64, arm64), packages them as `**.tar.gz**` (so execute permission survives browser download), writes `**SHA256SUMS**`, pins image tags in the Helm chart `values.yaml` to the release version, packages and publishes the Helm chart to the OCI registry (GHCR), creates a GitHub Release with notes generated automatically, uploads those assets, and marks the release as **Latest**.
 - **Docker workflow** (`.github/workflows/ci-release.yaml`): Builds and pushes container images to GHCR. It runs on the following triggers:
   - **Push to `main`**: Images are tagged `latest` and with the commit SHA.
   - **Push of version tag** (`v*.*.*`): Images are tagged with the version (e.g. `v1.0.0`) and with the commit SHA.
@@ -37,7 +37,7 @@ Pushing `v*.*.`* **always** triggers the workflow if the check passes; there is 
   ```
 
 3. **Let automation run**
-  - **create-release.yml**: Packages binaries as `.tar.gz`, creates the GitHub Release with generated notes, attaches archives and `SHA256SUMS`.
+  - **create-release.yml**: Packages binaries as `.tar.gz`, pins Helm chart image tags to the release version, publishes the Helm chart to `oci://ghcr.io/llm-d-incubation/charts/batch-gateway`, creates the GitHub Release with generated notes, attaches binaries, chart `.tgz`, and `SHA256SUMS`.
   - **ci-release.yaml**: Builds and pushes images for that tag to GHCR.
 4. **Optional: edit the release**
   - In GitHub: **Releases** → open the new release → **Edit**.
@@ -66,6 +66,7 @@ tar xzf batch-gateway-apiserver-linux-amd64.tar.gz
 `.github/RELEASE_TEMPLATE.md` is for human use when drafting or editing a release. It reminds you to mention:
 
 - Docker image names and tag
+- Helm chart OCI URL and install command
 - Upgrade or migration notes
 - That Linux binaries are attached as `.tar.gz` with `SHA256SUMS`
 
@@ -95,4 +96,4 @@ To remove a release and its tag (e.g. after a test release):
    git tag -d <tag>
    git push origin --delete <tag>
   ```
-3. **Docker images** already pushed to GHCR for that tag are **not** removed. Delete them in the **Packages** area of the repo if needed.
+3. **Docker images and Helm charts** already pushed to GHCR for that tag are **not** removed. Delete them in the **Packages** area of the repo if needed.
