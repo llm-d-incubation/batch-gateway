@@ -16,6 +16,11 @@ limitations under the License.
 
 // Package retry provides a shared retry configuration and exponential backoff
 // helper backed by github.com/cenkalti/backoff/v5.
+//
+// It wraps cenkalti/backoff to add an onRetry callback that runs between retry
+// attempts. cenkalti v5 does not provide a between-retry hook, and callers such
+// as retryclient need it for pre-retry preparation (e.g. Seek(0) to rewind a
+// reader in Store, or closing the previous ReadCloser in Retrieve).
 package retry
 
 import (
@@ -52,15 +57,15 @@ func (c *Config) Validate() error {
 }
 
 // Do executes fn with retries using cenkalti/backoff exponential backoff.
-// If MaxRetries is 0, fn is called exactly once with no retries.
+// If cfg is nil or MaxRetries is 0, fn is called exactly once with no retries.
 // The onRetry callback, if non-nil, is called after fn fails and before
 // the next retry attempt. The attempt parameter is the zero-based retry
 // index (0 = first retry, not the initial call).
 // If onRetry returns a non-nil error, retries are aborted immediately
 // and that error is returned (useful for non-recoverable preparation failures
 // such as a failed Seek).
-func Do(ctx context.Context, cfg Config, fn func() error, onRetry func(attempt int, err error) error) error {
-	if cfg.MaxRetries == 0 {
+func Do(ctx context.Context, cfg *Config, fn func() error, onRetry func(attempt int, err error) error) error {
+	if cfg == nil || cfg.MaxRetries == 0 {
 		return fn()
 	}
 
@@ -91,7 +96,7 @@ func Do(ctx context.Context, cfg Config, fn func() error, onRetry func(attempt i
 		return struct{}{}, nil
 	},
 		cbackoff.WithBackOff(expBackoff),
-		cbackoff.WithMaxTries(uint(cfg.MaxRetries)+1),
+		cbackoff.WithMaxTries(uint(cfg.MaxRetries)+1), // +1: MaxRetries is retry count, WithMaxTries expects total attempts
 		cbackoff.WithMaxElapsedTime(0),
 	)
 	return err

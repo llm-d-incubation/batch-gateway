@@ -211,8 +211,7 @@ func TestDelete_SucceedsAfterRetry(t *testing.T) {
 }
 
 func metricsCtx() context.Context {
-	ctx := ctxkeys.WithTenantID(context.Background(), "test-tenant")
-	return ctxkeys.WithComponent(ctx, "test-component")
+	return ctxkeys.WithComponent(context.Background(), "test-component")
 }
 
 func counterValue(t *testing.T, name string, wantLabels map[string]string) float64 {
@@ -254,7 +253,7 @@ func hasLabels(m *dto.Metric, wantLabels map[string]string) bool {
 func TestMetrics_RetriesRecorded(t *testing.T) {
 	retriesTotal.Reset()
 	retryExhaustedTotal.Reset()
-	retryExhaustedTotal.WithLabelValues("store", "test-tenant", "test-component").Add(0)
+	retryExhaustedTotal.WithLabelValues("store", "test-component").Add(0)
 
 	mock := &mockFilesClient{failUntil: 2}
 	c := New(mock, retryCfg())
@@ -266,7 +265,6 @@ func TestMetrics_RetriesRecorded(t *testing.T) {
 
 	got := counterValue(t, "file_storage_retries_total", map[string]string{
 		"operation": "store",
-		"tenant_id": "test-tenant",
 		"component": "test-component",
 	})
 	if got != 2 {
@@ -275,7 +273,6 @@ func TestMetrics_RetriesRecorded(t *testing.T) {
 
 	exhausted := counterValue(t, "file_storage_retry_exhausted_total", map[string]string{
 		"operation": "store",
-		"tenant_id": "test-tenant",
 		"component": "test-component",
 	})
 	if exhausted != 0 {
@@ -297,7 +294,6 @@ func TestMetrics_ExhaustedRecorded(t *testing.T) {
 
 	retries := counterValue(t, "file_storage_retries_total", map[string]string{
 		"operation": "store",
-		"tenant_id": "test-tenant",
 		"component": "test-component",
 	})
 	if retries != 3 {
@@ -306,7 +302,6 @@ func TestMetrics_ExhaustedRecorded(t *testing.T) {
 
 	exhausted := counterValue(t, "file_storage_retry_exhausted_total", map[string]string{
 		"operation": "store",
-		"tenant_id": "test-tenant",
 		"component": "test-component",
 	})
 	if exhausted != 1 {
@@ -328,7 +323,6 @@ func TestMetrics_DeleteRetries(t *testing.T) {
 
 	got := counterValue(t, "file_storage_retries_total", map[string]string{
 		"operation": "delete",
-		"tenant_id": "test-tenant",
 		"component": "test-component",
 	})
 	if got != 1 {

@@ -25,7 +25,7 @@ import (
 
 func TestDo_NoRetry(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), Config{MaxRetries: 0}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 0}, func() error {
 		calls++
 		return errors.New("fail")
 	}, nil)
@@ -39,7 +39,7 @@ func TestDo_NoRetry(t *testing.T) {
 
 func TestDo_SucceedsOnFirstTry(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
 		calls++
 		return nil
 	}, nil)
@@ -53,7 +53,7 @@ func TestDo_SucceedsOnFirstTry(t *testing.T) {
 
 func TestDo_SucceedsAfterRetries(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
 		calls++
 		if calls < 3 {
 			return errors.New("transient")
@@ -70,7 +70,7 @@ func TestDo_SucceedsAfterRetries(t *testing.T) {
 
 func TestDo_ExhaustsRetries(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), Config{MaxRetries: 2, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 2, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
 		calls++
 		return errors.New("persistent")
 	}, nil)
@@ -85,7 +85,7 @@ func TestDo_ExhaustsRetries(t *testing.T) {
 func TestDo_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
-	err := Do(ctx, Config{MaxRetries: 5, InitialBackoff: time.Second, MaxBackoff: time.Second}, func() error {
+	err := Do(ctx, &Config{MaxRetries: 5, InitialBackoff: time.Second, MaxBackoff: time.Second}, func() error {
 		calls++
 		cancel()
 		return errors.New("fail")
@@ -100,7 +100,7 @@ func TestDo_ContextCancelled(t *testing.T) {
 
 func TestDo_OnRetryCallback(t *testing.T) {
 	retryAttempts := []int{}
-	err := Do(context.Background(), Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
 		if len(retryAttempts) < 2 {
 			return errors.New("fail")
 		}
@@ -122,7 +122,7 @@ func TestDo_OnRetryCallback(t *testing.T) {
 
 func TestDo_OnRetryAbort(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), Config{MaxRetries: 5, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 5, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
 		calls++
 		return errors.New("fail")
 	}, func(_ int, _ error) error {

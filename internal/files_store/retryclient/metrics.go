@@ -16,36 +16,46 @@ limitations under the License.
 
 package retryclient
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"sync"
 
-var (
-	retriesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "file_storage_retries_total",
-			Help: "Total number of file storage retry attempts",
-		},
-		[]string{"operation", "tenant_id", "component"},
-	)
-
-	retryExhaustedTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "file_storage_retry_exhausted_total",
-			Help: "Total number of file storage operations that failed after exhausting all retries",
-		},
-		[]string{"operation", "tenant_id", "component"},
-	)
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-func init() {
-	prometheus.MustRegister(retriesTotal, retryExhaustedTotal)
+var (
+	retriesTotal        *prometheus.CounterVec
+	retryExhaustedTotal *prometheus.CounterVec
+	metricsOnce         sync.Once
+)
+
+// InitMetrics registers retry-related Prometheus metrics.
+// It is safe to call multiple times; registration happens only once.
+func InitMetrics() {
+	metricsOnce.Do(func() {
+		retriesTotal = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "file_storage_retries_total",
+				Help: "Total number of file storage retry attempts",
+			},
+			[]string{"operation", "component"},
+		)
+		retryExhaustedTotal = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "file_storage_retry_exhausted_total",
+				Help: "Total number of file storage operations that failed after exhausting all retries",
+			},
+			[]string{"operation", "component"},
+		)
+		prometheus.MustRegister(retriesTotal, retryExhaustedTotal)
+	})
 }
 
-// RecordRetry increments the retry counter for a file storage operation.
-func RecordRetry(operation, tenantID, component string) {
-	retriesTotal.WithLabelValues(operation, tenantID, component).Inc()
+// recordRetry increments the retry counter for a file storage operation.
+func recordRetry(operation, component string) {
+	retriesTotal.WithLabelValues(operation, component).Inc()
 }
 
-// RecordRetryExhausted increments the exhaustion counter when all retries fail.
-func RecordRetryExhausted(operation, tenantID, component string) {
-	retryExhaustedTotal.WithLabelValues(operation, tenantID, component).Inc()
+// recordRetryExhausted increments the exhaustion counter when all retries fail.
+func recordRetryExhausted(operation, component string) {
+	retryExhaustedTotal.WithLabelValues(operation, component).Inc()
 }
