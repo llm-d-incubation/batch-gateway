@@ -33,12 +33,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestInferenceClient aggregates all HTTPClient test cases
@@ -103,9 +102,15 @@ func testNewHTTPInferenceClient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client, err := NewInferenceClient(&tt.config)
-			require.NoError(t, err)
-			require.NotNil(t, client)
-			assert.NotNil(t, client.client)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if client == nil {
+				t.Fatal("expected non-nil client")
+			}
+			if client.client == nil {
+				t.Error("expected non-nil client.client")
+			}
 			// Note: resty.Client internal state (timeout, auth, retry config) is not directly accessible
 			// Behavior is validated through integration and functional tests
 		})
@@ -116,11 +121,15 @@ func testGenerate(t *testing.T) {
 	t.Run("should successfully make inference request with chat completion", func(t *testing.T) {
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Verify headers
-			assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+			if got := r.Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("got Content-Type %v, want %v", got, "application/json")
+			}
 
 			// Verify request ID if present
 			if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
-				assert.Equal(t, "test-request-123", requestID)
+				if requestID != "test-request-123" {
+					t.Errorf("got X-Request-ID %v, want %v", requestID, "test-request-123")
+				}
 			}
 
 			// Return success response
@@ -149,7 +158,9 @@ func testGenerate(t *testing.T) {
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test-request-123",
@@ -168,17 +179,31 @@ func testGenerate(t *testing.T) {
 		ctx := context.Background()
 		resp, genErr := client.Generate(ctx, req)
 
-		assert.Nil(t, genErr)
-		require.NotNil(t, resp)
-		assert.Equal(t, "test-request-123", resp.RequestID)
-		assert.NotNil(t, resp.Response)
-		assert.NotNil(t, resp.RawData)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if resp.RequestID != "test-request-123" {
+			t.Errorf("got RequestID %v, want %v", resp.RequestID, "test-request-123")
+		}
+		if resp.Response == nil {
+			t.Error("expected non-nil Response")
+		}
+		if resp.RawData == nil {
+			t.Error("expected non-nil RawData")
+		}
 
 		// Verify response can be unmarshaled
 		var data map[string]interface{}
 		unmarshalErr := json.Unmarshal(resp.Response, &data)
-		assert.Nil(t, unmarshalErr)
-		assert.Equal(t, "chatcmpl-123", data["id"])
+		if unmarshalErr != nil {
+			t.Errorf("expected no error, got %v", unmarshalErr)
+		}
+		if data["id"] != "chatcmpl-123" {
+			t.Errorf("got id %v, want %v", data["id"], "chatcmpl-123")
+		}
 	})
 
 	t.Run("should handle nil request", func(t *testing.T) {
@@ -191,15 +216,25 @@ func testGenerate(t *testing.T) {
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		ctx := context.Background()
 		resp, genErr := client.Generate(ctx, nil)
 
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Equal(t, httpclient.ErrCategoryInvalidReq, genErr.Category)
-		assert.Contains(t, genErr.Message, "cannot be nil")
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if genErr.Category != httpclient.ErrCategoryInvalidReq {
+			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryInvalidReq)
+		}
+		if !strings.Contains(genErr.Message, "cannot be nil") {
+			t.Errorf("expected %q to contain %q", genErr.Message, "cannot be nil")
+		}
 	})
 
 	t.Run("should use endpoint from request", func(t *testing.T) {
@@ -215,7 +250,9 @@ func testGenerate(t *testing.T) {
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -228,7 +265,9 @@ func testGenerate(t *testing.T) {
 		}
 
 		_, _ = client.Generate(context.Background(), req)
-		assert.Equal(t, "/v1/chat/completions", endpoint)
+		if endpoint != "/v1/chat/completions" {
+			t.Errorf("got endpoint %v, want %v", endpoint, "/v1/chat/completions")
+		}
 	})
 
 	t.Run("should fail when endpoint is empty", func(t *testing.T) {
@@ -242,7 +281,9 @@ func testGenerate(t *testing.T) {
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -255,10 +296,18 @@ func testGenerate(t *testing.T) {
 		}
 
 		resp, genErr := client.Generate(context.Background(), req)
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Equal(t, httpclient.ErrCategoryInvalidReq, genErr.Category)
-		assert.Contains(t, genErr.Message, "endpoint cannot be empty")
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if genErr.Category != httpclient.ErrCategoryInvalidReq {
+			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryInvalidReq)
+		}
+		if !strings.Contains(genErr.Message, "endpoint cannot be empty") {
+			t.Errorf("expected %q to contain %q", genErr.Message, "endpoint cannot be empty")
+		}
 	})
 }
 
@@ -375,7 +424,9 @@ func testErrorHandling(t *testing.T) {
 				t.Cleanup(testServer.Close)
 
 				client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
-				require.NoError(t, err)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
 
 				req := &GenerateRequest{
 					RequestID: "test",
@@ -384,13 +435,23 @@ func testErrorHandling(t *testing.T) {
 				}
 
 				resp, genErr := client.Generate(context.Background(), req)
-				assert.Nil(t, resp)
-				require.NotNil(t, genErr)
-				assert.Equal(t, tt.wantCategory, genErr.Category)
+				if resp != nil {
+					t.Errorf("expected nil response, got %v", resp)
+				}
+				if genErr == nil {
+					t.Fatal("expected non-nil error")
+				}
+				if genErr.Category != tt.wantCategory {
+					t.Errorf("got Category %v, want %v", genErr.Category, tt.wantCategory)
+				}
 				if tt.wantRetryable {
-					assert.True(t, genErr.IsRetryable())
+					if !genErr.IsRetryable() {
+						t.Error("expected true")
+					}
 				} else {
-					assert.False(t, genErr.IsRetryable())
+					if genErr.IsRetryable() {
+						t.Error("expected false")
+					}
 				}
 			})
 		}
@@ -405,7 +466,9 @@ func testErrorHandling(t *testing.T) {
 		t.Cleanup(testServer.Close)
 
 		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -415,11 +478,21 @@ func testErrorHandling(t *testing.T) {
 
 		resp, genErr := client.Generate(context.Background(), req)
 		// Implementation continues despite JSON parse errors, returning success with nil RawData
-		assert.Nil(t, genErr)
-		require.NotNil(t, resp)
-		assert.Equal(t, "test", resp.RequestID)
-		assert.Nil(t, resp.RawData) // RawData should be nil for malformed JSON
-		assert.NotNil(t, resp.Response)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if resp.RequestID != "test" {
+			t.Errorf("got RequestID %v, want %v", resp.RequestID, "test")
+		}
+		if resp.RawData != nil { // RawData should be nil for malformed JSON
+			t.Errorf("expected nil RawData, got %v", resp.RawData)
+		}
+		if resp.Response == nil {
+			t.Error("expected non-nil Response")
+		}
 	})
 
 	t.Run("should handle empty response body", func(t *testing.T) {
@@ -430,7 +503,9 @@ func testErrorHandling(t *testing.T) {
 		t.Cleanup(testServer.Close)
 
 		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -440,11 +515,21 @@ func testErrorHandling(t *testing.T) {
 
 		resp, genErr := client.Generate(context.Background(), req)
 		// Implementation handles empty body as successful response
-		assert.Nil(t, genErr)
-		require.NotNil(t, resp)
-		assert.Equal(t, "test", resp.RequestID)
-		assert.Nil(t, resp.RawData) // RawData should be nil for empty JSON
-		assert.NotNil(t, resp.Response)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if resp.RequestID != "test" {
+			t.Errorf("got RequestID %v, want %v", resp.RequestID, "test")
+		}
+		if resp.RawData != nil { // RawData should be nil for empty JSON
+			t.Errorf("expected nil RawData, got %v", resp.RawData)
+		}
+		if resp.Response == nil {
+			t.Error("expected non-nil Response")
+		}
 	})
 
 	t.Run("should handle context cancellation", func(t *testing.T) {
@@ -457,7 +542,9 @@ func testErrorHandling(t *testing.T) {
 		t.Cleanup(testServer.Close)
 
 		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -479,11 +566,19 @@ func testErrorHandling(t *testing.T) {
 		resp, genErr := client.Generate(ctx, req)
 		elapsed := time.Since(start)
 
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Contains(t, genErr.Message, "cancelled")
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if !strings.Contains(genErr.Message, "cancelled") {
+			t.Errorf("expected %q to contain %q", genErr.Message, "cancelled")
+		}
 		// Should cancel quickly after server is reached, not wait for full 2s sleep
-		assert.Less(t, elapsed, 500*time.Millisecond)
+		if elapsed >= 500*time.Millisecond {
+			t.Errorf("expected %v < %v", elapsed, 500*time.Millisecond)
+		}
 	})
 
 	t.Run("should handle context timeout", func(t *testing.T) {
@@ -497,7 +592,9 @@ func testErrorHandling(t *testing.T) {
 			BaseURL: testServer.URL,
 			Timeout: 100 * time.Millisecond,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -507,9 +604,15 @@ func testErrorHandling(t *testing.T) {
 
 		ctx := context.Background()
 		resp, genErr := client.Generate(ctx, req)
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Equal(t, httpclient.ErrCategoryServer, genErr.Category)
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if genErr.Category != httpclient.ErrCategoryServer {
+			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryServer)
+		}
 	})
 }
 
@@ -594,7 +697,9 @@ func testRetryLogic(t *testing.T) {
 					MaxRetries:     3,
 					InitialBackoff: 10 * time.Millisecond,
 				})
-				require.NoError(t, err)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
 
 				req := &GenerateRequest{
 					RequestID: "test",
@@ -603,15 +708,27 @@ func testRetryLogic(t *testing.T) {
 				}
 
 				resp, genErr := client.Generate(context.Background(), req)
-				assert.Equal(t, tt.wantAttemptCount, attemptCount)
+				if attemptCount != tt.wantAttemptCount {
+					t.Errorf("got attemptCount %v, want %v", attemptCount, tt.wantAttemptCount)
+				}
 
 				if tt.wantSuccess {
-					assert.Nil(t, genErr)
-					assert.NotNil(t, resp)
+					if genErr != nil {
+						t.Errorf("expected no error, got %v", genErr)
+					}
+					if resp == nil {
+						t.Error("expected non-nil response")
+					}
 				} else {
-					assert.Nil(t, resp)
-					require.NotNil(t, genErr)
-					assert.Equal(t, tt.wantErrorCategory, genErr.Category)
+					if resp != nil {
+						t.Errorf("expected nil response, got %v", resp)
+					}
+					if genErr == nil {
+						t.Fatal("expected non-nil error")
+					}
+					if genErr.Category != tt.wantErrorCategory {
+						t.Errorf("got Category %v, want %v", genErr.Category, tt.wantErrorCategory)
+					}
 				}
 			})
 		}
@@ -636,7 +753,9 @@ func testRetryLogic(t *testing.T) {
 			MaxRetries:     2,
 			InitialBackoff: 10 * time.Millisecond,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -645,9 +764,15 @@ func testRetryLogic(t *testing.T) {
 		}
 
 		resp, genErr := client.Generate(context.Background(), req)
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Equal(t, 3, attemptCount) // Initial + 2 retries
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if attemptCount != 3 { // Initial + 2 retries
+			t.Errorf("got attemptCount %v, want %v", attemptCount, 3)
+		}
 	})
 
 	t.Run("should work without retry when MaxRetries is 0", func(t *testing.T) {
@@ -663,7 +788,9 @@ func testRetryLogic(t *testing.T) {
 			BaseURL:    testServer.URL,
 			MaxRetries: 0, // Retry disabled
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -672,9 +799,15 @@ func testRetryLogic(t *testing.T) {
 		}
 
 		resp, genErr := client.Generate(context.Background(), req)
-		assert.Nil(t, genErr)
-		assert.NotNil(t, resp)
-		assert.Equal(t, 1, attemptCount)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Error("expected non-nil response")
+		}
+		if attemptCount != 1 {
+			t.Errorf("got attemptCount %v, want %v", attemptCount, 1)
+		}
 	})
 }
 
@@ -770,8 +903,12 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.Nil(t, err)
-		assert.Nil(t, tlsConfig, "should return nil to use Go's default TLS config")
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if tlsConfig != nil {
+			t.Errorf("expected nil TLS config to use Go's default, got %v", tlsConfig)
+		}
 	})
 
 	t.Run("should use secure TLS defaults when InsecureSkipVerify is false", func(t *testing.T) {
@@ -779,9 +916,13 @@ func testTLSConfiguration(t *testing.T) {
 			BaseURL:               "https://localhost:8000",
 			TLSInsecureSkipVerify: false, // Default: use system root CAs
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-		require.NotNil(t, client)
+		if client == nil {
+			t.Fatal("expected non-nil client")
+		}
 
 		// Client created successfully with default TLS settings (system root CAs)
 	})
@@ -791,9 +932,13 @@ func testTLSConfiguration(t *testing.T) {
 			BaseURL:               "https://localhost:8443",
 			TLSInsecureSkipVerify: true, // Skip cert verification for testing
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-		require.NotNil(t, client)
+		if client == nil {
+			t.Fatal("expected non-nil client")
+		}
 
 		// Client created successfully with InsecureSkipVerify enabled
 	})
@@ -807,10 +952,18 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.Nil(t, err)
-		assert.NotNil(t, tlsConfig, "TLS config should be created for custom CA")
-		assert.NotNil(t, tlsConfig.RootCAs, "RootCAs should be set")
-		assert.False(t, tlsConfig.InsecureSkipVerify, "Certificate verification should be enabled")
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if tlsConfig == nil {
+			t.Fatal("expected non-nil TLS config for custom CA")
+		}
+		if tlsConfig.RootCAs == nil {
+			t.Error("expected non-nil RootCAs")
+		}
+		if tlsConfig.InsecureSkipVerify {
+			t.Error("expected false")
+		}
 	})
 
 	t.Run("should load client certificate and key for mTLS", func(t *testing.T) {
@@ -823,9 +976,15 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.Nil(t, err)
-		assert.NotNil(t, tlsConfig, "TLS config should be created for mTLS")
-		assert.Equal(t, 1, len(tlsConfig.Certificates), "Should have one client certificate")
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if tlsConfig == nil {
+			t.Fatal("expected non-nil TLS config for mTLS")
+		}
+		if len(tlsConfig.Certificates) != 1 {
+			t.Errorf("got %d certificates, want 1", len(tlsConfig.Certificates))
+		}
 	})
 
 	t.Run("should combine custom CA and mTLS", func(t *testing.T) {
@@ -839,10 +998,18 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.Nil(t, err)
-		assert.NotNil(t, tlsConfig, "TLS config should be created")
-		assert.NotNil(t, tlsConfig.RootCAs, "RootCAs should be set")
-		assert.Equal(t, 1, len(tlsConfig.Certificates), "Should have one client certificate")
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if tlsConfig == nil {
+			t.Fatal("expected non-nil TLS config")
+		}
+		if tlsConfig.RootCAs == nil {
+			t.Error("expected non-nil RootCAs")
+		}
+		if len(tlsConfig.Certificates) != 1 {
+			t.Errorf("got %d certificates, want 1", len(tlsConfig.Certificates))
+		}
 	})
 
 	t.Run("should set TLS version constraints", func(t *testing.T) {
@@ -853,10 +1020,18 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.Nil(t, err)
-		assert.NotNil(t, tlsConfig, "TLS config should be created for version constraints")
-		assert.Equal(t, uint16(tls.VersionTLS12), tlsConfig.MinVersion, "Min TLS version should be TLS 1.2")
-		assert.Equal(t, uint16(tls.VersionTLS13), tlsConfig.MaxVersion, "Max TLS version should be TLS 1.3")
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if tlsConfig == nil {
+			t.Fatal("expected non-nil TLS config for version constraints")
+		}
+		if tlsConfig.MinVersion != uint16(tls.VersionTLS12) {
+			t.Errorf("got MinVersion %v, want %v", tlsConfig.MinVersion, uint16(tls.VersionTLS12))
+		}
+		if tlsConfig.MaxVersion != uint16(tls.VersionTLS13) {
+			t.Errorf("got MaxVersion %v, want %v", tlsConfig.MaxVersion, uint16(tls.VersionTLS13))
+		}
 	})
 
 	t.Run("should fail with missing CA certificate file", func(t *testing.T) {
@@ -868,9 +1043,15 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.NotNil(t, err, "Should fail with missing CA cert file")
-		assert.Nil(t, tlsConfig)
-		assert.Contains(t, err.Error(), "failed to read CA certificate file")
+		if err == nil {
+			t.Error("expected non-nil error for missing CA cert file")
+		}
+		if tlsConfig != nil {
+			t.Errorf("expected nil TLS config, got %v", tlsConfig)
+		}
+		if err != nil && !strings.Contains(err.Error(), "failed to read CA certificate file") {
+			t.Errorf("expected %q to contain %q", err.Error(), "failed to read CA certificate file")
+		}
 	})
 
 	t.Run("should fail with invalid CA certificate PEM", func(t *testing.T) {
@@ -882,9 +1063,15 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.NotNil(t, err, "Should fail with invalid PEM")
-		assert.Nil(t, tlsConfig)
-		assert.Contains(t, err.Error(), "failed to parse CA certificate")
+		if err == nil {
+			t.Error("expected non-nil error for invalid PEM")
+		}
+		if tlsConfig != nil {
+			t.Errorf("expected nil TLS config, got %v", tlsConfig)
+		}
+		if err != nil && !strings.Contains(err.Error(), "failed to parse CA certificate") {
+			t.Errorf("expected %q to contain %q", err.Error(), "failed to parse CA certificate")
+		}
 	})
 
 	t.Run("should fail with missing client certificate file", func(t *testing.T) {
@@ -897,9 +1084,15 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.NotNil(t, err, "Should fail with missing client cert")
-		assert.Nil(t, tlsConfig)
-		assert.Contains(t, err.Error(), "failed to load client certificate/key pair")
+		if err == nil {
+			t.Error("expected non-nil error for missing client cert")
+		}
+		if tlsConfig != nil {
+			t.Errorf("expected nil TLS config, got %v", tlsConfig)
+		}
+		if err != nil && !strings.Contains(err.Error(), "failed to load client certificate/key pair") {
+			t.Errorf("expected %q to contain %q", err.Error(), "failed to load client certificate/key pair")
+		}
 	})
 
 	t.Run("should fail with incomplete mTLS config - cert without key", func(t *testing.T) {
@@ -912,9 +1105,15 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.NotNil(t, err, "Should fail with incomplete mTLS config")
-		assert.Nil(t, tlsConfig)
-		assert.Contains(t, err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified")
+		if err == nil {
+			t.Error("expected non-nil error for incomplete mTLS config")
+		}
+		if tlsConfig != nil {
+			t.Errorf("expected nil TLS config, got %v", tlsConfig)
+		}
+		if err != nil && !strings.Contains(err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified") {
+			t.Errorf("expected %q to contain %q", err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified")
+		}
 	})
 
 	t.Run("should fail with incomplete mTLS config - key without cert", func(t *testing.T) {
@@ -927,9 +1126,15 @@ func testTLSConfiguration(t *testing.T) {
 		}
 
 		tlsConfig, err := httpclient.BuildTLSConfig(&config)
-		assert.NotNil(t, err, "Should fail with incomplete mTLS config")
-		assert.Nil(t, tlsConfig)
-		assert.Contains(t, err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified")
+		if err == nil {
+			t.Error("expected non-nil error for incomplete mTLS config")
+		}
+		if tlsConfig != nil {
+			t.Errorf("expected nil TLS config, got %v", tlsConfig)
+		}
+		if err != nil && !strings.Contains(err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified") {
+			t.Errorf("expected %q to contain %q", err.Error(), "both TLSClientCertFile and TLSClientKeyFile must be specified")
+		}
 	})
 
 	t.Run("should create client with all TLS options combined", func(t *testing.T) {
@@ -942,9 +1147,13 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 			TLSMinVersion:     tls.VersionTLS12,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-		require.NotNil(t, client)
+		if client == nil {
+			t.Fatal("expected non-nil client")
+		}
 
 		// Client created successfully with all TLS options combined
 	})
@@ -964,7 +1173,9 @@ func testAuthentication(t *testing.T) {
 			BaseURL: testServer.URL,
 			APIKey:  "sk-test-key-123",
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -973,7 +1184,9 @@ func testAuthentication(t *testing.T) {
 		}
 
 		_, _ = client.Generate(context.Background(), req)
-		assert.Equal(t, "Bearer sk-test-key-123", authHeader)
+		if authHeader != "Bearer sk-test-key-123" {
+			t.Errorf("got Authorization %v, want %v", authHeader, "Bearer sk-test-key-123")
+		}
 	})
 
 	t.Run("should not include Authorization header when API key is empty", func(t *testing.T) {
@@ -988,7 +1201,9 @@ func testAuthentication(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "test",
@@ -997,7 +1212,9 @@ func testAuthentication(t *testing.T) {
 		}
 
 		_, _ = client.Generate(context.Background(), req)
-		assert.Empty(t, authHeader)
+		if authHeader != "" {
+			t.Errorf("expected empty Authorization header, got %q", authHeader)
+		}
 	})
 }
 
@@ -1009,7 +1226,9 @@ func testNetworkErrors(t *testing.T) {
 			MaxRetries:     2,
 			InitialBackoff: 10 * time.Millisecond,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		resp, genErr := client.Generate(context.Background(), &GenerateRequest{
 			RequestID: "test",
@@ -1017,11 +1236,21 @@ func testNetworkErrors(t *testing.T) {
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Equal(t, httpclient.ErrCategoryServer, genErr.Category)
-		assert.True(t, genErr.IsRetryable())
-		assert.Contains(t, genErr.Message, "failed to execute request")
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if genErr.Category != httpclient.ErrCategoryServer {
+			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryServer)
+		}
+		if !genErr.IsRetryable() {
+			t.Error("expected true")
+		}
+		if !strings.Contains(genErr.Message, "failed to execute request") {
+			t.Errorf("expected %q to contain %q", genErr.Message, "failed to execute request")
+		}
 	})
 
 	t.Run("should handle DNS resolution failure", func(t *testing.T) {
@@ -1031,7 +1260,9 @@ func testNetworkErrors(t *testing.T) {
 			MaxRetries:     1,
 			InitialBackoff: 10 * time.Millisecond,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		resp, genErr := client.Generate(context.Background(), &GenerateRequest{
 			RequestID: "test",
@@ -1039,9 +1270,15 @@ func testNetworkErrors(t *testing.T) {
 			Params:    map[string]interface{}{"model": "test"},
 		})
 
-		assert.Nil(t, resp)
-		require.NotNil(t, genErr)
-		assert.Equal(t, httpclient.ErrCategoryServer, genErr.Category)
+		if resp != nil {
+			t.Errorf("expected nil response, got %v", resp)
+		}
+		if genErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if genErr.Category != httpclient.ErrCategoryServer {
+			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryServer)
+		}
 	})
 
 	t.Run("should retry and recover from connection close", func(t *testing.T) {
@@ -1069,7 +1306,9 @@ func testNetworkErrors(t *testing.T) {
 			MaxRetries:     3,
 			InitialBackoff: 10 * time.Millisecond,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		resp, genErr := client.Generate(context.Background(), &GenerateRequest{
 			RequestID: "test",
@@ -1078,8 +1317,14 @@ func testNetworkErrors(t *testing.T) {
 		})
 
 		// Should eventually succeed after retries
-		assert.Nil(t, genErr)
-		assert.NotNil(t, resp)
-		assert.GreaterOrEqual(t, attemptCount, 2)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Error("expected non-nil response")
+		}
+		if attemptCount < 2 {
+			t.Errorf("expected %v >= %v", attemptCount, 2)
+		}
 	})
 }

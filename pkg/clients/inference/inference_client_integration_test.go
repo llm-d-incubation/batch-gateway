@@ -30,8 +30,6 @@ import (
 	"time"
 
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // Integration tests using llm-d-inference-sim mock server running in Docker
@@ -113,7 +111,9 @@ func testHTTPClientBasicInference(t *testing.T) {
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
 	})
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	t.Run("should handle multiple sequential requests", func(t *testing.T) {
 		// Verifies that client can handle multiple requests and reuses connections
@@ -131,8 +131,12 @@ func testHTTPClientBasicInference(t *testing.T) {
 			ctx := context.Background()
 			resp, genErr := client.Generate(ctx, req)
 
-			assert.Nil(t, genErr, "request %d failed", i)
-			require.NotNil(t, resp, "request %d returned nil response", i)
+			if genErr != nil {
+				t.Errorf("request %d failed: %v", i, genErr)
+			}
+			if resp == nil {
+				t.Fatalf("request %d returned nil response", i)
+			}
 		}
 	})
 
@@ -161,7 +165,9 @@ func testHTTPClientBasicInference(t *testing.T) {
 		// Verify all requests completed successfully
 		for i := 0; i < numRequests; i++ {
 			inferr := <-results
-			assert.Nil(t, inferr, "concurrent request %d failed", i)
+			if inferr != nil {
+				t.Errorf("concurrent request %d failed: %v", i, inferr)
+			}
 		}
 	})
 }
@@ -187,7 +193,9 @@ func testHTTPClientLatencySimulation(t *testing.T) {
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
 	})
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	t.Run("should handle time-to-first-token latency", func(t *testing.T) {
 		req := &GenerateRequest{
@@ -204,11 +212,18 @@ func testHTTPClientLatencySimulation(t *testing.T) {
 		resp, genErr := client.Generate(context.Background(), req)
 		duration := time.Since(start)
 
-		assert.Nil(t, genErr)
-		require.NotNil(t, resp)
-		// Should take at least 200ms for TTFT
-		assert.GreaterOrEqual(t, duration, 180*time.Millisecond)
-		assert.Less(t, duration, 2*time.Second)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if duration < 180*time.Millisecond {
+			t.Errorf("expected duration >= 180ms, got %v", duration)
+		}
+		if duration >= 2*time.Second {
+			t.Errorf("expected duration < 2s, got %v", duration)
+		}
 	})
 
 	t.Run("should handle inter-token latency", func(t *testing.T) {
@@ -226,10 +241,16 @@ func testHTTPClientLatencySimulation(t *testing.T) {
 		resp, genErr := client.Generate(context.Background(), req)
 		duration := time.Since(start)
 
-		assert.Nil(t, genErr)
-		require.NotNil(t, resp)
+		if genErr != nil {
+			t.Errorf("expected no error, got %v", genErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
 		// With 10 tokens, TTFT=200ms + ~10*50ms = ~700ms total
-		assert.GreaterOrEqual(t, duration, 200*time.Millisecond)
+		if duration < 200*time.Millisecond {
+			t.Errorf("expected duration >= 200ms, got %v", duration)
+		}
 	})
 }
 
@@ -260,7 +281,9 @@ func testHTTPClientFailureInjection(t *testing.T) {
 			MaxRetries:     5,
 			InitialBackoff: 50 * time.Millisecond,
 		})
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		req := &GenerateRequest{
 			RequestID: "mixed-failure-001",
@@ -278,11 +301,16 @@ func testHTTPClientFailureInjection(t *testing.T) {
 		// Should likely succeed (98.5% probability)
 		// If it fails, that's acceptable but unlikely
 		if inferr == nil {
-			assert.NotNil(t, resp)
+			if resp == nil {
+				t.Error("expected non-nil response")
+			}
 		} else {
-			// If it did fail, verify it's the right type
-			assert.Equal(t, httpclient.ErrCategoryServer, inferr.Category)
-			assert.True(t, inferr.IsRetryable())
+			if inferr.Category != httpclient.ErrCategoryServer {
+				t.Errorf("got category %v, want %v", inferr.Category, httpclient.ErrCategoryServer)
+			}
+			if !inferr.IsRetryable() {
+				t.Error("expected error to be retryable")
+			}
 		}
 	})
 }
