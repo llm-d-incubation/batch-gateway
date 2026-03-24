@@ -101,8 +101,8 @@ func createPhysicalFile(t *testing.T, filename, tenantID string) {
 		t.Fatalf("create file: %v", err)
 	}
 	t.Cleanup(func() {
-		os.Remove(path)
-		os.Remove(dir) // only succeeds if empty, which is fine
+		_ = os.Remove(path)
+		_ = os.Remove(dir)
 	})
 }
 

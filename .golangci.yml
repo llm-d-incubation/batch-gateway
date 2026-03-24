@@ -1,0 +1,31 @@
+# golangci-lint configuration for batch-gateway.
+#
+# This is an initial setup to make golangci-lint pass cleanly.
+# The rules below reflect what seemed reasonable at the time of writing,
+# but they are not set in stone — feel free to propose changes in a PR
+# if something doesn't fit the team's preferences.
+#
+# Key decision: defer X.Close() on read-only / cleanup resources is
+# excluded from errcheck. Write-path Close errors (e.g. after writing
+# to a file) should still be checked explicitly.
+
+# v2 is required for Go 1.25+ (v1 does not support Go 1.25).
+# See: https://github.com/golangci/golangci-lint/issues/5873
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        # Read-only or cleanup Close — errors are unrecoverable and
+        # callers cannot meaningfully act on them.
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*net.TCPListener).Close
+        - (net.Conn).Close

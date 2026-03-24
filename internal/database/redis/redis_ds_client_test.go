@@ -77,12 +77,12 @@ func TestRedisDSClient(t *testing.T) {
 	redisCaCert := os.Getenv("TEST_REDIS_CACERT_PATH")
 	var (
 		minirds *miniredis.Miniredis
-		tagKey1 string = "key-tag-1"
-		tagKey2 string = "key-tag-2"
-		tagKey3 string = "key-tag-3"
-		tagVal1 string = "val-tag-1"
-		tagVal2 string = "val-tag-2"
-		tagVal3 string = "val-tag-3"
+		tagKey1 = "key-tag-1"
+		tagKey2 = "key-tag-2"
+		tagKey3 = "key-tag-3"
+		tagVal1 = "val-tag-1"
+		tagVal2 = "val-tag-2"
+		tagVal3 = "val-tag-3"
 	)
 
 	// Start miniredis if no external redis URL is provided.
@@ -101,7 +101,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, fileClient, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 		t.Logf("Memory address of the clients: base=%p batch=%p file=%p exchange=%p",
 			baseClient, batchClient, fileClient, exchClient)
@@ -114,7 +114,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store.
@@ -354,7 +354,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store.
@@ -598,7 +598,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Get event channel.
@@ -657,7 +657,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Send empty events array.
@@ -757,7 +757,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Test all event types (Cancel, Pause, Resume).
@@ -799,7 +799,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Send events before creating consumer channel.
@@ -841,7 +841,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Send multiple events to different IDs.
@@ -906,7 +906,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Test closing consumer channel multiple times (should be idempotent).
@@ -927,7 +927,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Test sending large number of events.
@@ -976,7 +976,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		origStatus, updStatus := []byte("orig status"), []byte("updated status")
@@ -1035,7 +1035,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		itemData := []byte("additional data")
@@ -1100,7 +1100,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Enqueue with nil item.
@@ -1182,7 +1182,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Enqueue items with identical SLO values.
@@ -1283,7 +1283,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store batch with spec.
@@ -1352,7 +1352,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store file with spec.
@@ -1418,7 +1418,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store with empty ID should fail validation.
@@ -1524,7 +1524,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store with empty ID should fail validation.
@@ -1556,7 +1556,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store batch with empty spec and status.
@@ -1606,7 +1606,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store batch.
@@ -1667,7 +1667,7 @@ func TestRedisDSClient(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			baseClient.Close()
+			_ = baseClient.Close()
 		})
 
 		// Store batches with different tenants.

@@ -119,7 +119,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 		return p.recoverWithFailed(ctx, dbItem, err, nil)
 	}
 
-	status := jobInfo.BatchJob.BatchStatusInfo.Status
+	status := jobInfo.BatchJob.Status
 	statusStr := string(status)
 	logger.V(logging.INFO).Info("Startup recovery: recovering job", "status", statusStr)
 

@@ -45,7 +45,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
 	planBuildStart := time.Now()
 	jobID := jobInfo.JobID
-	inputFileID := jobInfo.BatchJob.BatchSpec.InputFileID
+	inputFileID := jobInfo.BatchJob.InputFileID
 	if inputFileID == "" {
 		err := fmt.Errorf("input file ID is empty")
 		logger.V(logging.ERROR).Error(err, "Input file ID is empty")

@@ -78,7 +78,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize files storage client: %w", err)
 	}
-	defer filesClient.Close()
+	defer func() { _ = filesClient.Close() }()
 
 	var batchDB db.BatchDBClient
 	var fileDB db.FileDBClient
@@ -94,8 +94,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize database clients: %w", err)
 	}
-	defer batchDB.Close()
-	defer fileDB.Close()
+	defer func() { _ = batchDB.Close() }()
+	defer func() { _ = fileDB.Close() }()
 
 	gc := collector.NewGarbageCollector(batchDB, fileDB, filesClient, cfg.DryRun, cfg.Interval, nil)
 

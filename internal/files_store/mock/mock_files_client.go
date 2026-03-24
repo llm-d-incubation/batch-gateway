@@ -68,18 +68,17 @@ func (m *MockBatchFilesClient) Store(ctx context.Context, fileName, folderName s
 		lineLen := int64(len(line))
 
 		if fileSizeLimit > 0 && totalBytes+lineLen+1 > fileSizeLimit {
-			// clean up the file (defer will also close it, but that's safe)
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 			return nil, fmt.Errorf("file size exceeds limit of %d bytes", fileSizeLimit)
 		}
 
 		// write line to file
 		if _, err := file.Write(line); err != nil {
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 			return nil, fmt.Errorf("failed to write file: %w", err)
 		}
 		if _, err := file.Write([]byte("\n")); err != nil {
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 			return nil, fmt.Errorf("failed to write file: %w", err)
 		}
 
@@ -88,14 +87,13 @@ func (m *MockBatchFilesClient) Store(ctx context.Context, fileName, folderName s
 
 		// check line count limit
 		if lineNumLimit > 0 && lineCount > lineNumLimit {
-			// clean up the file (defer will also close it, but that's safe)
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 			return nil, fmt.Errorf("file line count exceeds limit of %d lines", lineNumLimit)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		os.Remove(filePath)
+		_ = os.Remove(filePath)
 		return nil, fmt.Errorf("failed to read input: %w", err)
 	}
 

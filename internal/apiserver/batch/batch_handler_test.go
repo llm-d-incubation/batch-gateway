@@ -148,8 +148,8 @@ func TestBatchHandler(t *testing.T) {
 					if batch.CompletionWindow != "24h" {
 						t.Errorf("Expected completion_window to be '24h', got %v", batch.CompletionWindow)
 					}
-					if batch.BatchStatusInfo.Status != openai.BatchStatusValidating {
-						t.Errorf("Expected status to be '%s', got %v", openai.BatchStatusValidating, batch.BatchStatusInfo)
+					if batch.Status != openai.BatchStatusValidating {
+						t.Errorf("Expected status to be '%s', got %v", openai.BatchStatusValidating, batch.Status)
 					}
 					if batch.RequestCounts.Total != 0 {
 						t.Errorf("Expected request_counts.total to be 0, got %v", batch.RequestCounts.Total)
