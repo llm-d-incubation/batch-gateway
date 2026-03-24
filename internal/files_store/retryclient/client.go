@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
@@ -48,10 +49,17 @@ func New(inner api.BatchFilesClient, cfg retry.Config) *Client {
 func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
 	*api.BatchFileMetadata, error,
 ) {
+	// All current callers pass seekable readers (os.File, multipart.File),
+	// but we guard against non-seekable ones for forward compatibility.
+	// Without Seek, the reader cannot be rewound after a failed attempt,
+	// so retrying would upload partial/empty data.
 	rs, seekable := reader.(io.ReadSeeker)
 	if !seekable {
 		return c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, reader)
 	}
+
+	tenantID := ctxkeys.TenantID(ctx)
+	component := ctxkeys.Component(ctx)
 
 	var meta *api.BatchFileMetadata
 	err := retry.Do(ctx, c.cfg, func() error {
@@ -59,6 +67,7 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 		meta, storeErr = c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, rs)
 		return storeErr
 	}, func(attempt int, retryErr error) error {
+		RecordRetry("store", tenantID, component)
 		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file store",
 			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
 		// Seek failure means the reader cannot be rewound, so subsequent
@@ -68,10 +77,16 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 		}
 		return nil
 	})
+	if err != nil && c.cfg.MaxRetries > 0 {
+		RecordRetryExhausted("store", tenantID, component)
+	}
 	return meta, err
 }
 
 func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.ReadCloser, *api.BatchFileMetadata, error) {
+	tenantID := ctxkeys.TenantID(ctx)
+	component := ctxkeys.Component(ctx)
+
 	var (
 		rc   io.ReadCloser
 		meta *api.BatchFileMetadata
@@ -81,21 +96,36 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 		rc, meta, retrieveErr = c.inner.Retrieve(ctx, fileName, folderName)
 		return retrieveErr
 	}, func(attempt int, retryErr error) error {
+		if rc != nil {
+			_ = rc.Close()
+		}
+		RecordRetry("retrieve", tenantID, component)
 		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file retrieve",
 			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
 		return nil
 	})
+	if err != nil && c.cfg.MaxRetries > 0 {
+		RecordRetryExhausted("retrieve", tenantID, component)
+	}
 	return rc, meta, err
 }
 
 func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
-	return retry.Do(ctx, c.cfg, func() error {
+	tenantID := ctxkeys.TenantID(ctx)
+	component := ctxkeys.Component(ctx)
+
+	err := retry.Do(ctx, c.cfg, func() error {
 		return c.inner.Delete(ctx, fileName, folderName)
 	}, func(attempt int, retryErr error) error {
+		RecordRetry("delete", tenantID, component)
 		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file delete",
 			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
 		return nil
 	})
+	if err != nil && c.cfg.MaxRetries > 0 {
+		RecordRetryExhausted("delete", tenantID, component)
+	}
+	return err
 }
 
 func (c *Client) Close() error {

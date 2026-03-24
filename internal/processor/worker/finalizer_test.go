@@ -257,7 +257,7 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
-	// Setup job dir manually instead of using setupJobWithOutputFile which creates a new DB
+	// Setup job dir manually to reuse the pre-seeded DB client
 	jobDir, _ := p.jobRootDir(jobID, tenantID)
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)

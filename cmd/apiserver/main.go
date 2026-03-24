@@ -24,6 +24,7 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/server"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"k8s.io/klog/v2"
@@ -40,7 +41,7 @@ func main() {
 	defer klog.Flush()
 
 	// graceful shutdown
-	parentCtx := context.Background()
+	parentCtx := ctxkeys.WithComponent(context.Background(), "apiserver")
 	ctx, cancel := interrupt.ContextWithSignal(parentCtx)
 	defer cancel()
 

@@ -25,7 +25,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
@@ -203,5 +207,131 @@ func TestDelete_SucceedsAfterRetry(t *testing.T) {
 	}
 	if mock.deleteCalls != 3 {
 		t.Fatalf("expected 3 delete calls, got %d", mock.deleteCalls)
+	}
+}
+
+func metricsCtx() context.Context {
+	ctx := ctxkeys.WithTenantID(context.Background(), "test-tenant")
+	return ctxkeys.WithComponent(ctx, "test-component")
+}
+
+func counterValue(t *testing.T, name string, wantLabels map[string]string) float64 {
+	t.Helper()
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error: %v", err)
+	}
+
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if hasLabels(m, wantLabels) {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+
+	t.Fatalf("metric %q with labels %v not found", name, wantLabels)
+	return 0
+}
+
+func hasLabels(m *dto.Metric, wantLabels map[string]string) bool {
+	if len(m.GetLabel()) != len(wantLabels) {
+		return false
+	}
+	for _, lp := range m.GetLabel() {
+		wantValue, ok := wantLabels[lp.GetName()]
+		if !ok || lp.GetValue() != wantValue {
+			return false
+		}
+	}
+	return true
+}
+
+func TestMetrics_RetriesRecorded(t *testing.T) {
+	retriesTotal.Reset()
+	retryExhaustedTotal.Reset()
+	retryExhaustedTotal.WithLabelValues("store", "test-tenant", "test-component").Add(0)
+
+	mock := &mockFilesClient{failUntil: 2}
+	c := New(mock, retryCfg())
+
+	_, err := c.Store(metricsCtx(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := counterValue(t, "file_storage_retries_total", map[string]string{
+		"operation": "store",
+		"tenant_id": "test-tenant",
+		"component": "test-component",
+	})
+	if got != 2 {
+		t.Fatalf("file_storage_retries_total{store} = %v, want 2", got)
+	}
+
+	exhausted := counterValue(t, "file_storage_retry_exhausted_total", map[string]string{
+		"operation": "store",
+		"tenant_id": "test-tenant",
+		"component": "test-component",
+	})
+	if exhausted != 0 {
+		t.Fatalf("file_storage_retry_exhausted_total{store} = %v, want 0 (succeeded)", exhausted)
+	}
+}
+
+func TestMetrics_ExhaustedRecorded(t *testing.T) {
+	retriesTotal.Reset()
+	retryExhaustedTotal.Reset()
+
+	mock := &mockFilesClient{failUntil: 10}
+	c := New(mock, retryCfg())
+
+	_, err := c.Store(metricsCtx(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	retries := counterValue(t, "file_storage_retries_total", map[string]string{
+		"operation": "store",
+		"tenant_id": "test-tenant",
+		"component": "test-component",
+	})
+	if retries != 3 {
+		t.Fatalf("file_storage_retries_total{store} = %v, want 3", retries)
+	}
+
+	exhausted := counterValue(t, "file_storage_retry_exhausted_total", map[string]string{
+		"operation": "store",
+		"tenant_id": "test-tenant",
+		"component": "test-component",
+	})
+	if exhausted != 1 {
+		t.Fatalf("file_storage_retry_exhausted_total{store} = %v, want 1", exhausted)
+	}
+}
+
+func TestMetrics_DeleteRetries(t *testing.T) {
+	retriesTotal.Reset()
+	retryExhaustedTotal.Reset()
+
+	mock := &mockFilesClient{failUntil: 1}
+	c := New(mock, retryCfg())
+
+	err := c.Delete(metricsCtx(), "f.txt", "folder")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := counterValue(t, "file_storage_retries_total", map[string]string{
+		"operation": "delete",
+		"tenant_id": "test-tenant",
+		"component": "test-component",
+	})
+	if got != 1 {
+		t.Fatalf("file_storage_retries_total{delete} = %v, want 1", got)
 	}
 }

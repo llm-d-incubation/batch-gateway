@@ -34,6 +34,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
@@ -138,7 +139,7 @@ func (p *Processor) finalizeJob(
 	return nil
 }
 
-// uploadOutputFile uploads the local output file to shared storage with retry.
+// uploadOutputFile uploads the local output file to shared storage.
 // Returns the file size; returns 0 without error if the file is empty (all requests failed).
 // Per the OpenAI batch spec, output_file_id is optional and may be omitted when there are no
 // successful requests.
@@ -154,7 +155,7 @@ func (p *Processor) uploadOutputFile(
 	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID)
 }
 
-// uploadErrorFile uploads the local error file to shared storage with retry.
+// uploadErrorFile uploads the local error file to shared storage.
 // Returns the file size; returns 0 without error if the file is empty (no errors occurred).
 // Per the OpenAI batch spec, error_file_id is optional and may be omitted when no requests failed.
 func (p *Processor) uploadErrorFile(
@@ -198,6 +199,7 @@ func (p *Processor) uploadJobFile(
 		return 0, fmt.Errorf("failed to get folder name: %w", err)
 	}
 
+	ctx = ctxkeys.WithTenantID(ctx, tenantID)
 	fileMeta, err := p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload file %s: %w", fileName, err)

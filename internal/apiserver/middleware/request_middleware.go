@@ -31,6 +31,7 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"k8s.io/klog/v2"
@@ -91,6 +92,7 @@ func NewRequestMiddleware(config *common.ServerConfig) common.RouteMiddleware {
 			ctx := klog.NewContext(r.Context(), logger)
 			ctx = context.WithValue(ctx, common.RequestIDKey, requestID)
 			ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
+			ctx = ctxkeys.WithTenantID(ctx, tenantID)
 
 			// Log incoming request
 			logger.V(logging.TRACE).Info("incoming request",

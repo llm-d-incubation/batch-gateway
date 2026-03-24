@@ -321,33 +321,6 @@ func seedDBJob(t *testing.T, dbClient db.BatchDBClient, jobID string) *db.BatchI
 // Job setup helpers
 // ---------------------------------------------------------------------------
 
-// setupJobWithOutputFile creates the local job directory structure with a dummy output file.
-func setupJobWithOutputFile(t *testing.T, cfg *config.ProcessorConfig, jobID, tenantID string) *batch_types.JobInfo {
-	t.Helper()
-	p := mustNewProcessor(t, cfg, validProcessorClients())
-
-	jobDir, err := p.jobRootDir(jobID, tenantID)
-	if err != nil {
-		t.Fatalf("jobRootDir: %v", err)
-	}
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-
-	outputPath, err := p.jobOutputFilePath(jobID, tenantID)
-	if err != nil {
-		t.Fatalf("jobOutputFilePath: %v", err)
-	}
-	if err := os.WriteFile(outputPath, []byte("test output\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	return &batch_types.JobInfo{
-		JobID:    jobID,
-		TenantID: tenantID,
-	}
-}
-
 // setupExecutionJob creates a complete job directory with input file, plan files, and model map.
 func setupExecutionJob(
 	t *testing.T,
