@@ -75,13 +75,13 @@ Authorization: Bearer {{apiKey}}
 # Set @outputfileIdN with the output_file_id returned in this step
 @outputfileIdN =
 
-### Download Output File (when status = completed)
-GET {{baseUrl}}/files/{{outputfileIdN}}/content
+### List All Files
+GET {{baseUrl}}/files
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
-### List All Files
-GET {{baseUrl}}/files
+### Download Output File (when status = completed)
+GET {{baseUrl}}/files/{{outputfileIdN}}/content
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
@@ -197,5 +197,10 @@ Accept: application/json
 
 ### Delete File
 DELETE {{baseUrl}}/files/{{fileIdD}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### List All Files
+GET {{baseUrl}}/files
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
