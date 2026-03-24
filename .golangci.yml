@@ -9,6 +9,8 @@
 # excluded from errcheck. Write-path Close errors (e.g. after writing
 # to a file) should still be checked explicitly.
 
+# v2 is required for Go 1.25+ (v1 does not support Go 1.25).
+# See: https://github.com/golangci/golangci-lint/issues/5873
 version: "2"
 
 linters:
@@ -27,5 +29,3 @@ linters:
         - (io.ReadCloser).Close
         - (*net.TCPListener).Close
         - (net.Conn).Close
-
-issues: {}
