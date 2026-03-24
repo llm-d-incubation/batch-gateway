@@ -75,20 +75,24 @@ jobs:
       - name: Package binaries as tar.gz (preserves execute bit on extract)
         run: make package-release
 
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install yq
+        uses: frenck/action-setup-yq@v1
+
       - name: Package and publish Helm chart
         run: |
           VERSION="${{ github.ref_name }}"
           CHART_VERSION="${VERSION#v}"
+          export VERSION
+          export CHART_VERSION
 
-          # Install Helm
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-          # Pin image tags in values.yaml to the release version
-          sed -i "s|tag: \"latest\"|tag: \"${VERSION}\"|g" charts/batch-gateway/values.yaml
+          # Pin image tags in values.yaml to the release version (structured edits; avoids brittle sed)
+          yq -i '.apiserver.image.tag = strenv(VERSION) | .processor.image.tag = strenv(VERSION) | .gc.image.tag = strenv(VERSION)' charts/batch-gateway/values.yaml
 
           # Update Chart.yaml version and appVersion
-          sed -i "s/^version: .*/version: ${CHART_VERSION}/" charts/batch-gateway/Chart.yaml
-          sed -i "s/^appVersion: .*/appVersion: \"${CHART_VERSION}\"/" charts/batch-gateway/Chart.yaml
+          yq -i '.version = strenv(CHART_VERSION) | .appVersion = strenv(CHART_VERSION)' charts/batch-gateway/Chart.yaml
 
           # Package the chart
           helm package charts/batch-gateway -d release/
