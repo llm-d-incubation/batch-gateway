@@ -147,7 +147,7 @@ func NewRedisClient(ctx context.Context, cnf *RedisClientConfig) (*gredis.Client
 	if cnf.EnableTracing {
 		if err := redisotel.InstrumentTracing(rds); err != nil {
 			logger.Error(err, "NewRedisClient: failed to instrument Redis tracing")
-			rds.Close()
+			_ = rds.Close()
 			return nil, err
 		}
 	}
@@ -156,7 +156,7 @@ func NewRedisClient(ctx context.Context, cnf *RedisClientConfig) (*gredis.Client
 	_, err = rds.Ping(ctx).Result()
 	if err != nil {
 		logger.Error(err, "NewRedisClient")
-		rds.Close()
+		_ = rds.Close()
 		return nil, err
 	}
 	logger.Info("NewRedisClient", "clientName", redisOps.ClientName)

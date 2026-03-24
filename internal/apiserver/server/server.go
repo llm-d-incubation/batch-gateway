@@ -155,7 +155,7 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Error(err, "failed to start")
 		return err
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	httpserver := &http.Server{
 		Handler:           s.apiHandler,

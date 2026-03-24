@@ -459,7 +459,7 @@ func (c *BatchAPIHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 		// Log error but don't fail the request - return what we have from DB
 	}
 
-	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.BatchSpec.InputFileID)}
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.InputFileID)}
 	if batch.OutputFileID != "" {
 		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
 	}
@@ -488,7 +488,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.BatchSpec.InputFileID)}
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.InputFileID)}
 	if batch.OutputFileID != "" {
 		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
 	}

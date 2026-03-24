@@ -172,12 +172,12 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 
 func (c *BatchDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	deletedIDs []string, err error) {
-	return c.DSClientRedis.dBDelete(ctx, IDs, itemTypeBatch, "DBDelete[Batch]")
+	return c.dBDelete(ctx, IDs, itemTypeBatch, "DBDelete[Batch]")
 }
 
 func (c *FileDBClientRedis) DBDelete(ctx context.Context, IDs []string) (
 	deletedIDs []string, err error) {
-	return c.DSClientRedis.dBDelete(ctx, IDs, itemTypeFile, "DBDelete[File]")
+	return c.dBDelete(ctx, IDs, itemTypeFile, "DBDelete[File]")
 }
 
 func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, logPref string) (

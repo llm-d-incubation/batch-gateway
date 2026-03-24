@@ -114,7 +114,7 @@ func run() error {
 		logger.Error(err, "Failed to build processor clients")
 		return err
 	}
-	defer procClients.Close()
+	defer func() { _ = procClients.Close() }()
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)

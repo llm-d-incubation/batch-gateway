@@ -221,7 +221,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// job is not in runnable state.
 		if !batch_utils.IsJobRunnable(jobInfo.BatchJob) {
-			jlogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.BatchStatusInfo.Status)
+			jlogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
 
 			// persistent status update is not needed.
 			// do not need to delete the task from the queue.
