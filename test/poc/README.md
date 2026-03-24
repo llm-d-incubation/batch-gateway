@@ -99,7 +99,8 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 │                                                                │
 └─────────────────────────────▲──────────────────────────────────┘
                               │
-                              │ Port-forwards
+                              │ kind extraPortMappings
+                              │ (NodePort → localhost)
                               │
                       ┌───────┴─────────┐
                       │  localhost      │
@@ -235,7 +236,9 @@ Prometheus automatically scrapes metrics from the components.
 ### Connection Refused
 
 - Ensure the batch gateway is deployed: `make dev-deploy`
-- Check that port forwarding is active (should happen automatically after deploy)
+- Verify the kind cluster is running: `kind get clusters`
+- Check that services are up: `kubectl get pods -n default`
+- The kind cluster maps NodePort services directly to localhost (no separate port-forward needed)
 
 ### TLS Certificate Errors
 

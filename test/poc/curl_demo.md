@@ -182,12 +182,17 @@ curl -k -s -X DELETE https://localhost:8000/v1/files/$FILE_ID \
 ### Q: Connection refused
 
 ```bash
-# Check if port-forward is running
-ps aux | grep port-forward
+# Check if kind cluster is running
+kind get clusters
 
-# Restart port-forward
+# Check if services are deployed
+kubectl get pods -n default
+
+# Redeploy if needed
 make dev-deploy
 ```
+
+**Note**: The kind cluster uses `extraPortMappings` to map NodePort services directly to localhost. No separate kubectl port-forward is needed.
 
 ### Q: Batch stuck in validating
 
