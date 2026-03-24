@@ -93,6 +93,9 @@ jobs:
           # Package the chart
           helm package charts/batch-gateway -d release/
 
+          # Append chart digest (package-release only hashes binary *.tar.gz)
+          (cd release && sha256sum "batch-gateway-${CHART_VERSION}.tgz" >> SHA256SUMS && cat SHA256SUMS)
+
           # Login to GHCR and push chart to OCI registry
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
           helm push release/batch-gateway-${CHART_VERSION}.tgz oci://ghcr.io/llm-d-incubation/charts

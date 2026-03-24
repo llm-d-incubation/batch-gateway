@@ -47,9 +47,9 @@ Pushing `v*.*.`* **always** triggers the workflow if the check passes; there is 
 
 Release notes are generated from merged PRs and grouped by labels. See `.github/release.yml` for exclusions and categories. Assign appropriate labels to PRs so they appear in the correct section.
 
-## Verifying binary checksums
+## Verifying checksums
 
-Each release includes `**SHA256SUMS`** for every `**.tar.gz`** asset. After downloading into one directory:
+Each release includes `**SHA256SUMS`** for every binary `**.tar.gz**` and the Helm chart `**.tgz**`. After downloading into one directory:
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -68,7 +68,7 @@ tar xzf batch-gateway-apiserver-linux-amd64.tar.gz
 - Docker image names and tag
 - Helm chart OCI URL and install command
 - Upgrade or migration notes
-- That Linux binaries are attached as `.tar.gz` with `SHA256SUMS`
+- That Linux binaries are attached as `.tar.gz`, the Helm chart as `.tgz`, with `SHA256SUMS` covering those files
 
 The workflow does **not** automatically inject this file into the release body; it only uses GitHub's generated notes. Paste the template content manually if you want it in the description.
 
