@@ -14,13 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package retry provides a shared retry configuration and exponential backoff helper.
+// Package retry provides a shared retry configuration and exponential backoff
+// helper backed by github.com/cenkalti/backoff/v5.
 package retry
 
 import (
 	"context"
 	"fmt"
 	"time"
+
+	cbackoff "github.com/cenkalti/backoff/v5"
 )
 
 // Config holds retry parameters for exponential backoff.
@@ -34,8 +37,7 @@ type Config struct {
 func (c *Config) Validate() error {
 	if c.MaxRetries < 0 {
 		return fmt.Errorf("max_retries must be >= 0")
-	}
-	if c.MaxRetries > 0 {
+	} else if c.MaxRetries > 0 {
 		if c.InitialBackoff <= 0 {
 			return fmt.Errorf("initial_backoff must be > 0 when max_retries > 0")
 		}
@@ -49,34 +51,48 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Do executes fn and retries on error with exponential backoff.
-// If MaxRetries is 0, fn is called exactly once.
-// The onRetry callback, if non-nil, is called before each retry sleep
-// with the zero-based retry index and the error from the previous attempt.
-// If onRetry returns a non-nil error, the retry loop is aborted immediately
+// Do executes fn with retries using cenkalti/backoff exponential backoff.
+// If MaxRetries is 0, fn is called exactly once with no retries.
+// The onRetry callback, if non-nil, is called after fn fails and before
+// the next retry attempt. The attempt parameter is the zero-based retry
+// index (0 = first retry, not the initial call).
+// If onRetry returns a non-nil error, retries are aborted immediately
 // and that error is returned (useful for non-recoverable preparation failures
 // such as a failed Seek).
 func Do(ctx context.Context, cfg Config, fn func() error, onRetry func(attempt int, err error) error) error {
-	err := fn()
-	for attempt := 0; err != nil && attempt < cfg.MaxRetries; attempt++ {
-		if onRetry != nil {
-			if abortErr := onRetry(attempt, err); abortErr != nil {
-				return abortErr
-			}
-		}
-
-		backoff := cfg.InitialBackoff * (1 << attempt)
-		if backoff > cfg.MaxBackoff {
-			backoff = cfg.MaxBackoff
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("retry cancelled: %w", ctx.Err())
-		case <-time.After(backoff):
-		}
-
-		err = fn()
+	if cfg.MaxRetries == 0 {
+		return fn()
 	}
+
+	expBackoff := &cbackoff.ExponentialBackOff{
+		InitialInterval:     cfg.InitialBackoff,
+		MaxInterval:         cfg.MaxBackoff,
+		Multiplier:          2,
+		RandomizationFactor: 0.5,
+	}
+
+	var lastErr error // Track the last error from fn so onRetry receives it before the next attempt.
+	retryCount := 0
+	firstCall := true
+
+	_, err := cbackoff.Retry(ctx, func() (struct{}, error) {
+		if !firstCall && onRetry != nil {
+			if abortErr := onRetry(retryCount, lastErr); abortErr != nil {
+				return struct{}{}, cbackoff.Permanent(abortErr)
+			}
+			retryCount++
+		}
+		firstCall = false
+
+		lastErr = fn()
+		if lastErr != nil {
+			return struct{}{}, lastErr
+		}
+		return struct{}{}, nil
+	},
+		cbackoff.WithBackOff(expBackoff),
+		cbackoff.WithMaxTries(uint(cfg.MaxRetries)+1),
+		cbackoff.WithMaxElapsedTime(0),
+	)
 	return err
 }
