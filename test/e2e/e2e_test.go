@@ -91,4 +91,5 @@ func TestE2E(t *testing.T) {
 	t.Run("MultiTenant", testMultiTenant)
 	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
+	t.Run("HelmUpgrade", testHelmUpgrade)
 }

@@ -1,0 +1,108 @@
+suite: apiserver configmap
+templates:
+  - templates/apiserver-configmap.yaml
+tests:
+  - it: should render a ConfigMap with default values
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'port: "8000"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'observability_port: "8081"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'database_type: "postgresql"'
+
+  - it: should render tenantHeader when set
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tenant_header: "X-MaaS-Username"'
+
+  - it: should not render tenantHeader when empty
+    set:
+      apiserver.config.tenantHeader: ""
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "tenant_header:"
+
+  - it: should render TLS cert paths when TLS is enabled
+    set:
+      apiserver.tls.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'ssl_cert_file: "/etc/tls/tls.crt"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'ssl_key_file: "/etc/tls/tls.key"'
+
+  - it: should not render TLS cert paths when TLS is disabled
+    set:
+      apiserver.tls.enabled: false
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "ssl_cert_file:"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "ssl_key_file:"
+
+  - it: should render passThroughHeaders list
+    set:
+      apiserver.config.batchAPI.passThroughHeaders:
+        - "X-Custom-Header"
+        - "X-Another-Header"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'pass_through_headers:'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '- "X-Custom-Header"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '- "X-Another-Header"'
+
+  - it: should not render passThroughHeaders when empty
+    set:
+      apiserver.config.batchAPI.passThroughHeaders: []
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "pass_through_headers:"
+
+  - it: should render file_api config
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'default_expiration_seconds: (7\.776e\+06|7776000)'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_size_bytes: (2\.097152e\+08|209715200)'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_line_count: 50000'
+
+  - it: should render redis config
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'redis:'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'db: 0'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'enable_tls: false'
+
+  - it: should not render ConfigMap when apiserver is disabled
+    set:
+      apiserver.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

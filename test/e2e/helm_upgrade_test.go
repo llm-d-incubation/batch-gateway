@@ -1,0 +1,156 @@
+// Copyright 2026 The llm-d Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package e2e_test
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+var testChartPath = getEnvOrDefault("TEST_CHART_PATH", "../../charts/batch-gateway")
+
+func testHelmUpgrade(t *testing.T) {
+	if !testKubectlAvailable {
+		t.Skip("kubectl not available, skipping helm upgrade test")
+	}
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not available, skipping helm upgrade test")
+	}
+
+	processorCMName := fmt.Sprintf("%s-processor-config", testHelmRelease)
+
+	// Snapshot current values so we can restore on failure.
+	// Cleanup is idempotent — if RestoreOriginalValues already ran successfully,
+	// this just re-applies the same values with no actual change.
+	originalValues := helmGetValues(t)
+	t.Cleanup(func() {
+		t.Log("cleanup: restoring original helm values")
+		helmUpgradeWithValues(t, originalValues)
+		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
+		waitForReady(t, testProcessorObsURL, 60*time.Second)
+	})
+
+	// 1. Upgrade: set model gateway maxRetries=0
+	t.Run("ExplicitZeroMaxRetries", func(t *testing.T) {
+		helmUpgrade(t,
+			"--set", "processor.config.modelGateways.default.maxRetries=0",
+		)
+
+		// Verify the model_gateways section contains max_retries: 0.
+		// Use a pattern that matches within the "default" gateway block
+		// to avoid false positives from redis max_retries (also 0).
+		cm := kubectlGetConfigMap(t, processorCMName)
+		pattern := regexp.MustCompile(`"default":\s*\n(?:.*\n)*?\s+max_retries:\s*0`)
+		if !pattern.MatchString(cm) {
+			t.Fatalf("expected model_gateways.default to contain max_retries: 0, got:\n%s", cm)
+		}
+		t.Log("ConfigMap correctly contains max_retries: 0 in model_gateways.default")
+
+		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
+		waitForReady(t, testProcessorObsURL, 60*time.Second)
+		t.Log("processor healthy after helm upgrade")
+	})
+
+	// 2. Restore original values and verify max_retries is no longer 0
+	t.Run("RestoreOriginalValues", func(t *testing.T) {
+		helmUpgradeWithValues(t, originalValues)
+
+		cm := kubectlGetConfigMap(t, processorCMName)
+		zeroPattern := regexp.MustCompile(`"default":\s*\n(?:.*\n)*?\s+max_retries:\s*0`)
+		if zeroPattern.MatchString(cm) {
+			t.Fatalf("expected model_gateways.default.max_retries to be restored (not 0), got:\n%s", cm)
+		}
+
+		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
+		waitForReady(t, testProcessorObsURL, 60*time.Second)
+		t.Log("original values restored successfully")
+	})
+}
+
+// helmGetValues returns the current release values as raw YAML bytes.
+func helmGetValues(t *testing.T) []byte {
+	t.Helper()
+	out, err := exec.Command("helm", "get", "values",
+		testHelmRelease, "-n", testNamespace, "-o", "yaml",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm get values failed: %v\n%s", err, out)
+	}
+	return out
+}
+
+func helmUpgrade(t *testing.T, extraArgs ...string) {
+	t.Helper()
+	helmUpgradeWithValues(t, helmGetValues(t), extraArgs...)
+}
+
+// helmUpgradeWithValues upgrades the release using the given values YAML,
+// with optional extra --set flags.
+func helmUpgradeWithValues(t *testing.T, values []byte, extraArgs ...string) {
+	t.Helper()
+
+	valuesFile := filepath.Join(t.TempDir(), "values.yaml")
+	if err := os.WriteFile(valuesFile, values, 0o600); err != nil {
+		t.Fatalf("failed to write values file: %v", err)
+	}
+
+	args := []string{
+		"upgrade", testHelmRelease, testChartPath,
+		"-n", testNamespace,
+		"-f", valuesFile,
+	}
+	args = append(args, extraArgs...)
+
+	t.Logf("helm %s", strings.Join(args, " "))
+	out, err := exec.Command("helm", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm upgrade failed: %v\n%s", err, out)
+	}
+	t.Logf("helm upgrade output: %s", strings.TrimSpace(string(out)))
+}
+
+func kubectlGetConfigMap(t *testing.T, name string) string {
+	t.Helper()
+
+	out, err := exec.Command("kubectl", "get", "configmap", name,
+		"-n", testNamespace,
+		"-o", "jsonpath={.data['config\\.yaml']}",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl get configmap failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func waitForRollout(t *testing.T, deployment string) {
+	t.Helper()
+
+	t.Logf("waiting for rollout of %s...", deployment)
+	out, err := exec.Command("kubectl", "rollout", "status",
+		fmt.Sprintf("deployment/%s", deployment),
+		"-n", testNamespace,
+		"--timeout=180s",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("rollout of %s failed: %v\n%s", deployment, err, out)
+	}
+	t.Logf("rollout of %s complete", deployment)
+}

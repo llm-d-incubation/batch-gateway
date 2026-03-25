@@ -1,0 +1,155 @@
+suite: processor configmap
+templates:
+  - templates/processor-configmap.yaml
+tests:
+  - it: should render a ConfigMap with default values
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'url: "http://localhost:8000"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'request_timeout: "5m"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_retries: 3'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'initial_backoff: "1s"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_backoff: "60s"'
+
+  - it: should render per-model gateway entries
+    set:
+      processor.config.modelGateways:
+        "default":
+          url: "http://default-gw:8000"
+          requestTimeout: "5m"
+          maxRetries: 3
+          initialBackoff: "1s"
+          maxBackoff: "60s"
+          tlsInsecureSkipVerify: false
+        "llama-3":
+          url: "http://llama-gw:8000"
+          requestTimeout: "2m"
+          maxRetries: 1
+          initialBackoff: "500ms"
+          maxBackoff: "30s"
+          tlsInsecureSkipVerify: false
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '"default":'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'url: "http://default-gw:8000"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '"llama-3":'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'url: "http://llama-gw:8000"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'request_timeout: "2m"'
+
+  - it: should render explicit zero maxRetries as 0 in model_gateways
+    set:
+      processor.config.modelGateways:
+        "default":
+          url: "http://gw:8000"
+          requestTimeout: "5m"
+          maxRetries: 0
+          initialBackoff: "1s"
+          maxBackoff: "60s"
+          tlsInsecureSkipVerify: false
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '"default":\s*\n\s+url:.*\n\s+request_timeout:.*\n\s+max_retries: 0'
+
+  - it: should render apiKeyName only when set
+    set:
+      processor.config.modelGateways:
+        "default":
+          url: "http://gw:8000"
+          requestTimeout: "5m"
+          maxRetries: 3
+          initialBackoff: "1s"
+          maxBackoff: "60s"
+          tlsInsecureSkipVerify: false
+          apiKeyName: "my-key"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'api_key_name: "my-key"'
+
+  - it: should not render apiKeyName when empty
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "api_key_name:"
+
+  - it: should render TLS fields only when set
+    set:
+      processor.config.modelGateways:
+        "default":
+          url: "http://gw:8000"
+          requestTimeout: "5m"
+          maxRetries: 3
+          initialBackoff: "1s"
+          maxBackoff: "60s"
+          tlsInsecureSkipVerify: true
+          tlsCaCertFile: "/certs/ca.pem"
+          tlsClientCertFile: "/certs/client.pem"
+          tlsClientKeyFile: "/certs/client-key.pem"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tls_insecure_skip_verify: true'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tls_ca_cert_file: "/certs/ca.pem"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tls_client_cert_file: "/certs/client.pem"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tls_client_key_file: "/certs/client-key.pem"'
+
+  - it: should not render TLS cert fields when empty
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "tls_ca_cert_file:"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "tls_client_cert_file:"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "tls_client_key_file:"
+
+  - it: should render bucket fields with correct names
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'queue_time_bucket:\n\s+start: 0\.1\n\s+factor: 2\n\s+count: 10'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'process_time_bucket:\n\s+start: 0\.1\n\s+factor: 2\n\s+count: 15'
+
+  - it: should render file_client.retry config
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'retry:\n\s+max_retries: 3\n\s+initial_backoff: "1s"\n\s+max_backoff: "10s"'
+
+  - it: should not render ConfigMap when processor is disabled
+    set:
+      processor.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
