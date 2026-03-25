@@ -13,6 +13,7 @@ DEV_VERSION="${DEV_VERSION:-0.0.1}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-dummy-s3-secret-access-key}"
+VLLM_SIM_DEFAULT_MODEL="${VLLM_SIM_DEFAULT_MODEL:-sim-model-default}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
@@ -594,6 +595,7 @@ install_batch_gateway() {
 
     local vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
     local vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+    local vllm_sim_default_url="http://${VLLM_SIM_DEFAULT_NAME}.${NAMESPACE}.svc.cluster.local:8000"
 
     local helm_args=(
         --set apiserver.image.pullPolicy=IfNotPresent
@@ -602,17 +604,13 @@ install_batch_gateway() {
         --set "processor.image.tag=${DEV_VERSION}"
         --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
         --set "global.secretName=${APP_SECRET_NAME}"
-        --set "processor.config.modelGateways.default.url=http://unused-default-gateway:8000"
+        --set "processor.config.modelGateways.default.url=${vllm_sim_default_url}"
+        --set "processor.config.modelGateways.default.requestTimeout=5m"
+        --set "processor.config.modelGateways.default.maxRetries=3"
+        --set "processor.config.modelGateways.default.initialBackoff=1s"
+        --set "processor.config.modelGateways.default.maxBackoff=60s"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.url=${vllm_sim_url}"
-        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.requestTimeout=5m"
-        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxRetries=3"
-        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=1s"
-        --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=60s"
         --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.url=${vllm_sim_b_url}"
-        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.requestTimeout=5m"
-        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxRetries=3"
-        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.initialBackoff=1s"
-        --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxBackoff=60s"
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
@@ -799,8 +797,9 @@ print_usage() {
     echo '       {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"Hello"}]}}'
     echo ""
     echo "     Available models in dev environment:"
-    echo "       - sim-model   (vLLM simulator at ${VLLM_SIM_NAME})"
-    echo "       - sim-model-b (vLLM simulator at ${VLLM_SIM_B_NAME})"
+    echo "       - sim-model-default (vLLM simulator at ${VLLM_SIM_DEFAULT_NAME}, default gateway)"
+    echo "       - sim-model         (vLLM simulator at ${VLLM_SIM_NAME})"
+    echo "       - sim-model-b       (vLLM simulator at ${VLLM_SIM_B_NAME})"
     echo ""
     echo "  3. Create a batch (replace FILE_ID with the id from step 2):"
     echo ""
@@ -843,6 +842,7 @@ print_usage() {
     echo "       kubectl delete deployment,svc ${JAEGER_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc,configmap,sa ${PROMETHEUS_NAME} ${PROMETHEUS_NAME}-config -n ${NAMESPACE}"
     echo "       kubectl delete clusterrole,clusterrolebinding ${PROMETHEUS_NAME}"
+    echo "       kubectl delete deployment,svc ${VLLM_SIM_DEFAULT_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete deployment,svc ${VLLM_SIM_B_NAME} -n ${NAMESPACE}"
     echo "       kubectl delete secret ${APP_SECRET_NAME} ${TLS_SECRET_NAME} -n ${NAMESPACE}"
@@ -870,6 +870,7 @@ main() {
     load_images
     install_jaeger
     install_prometheus
+    install_vllm_sim "${VLLM_SIM_DEFAULT_NAME}" "${VLLM_SIM_DEFAULT_MODEL}" "50ms" "100ms"
     install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
     install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_batch_gateway
