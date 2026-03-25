@@ -30,7 +30,7 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "batch-gateway.apiserver.serviceAccountName" . }}
       securityContext:
-        {{- toYaml .Values.apiserver.podSecurityContext | nindent 8 }}
+        {{- toYaml (.Values.apiserver.podSecurityContext | default .Values.global.podSecurityContext) | nindent 8 }}
       containers:
       - name: apiserver
         securityContext:

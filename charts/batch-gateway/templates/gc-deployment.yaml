@@ -22,7 +22,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.gc.podSecurityContext | nindent 8 }}
+        {{- toYaml (.Values.gc.podSecurityContext | default .Values.global.podSecurityContext) | nindent 8 }}
       containers:
       - name: gc
         securityContext:
