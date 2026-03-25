@@ -338,6 +338,94 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	}
 }
 
+// TestProcessModel_CancelWritesInFlightToErrorFile verifies that when cancelRequested
+// is set while an inference request is in-flight, the completed result is overwritten
+// as batch_cancelled and written to the error file (not silently dropped).
+func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.GlobalConcurrency = 10
+	cfg.PerModelMaxConcurrency = 10
+
+	cancelReq := &atomic.Bool{}
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			// Simulate cancel arriving while the request is in-flight:
+			// set the flag after inference "completes" but before the
+			// goroutine checks cancelRequested.
+			cancelReq.Store(true)
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "inflight-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+	var outBuf, errBuf bytes.Buffer
+	outWriter := bufio.NewWriter(&outBuf)
+	errWriter := bufio.NewWriter(&errBuf)
+	writers := &outputWriters{output: outWriter, errors: errWriter}
+
+	progress := &executionProgress{
+		total:   1,
+		updater: env.updater,
+		jobID:   jobInfo.JobID,
+	}
+
+	ctx := testLoggerCtx()
+	_ = env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+
+	if flushErr := outWriter.Flush(); flushErr != nil {
+		t.Fatalf("flush output: %v", flushErr)
+	}
+	if flushErr := errWriter.Flush(); flushErr != nil {
+		t.Fatalf("flush error: %v", flushErr)
+	}
+
+	// Output file should be empty — cancelled requests go to error file.
+	if outBuf.Len() > 0 {
+		t.Errorf("expected empty output file, got: %s", outBuf.String())
+	}
+
+	// Error file should have exactly 1 entry with batch_cancelled.
+	errContent := bytes.TrimSpace(errBuf.Bytes())
+	if len(errContent) == 0 {
+		t.Fatal("expected cancelled entry in error file, got empty")
+	}
+	errLines := bytes.Split(errContent, []byte{'\n'})
+	if len(errLines) != 1 {
+		t.Fatalf("expected 1 error line, got %d", len(errLines))
+	}
+
+	var entry outputLine
+	if err := json.Unmarshal(errLines[0], &entry); err != nil {
+		t.Fatalf("unmarshal error line: %v", err)
+	}
+	if entry.CustomID != "inflight-1" {
+		t.Errorf("custom_id = %q, want %q", entry.CustomID, "inflight-1")
+	}
+	if entry.Error == nil || entry.Error.Code != batch_types.ErrCodeBatchCancelled {
+		t.Fatalf("expected error code %s, got %+v", batch_types.ErrCodeBatchCancelled, entry.Error)
+	}
+	if entry.Response != nil {
+		t.Errorf("expected nil response for cancelled entry, got %+v", entry.Response)
+	}
+
+	counts := progress.counts()
+	if counts.Failed != 1 {
+		t.Errorf("failed count = %d, want 1", counts.Failed)
+	}
+}
+
 func TestProcessModel_InferenceFatalError(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
