@@ -62,12 +62,12 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		remoteBuf.Write(ln)
 	}
 
-	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
-		t.Fatalf("files.Store: %v", err)
-	}
-
 	// Create DB item for "input file metadata"
 	inputFileID := "file-123"
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, filename), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
 	fileSpec := &openai.FileObject{Filename: filename}
 	fileItem := &db.FileItem{
 		BaseIndexes: db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
@@ -217,11 +217,11 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 	}
 
 	filename := "input.jsonl"
-	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+	inputFileID := "file-sys-prompt"
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, filename), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
 		t.Fatalf("files.Store: %v", err)
 	}
-
-	inputFileID := "file-sys-prompt"
 	fileSpec := &openai.FileObject{Filename: filename}
 	fileItem := &db.FileItem{
 		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
@@ -463,7 +463,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 		remoteBuf.Write(ln)
 	}
 
-	if _, err := filesClient.Store(ctx, "input.jsonl", folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, "input.jsonl"), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
 		t.Fatalf("files.Store: %v", err)
 	}
 	fileSpec := &openai.FileObject{Filename: "input.jsonl"}
@@ -808,11 +808,11 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 	remoteBuf.WriteString(`{"custom_id":"r3","body":{"model":"m1","messages":[{"role":"user","content":"ok2"}]}}` + "\n")
 
 	filename := "input.jsonl"
-	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+	inputFileID := "file-stream-reject"
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, filename), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
 		t.Fatalf("files.Store: %v", err)
 	}
-
-	inputFileID := "file-stream-reject"
 	fileSpec := &openai.FileObject{Filename: filename}
 	fileItem := &db.FileItem{
 		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
@@ -877,11 +877,11 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
 
 	filename := "input.jsonl"
-	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+	inputFileID := "file-dup-custom-id"
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, filename), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
 		t.Fatalf("files.Store: %v", err)
 	}
-
-	inputFileID := "file-dup-custom-id"
 	fileSpec := &openai.FileObject{Filename: filename}
 	fileItem := &db.FileItem{
 		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
@@ -949,11 +949,11 @@ func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
 	remoteBuf.WriteString(`{"custom_id":"req-3","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
 
 	filename := "input.jsonl"
-	if _, err := filesClient.Store(ctx, filename, folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+	inputFileID := "file-unique-custom-id"
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, filename), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
 		t.Fatalf("files.Store: %v", err)
 	}
-
-	inputFileID := "file-unique-custom-id"
 	fileSpec := &openai.FileObject{Filename: filename}
 	fileItem := &db.FileItem{
 		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},

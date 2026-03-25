@@ -149,7 +149,8 @@ func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get folder name by tenant id: %w", err)
 	}
-	reader, metadata, err := p.files.storage.Retrieve(ctx, fileObj.Filename, folderName)
+	storageName := ucom.FileStorageName(fileItem.ID, fileObj.Filename)
+	reader, metadata, err := p.files.storage.Retrieve(ctx, storageName, folderName)
 	if err != nil {
 		return nil, metadata, fmt.Errorf("failed to open input file stream: %w", err)
 	}

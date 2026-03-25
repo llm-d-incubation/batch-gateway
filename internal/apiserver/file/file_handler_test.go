@@ -201,17 +201,26 @@ func doTestCreateFileStoreValidationErrors(t *testing.T) {
 	cases := []struct {
 		name        string
 		storeErr    error
+		wantStatus  int
 		wantMessage string
 	}{
 		{
 			name:        "file too large",
 			storeErr:    fsapi.ErrFileTooLarge,
+			wantStatus:  http.StatusBadRequest,
 			wantMessage: fmt.Sprintf("File size exceeds the maximum allowed size of %d bytes", common.DefaultMaxFileSizeBytes),
 		},
 		{
 			name:        "too many lines",
 			storeErr:    fsapi.ErrTooManyLines,
+			wantStatus:  http.StatusBadRequest,
 			wantMessage: "File exceeds the maximum allowed line count of 10",
+		},
+		{
+			name:        "file already exists",
+			storeErr:    fsapi.ErrFileExists,
+			wantStatus:  http.StatusConflict,
+			wantMessage: "A file with this name already exists",
 		},
 	}
 
@@ -230,15 +239,15 @@ func doTestCreateFileStoreValidationErrors(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.CreateFile(w, req)
 
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected status %d, got %d, body: %s", http.StatusBadRequest, w.Code, w.Body.String())
+			if w.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d, body: %s", tc.wantStatus, w.Code, w.Body.String())
 			}
 			var errResp openai.ErrorResponse
 			if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
 				t.Fatalf("failed to parse error response: %v", err)
 			}
-			if errResp.Error.Code != http.StatusBadRequest {
-				t.Errorf("expected error code %d, got %d", http.StatusBadRequest, errResp.Error.Code)
+			if errResp.Error.Code != tc.wantStatus {
+				t.Errorf("expected error code %d, got %d", tc.wantStatus, errResp.Error.Code)
 			}
 			if errResp.Error.Message != tc.wantMessage {
 				t.Errorf("expected message %q, got %q", tc.wantMessage, errResp.Error.Message)
@@ -308,12 +317,12 @@ func doTestCreateFileSuccess(t *testing.T) {
 	}
 
 	// Verify file was actually uploaded to storage
-	fileName := fileObj.Filename
+	storageName := ucom.FileStorageName(fileObj.ID, fileObj.Filename)
 	folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
 	if err != nil {
 		t.Fatalf("failed to get folder name from tenant ID: %v", err)
 	}
-	fileReader, fileMeta, err := handler.clients.File.Retrieve(ctx, fileName, folderName)
+	fileReader, fileMeta, err := handler.clients.File.Retrieve(ctx, storageName, folderName)
 	if err != nil {
 		t.Fatalf("failed to retrieve file from storage: %v", err)
 	}
@@ -949,11 +958,12 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Verify physical file is deleted from storage
+		storageName := ucom.FileStorageName(createdFile.ID, createdFile.Filename)
 		folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
 		if err != nil {
 			t.Fatalf("failed to get folder name from tenant ID: %v", err)
 		}
-		_, _, err = handler.clients.File.Retrieve(ctx, createdFile.Filename, folderName)
+		_, _, err = handler.clients.File.Retrieve(ctx, storageName, folderName)
 		if err == nil {
 			t.Errorf("expected physical file to be deleted, but still exists")
 		}

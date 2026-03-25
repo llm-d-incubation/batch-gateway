@@ -119,6 +119,30 @@ func TestGetFolderNameByTenantID(t *testing.T) {
 	}
 }
 
+func TestFileStorageName(t *testing.T) {
+	tests := []struct {
+		name         string
+		fileID       string
+		origFilename string
+		want         string
+	}{
+		{"jsonl extension", "file_abc", "input.jsonl", "file_abc.jsonl"},
+		{"csv extension", "file_abc", "data.csv", "file_abc.csv"},
+		{"no extension defaults to jsonl", "file_abc", "noext", "file_abc.jsonl"},
+		{"batch output format", "file_xyz", "batch_output_batch_123.jsonl", "file_xyz.jsonl"},
+		{"batch error format", "file_xyz", "batch_error_batch_123.jsonl", "file_xyz.jsonl"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FileStorageName(tt.fileID, tt.origFilename)
+			if got != tt.want {
+				t.Errorf("FileStorageName(%q, %q) = %q, want %q", tt.fileID, tt.origFilename, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSameMembersInStrSlice(t *testing.T) {
 	tests := []struct {
 		name string

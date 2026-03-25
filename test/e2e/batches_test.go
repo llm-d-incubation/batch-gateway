@@ -268,6 +268,15 @@ func doTestBatchLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("download output file failed: %v", err)
 	}
+
+	// Verify output file download filename matches expected format
+	wantOutputFilename := fmt.Sprintf("batch_output_%s.jsonl", batchID)
+	cd := resp.Header.Get("Content-Disposition")
+	wantCD := fmt.Sprintf(`attachment; filename=%q`, wantOutputFilename)
+	if cd != wantCD {
+		t.Errorf("output file Content-Disposition mismatch\ngot:  %s\nwant: %s", cd, wantCD)
+	}
+
 	outputBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	validateAndLogJSONL(t, "output file", string(outputBody))
@@ -279,6 +288,15 @@ func doTestBatchLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("download error file failed: %v", err)
 		}
+
+		// Verify error file download filename matches expected format
+		wantErrorFilename := fmt.Sprintf("batch_error_%s.jsonl", batchID)
+		cd := resp.Header.Get("Content-Disposition")
+		wantCD := fmt.Sprintf(`attachment; filename=%q`, wantErrorFilename)
+		if cd != wantCD {
+			t.Errorf("error file Content-Disposition mismatch\ngot:  %s\nwant: %s", cd, wantCD)
+		}
+
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		validateAndLogJSONL(t, "error file", string(body))

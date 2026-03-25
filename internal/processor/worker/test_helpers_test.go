@@ -103,16 +103,18 @@ func (m *mockInferenceClient) Generate(ctx context.Context, req *inference.Gener
 // ---------------------------------------------------------------------------
 
 type failNTimesFilesClient struct {
-	failCount int
-	calls     int
-	lastMeta  *filesapi.BatchFileMetadata
+	failCount    int
+	calls        int
+	lastMeta     *filesapi.BatchFileMetadata
+	lastFileName string // records the fileName passed to the most recent successful Store call
 }
 
-func (f *failNTimesFilesClient) Store(_ context.Context, _, _ string, _, _ int64, _ io.Reader) (*filesapi.BatchFileMetadata, error) {
+func (f *failNTimesFilesClient) Store(_ context.Context, fileName, _ string, _, _ int64, _ io.Reader) (*filesapi.BatchFileMetadata, error) {
 	f.calls++
 	if f.calls <= f.failCount {
 		return nil, errors.New("transient upload error")
 	}
+	f.lastFileName = fileName
 	f.lastMeta = &filesapi.BatchFileMetadata{Size: 42}
 	return f.lastMeta, nil
 }

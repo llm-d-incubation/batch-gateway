@@ -237,10 +237,9 @@ func (c *GarbageCollector) processFile(ctx context.Context, file *db.FileItem) (
 		return false, fmt.Errorf("failed to get folder name for tenant %q: %w", file.TenantID, err)
 	}
 
-	// Delete the physical file first, then the DB metadata. If the file is already
-	// gone (e.g. from a previous partial GC cycle), proceed to delete the metadata.
-	if err := c.filesClient.Delete(ctx, fileObject.Filename, folderName); err != nil && !errors.Is(err, os.ErrNotExist) {
-		logger.Error(err, "Failed to delete physical file", "fileID", file.ID, "fileName", fileObject.Filename, "folderName", folderName)
+	storageName := ucom.FileStorageName(fileObject.ID, fileObject.Filename)
+	if err := c.filesClient.Delete(ctx, storageName, folderName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Error(err, "Failed to delete physical file", "fileID", file.ID, "storageName", storageName, "folderName", folderName)
 		return false, fmt.Errorf("failed to delete physical file with ID %v : %w", file.ID, err)
 	}
 

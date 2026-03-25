@@ -53,13 +53,17 @@ func (p *Processor) uploadFileAndStoreFileRecord(
 	var err error
 	var attrKey string
 
+	fileID := ucom.NewFileID()
+
 	if fileType == metrics.FileTypeOutput {
 		fileName = jobOutputStorageName(jobInfo.JobID)
-		fileSize, err = p.uploadOutputFile(ctx, jobInfo, fileName)
+		storageName := ucom.FileStorageName(fileID, fileName)
+		fileSize, err = p.uploadOutputFile(ctx, jobInfo, storageName)
 		attrKey = uotel.AttrOutputFileID
 	} else {
 		fileName = jobErrorStorageName(jobInfo.JobID)
-		fileSize, err = p.uploadErrorFile(ctx, jobInfo, fileName)
+		storageName := ucom.FileStorageName(fileID, fileName)
+		fileSize, err = p.uploadErrorFile(ctx, jobInfo, storageName)
 		attrKey = uotel.AttrErrorFileID
 	}
 	if err != nil {
@@ -69,7 +73,6 @@ func (p *Processor) uploadFileAndStoreFileRecord(
 		return "", nil
 	}
 
-	fileID := ucom.NewFileID()
 	uotel.SetAttr(ctx, attribute.String(attrKey, fileID))
 	if err := p.storeFileRecord(ctx, fileID, fileName, jobInfo.TenantID, fileSize, dbJob.Tags); err != nil {
 		return "", err
