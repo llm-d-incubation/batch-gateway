@@ -1,0 +1,71 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-batch-gateway-alerts
+  labels:
+    {{- include "batch-gateway.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: batch-gateway.rules
+      rules:
+        {{- if .Values.prometheusRule.rules.highQueueWait.enabled }}
+        - alert: BatchGatewayHighQueueWait
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum(rate(job_queue_wait_duration_seconds_bucket{namespace="{{ .Release.Namespace }}"}[5m])) by (le)
+            ) > {{ .Values.prometheusRule.rules.highQueueWait.thresholdSeconds }}
+          for: {{ .Values.prometheusRule.rules.highQueueWait.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Batch Gateway queue wait time is high
+            description: p95 queue wait time has been above {{ .Values.prometheusRule.rules.highQueueWait.thresholdSeconds }} seconds for {{ .Values.prometheusRule.rules.highQueueWait.for }}.
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.highJobFailureRate.enabled }}
+        - alert: BatchGatewayHighJobFailureRate
+          expr: |
+            sum(rate(jobs_processed_total{namespace="{{ .Release.Namespace }}", result="failed"}[10m]))
+            /
+            clamp_min(sum(rate(jobs_processed_total{namespace="{{ .Release.Namespace }}"}[10m])), 0.001)
+            > {{ .Values.prometheusRule.rules.highJobFailureRate.thresholdRatio }}
+          for: {{ .Values.prometheusRule.rules.highJobFailureRate.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Batch Gateway job failure rate is high
+            description: Failed jobs have exceeded {{ .Values.prometheusRule.rules.highJobFailureRate.thresholdRatio }} of processed jobs for {{ .Values.prometheusRule.rules.highJobFailureRate.for }}.
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.expiredJobsDetected.enabled }}
+        - alert: BatchGatewayExpiredJobsDetected
+          expr: |
+            sum(rate(jobs_processed_total{namespace="{{ .Release.Namespace }}", result="expired"}[10m]))
+            /
+            clamp_min(sum(rate(jobs_processed_total{namespace="{{ .Release.Namespace }}"}[10m])), 0.001)
+            > {{ .Values.prometheusRule.rules.expiredJobsDetected.thresholdRatio }}
+          for: {{ .Values.prometheusRule.rules.expiredJobsDetected.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Batch Gateway expired job rate is high
+            description: Expired jobs have exceeded {{ .Values.prometheusRule.rules.expiredJobsDetected.thresholdRatio }} of processed jobs for {{ .Values.prometheusRule.rules.expiredJobsDetected.for }}.
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.workersSaturated.enabled }}
+        - alert: BatchGatewayWorkersSaturated
+          expr: |
+            sum(active_workers{namespace="{{ .Release.Namespace }}"})
+            /
+            clamp_min(sum(total_workers{namespace="{{ .Release.Namespace }}"}), 1)
+            > {{ .Values.prometheusRule.rules.workersSaturated.thresholdRatio }}
+          for: {{ .Values.prometheusRule.rules.workersSaturated.for | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Batch Gateway workers are saturated
+            description: Worker utilization has been above {{ .Values.prometheusRule.rules.workersSaturated.thresholdRatio }} for {{ .Values.prometheusRule.rules.workersSaturated.for }}.
+        {{- end }}
+{{- end }}

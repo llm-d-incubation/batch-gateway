@@ -345,6 +345,29 @@ grafana:
     label: grafana_dashboard
     labelValue: "1"
 
+# PrometheusRule for Prometheus Operator alerting.
+prometheusRule:
+  enabled: false
+  # Extra labels to match Prometheus Operator's ruleSelector.
+  labels: {}
+  rules:
+    highQueueWait:
+      enabled: true
+      thresholdSeconds: 300
+      for: "15m"
+    highJobFailureRate:
+      enabled: true
+      thresholdRatio: 0.1
+      for: "10m"
+    expiredJobsDetected:
+      enabled: true
+      thresholdRatio: 0.03
+      for: "10m"
+    workersSaturated:
+      enabled: true
+      thresholdRatio: 0.9
+      for: "15m"
+
 # Garbage Collector configuration
 gc:
   enabled: true
