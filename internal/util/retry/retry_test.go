@@ -25,10 +25,13 @@ import (
 
 func TestDo_NoRetry(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), &Config{MaxRetries: 0}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 0}, func(attempt int) error {
 		calls++
+		if attempt != 1 {
+			t.Fatalf("expected attempt 1, got %d", attempt)
+		}
 		return errors.New("fail")
-	}, nil)
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -39,10 +42,13 @@ func TestDo_NoRetry(t *testing.T) {
 
 func TestDo_SucceedsOnFirstTry(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func(attempt int) error {
 		calls++
+		if attempt != 1 {
+			t.Fatalf("expected attempt 1 on first try, got %d", attempt)
+		}
 		return nil
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,13 +59,16 @@ func TestDo_SucceedsOnFirstTry(t *testing.T) {
 
 func TestDo_SucceedsAfterRetries(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func(attempt int) error {
 		calls++
+		if attempt != calls {
+			t.Fatalf("expected attempt %d, got %d", calls, attempt)
+		}
 		if calls < 3 {
 			return errors.New("transient")
 		}
 		return nil
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,10 +79,13 @@ func TestDo_SucceedsAfterRetries(t *testing.T) {
 
 func TestDo_ExhaustsRetries(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), &Config{MaxRetries: 2, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	err := Do(context.Background(), &Config{MaxRetries: 2, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func(attempt int) error {
 		calls++
+		if attempt != calls {
+			t.Fatalf("expected attempt %d, got %d", calls, attempt)
+		}
 		return errors.New("persistent")
-	}, nil)
+	})
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
@@ -85,11 +97,14 @@ func TestDo_ExhaustsRetries(t *testing.T) {
 func TestDo_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
-	err := Do(ctx, &Config{MaxRetries: 5, InitialBackoff: time.Second, MaxBackoff: time.Second}, func() error {
+	err := Do(ctx, &Config{MaxRetries: 5, InitialBackoff: time.Second, MaxBackoff: time.Second}, func(attempt int) error {
 		calls++
+		if attempt != calls {
+			t.Fatalf("expected attempt %d, got %d", calls, attempt)
+		}
 		cancel()
 		return errors.New("fail")
-	}, nil)
+	})
 	if err == nil {
 		t.Fatal("expected error on context cancel")
 	}
@@ -98,41 +113,50 @@ func TestDo_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestDo_OnRetryCallback(t *testing.T) {
-	retryAttempts := []int{}
-	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
-		if len(retryAttempts) < 2 {
+func TestDo_AttemptNumbers(t *testing.T) {
+	attempts := []int{}
+	err := Do(context.Background(), &Config{MaxRetries: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func(attempt int) error {
+		attempts = append(attempts, attempt)
+		if len(attempts) <= 2 {
 			return errors.New("fail")
 		}
-		return nil
-	}, func(attempt int, _ error) error {
-		retryAttempts = append(retryAttempts, attempt)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(retryAttempts) != 2 {
-		t.Fatalf("expected 2 retry callbacks, got %d", len(retryAttempts))
+	// Should have attempts: 1 (initial), 2 (first retry), 3 (second retry)
+	if len(attempts) != 3 {
+		t.Fatalf("expected 3 attempts, got %d", len(attempts))
 	}
-	if retryAttempts[0] != 0 || retryAttempts[1] != 1 {
-		t.Fatalf("expected attempts [0,1], got %v", retryAttempts)
+	if attempts[0] != 1 || attempts[1] != 2 || attempts[2] != 3 {
+		t.Fatalf("expected attempts [1,2,3], got %v", attempts)
 	}
 }
 
-func TestDo_OnRetryAbort(t *testing.T) {
+func TestDo_PermanentError(t *testing.T) {
 	calls := 0
-	err := Do(context.Background(), &Config{MaxRetries: 5, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func() error {
+	permanentErr := errors.New("non-recoverable error")
+	err := Do(context.Background(), &Config{MaxRetries: 5, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, func(attempt int) error {
 		calls++
-		return errors.New("fail")
-	}, func(_ int, _ error) error {
-		return errors.New("abort: non-recoverable")
+		if attempt > 1 {
+			// On first retry, return permanent error
+			return Permanent(permanentErr)
+		}
+		return errors.New("initial failure")
 	})
-	if err == nil || err.Error() != "abort: non-recoverable" {
-		t.Fatalf("expected abort error, got %v", err)
+	if err != permanentErr {
+		t.Fatalf("expected permanent error, got %v", err)
 	}
-	if calls != 1 {
-		t.Fatalf("expected 1 call (no retry after abort), got %d", calls)
+	if calls != 2 { // initial call + first retry that returns permanent
+		t.Fatalf("expected 2 calls (initial + first retry with permanent error), got %d", calls)
+	}
+}
+
+func TestPermanent_NilError(t *testing.T) {
+	err := Permanent(nil)
+	if err != nil {
+		t.Fatalf("Permanent(nil) should return nil, got %v", err)
 	}
 }
 

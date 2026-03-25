@@ -62,20 +62,21 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 	component := ctxkeys.Component(ctx)
 
 	var meta *api.BatchFileMetadata
-	err := retry.Do(ctx, &c.cfg, func() error {
+	err := retry.Do(ctx, &c.cfg, func(attempt int) error {
+		if attempt > 1 {
+			recordRetry("store", component)
+			klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file store",
+				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
+			// Seek failure means the reader cannot be rewound, so subsequent
+			// Store attempts would send partial/empty data. Abort immediately.
+			if _, seekErr := rs.Seek(0, io.SeekStart); seekErr != nil {
+				return retry.Permanent(fmt.Errorf("seek failed: %w", seekErr))
+			}
+		}
+
 		var storeErr error
 		meta, storeErr = c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, rs)
 		return storeErr
-	}, func(attempt int, retryErr error) error {
-		recordRetry("store", component)
-		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file store",
-			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
-		// Seek failure means the reader cannot be rewound, so subsequent
-		// Store attempts would send partial/empty data. Abort immediately.
-		if _, seekErr := rs.Seek(0, io.SeekStart); seekErr != nil {
-			return fmt.Errorf("aborting retry, seek failed: %w", seekErr)
-		}
-		return nil
 	})
 	if err != nil && c.cfg.MaxRetries > 0 {
 		recordRetryExhausted("store", component)
@@ -90,18 +91,19 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 		rc   io.ReadCloser
 		meta *api.BatchFileMetadata
 	)
-	err := retry.Do(ctx, &c.cfg, func() error {
+	err := retry.Do(ctx, &c.cfg, func(attempt int) error {
+		if attempt > 1 {
+			if rc != nil {
+				_ = rc.Close()
+			}
+			recordRetry("retrieve", component)
+			klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file retrieve",
+				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
+		}
+
 		var retrieveErr error
 		rc, meta, retrieveErr = c.inner.Retrieve(ctx, fileName, folderName)
 		return retrieveErr
-	}, func(attempt int, retryErr error) error {
-		if rc != nil {
-			_ = rc.Close()
-		}
-		recordRetry("retrieve", component)
-		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file retrieve",
-			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
-		return nil
 	})
 	if err != nil && c.cfg.MaxRetries > 0 {
 		recordRetryExhausted("retrieve", component)
@@ -112,13 +114,13 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
 	component := ctxkeys.Component(ctx)
 
-	err := retry.Do(ctx, &c.cfg, func() error {
+	err := retry.Do(ctx, &c.cfg, func(attempt int) error {
+		if attempt > 1 {
+			recordRetry("delete", component)
+			klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file delete",
+				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
+		}
 		return c.inner.Delete(ctx, fileName, folderName)
-	}, func(attempt int, retryErr error) error {
-		recordRetry("delete", component)
-		klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file delete",
-			"file", fileName, "retry", attempt+1, "maxRetries", c.cfg.MaxRetries, "error", retryErr)
-		return nil
 	})
 	if err != nil && c.cfg.MaxRetries > 0 {
 		recordRetryExhausted("delete", component)

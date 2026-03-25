@@ -25,11 +25,35 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	cbackoff "github.com/cenkalti/backoff/v5"
 )
+
+// permanentError marks an error as non-retryable.
+type permanentError struct {
+	err error
+}
+
+func (e *permanentError) Error() string {
+	return e.err.Error()
+}
+
+func (e *permanentError) Unwrap() error {
+	return e.err
+}
+
+// Permanent wraps an error to mark it as non-retryable.
+// When Do encounters a permanent error, it stops retrying immediately
+// and returns the unwrapped error.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &permanentError{err: err}
+}
 
 // Config holds retry parameters for exponential backoff.
 type Config struct {
@@ -56,48 +80,48 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Do executes fn with retries using cenkalti/backoff exponential backoff.
+// Do executes fn with retries using cenkalti/backoff for exponential backoff delay calculation.
 // If cfg is nil or MaxRetries is 0, fn is called exactly once with no retries.
-// The onRetry callback, if non-nil, is called after fn fails and before
-// the next retry attempt. The attempt parameter is the zero-based retry
-// index (0 = first retry, not the initial call).
-// If onRetry returns a non-nil error, retries are aborted immediately
-// and that error is returned (useful for non-recoverable preparation failures
-// such as a failed Seek).
-func Do(ctx context.Context, cfg *Config, fn func() error, onRetry func(attempt int, err error) error) error {
-	if cfg == nil || cfg.MaxRetries == 0 {
-		return fn()
+// The fn receives the attempt number starting from 1:
+//   - attempt=1: initial call
+//   - attempt=2: first retry
+//   - attempt=3: second retry, etc.
+//
+// Callers can use attempt > 1 to detect retries.
+func Do(ctx context.Context, cfg *Config, fn func(attempt int) error) error {
+	// Initial call (attempt 1)
+	err := fn(1)
+	if err == nil || cfg == nil || cfg.MaxRetries == 0 {
+		// No retries needed, return the result of the initial call
+		return err
 	}
 
+	// Retry loop (attempt 2, 3, 4, ...)
 	expBackoff := &cbackoff.ExponentialBackOff{
 		InitialInterval:     cfg.InitialBackoff,
 		MaxInterval:         cfg.MaxBackoff,
 		Multiplier:          2,
 		RandomizationFactor: 0.5,
 	}
+	expBackoff.Reset()
 
-	var lastErr error // Track the last error from fn so onRetry receives it before the next attempt.
-	retryCount := 0
-	firstCall := true
-
-	_, err := cbackoff.Retry(ctx, func() (struct{}, error) {
-		if !firstCall && onRetry != nil {
-			if abortErr := onRetry(retryCount, lastErr); abortErr != nil {
-				return struct{}{}, cbackoff.Permanent(abortErr)
-			}
-			retryCount++
+	for i := range cfg.MaxRetries {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(expBackoff.NextBackOff()):
 		}
-		firstCall = false
 
-		lastErr = fn()
-		if lastErr != nil {
-			return struct{}{}, lastErr
+		err = fn(i + 2) // attempt starts at 2 for first retry
+		if err == nil {
+			return nil
 		}
-		return struct{}{}, nil
-	},
-		cbackoff.WithBackOff(expBackoff),
-		cbackoff.WithMaxTries(uint(cfg.MaxRetries)+1), // +1: MaxRetries is retry count, WithMaxTries expects total attempts
-		cbackoff.WithMaxElapsedTime(0),
-	)
+
+		// Stop retrying on permanent errors.
+		var permErr *permanentError
+		if errors.As(err, &permErr) {
+			return permErr.err
+		}
+	}
 	return err
 }
