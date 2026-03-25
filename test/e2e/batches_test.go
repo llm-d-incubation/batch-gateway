@@ -156,9 +156,6 @@ func doTestBatchCancel(t *testing.T) {
 		}
 	}
 
-	// Known issue: dispatched-but-cancelled requests are counted as failed but not
-	// written to the error file (executor.go:387-390 discards the result).
-	// TODO: fix path 2 so that cancelled in-flight requests are written to error file.
 	totalFileLines := outputLines + errorLines
 	if totalFileLines != int(finalBatch.RequestCounts.Total) {
 		t.Errorf("output lines (%d) + error lines (%d) = %d, but total requests = %d (missing %d — dispatched-but-cancelled requests not written to error file)",

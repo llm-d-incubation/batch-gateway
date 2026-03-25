@@ -1,6 +1,19 @@
-# Global settings (shared by apiserver and processor)
+# Global settings (shared by apiserver, processor, and gc)
 global:
   imagePullSecrets: []
+
+  # Shared pod security context for all components.
+  # All three components (apiserver, processor, gc) must run with the same UID/GID
+  # when sharing files on a PVC. Per-component overrides are possible via
+  # <component>.podSecurityContext, but use with caution to avoid permission issues.
+  # For OpenShift, set podSecurityContext: {} to use SCC-assigned UIDs.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
 
   # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.
@@ -80,15 +93,9 @@ apiserver:
   podAnnotations: {}
   podLabels: {}
 
-  # Pod security context
-  # For OpenShift, set podSecurityContext: {} to use SCC-assigned UIDs
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    fsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
+  # Per-component podSecurityContext override (optional).
+  # If not set, inherits global.podSecurityContext.
+  # podSecurityContext: {}
 
   # Container security context (minimal, works with OpenShift)
   securityContext:
@@ -211,15 +218,9 @@ processor:
   podAnnotations: {}
   podLabels: {}
 
-  # Pod security context
-  # For OpenShift, set podSecurityContext: {} to use SCC-assigned UIDs
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    fsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
+  # Per-component podSecurityContext override (optional).
+  # If not set, inherits global.podSecurityContext.
+  # podSecurityContext: {}
 
   # Container security context (minimal, works with OpenShift)
   securityContext:
@@ -334,13 +335,9 @@ gc:
     # Interval between garbage collection cycles (Go duration format)
     interval: "30m"
 
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    fsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
+  # Per-component podSecurityContext override (optional).
+  # If not set, inherits global.podSecurityContext.
+  # podSecurityContext: {}
 
   securityContext:
     allowPrivilegeEscalation: false

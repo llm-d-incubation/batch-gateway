@@ -30,7 +30,11 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "batch-gateway.processor.serviceAccountName" . }}
       securityContext:
+        {{- if hasKey .Values.processor "podSecurityContext" }}
         {{- toYaml .Values.processor.podSecurityContext | nindent 8 }}
+        {{- else }}
+        {{- toYaml .Values.global.podSecurityContext | nindent 8 }}
+        {{- end }}
       containers:
       - name: processor
         securityContext:

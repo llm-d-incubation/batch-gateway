@@ -381,11 +381,30 @@ dispatch:
 				return
 			}
 
-			// If cancel was requested while this request was in-flight, count it as
-			// failed and discard the result — cancelled requests are not written to
-			// the output file.
+			// If cancel was requested while this request was in-flight,
+			// overwrite the result as batch_cancelled and write to the error file
+			// so that output lines + error lines == total requests.
+			// Note: inferCtx is already cancelled at this point, so the HTTP
+			// request was aborted and this goroutine returns almost immediately.
 			if cancelRequested.Load() {
+				result.Response = nil
+				result.Error = &outputError{
+					Code:    batch_types.ErrCodeBatchCancelled,
+					Message: "This request was cancelled while in progress.",
+				}
 				progress.record(ctx, false)
+
+				lineBytes, marshalErr := json.Marshal(result)
+				if marshalErr != nil {
+					logger.Error(marshalErr, "Failed to marshal cancelled output line", "offset", entry.Offset)
+					errOnce.Do(func() { modelErr = fmt.Errorf("failed to marshal cancelled line: %w", marshalErr) })
+					return
+				}
+				lineBytes = append(lineBytes, '\n')
+				if writeErr := writers.write(lineBytes, true); writeErr != nil {
+					logger.Error(writeErr, "Failed to write cancelled line", "offset", entry.Offset)
+					errOnce.Do(func() { modelErr = fmt.Errorf("failed to write cancelled line: %w", writeErr) })
+				}
 				return
 			}
 
