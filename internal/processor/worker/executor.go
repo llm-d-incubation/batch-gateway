@@ -390,7 +390,7 @@ dispatch:
 				result.Response = nil
 				result.Error = &outputError{
 					Code:    batch_types.ErrCodeBatchCancelled,
-					Message: "This request was cancelled.",
+					Message: "This request was cancelled while in progress.",
 				}
 				progress.record(ctx, false)
 
