@@ -46,21 +46,32 @@ func testBatches(t *testing.T) {
 func doTestBatchCancel(t *testing.T) {
 	t.Helper()
 
-	// Use high max_tokens so each request takes ~50s at 500ms inter-token-latency,
-	// ensuring the cancel event arrives before inference completes.
-	slowJSONL := strings.Join([]string{
-		`{"custom_id":"slow-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"Tell me a story"}]}}`,
-		`{"custom_id":"slow-2","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"Tell me a joke"}]}}`,
-		`{"custom_id":"slow-3","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"Tell me a poem"}]}}`,
-		`{"custom_id":"slow-4","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"Tell me a fact"}]}}`,
-	}, "\n")
+	// Mix fast and slow requests to guarantee both output and error files exist after cancel:
+	//   - Fast requests (max_tokens=1): complete in ~150ms, ensuring output file has entries.
+	//   - Slow requests (max_tokens=200): take ~20s each at 100ms inter-token-latency,
+	//     ensuring cancel arrives while they are still in-flight or undispatched.
+	//   - 20 slow requests exceed PerModelMaxConcurrency (default 10), guaranteeing some
+	//     remain undispatched and get drained to the error file as batch_cancelled.
+	var lines []string
+	for i := 1; i <= 5; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, i))
+	}
+	for i := 1; i <= 20; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, i))
+	}
+	slowJSONL := strings.Join(lines, "\n")
 	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), slowJSONL)
 	batchID := mustCreateBatch(t, fileID)
 
 	// Wait for the processor to pick up the batch and start inference.
 	waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
 
-	// Cancel the batch while inference is running.
+	// Give fast requests time to complete before cancelling.
+	time.Sleep(2 * time.Second)
+
+	// Cancel the batch while slow requests are still in-flight.
 	batch, err := newClient().Batches.Cancel(context.Background(), batchID)
 	if err != nil {
 		t.Fatalf("cancel batch failed: %v", err)
@@ -77,11 +88,13 @@ func doTestBatchCancel(t *testing.T) {
 	// Wait for the batch to reach cancelled state.
 	finalBatch := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
 
-	t.Logf("batch %s cancelled (completed=%d, failed=%d, total=%d)",
+	t.Logf("batch %s cancelled (completed=%d, failed=%d, total=%d, output_file_id=%s, error_file_id=%s)",
 		batchID,
 		finalBatch.RequestCounts.Completed,
 		finalBatch.RequestCounts.Failed,
-		finalBatch.RequestCounts.Total)
+		finalBatch.RequestCounts.Total,
+		finalBatch.OutputFileID,
+		finalBatch.ErrorFileID)
 
 	// Verify timestamps
 	if finalBatch.CancelledAt == 0 {
@@ -110,6 +123,47 @@ func doTestBatchCancel(t *testing.T) {
 	if finalBatch.RequestCounts.Completed >= finalBatch.RequestCounts.Total {
 		t.Errorf("expected some requests to not complete after cancellation, but all %d completed",
 			finalBatch.RequestCounts.Total)
+	}
+
+	// Download and count output/error file lines to verify completeness.
+	var outputLines, errorLines int
+	if finalBatch.OutputFileID != "" {
+		resp, err := newClient().Files.Content(context.Background(), finalBatch.OutputFileID)
+		if err != nil {
+			t.Logf("download output file failed: %v", err)
+		} else {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			content := strings.TrimSpace(string(body))
+			if content != "" {
+				outputLines = len(strings.Split(content, "\n"))
+			}
+			t.Logf("output file content (%d lines):\n%s", outputLines, content)
+		}
+	}
+	if finalBatch.ErrorFileID != "" {
+		resp, err := newClient().Files.Content(context.Background(), finalBatch.ErrorFileID)
+		if err != nil {
+			t.Logf("download error file failed: %v", err)
+		} else {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			content := strings.TrimSpace(string(body))
+			if content != "" {
+				errorLines = len(strings.Split(content, "\n"))
+			}
+			t.Logf("error file content (%d lines):\n%s", errorLines, content)
+		}
+	}
+
+	// Known issue: dispatched-but-cancelled requests are counted as failed but not
+	// written to the error file (executor.go:387-390 discards the result).
+	// TODO: fix path 2 so that cancelled in-flight requests are written to error file.
+	totalFileLines := outputLines + errorLines
+	if totalFileLines != int(finalBatch.RequestCounts.Total) {
+		t.Errorf("output lines (%d) + error lines (%d) = %d, but total requests = %d (missing %d — dispatched-but-cancelled requests not written to error file)",
+			outputLines, errorLines, totalFileLines, finalBatch.RequestCounts.Total,
+			int(finalBatch.RequestCounts.Total)-totalFileLines)
 	}
 
 	// Verify that in-flight inference requests were actually aborted by the inference client
