@@ -11,6 +11,8 @@ import (
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
@@ -133,6 +135,64 @@ func TestExecutionProgress_RecordAndCounts(t *testing.T) {
 	}
 }
 
+// --- uploadFileAndStoreFileRecord ---
+
+func TestUploadFileAndStoreFileRecord_StorageKeyAndDBFilename(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DefaultOutputExpirationSeconds = 86400
+	cfg.UploadRetry = config.RetryConfig{
+		MaxRetries:     0,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     10 * time.Millisecond,
+	}
+
+	mock := &failNTimesFilesClient{failCount: 0}
+	fileDB := newMockFileDBClient()
+	batchDB := newMockBatchDBClient()
+
+	clients := &clientset.Clientset{
+		File:    mock,
+		FileDB:  fileDB,
+		BatchDB: batchDB,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-storage-key"
+	tenantID := "tenant-1"
+	jobInfo := setupJobWithOutputFile(t, cfg, jobID, tenantID)
+	ctx := testLoggerCtx()
+	dbJob := seedDBJob(t, batchDB, jobID)
+
+	fileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
+	if err != nil {
+		t.Fatalf("uploadFileAndStoreFileRecord returned error: %v", err)
+	}
+	if fileID == "" {
+		t.Fatal("expected non-empty fileID")
+	}
+
+	// Verify storage key uses FileStorageName format: <fileID>.jsonl
+	wantStorageKey := fileID + ".jsonl"
+	if mock.lastFileName != wantStorageKey {
+		t.Errorf("storage key = %q, want %q", mock.lastFileName, wantStorageKey)
+	}
+
+	// Verify DB filename preserves the batch output format
+	items, _, _, err := fileDB.DBGet(ctx, &db.FileQuery{BaseQuery: db.BaseQuery{IDs: []string{fileID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	fileObj, err := converter.DBItemToFile(items[0])
+	if err != nil {
+		t.Fatalf("DBItemToFile: %v", err)
+	}
+	wantDBFilename := "batch_output_" + jobID + ".jsonl"
+	if fileObj.Filename != wantDBFilename {
+		t.Errorf("DB filename = %q, want %q", fileObj.Filename, wantDBFilename)
+	}
+}
+
 // --- storeFileRecord ---
 
 func TestStoreOutputFileRecord_Success(t *testing.T) {
@@ -161,6 +221,34 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	}
 	if items[0].Purpose != string(openai.FileObjectPurposeBatchOutput) {
 		t.Fatalf("stored purpose = %q, want %q", items[0].Purpose, openai.FileObjectPurposeBatchOutput)
+	}
+}
+
+// --- uploadOutputFile retry ---
+
+// --- storage key format ---
+
+func TestUploadOutputFile_UsesFileStorageName(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.UploadRetry = config.RetryConfig{
+		MaxRetries:     0,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     10 * time.Millisecond,
+	}
+
+	mock := &failNTimesFilesClient{failCount: 0}
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{File: mock})
+
+	jobInfo := setupJobWithOutputFile(t, cfg, "job-key-fmt", "tenant-1")
+	ctx := testLoggerCtx()
+
+	_, err := p.uploadOutputFile(ctx, jobInfo, "file_abc.jsonl")
+	if err != nil {
+		t.Fatalf("uploadOutputFile returned error: %v", err)
+	}
+	if mock.lastFileName != "file_abc.jsonl" {
+		t.Errorf("storage key = %q, want %q", mock.lastFileName, "file_abc.jsonl")
 	}
 }
 

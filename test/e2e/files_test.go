@@ -29,10 +29,52 @@ import (
 
 func testFiles(t *testing.T) {
 	t.Run("Lifecycle", doTestFileLifecycle)
+	t.Run("Create", func(t *testing.T) {
+		t.Run("DuplicateFilename", doTestDuplicateFileUpload)
+	})
 	t.Run("List", func(t *testing.T) {
 		t.Run("Pagination", doTestFilePagination)
 		t.Run("PurposeFilter", doTestFilePurposeFilter)
 	})
+}
+
+// doTestDuplicateFileUpload verifies that uploading two files with the same
+// filename under the same tenant succeeds. Each upload should get a unique
+// fileID and storage path. Reproduces https://github.com/llm-d-incubation/batch-gateway/issues/214
+func doTestDuplicateFileUpload(t *testing.T) {
+	t.Helper()
+
+	client := newClient()
+	filename := fmt.Sprintf("duplicate-%s.jsonl", testRunID)
+
+	// First upload — should succeed
+	fileID1 := mustCreateFileWithClient(t, client, filename, testJSONL)
+	t.Logf("first upload: fileID=%s, filename=%s", fileID1, filename)
+
+	// Second upload with the same filename — should also succeed with a different fileID
+	fileID2 := mustCreateFileWithClient(t, client, filename, testJSONL)
+	t.Logf("second upload: fileID=%s, filename=%s", fileID2, filename)
+
+	if fileID1 == fileID2 {
+		t.Errorf("expected different file IDs, both got %s", fileID1)
+	}
+
+	// Both files should be retrievable and preserve the original filename
+	got1, err := client.Files.Get(context.Background(), fileID1)
+	if err != nil {
+		t.Fatalf("retrieve first file failed: %v", err)
+	}
+	if got1.Filename != filename {
+		t.Errorf("first file: expected filename %q, got %q", filename, got1.Filename)
+	}
+
+	got2, err := client.Files.Get(context.Background(), fileID2)
+	if err != nil {
+		t.Fatalf("retrieve second file failed: %v", err)
+	}
+	if got2.Filename != filename {
+		t.Errorf("second file: expected filename %q, got %q", filename, got2.Filename)
+	}
 }
 
 // doTestFileLifecycle uploads a file, verifies list, retrieve, download, then deletes it.
@@ -78,6 +120,13 @@ func doTestFileLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("download file failed: %v", err)
 	}
+	// Verify download filename matches the original upload filename
+	cd := resp.Header.Get("Content-Disposition")
+	wantCD := fmt.Sprintf(`attachment; filename=%q`, filename)
+	if cd != wantCD {
+		t.Errorf("Content-Disposition mismatch\ngot:  %s\nwant: %s", cd, wantCD)
+	}
+
 	content, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
