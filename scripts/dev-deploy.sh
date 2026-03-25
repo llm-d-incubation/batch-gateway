@@ -22,6 +22,7 @@ APISERVER_OBS_NODE_PORT="${APISERVER_OBS_NODE_PORT:-30081}"
 PROCESSOR_NODE_PORT="${PROCESSOR_NODE_PORT:-30090}"
 JAEGER_NODE_PORT="${JAEGER_NODE_PORT:-30086}"
 PROMETHEUS_NODE_PORT="${PROMETHEUS_NODE_PORT:-30091}"
+GRAFANA_NODE_PORT="${GRAFANA_NODE_PORT:-30030}"
 APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
 PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:${DEV_VERSION}}"
 GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${DEV_VERSION}}"
@@ -95,6 +96,9 @@ nodes:
     protocol: TCP
   - containerPort: ${PROMETHEUS_NODE_PORT}
     hostPort: ${PROMETHEUS_PORT}
+    protocol: TCP
+  - containerPort: ${GRAFANA_NODE_PORT}
+    hostPort: ${GRAFANA_PORT}
     protocol: TCP
 EOF
         fi
@@ -504,6 +508,134 @@ EOF
     log "Prometheus installed. UI: ${PROMETHEUS_NAME}:9090"
 }
 
+# ── Grafana ───────────────────────────────────────────────────────────────────
+
+install_grafana() {
+    step "Installing Grafana '${GRAFANA_NAME}'..."
+
+    if kubectl get deployment "${GRAFANA_NAME}" -n "${NAMESPACE}" &>/dev/null; then
+        log "Grafana '${GRAFANA_NAME}' already exists. Skipping."
+        return
+    fi
+
+    # Provisioning ConfigMap: auto-configure Prometheus datasource and dashboard loader
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GRAFANA_NAME}-provisioning-datasources
+  namespace: ${NAMESPACE}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      url: http://${PROMETHEUS_NAME}.${NAMESPACE}.svc.cluster.local:9090
+      isDefault: true
+      editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GRAFANA_NAME}-provisioning-dashboards
+  namespace: ${NAMESPACE}
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: batch-gateway
+      type: file
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${GRAFANA_NAME}-dashboards
+  namespace: ${NAMESPACE}
+data:
+$(cd "${REPO_ROOT}" && for f in charts/batch-gateway/dashboards/*.json; do
+  name="$(basename "$f")"
+  echo "  ${name}: |"
+  sed 's/^/    /' "$f"
+done)
+EOF
+
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${GRAFANA_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${GRAFANA_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${GRAFANA_NAME}
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        env:
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: "true"
+        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+          value: "Admin"
+        volumeMounts:
+        - name: datasources
+          mountPath: /etc/grafana/provisioning/datasources
+        - name: dashboard-providers
+          mountPath: /etc/grafana/provisioning/dashboards
+        - name: dashboards
+          mountPath: /var/lib/grafana/dashboards
+        resources:
+          requests:
+            cpu: 10m
+            memory: 128Mi
+      volumes:
+      - name: datasources
+        configMap:
+          name: ${GRAFANA_NAME}-provisioning-datasources
+      - name: dashboard-providers
+        configMap:
+          name: ${GRAFANA_NAME}-provisioning-dashboards
+      - name: dashboards
+        configMap:
+          name: ${GRAFANA_NAME}-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${GRAFANA_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${GRAFANA_NAME}
+spec:
+  selector:
+    app: ${GRAFANA_NAME}
+  ports:
+  - name: http
+    protocol: TCP
+    port: 3000
+    targetPort: 3000
+  type: ClusterIP
+EOF
+
+    wait_for_deployment "${GRAFANA_NAME}" "${NAMESPACE}" 120s
+    log "Grafana installed. UI: ${GRAFANA_NAME}:3000 (anonymous admin access enabled)"
+}
+
 # ── vLLM Simulator ────────────────────────────────────────────────────────────
 
 install_vllm_sim() {
@@ -770,6 +902,21 @@ spec:
     port: 9090
     targetPort: 9090
     nodePort: ${PROMETHEUS_NODE_PORT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${GRAFANA_NAME}-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: ${GRAFANA_NAME}
+  ports:
+  - name: http
+    protocol: TCP
+    port: 3000
+    targetPort: 3000
+    nodePort: ${GRAFANA_NODE_PORT}
 EOF
 
     log "NodePort services created."
@@ -826,13 +973,18 @@ print_usage() {
     echo ""
     echo "       http://localhost:${PROMETHEUS_PORT}"
     echo ""
-    echo "  6. Jaeger UI (trace visualization):"
+    echo "  6. Grafana (dashboards):"
+    echo ""
+    echo "       http://localhost:${GRAFANA_PORT}"
+    echo "       Anonymous admin access enabled — no login required."
+    echo ""
+    echo "  7. Jaeger UI (trace visualization):"
     echo ""
     echo "       http://localhost:${JAEGER_PORT}"
     echo ""
     echo "     Select service 'batch-gateway' to view traces."
     echo ""
-    echo "  7. Cleanup:"
+    echo "  8. Cleanup:"
     echo ""
     if [ "${USE_KIND}" = true ]; then
     echo "       make dev-rm-cluster"
@@ -870,6 +1022,7 @@ main() {
     load_images
     install_jaeger
     install_prometheus
+    install_grafana
     install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
     install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_batch_gateway

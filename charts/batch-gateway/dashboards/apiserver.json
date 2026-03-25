@@ -9,10 +9,13 @@
     "list": [
       {
         "current": {},
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "datasource": { "type": "prometheus" },
         "definition": "label_values(http_requests_total, namespace)",
         "name": "namespace",
-        "type": "query"
+        "type": "query",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
       }
     ]
   },

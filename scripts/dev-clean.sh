@@ -21,10 +21,13 @@ cleanup_kubernetes_resources() {
     kubectl delete svc "${HELM_RELEASE}-apiserver-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete svc "${HELM_RELEASE}-processor-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete svc "${PROMETHEUS_NAME}-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete svc "${GRAFANA_NAME}-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
 
     # Delete deployments and services
     log "Deleting deployments and services..."
     kubectl delete deployment,svc "${JAEGER_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete deployment,svc "${GRAFANA_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete configmap "${GRAFANA_NAME}-provisioning-datasources" "${GRAFANA_NAME}-provisioning-dashboards" "${GRAFANA_NAME}-dashboards" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc,configmap,sa "${PROMETHEUS_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete configmap "${PROMETHEUS_NAME}-config" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete clusterrole,clusterrolebinding "${PROMETHEUS_NAME}" --ignore-not-found=true

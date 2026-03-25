@@ -9,10 +9,13 @@
     "list": [
       {
         "current": {},
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "datasource": { "type": "prometheus" },
         "definition": "label_values(jobs_processed_total, namespace)",
         "name": "namespace",
-        "type": "query"
+        "type": "query",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
       }
     ]
   },
@@ -151,9 +154,31 @@
       }
     },
     {
-      "title": "File Upload Retries",
+      "title": "Plan Build Duration (p50 / p95 / p99)",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(plan_build_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(plan_build_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(plan_build_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "File Upload Retries",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
       "targets": [
         {
           "expr": "sum(rate(file_upload_retries_total{namespace=\"$namespace\"}[5m]))",
@@ -167,7 +192,7 @@
     {
       "title": "Startup Recovery",
       "type": "stat",
-      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
       "targets": [
         {
           "expr": "sum(batch_startup_recovery_total{namespace=\"$namespace\"}) by (result)",
