@@ -12,7 +12,12 @@ KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
 DEV_VERSION="${DEV_VERSION:-0.0.1}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
-S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-dummy-s3-secret-access-key}"
+S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-minioadmin}"
+FILE_CLIENT_TYPE="${FILE_CLIENT_TYPE:-s3}"
+MINIO_IMAGE="${MINIO_IMAGE:-minio/minio:latest}"
+MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
+MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
+MINIO_REGION="${MINIO_REGION:-us-east-1}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
@@ -291,6 +296,76 @@ spec:
       storage: 1Gi
 EOF
     log "PVC '${FILES_PVC_NAME}' created."
+}
+
+# ── MinIO (S3-compatible object storage) ─────────────────────────────────────
+
+install_minio() {
+    step "Installing MinIO '${MINIO_NAME}'..."
+
+    if kubectl get deployment "${MINIO_NAME}" -n "${NAMESPACE}" &>/dev/null; then
+        log "MinIO '${MINIO_NAME}' already exists. Skipping."
+        return
+    fi
+
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${MINIO_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${MINIO_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${MINIO_NAME}
+    spec:
+      containers:
+      - name: minio
+        image: ${MINIO_IMAGE}
+        args: ["server", "/data", "--console-address", ":9001"]
+        env:
+        - name: MINIO_ROOT_USER
+          value: "${MINIO_ACCESS_KEY}"
+        - name: MINIO_ROOT_PASSWORD
+          value: "${MINIO_SECRET_KEY}"
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${MINIO_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: ${MINIO_NAME}
+  ports:
+  - name: api
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
+EOF
+
+    log "Waiting for MinIO to be ready..."
+    kubectl rollout status deployment "${MINIO_NAME}" -n "${NAMESPACE}" --timeout=120s
+
+    log "MinIO installed."
 }
 
 # ── Jaeger (OpenTelemetry collector & trace UI) ──────────────────────────────
@@ -738,7 +813,7 @@ install_batch_gateway() {
         --set "apiserver.image.tag=${DEV_VERSION}"
         --set processor.image.pullPolicy=IfNotPresent
         --set "processor.image.tag=${DEV_VERSION}"
-        --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
+        --set "global.fileClient.type=${FILE_CLIENT_TYPE}"
         --set "global.secretName=${APP_SECRET_NAME}"
         --set "processor.config.modelGateways.default.url=http://unused-default-gateway:8000"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.url=${vllm_sim_url}"
@@ -769,6 +844,22 @@ install_batch_gateway() {
         --set "gc.config.interval=5s"
         --namespace "${NAMESPACE}"
     )
+
+    # Add file client specific helm args
+    if [ "${FILE_CLIENT_TYPE}" = "s3" ]; then
+        local minio_endpoint="http://${MINIO_NAME}.${NAMESPACE}.svc.cluster.local:9000"
+        helm_args+=(
+            --set "global.fileClient.s3.region=${MINIO_REGION}"
+            --set "global.fileClient.s3.endpoint=${minio_endpoint}"
+            --set "global.fileClient.s3.accessKeyId=${MINIO_ACCESS_KEY}"
+            --set "global.fileClient.s3.usePathStyle=true"
+            --set "global.fileClient.s3.autoCreateBucket=true"
+        )
+    else
+        helm_args+=(
+            --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
+        )
+    fi
 
     if helm status "${HELM_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
         log "Release '${HELM_RELEASE}' already exists. Upgrading..."
@@ -1024,7 +1115,11 @@ main() {
     install_postgresql
     create_secret
     create_tls_secret
-    create_pvc
+    if [ "${FILE_CLIENT_TYPE}" = "s3" ]; then
+        install_minio
+    else
+        create_pvc
+    fi
     load_images
     install_jaeger
     install_prometheus

@@ -71,6 +71,7 @@ global:
       accessKeyId: ""
       prefix: ""
       usePathStyle: false
+      autoCreateBucket: false
 
 # API Server configuration
 apiserver:

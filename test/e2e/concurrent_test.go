@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -62,7 +63,7 @@ func doTestConcurrentBatches(t *testing.T) {
 	for i, bid := range batchIDs {
 		go func(idx int, batchID string) {
 			defer wg.Done()
-			b := waitForBatchCompletion(t, batchID)
+			b, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
 			results[idx] = result{index: idx, batch: b}
 		}(i, bid)
 	}
@@ -71,11 +72,6 @@ func doTestConcurrentBatches(t *testing.T) {
 	// Verify each batch completed independently.
 	for _, r := range results {
 		b := r.batch
-		if b.Status != openai.BatchStatusCompleted {
-			t.Errorf("batch %d (%s): expected status %q, got %q",
-				r.index, b.ID, openai.BatchStatusCompleted, b.Status)
-			continue
-		}
 		if b.RequestCounts.Total != 2 {
 			t.Errorf("batch %d (%s): total = %d, want 2", r.index, b.ID, b.RequestCounts.Total)
 		}

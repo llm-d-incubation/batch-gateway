@@ -221,6 +221,18 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// job is not in runnable state.
 		if !batch_utils.IsJobRunnable(jobInfo.BatchJob) {
+			// If the batch was marked as "cancelling" between dequeue and this check,
+			// transition it to "cancelled" so it doesn't get stuck forever.
+			if jobInfo.BatchJob.Status == openai.BatchStatusCancelling {
+				jlogger.V(logging.INFO).Info("Job is in cancelling state after dequeue, transitioning to cancelled")
+				if err := p.updater.UpdateCancelledStatus(jctx, jobItem, nil, "", ""); err != nil {
+					jlogger.V(logging.ERROR).Error(err, "Failed to update job status to cancelled")
+				}
+				p.releaseForNextPoll()
+				metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
+				continue
+			}
+
 			jlogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
 
 			// persistent status update is not needed.

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -47,6 +48,8 @@ type s3API interface {
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+	CreateBucket(ctx context.Context, params *s3.CreateBucketInput, optFns ...func(*s3.Options)) (*s3.CreateBucketOutput, error)
+	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 }
 
 type uploaderAPI interface {
@@ -56,21 +59,24 @@ type uploaderAPI interface {
 // Client implements api.BatchFilesClient using S3 storage.
 // The folderName parameter in Store/Retrieve/Delete is used as the S3 bucket name.
 type Client struct {
-	s3Client s3API
-	uploader uploaderAPI
-	prefix   string
+	s3Client         s3API
+	uploader         uploaderAPI
+	prefix           string
+	autoCreateBucket bool
+	knownBuckets     sync.Map // caches bucket names that have been verified to exist
 }
 
 var _ api.BatchFilesClient = (*Client)(nil)
 
 // Config holds configuration for the S3 client.
 type Config struct {
-	Region          string `yaml:"region"`
-	Endpoint        string `yaml:"endpoint"`
-	AccessKeyID     string `yaml:"access_key_id"`
-	SecretAccessKey string `yaml:"-"`
-	Prefix          string `yaml:"prefix"`
-	UsePathStyle    bool   `yaml:"use_path_style"`
+	Region           string `yaml:"region"`
+	Endpoint         string `yaml:"endpoint"`
+	AccessKeyID      string `yaml:"access_key_id"`
+	SecretAccessKey  string `yaml:"-"`
+	Prefix           string `yaml:"prefix"`
+	UsePathStyle     bool   `yaml:"use_path_style"`
+	AutoCreateBucket bool   `yaml:"auto_create_bucket"`
 }
 
 // Validate checks that all required fields are set.
@@ -113,9 +119,10 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	klog.InfoS("BatchFiles S3 client initialized", "endpoint", cfg.Endpoint, "region", cfg.Region, "prefix", cfg.Prefix)
 
 	return &Client{
-		s3Client: s3Client,
-		uploader: manager.NewUploader(s3Client), //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
-		prefix:   cfg.Prefix,
+		s3Client:         s3Client,
+		uploader:         manager.NewUploader(s3Client), //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
+		prefix:           cfg.Prefix,
+		autoCreateBucket: cfg.AutoCreateBucket,
 	}, nil
 }
 
@@ -127,12 +134,64 @@ func (c *Client) buildKey(fileName string) string {
 	return c.prefix + "/" + fileName
 }
 
+// ensureBucket checks that the bucket exists. When autoCreateBucket is true,
+// it creates the bucket if it does not exist; otherwise it returns an error.
+// Verified buckets are cached to avoid repeated HeadBucket calls.
+func (c *Client) ensureBucket(ctx context.Context, bucket string) error {
+	if _, ok := c.knownBuckets.Load(bucket); ok {
+		return nil
+	}
+
+	_, err := c.s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(bucket),
+	})
+	if err == nil {
+		c.knownBuckets.Store(bucket, true)
+		return nil
+	}
+
+	var notFound *types.NotFound
+	if !errors.As(err, &notFound) {
+		// HeadBucket may also return 404 as a generic smithy error, so check for NoSuchBucket too.
+		var noSuchBucket *types.NoSuchBucket
+		if !errors.As(err, &noSuchBucket) {
+			return fmt.Errorf("head bucket %s: %w", bucket, err)
+		}
+	}
+
+	if !c.autoCreateBucket {
+		return fmt.Errorf("bucket %s does not exist", bucket)
+	}
+
+	_, err = c.s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		// Bucket may have been created concurrently — check for BucketAlreadyOwnedByYou.
+		var alreadyOwned *types.BucketAlreadyOwnedByYou
+		var alreadyExists *types.BucketAlreadyExists
+		if errors.As(err, &alreadyOwned) || errors.As(err, &alreadyExists) {
+			c.knownBuckets.Store(bucket, true)
+			return nil
+		}
+		return fmt.Errorf("create bucket %s: %w", bucket, err)
+	}
+
+	c.knownBuckets.Store(bucket, true)
+	klog.FromContext(ctx).V(logging.INFO).Info("Bucket created", "bucket", bucket)
+	return nil
+}
+
 // Store stores a file in S3.
 // The bucket parameter specifies which S3 bucket to use.
 func (c *Client) Store(ctx context.Context, fileName, bucket string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
 	*api.BatchFileMetadata, error,
 ) {
 	key := c.buildKey(fileName)
+
+	if err := c.ensureBucket(ctx, bucket); err != nil {
+		return nil, err
+	}
 
 	_, err := c.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket),
@@ -193,7 +252,8 @@ func (c *Client) Retrieve(ctx context.Context, fileName, bucket string) (io.Read
 	})
 	if err != nil {
 		var noSuchKey *types.NoSuchKey
-		if errors.As(err, &noSuchKey) {
+		var noSuchBucket *types.NoSuchBucket
+		if errors.As(err, &noSuchKey) || errors.As(err, &noSuchBucket) {
 			return nil, nil, os.ErrNotExist
 		}
 		return nil, nil, err
@@ -231,6 +291,10 @@ func (c *Client) Delete(ctx context.Context, fileName, bucket string) error {
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var noSuchBucket *types.NoSuchBucket
+		if errors.As(err, &noSuchBucket) {
+			return os.ErrNotExist
+		}
 		return err
 	}
 

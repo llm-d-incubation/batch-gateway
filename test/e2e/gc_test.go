@@ -110,10 +110,7 @@ func doTestGCCollectsExpiredBatch(t *testing.T) {
 	// Create a file and batch, wait for completion
 	fileID := mustCreateFile(t, fmt.Sprintf("test-gc-batch-%s.jsonl", testRunID), testJSONL)
 	batchID := mustCreateBatch(t, fileID)
-	finalBatch := waitForBatchCompletion(t, batchID)
-	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
-	}
+	_, _ = waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
 
 	// Verify it exists
 	_, err := client.Batches.Get(ctx, batchID)

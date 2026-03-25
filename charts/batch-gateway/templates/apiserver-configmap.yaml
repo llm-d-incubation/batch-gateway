@@ -40,6 +40,7 @@ data:
         access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
         prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
         use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+        auto_create_bucket: {{ .Values.global.fileClient.s3.autoCreateBucket }}
     batch_api:
       batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.eventTTLSeconds }}
       {{- if .Values.apiserver.config.batchAPI.passThroughHeaders }}
