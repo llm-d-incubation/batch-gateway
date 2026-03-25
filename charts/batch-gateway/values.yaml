@@ -187,6 +187,14 @@ apiserver:
       issuerKind: ClusterIssuer
       dnsNames: []
 
+  # ServiceMonitor for Prometheus Operator auto-discovery.
+  # Scrapes the observability port (default 8081) where /metrics is served.
+  serviceMonitor:
+    enabled: false
+    interval: "30s"
+    # Extra labels to match Prometheus Operator's serviceMonitorSelector.
+    labels: {}
+
   # Logging configuration
   logging:
     verbosity: 2
@@ -314,9 +322,28 @@ processor:
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
     enablePprof: false
 
+  # PodMonitor for Prometheus Operator auto-discovery.
+  # Scrapes the metrics port (default 9090) where /metrics is served.
+  # PodMonitor is used instead of ServiceMonitor because the processor has no Service.
+  podMonitor:
+    enabled: false
+    interval: "30s"
+    # Extra labels to match Prometheus Operator's podMonitorSelector.
+    labels: {}
+
   # Logging configuration
   logging:
     verbosity: 2
+
+# Grafana dashboard configuration
+# When enabled, creates a ConfigMap with dashboard JSON files that Grafana's
+# sidecar auto-loads (requires grafana.sidecar.dashboards.enabled=true).
+grafana:
+  dashboards:
+    enabled: false
+    # Label that the Grafana sidecar watches for dashboard ConfigMaps.
+    label: grafana_dashboard
+    labelValue: "1"
 
 # Garbage Collector configuration
 gc:
