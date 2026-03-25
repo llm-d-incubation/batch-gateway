@@ -25,26 +25,28 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
 // Client wraps a BatchFilesClient and retries transient errors.
 type Client struct {
-	inner api.BatchFilesClient
-	cfg   retry.Config
+	inner     api.BatchFilesClient
+	cfg       retry.Config
+	component ucom.Component
 }
 
 var _ api.BatchFilesClient = (*Client)(nil)
 
 // New creates a retry-wrapping Client.
+// component identifies the caller (e.g. "processor", "apiserver", "garbage-collector") for metrics.
 // Callers should only wrap when cfg.MaxRetries > 0; with MaxRetries == 0
 // retry.Do still calls fn exactly once, so there is no functional difference
 // but an unnecessary layer of indirection.
-func New(inner api.BatchFilesClient, cfg retry.Config) *Client {
+func New(inner api.BatchFilesClient, cfg retry.Config, component ucom.Component) *Client {
 	InitMetrics()
-	return &Client{inner: inner, cfg: cfg}
+	return &Client{inner: inner, cfg: cfg, component: component}
 }
 
 func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
@@ -59,12 +61,10 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 		return c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, reader)
 	}
 
-	component := ctxkeys.Component(ctx)
-
 	var meta *api.BatchFileMetadata
-	err := retry.Do(ctx, &c.cfg, func(attempt int) error {
+	attempts, err := retry.Do(ctx, &c.cfg, func(attempt int) error {
 		if attempt > 1 {
-			recordRetry("store", component)
+			recordRetry("store", c.component)
 			klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file store",
 				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
 			// Seek failure means the reader cannot be rewound, so subsequent
@@ -79,28 +79,26 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 		return storeErr
 	})
 	if err != nil {
-		if c.cfg.MaxRetries > 0 {
-			recordExhausted("store", component)
+		if attempts > c.cfg.MaxRetries {
+			recordExhausted("store", c.component)
 		}
 	} else {
-		recordSuccess("store", component)
+		recordSuccess("store", c.component)
 	}
 	return meta, err
 }
 
 func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.ReadCloser, *api.BatchFileMetadata, error) {
-	component := ctxkeys.Component(ctx)
-
 	var (
 		rc   io.ReadCloser
 		meta *api.BatchFileMetadata
 	)
-	err := retry.Do(ctx, &c.cfg, func(attempt int) error {
+	attempts, err := retry.Do(ctx, &c.cfg, func(attempt int) error {
 		if attempt > 1 {
 			if rc != nil {
 				_ = rc.Close()
 			}
-			recordRetry("retrieve", component)
+			recordRetry("retrieve", c.component)
 			klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file retrieve",
 				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
 		}
@@ -110,32 +108,30 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 		return retrieveErr
 	})
 	if err != nil {
-		if c.cfg.MaxRetries > 0 {
-			recordExhausted("retrieve", component)
+		if attempts > c.cfg.MaxRetries {
+			recordExhausted("retrieve", c.component)
 		}
 	} else {
-		recordSuccess("retrieve", component)
+		recordSuccess("retrieve", c.component)
 	}
 	return rc, meta, err
 }
 
 func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
-	component := ctxkeys.Component(ctx)
-
-	err := retry.Do(ctx, &c.cfg, func(attempt int) error {
+	attempts, err := retry.Do(ctx, &c.cfg, func(attempt int) error {
 		if attempt > 1 {
-			recordRetry("delete", component)
+			recordRetry("delete", c.component)
 			klog.FromContext(ctx).V(logging.WARNING).Info("Retrying file delete",
 				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
 		}
 		return c.inner.Delete(ctx, fileName, folderName)
 	})
 	if err != nil {
-		if c.cfg.MaxRetries > 0 {
-			recordExhausted("delete", component)
+		if attempts > c.cfg.MaxRetries {
+			recordExhausted("delete", c.component)
 		}
 	} else {
-		recordSuccess("delete", component)
+		recordSuccess("delete", c.component)
 	}
 	return err
 }

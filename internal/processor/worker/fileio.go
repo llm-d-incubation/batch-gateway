@@ -26,7 +26,7 @@ import (
 	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"k8s.io/klog/v2"
 )
@@ -150,7 +150,6 @@ func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get folder name by tenant id: %w", err)
 	}
-	ctx = ctxkeys.WithTenantID(ctx, fileItem.TenantID)
 	storageName := ucom.FileStorageName(fileItem.ID, fileObj.Filename)
 	reader, metadata, err := p.files.storage.Retrieve(ctx, storageName, folderName)
 	if err != nil {

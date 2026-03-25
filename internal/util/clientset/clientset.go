@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package com provides factory functions for creating all external clients used by
-// the batch gateway apiserver and processor. Centralising client construction here
-// ensures both processes use identical setup logic.
+// Package clientset provides factory functions for creating all external clients
+// used by the batch gateway apiserver and processor. Centralising client
+// construction here ensures both processes use identical setup logic.
 package clientset
 
 import (
@@ -141,6 +141,7 @@ func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfi
 }
 
 // NewClientset creates all clients.
+// component identifies the caller (e.g. "processor", "apiserver") for metrics.
 // fileRetryCfg, if non-nil with MaxRetries > 0, wraps the file client with retry logic.
 func NewClientset(
 	ctx context.Context,
@@ -152,6 +153,7 @@ func NewClientset(
 	s3Cfg *s3client.Config,
 	fileRetryCfg *retry.Config,
 	modelGatewaysConfigs map[string]inference.GatewayClientConfig,
+	component ucom.Component,
 ) (*Clientset, error) {
 
 	logger := klog.FromContext(ctx)
@@ -202,7 +204,7 @@ func NewClientset(
 		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", fileClientType)
 	}
 	if fileRetryCfg != nil && fileRetryCfg.MaxRetries > 0 {
-		cs.File = retryclient.New(cs.File, *fileRetryCfg)
+		cs.File = retryclient.New(cs.File, *fileRetryCfg, component)
 		logger.Info("File client wrapped with retry", "maxRetries", fileRetryCfg.MaxRetries)
 	}
 

@@ -30,7 +30,7 @@ import (
 	fs "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
@@ -240,7 +240,6 @@ func (c *GarbageCollector) processFile(ctx context.Context, file *db.FileItem) (
 
 	// Delete the physical file first, then the DB metadata. If the file is already
 	// gone (e.g. from a previous partial GC cycle), proceed to delete the metadata.
-	ctx = ctxkeys.WithTenantID(ctx, file.TenantID)
 	storageName := ucom.FileStorageName(fileObject.ID, fileObject.Filename)
 	if err := c.filesClient.Delete(ctx, storageName, folderName); err != nil && !errors.Is(err, os.ErrNotExist) {
 		logger.Error(err, "Failed to delete physical file", "fileID", file.ID, "storageName", storageName, "folderName", folderName)

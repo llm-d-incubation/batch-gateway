@@ -87,13 +87,20 @@ func (c *Config) Validate() error {
 //   - attempt=2: first retry
 //   - attempt=3: second retry, etc.
 //
+// Returns (attempts, err) where attempts is the total number of times fn was called.
 // Callers can use attempt > 1 to detect retries.
-func Do(ctx context.Context, cfg *Config, fn func(attempt int) error) error {
+func Do(ctx context.Context, cfg *Config, fn func(attempt int) error) (int, error) {
 	// Initial call (attempt 1)
 	err := fn(1)
 	if err == nil || cfg == nil || cfg.MaxRetries == 0 {
-		// No retries needed, return the result of the initial call
-		return err
+		return 1, err
+	}
+
+	// Check before entering the retry loop — if the initial call already
+	// returned a permanent error, retrying would be pointless.
+	var permErr *permanentError
+	if errors.As(err, &permErr) {
+		return 1, permErr.err
 	}
 
 	// Retry loop (attempt 2, 3, 4, ...)
@@ -106,22 +113,22 @@ func Do(ctx context.Context, cfg *Config, fn func(attempt int) error) error {
 	expBackoff.Reset()
 
 	for i := range cfg.MaxRetries {
+		attempt := i + 2
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return attempt - 1, ctx.Err()
 		case <-time.After(expBackoff.NextBackOff()):
 		}
 
-		err = fn(i + 2) // attempt starts at 2 for first retry
+		err = fn(attempt)
 		if err == nil {
-			return nil
+			return attempt, nil
 		}
 
-		// Stop retrying on permanent errors.
-		var permErr *permanentError
-		if errors.As(err, &permErr) {
-			return permErr.err
+		var pe *permanentError
+		if errors.As(err, &pe) {
+			return attempt, pe.err
 		}
 	}
-	return err
+	return cfg.MaxRetries + 1, err
 }

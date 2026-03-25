@@ -29,7 +29,6 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
@@ -106,7 +105,7 @@ func (r *failingSeekerReader) Seek(offset int64, whence int) (int64, error) {
 
 func TestStore_SucceedsAfterRetry(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 2}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	meta, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
 	if err != nil {
@@ -122,7 +121,7 @@ func TestStore_SucceedsAfterRetry(t *testing.T) {
 
 func TestStore_ExhaustsRetries(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 10}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	_, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
 	if err == nil {
@@ -135,7 +134,7 @@ func TestStore_ExhaustsRetries(t *testing.T) {
 
 func TestStore_NoRetryOnZeroConfig(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 1}
-	c := New(mock, retry.Config{MaxRetries: 0})
+	c := New(mock, retry.Config{MaxRetries: 0}, "test")
 
 	_, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
 	if err == nil {
@@ -148,7 +147,7 @@ func TestStore_NoRetryOnZeroConfig(t *testing.T) {
 
 func TestStore_NonSeekableReaderDoesNotRetry(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 10}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	reader := &nonSeekableReader{data: []byte("data")}
 	_, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, reader)
@@ -162,7 +161,7 @@ func TestStore_NonSeekableReaderDoesNotRetry(t *testing.T) {
 
 func TestStore_SeekFailureAbortsImmediately(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 1}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	reader := &failingSeekerReader{data: []byte("data")}
 	_, err := c.Store(context.Background(), "f.txt", "folder", 0, 0, reader)
@@ -182,7 +181,7 @@ func TestStore_SeekFailureAbortsImmediately(t *testing.T) {
 
 func TestRetrieve_SucceedsAfterRetry(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 1}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	rc, meta, err := c.Retrieve(context.Background(), "f.txt", "folder")
 	if err != nil {
@@ -199,7 +198,7 @@ func TestRetrieve_SucceedsAfterRetry(t *testing.T) {
 
 func TestDelete_SucceedsAfterRetry(t *testing.T) {
 	mock := &mockFilesClient{failUntil: 2}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	err := c.Delete(context.Background(), "f.txt", "folder")
 	if err != nil {
@@ -211,7 +210,7 @@ func TestDelete_SucceedsAfterRetry(t *testing.T) {
 }
 
 func metricsCtx() context.Context {
-	return ctxkeys.WithComponent(context.Background(), "test-component")
+	return context.Background()
 }
 
 func counterValue(t *testing.T, name string, wantLabels map[string]string) float64 {
@@ -237,6 +236,27 @@ func counterValue(t *testing.T, name string, wantLabels map[string]string) float
 	return 0
 }
 
+func counterValueOrZero(t *testing.T, name string, wantLabels map[string]string) float64 {
+	t.Helper()
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error: %v", err)
+	}
+
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if hasLabels(m, wantLabels) {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
 func hasLabels(m *dto.Metric, wantLabels map[string]string) bool {
 	if len(m.GetLabel()) != len(wantLabels) {
 		return false
@@ -250,82 +270,114 @@ func hasLabels(m *dto.Metric, wantLabels map[string]string) bool {
 	return true
 }
 
-func TestMetrics_RetriesRecorded(t *testing.T) {
-	retriesTotal.Reset()
-	retryExhaustedTotal.Reset()
-	retryExhaustedTotal.WithLabelValues("store", "test-component").Add(0)
+func TestMetrics_RetriesAndSuccessRecorded(t *testing.T) {
+	operationsTotal.Reset()
 
 	mock := &mockFilesClient{failUntil: 2}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	_, err := c.Store(metricsCtx(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := counterValue(t, "file_storage_retries_total", map[string]string{
+	retries := counterValue(t, "file_storage_operations_total", map[string]string{
 		"operation": "store",
-		"component": "test-component",
+		"component": "test",
+		"status":    "retry",
 	})
-	if got != 2 {
-		t.Fatalf("file_storage_retries_total{store} = %v, want 2", got)
+	if retries != 2 {
+		t.Fatalf("file_storage_operations_total{store,retry} = %v, want 2", retries)
 	}
 
-	exhausted := counterValue(t, "file_storage_retry_exhausted_total", map[string]string{
+	success := counterValue(t, "file_storage_operations_total", map[string]string{
 		"operation": "store",
-		"component": "test-component",
+		"component": "test",
+		"status":    "success",
 	})
-	if exhausted != 0 {
-		t.Fatalf("file_storage_retry_exhausted_total{store} = %v, want 0 (succeeded)", exhausted)
+	if success != 1 {
+		t.Fatalf("file_storage_operations_total{store,success} = %v, want 1", success)
 	}
 }
 
 func TestMetrics_ExhaustedRecorded(t *testing.T) {
-	retriesTotal.Reset()
-	retryExhaustedTotal.Reset()
+	operationsTotal.Reset()
 
 	mock := &mockFilesClient{failUntil: 10}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	_, err := c.Store(metricsCtx(), "f.txt", "folder", 0, 0, bytes.NewReader([]byte("data")))
 	if err == nil {
 		t.Fatal("expected error")
 	}
 
-	retries := counterValue(t, "file_storage_retries_total", map[string]string{
+	retries := counterValue(t, "file_storage_operations_total", map[string]string{
 		"operation": "store",
-		"component": "test-component",
+		"component": "test",
+		"status":    "retry",
 	})
 	if retries != 3 {
-		t.Fatalf("file_storage_retries_total{store} = %v, want 3", retries)
+		t.Fatalf("file_storage_operations_total{store,retry} = %v, want 3", retries)
 	}
 
-	exhausted := counterValue(t, "file_storage_retry_exhausted_total", map[string]string{
+	exhausted := counterValue(t, "file_storage_operations_total", map[string]string{
 		"operation": "store",
-		"component": "test-component",
+		"component": "test",
+		"status":    "exhausted",
 	})
 	if exhausted != 1 {
-		t.Fatalf("file_storage_retry_exhausted_total{store} = %v, want 1", exhausted)
+		t.Fatalf("file_storage_operations_total{store,exhausted} = %v, want 1", exhausted)
+	}
+}
+
+func TestMetrics_SeekFailureDoesNotRecordExhausted(t *testing.T) {
+	operationsTotal.Reset()
+
+	mock := &mockFilesClient{failUntil: 1}
+	c := New(mock, retryCfg(), "test")
+
+	reader := &failingSeekerReader{data: []byte("data")}
+	_, err := c.Store(metricsCtx(), "f.txt", "folder", 0, 0, reader)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	exhausted := counterValueOrZero(t, "file_storage_operations_total", map[string]string{
+		"operation": "store",
+		"component": "test",
+		"status":    "exhausted",
+	})
+	if exhausted != 0 {
+		t.Fatalf("file_storage_operations_total{store,exhausted} = %v, want 0 (permanent error should not count as exhausted)", exhausted)
 	}
 }
 
 func TestMetrics_DeleteRetries(t *testing.T) {
-	retriesTotal.Reset()
-	retryExhaustedTotal.Reset()
+	operationsTotal.Reset()
 
 	mock := &mockFilesClient{failUntil: 1}
-	c := New(mock, retryCfg())
+	c := New(mock, retryCfg(), "test")
 
 	err := c.Delete(metricsCtx(), "f.txt", "folder")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := counterValue(t, "file_storage_retries_total", map[string]string{
+	retries := counterValue(t, "file_storage_operations_total", map[string]string{
 		"operation": "delete",
-		"component": "test-component",
+		"component": "test",
+		"status":    "retry",
 	})
-	if got != 1 {
-		t.Fatalf("file_storage_retries_total{delete} = %v, want 1", got)
+	if retries != 1 {
+		t.Fatalf("file_storage_operations_total{delete,retry} = %v, want 1", retries)
+	}
+
+	success := counterValue(t, "file_storage_operations_total", map[string]string{
+		"operation": "delete",
+		"component": "test",
+		"status":    "success",
+	})
+	if success != 1 {
+		t.Fatalf("file_storage_operations_total{delete,success} = %v, want 1", success)
 	}
 }

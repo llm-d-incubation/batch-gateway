@@ -35,6 +35,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/middleware"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/readiness"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"k8s.io/klog/v2"
 )
 
@@ -64,6 +65,7 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 		&config.FileClientCfg.S3Config,
 		&config.FileClientCfg.Retry,
 		nil,
+		ucom.ComponentApiserver,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clients: %w", err)

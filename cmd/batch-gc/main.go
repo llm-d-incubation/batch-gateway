@@ -35,7 +35,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/gc/collector"
 	gcconfig "github.com/llm-d-incubation/batch-gateway/internal/gc/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 )
 
@@ -53,7 +53,6 @@ func run() error {
 	hostname, _ := os.Hostname()
 	logger := klog.Background().WithValues("hostname", hostname, "service", "batch-gc")
 	ctx := klog.NewContext(context.Background(), logger)
-	ctx = ctxkeys.WithComponent(ctx, "garbage-collector")
 
 	flagSet := flag.NewFlagSet("batch-gc", flag.ExitOnError)
 	configFile := flagSet.String("config", "./config.yaml", "path to YAML config file")
@@ -83,7 +82,7 @@ func run() error {
 		return fmt.Errorf("failed to initialize files storage client: %w", err)
 	}
 	if cfg.FileClientCfg.Retry.MaxRetries > 0 {
-		filesClient = retryclient.New(filesClient, cfg.FileClientCfg.Retry)
+		filesClient = retryclient.New(filesClient, cfg.FileClientCfg.Retry, ucom.ComponentGC)
 	}
 	filesClient = fstracing.Wrap(filesClient, cfg.FileClientCfg.Type)
 	defer func() { _ = filesClient.Close() }()

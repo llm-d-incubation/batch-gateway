@@ -230,6 +230,11 @@ func NewConfig() *ProcessorConfig {
 			Retry    retry.Config    `yaml:"retry"`
 		}{
 			Type: "mock",
+			Retry: retry.Config{
+				MaxRetries:     3,
+				InitialBackoff: 1 * time.Second,
+				MaxBackoff:     10 * time.Second,
+			},
 		},
 		ModelGateways: map[string]ModelGatewayConfig{
 			DefaultModelGatewayKey: {

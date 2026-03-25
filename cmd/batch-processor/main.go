@@ -34,7 +34,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
@@ -55,7 +55,6 @@ func run() error {
 	hostname, _ := os.Hostname()
 	logger := klog.Background().WithValues("hostname", hostname, "service", "batch-processor")
 	ctx := klog.NewContext(context.Background(), logger)
-	ctx = ctxkeys.WithComponent(ctx, "processor")
 
 	cfg := config.NewConfig()
 	fs := flag.NewFlagSet("batch-gateway-processor", flag.ExitOnError)
@@ -295,6 +294,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		&cfg.FileClientCfg.S3Config,
 		&cfg.FileClientCfg.Retry,
 		modelGatewaysConfigs,
+		ucom.ComponentProcessor,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")

@@ -34,7 +34,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ctxkeys"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
@@ -199,7 +199,6 @@ func (p *Processor) uploadJobFile(
 		return 0, fmt.Errorf("failed to get folder name: %w", err)
 	}
 
-	ctx = ctxkeys.WithTenantID(ctx, tenantID)
 	fileMeta, err := p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload file %s: %w", fileName, err)

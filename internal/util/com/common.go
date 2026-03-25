@@ -28,6 +28,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// Component identifies a batch-gateway service component.
+// Used for metric labels and logging. Add new components here to keep
+// the set in one place.
+type Component = string
+
+const (
+	ComponentApiserver Component = "apiserver"
+	ComponentProcessor Component = "processor"
+	ComponentGC        Component = "garbage-collector"
+)
+
 var (
 	letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 )
