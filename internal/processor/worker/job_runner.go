@@ -98,10 +98,11 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "event watcher failed")
-		// Re-enqueue best-effort. Use context.Background() because ctx may already be
+		// Re-enqueue best-effort. Use a detached context because ctx may already be
 		// cancelled (e.g. pod shutdown) and we don't want the enqueue call to be short-circuited.
 		if params.task != nil {
-			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+			bgCtx, bgSpan := uotel.DetachedContext(ctx, "re-enqueue")
+			defer bgSpan.End()
 			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
 				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
 				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
@@ -215,9 +216,10 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 		// Parent context was cancelled or deadline exceeded (e.g. pod shutdown).
 		// Re-enqueue so another worker can pick it up.
 		// Note: SLO expiry returns ErrExpired, which is handled before this function is called.
-		// Use context.Background() because ctx is already cancelled.
+		// Use a detached context because ctx is already cancelled.
 		if params.task != nil {
-			bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+			bgCtx, bgSpan := uotel.DetachedContext(ctx, "re-enqueue")
+			defer bgSpan.End()
 			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
 				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
 				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {

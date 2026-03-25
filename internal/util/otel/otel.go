@@ -58,6 +58,20 @@ func SetAttr(ctx context.Context, attrs ...attribute.KeyValue) {
 	trace.SpanFromContext(ctx).SetAttributes(attrs...)
 }
 
+// DetachedContext returns a new background context that carries a span linked to
+// the span in the original context. Use this when the original context is cancelled
+// (e.g. pod shutdown) but you still need to perform traced operations (e.g. re-enqueue).
+// The linked span appears in Jaeger as a separate trace with a link back to the original,
+// avoiding orphan spans with no connection to the parent trace.
+func DetachedContext(ctx context.Context, name string) (context.Context, trace.Span) {
+	var links []trace.Link
+	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+		links = append(links, trace.Link{SpanContext: sc})
+	}
+	bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+	return StartSpan(bgCtx, name, trace.WithLinks(links...))
+}
+
 // InitTracer sets up an OpenTelemetry TracerProvider with an OTLP gRPC exporter.
 // It reads the endpoint from the OTEL_EXPORTER_OTLP_ENDPOINT environment variable.
 // If the endpoint is not set, tracing is disabled (no-op) and a nil shutdown function is returned.

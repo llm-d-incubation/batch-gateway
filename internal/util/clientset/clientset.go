@@ -30,6 +30,7 @@ import (
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
+	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
@@ -186,13 +187,13 @@ func NewClientset(
 		if err != nil {
 			return nil, err
 		}
-		cs.File = c
+		cs.File = fstracing.Wrap(c, "fs")
 	case "s3":
 		c, err := NewS3FileClient(ctx, s3Cfg)
 		if err != nil {
 			return nil, err
 		}
-		cs.File = c
+		cs.File = fstracing.Wrap(c, "s3")
 	default:
 		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", fileClientType)
 	}
