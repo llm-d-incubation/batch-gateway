@@ -24,6 +24,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
@@ -320,6 +321,25 @@ func seedDBJob(t *testing.T, dbClient db.BatchDBClient, jobID string) *db.BatchI
 // ---------------------------------------------------------------------------
 // Job setup helpers
 // ---------------------------------------------------------------------------
+
+// setupJobWithOutputFile creates a job directory with a non-empty output.jsonl
+// so that uploadFileAndStoreFileRecord can find and upload it.
+func setupJobWithOutputFile(t *testing.T, cfg *config.ProcessorConfig, jobID, tenantID string) *batch_types.JobInfo {
+	t.Helper()
+	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	jobDir := filepath.Join(cfg.WorkDir, folderName, jobsDirName, jobID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath := filepath.Join(jobDir, outputFileName)
+	if err := os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"req-1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+}
 
 // setupExecutionJob creates a complete job directory with input file, plan files, and model map.
 func setupExecutionJob(
