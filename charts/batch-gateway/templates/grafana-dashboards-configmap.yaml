@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "batch-gateway.name" . }}-dashboards
+  name: {{ .Release.Name }}-batch-gateway-dashboards
   labels:
     {{- include "batch-gateway.labels" . | nindent 4 }}
     {{ .Values.grafana.dashboards.label }}: {{ .Values.grafana.dashboards.labelValue | quote }}

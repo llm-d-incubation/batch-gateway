@@ -513,12 +513,12 @@ EOF
 install_grafana() {
     step "Installing Grafana '${GRAFANA_NAME}'..."
 
+    local grafana_exists=false
     if kubectl get deployment "${GRAFANA_NAME}" -n "${NAMESPACE}" &>/dev/null; then
-        log "Grafana '${GRAFANA_NAME}' already exists. Skipping."
-        return
+        grafana_exists=true
     fi
 
-    # Provisioning ConfigMap: auto-configure Prometheus datasource and dashboard loader
+    # Always apply ConfigMaps so dashboard/datasource changes are picked up on re-deploy.
     kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -563,7 +563,12 @@ $(cd "${REPO_ROOT}" && for f in charts/batch-gateway/dashboards/*.json; do
 done)
 EOF
 
-    kubectl apply -f - <<EOF
+    if [ "${grafana_exists}" = true ]; then
+        # Restart Grafana to pick up updated ConfigMaps
+        kubectl rollout restart deployment "${GRAFANA_NAME}" -n "${NAMESPACE}"
+        log "Grafana ConfigMaps updated and pod restarted."
+    else
+        kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -632,8 +637,9 @@ spec:
   type: ClusterIP
 EOF
 
-    wait_for_deployment "${GRAFANA_NAME}" "${NAMESPACE}" 120s
-    log "Grafana installed. UI: ${GRAFANA_NAME}:3000 (anonymous admin access enabled)"
+        wait_for_deployment "${GRAFANA_NAME}" "${NAMESPACE}" 120s
+        log "Grafana installed. UI: ${GRAFANA_NAME}:3000 (anonymous admin access enabled)"
+    fi
 }
 
 # ── vLLM Simulator ────────────────────────────────────────────────────────────
