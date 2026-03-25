@@ -9,11 +9,14 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
   selector:
     matchLabels:
       {{- include "batch-gateway.apiserver.selectorLabels" . | nindent 6 }}
   endpoints:
     - port: observability
       path: /metrics
-      interval: {{ .Values.apiserver.serviceMonitor.interval }}
+      interval: {{ .Values.apiserver.serviceMonitor.interval | quote }}
 {{- end }}

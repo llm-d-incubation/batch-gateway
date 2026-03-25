@@ -9,11 +9,14 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
   selector:
     matchLabels:
       {{- include "batch-gateway.processor.selectorLabels" . | nindent 6 }}
   podMetricsEndpoints:
     - port: metrics
       path: /metrics
-      interval: {{ .Values.processor.podMonitor.interval }}
+      interval: {{ .Values.processor.podMonitor.interval | quote }}
 {{- end }}
