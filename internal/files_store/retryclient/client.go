@@ -78,8 +78,12 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 		meta, storeErr = c.inner.Store(ctx, fileName, folderName, fileSizeLimit, lineNumLimit, rs)
 		return storeErr
 	})
-	if err != nil && c.cfg.MaxRetries > 0 {
-		recordRetryExhausted("store", component)
+	if err != nil {
+		if c.cfg.MaxRetries > 0 {
+			recordExhausted("store", component)
+		}
+	} else {
+		recordSuccess("store", component)
 	}
 	return meta, err
 }
@@ -105,8 +109,12 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 		rc, meta, retrieveErr = c.inner.Retrieve(ctx, fileName, folderName)
 		return retrieveErr
 	})
-	if err != nil && c.cfg.MaxRetries > 0 {
-		recordRetryExhausted("retrieve", component)
+	if err != nil {
+		if c.cfg.MaxRetries > 0 {
+			recordExhausted("retrieve", component)
+		}
+	} else {
+		recordSuccess("retrieve", component)
 	}
 	return rc, meta, err
 }
@@ -122,8 +130,12 @@ func (c *Client) Delete(ctx context.Context, fileName, folderName string) error 
 		}
 		return c.inner.Delete(ctx, fileName, folderName)
 	})
-	if err != nil && c.cfg.MaxRetries > 0 {
-		recordRetryExhausted("delete", component)
+	if err != nil {
+		if c.cfg.MaxRetries > 0 {
+			recordExhausted("delete", component)
+		}
+	} else {
+		recordSuccess("delete", component)
 	}
 	return err
 }

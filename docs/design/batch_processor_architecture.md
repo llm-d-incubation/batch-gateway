@@ -630,11 +630,8 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 - `request_errors_by_model_total{model}` (counter)
   Counts inference request errors grouped by model.
 
-- `file_storage_retries_total{operation,component}` (counter)
-  Counts file storage retry attempts by operation (`store`/`retrieve`/`delete`)
-  and component (`processor`/`apiserver`/`garbage-collector`).
-  Emitted by the `retryclient` decorator on each retry.
-
-- `file_storage_retry_exhausted_total{operation,component}` (counter)
-  Counts file storage operations that failed after exhausting all retries.
-  Useful for alerting on persistent storage failures.
+- `file_storage_operations_total{operation,component,status}` (counter)
+  Counts file storage operations by outcome. `operation` is `store`/`retrieve`/`delete`,
+  `component` is `processor`/`apiserver`/`garbage-collector`, and `status` is
+  `success` (operation completed), `retry` (retry attempt), or `exhausted`
+  (all retries failed). Emitted by the `retryclient` decorator.

@@ -22,40 +22,40 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var (
-	retriesTotal        *prometheus.CounterVec
-	retryExhaustedTotal *prometheus.CounterVec
-	metricsOnce         sync.Once
+const (
+	statusSuccess   = "success"
+	statusRetry     = "retry"
+	statusExhausted = "exhausted"
 )
 
-// InitMetrics registers retry-related Prometheus metrics.
+var (
+	operationsTotal *prometheus.CounterVec
+	metricsOnce     sync.Once
+)
+
+// InitMetrics registers file storage operation metrics.
 // It is safe to call multiple times; registration happens only once.
 func InitMetrics() {
 	metricsOnce.Do(func() {
-		retriesTotal = prometheus.NewCounterVec(
+		operationsTotal = prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "file_storage_retries_total",
-				Help: "Total number of file storage retry attempts",
+				Name: "file_storage_operations_total",
+				Help: "Total number of file storage operations by outcome",
 			},
-			[]string{"operation", "component"},
+			[]string{"operation", "component", "status"},
 		)
-		retryExhaustedTotal = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "file_storage_retry_exhausted_total",
-				Help: "Total number of file storage operations that failed after exhausting all retries",
-			},
-			[]string{"operation", "component"},
-		)
-		prometheus.MustRegister(retriesTotal, retryExhaustedTotal)
+		prometheus.MustRegister(operationsTotal)
 	})
 }
 
-// recordRetry increments the retry counter for a file storage operation.
-func recordRetry(operation, component string) {
-	retriesTotal.WithLabelValues(operation, component).Inc()
+func recordSuccess(operation, component string) {
+	operationsTotal.WithLabelValues(operation, component, statusSuccess).Inc()
 }
 
-// recordRetryExhausted increments the exhaustion counter when all retries fail.
-func recordRetryExhausted(operation, component string) {
-	retryExhaustedTotal.WithLabelValues(operation, component).Inc()
+func recordRetry(operation, component string) {
+	operationsTotal.WithLabelValues(operation, component, statusRetry).Inc()
+}
+
+func recordExhausted(operation, component string) {
+	operationsTotal.WithLabelValues(operation, component, statusExhausted).Inc()
 }
