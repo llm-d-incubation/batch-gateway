@@ -19,10 +19,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 var testChartPath = getEnvOrDefault("TEST_CHART_PATH", "../../charts/batch-gateway")
@@ -37,7 +38,16 @@ func testHelmUpgrade(t *testing.T) {
 
 	processorCMName := fmt.Sprintf("%s-processor-config", testHelmRelease)
 
+	baselineCM := kubectlGetConfigMap(t, processorCMName)
+	originalDefaultMaxRetries := parseModelGatewayDefaultMaxRetries(t, baselineCM)
+	targetMaxRetries := alternateIntForHelmTest(originalDefaultMaxRetries)
+	if targetMaxRetries == originalDefaultMaxRetries {
+		t.Fatalf("internal: targetMaxRetries must differ from baseline (baseline=%d)", originalDefaultMaxRetries)
+	}
+
 	// Snapshot current values so we can restore on failure.
+	// Use --all so the file includes chart defaults + prior overrides; otherwise
+	// helm upgrade -f may merge with a partial snapshot and leave --set changes behind.
 	// Cleanup is idempotent — if RestoreOriginalValues already ran successfully,
 	// this just re-applies the same values with no actual change.
 	originalValues := helmGetValues(t)
@@ -48,35 +58,37 @@ func testHelmUpgrade(t *testing.T) {
 		waitForReady(t, testProcessorObsURL, 60*time.Second)
 	})
 
-	// 1. Upgrade: set model gateway maxRetries=0
-	t.Run("ExplicitZeroMaxRetries", func(t *testing.T) {
+	// 1. Upgrade: set model gateway maxRetries to a value different from the baseline
+	// (proves helm --set changed the rendered config, not a fixed "must be zero" check).
+	t.Run("OverrideModelGatewayMaxRetries", func(t *testing.T) {
 		helmUpgrade(t,
-			"--set", "processor.config.modelGateways.default.maxRetries=0",
+			"--set", fmt.Sprintf("processor.config.modelGateways.default.maxRetries=%d", targetMaxRetries),
 		)
 
-		// Verify the model_gateways section contains max_retries: 0.
-		// Use a pattern that matches within the "default" gateway block
-		// to avoid false positives from redis max_retries (also 0).
 		cm := kubectlGetConfigMap(t, processorCMName)
-		pattern := regexp.MustCompile(`"default":\s*\n(?:.*\n)*?\s+max_retries:\s*0`)
-		if !pattern.MatchString(cm) {
-			t.Fatalf("expected model_gateways.default to contain max_retries: 0, got:\n%s", cm)
+		got := parseModelGatewayDefaultMaxRetries(t, cm)
+		if got != targetMaxRetries {
+			t.Fatalf("expected model_gateways.default.max_retries %d, got %d; config:\n%s", targetMaxRetries, got, cm)
 		}
-		t.Log("ConfigMap correctly contains max_retries: 0 in model_gateways.default")
+		if got == originalDefaultMaxRetries {
+			t.Fatalf("expected max_retries to change from baseline %d, still %d; config:\n%s",
+				originalDefaultMaxRetries, got, cm)
+		}
+		t.Logf("ConfigMap max_retries changed from %d to %d (model_gateways.default)", originalDefaultMaxRetries, got)
 
 		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
 		waitForReady(t, testProcessorObsURL, 60*time.Second)
 		t.Log("processor healthy after helm upgrade")
 	})
 
-	// 2. Restore original values and verify max_retries is no longer 0
+	// 2. Restore original values and verify max_retries matches baseline again
 	t.Run("RestoreOriginalValues", func(t *testing.T) {
 		helmUpgradeWithValues(t, originalValues)
 
 		cm := kubectlGetConfigMap(t, processorCMName)
-		zeroPattern := regexp.MustCompile(`"default":\s*\n(?:.*\n)*?\s+max_retries:\s*0`)
-		if zeroPattern.MatchString(cm) {
-			t.Fatalf("expected model_gateways.default.max_retries to be restored (not 0), got:\n%s", cm)
+		if got := parseModelGatewayDefaultMaxRetries(t, cm); got != originalDefaultMaxRetries {
+			t.Fatalf("expected model_gateways.default.max_retries restored to %d, got %d; config:\n%s",
+				originalDefaultMaxRetries, got, cm)
 		}
 
 		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
@@ -85,11 +97,11 @@ func testHelmUpgrade(t *testing.T) {
 	})
 }
 
-// helmGetValues returns the current release values as raw YAML bytes.
+// helmGetValues returns the current release values as raw YAML bytes (all computed values).
 func helmGetValues(t *testing.T) []byte {
 	t.Helper()
 	out, err := exec.Command("helm", "get", "values",
-		testHelmRelease, "-n", testNamespace, "-o", "yaml",
+		testHelmRelease, "-n", testNamespace, "-a", "-o", "yaml",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm get values failed: %v\n%s", err, out)
@@ -153,4 +165,31 @@ func waitForRollout(t *testing.T, deployment string) {
 		t.Fatalf("rollout of %s failed: %v\n%s", deployment, err, out)
 	}
 	t.Logf("rollout of %s complete", deployment)
+}
+
+// parseModelGatewayDefaultMaxRetries returns model_gateways.default.max_retries from processor config.yaml.
+func parseModelGatewayDefaultMaxRetries(t *testing.T, configYAML string) int {
+	t.Helper()
+	var root struct {
+		ModelGateways map[string]struct {
+			MaxRetries int `yaml:"max_retries"`
+		} `yaml:"model_gateways"`
+	}
+	if err := yaml.Unmarshal([]byte(configYAML), &root); err != nil {
+		t.Fatalf("parse processor config.yaml: %v", err)
+	}
+	gw, ok := root.ModelGateways["default"]
+	if !ok {
+		t.Fatalf("model_gateways.default missing in config:\n%s", configYAML)
+	}
+	return gw.MaxRetries
+}
+
+// alternateIntForHelmTest returns an integer guaranteed to differ from baseline,
+// used so the upgrade test asserts a real change rather than a hard-coded sentinel.
+func alternateIntForHelmTest(baseline int) int {
+	if baseline == 0 {
+		return 3 // typical chart default for model gateway maxRetries
+	}
+	return 0
 }
