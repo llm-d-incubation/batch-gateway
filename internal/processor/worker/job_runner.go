@@ -84,18 +84,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		span.RecordError(recoverErr)
 		span.SetStatus(codes.Error, "panic recovered")
 
-		// Move the job to a terminal failed state; otherwise it can remain in_progress forever.
-		// Try partial-result upload first if we have enough context; fall back to plain failed.
-		bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
-		if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
-			if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err == nil {
-				return
-			}
-			klog.FromContext(bgCtx).Info("handleFailedWithPartial failed after panic, falling back to handleFailed")
-		}
-		if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
-			klog.FromContext(bgCtx).Error(err, "Failed to mark job as failed after panic")
-		}
+		p.handlePanicRecovery(ctx, params, transitionedToInProgress, requestCounts)
 	}()
 
 	metrics.IncActiveWorkers()
@@ -216,6 +205,26 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job completed successfully")
+}
+
+// handlePanicRecovery moves a job to a terminal failed state after a panic in runJob.
+// It tries to preserve partial results when possible, falling back to a plain failure.
+func (p *Processor) handlePanicRecovery(
+	ctx context.Context,
+	params *jobExecutionParams,
+	transitionedToInProgress bool,
+	requestCounts *openai.BatchRequestCounts,
+) {
+	bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+	if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
+		if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err == nil {
+			return
+		}
+		klog.FromContext(bgCtx).Info("handleFailedWithPartial failed after panic, falling back to handleFailed")
+	}
+	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
+		klog.FromContext(bgCtx).Error(err, "Failed to mark job as failed after panic")
+	}
 }
 
 // handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).
