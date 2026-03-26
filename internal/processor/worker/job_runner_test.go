@@ -286,6 +286,37 @@ func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
 	assertJobStatus(t, dbClient, "job-panic-cancelled-ctx", openai.BatchStatusFailed)
 }
 
+func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
+	ctx := testLoggerCtx()
+	dbClient := &dbUpdateFailOnceWrapper{inner: newMockBatchDBClient(), failCount: 1}
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-fallback", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	counts := &openai.BatchRequestCounts{Total: 10, Completed: 3, Failed: 0}
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
+	p.handlePanicRecovery(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-fallback"},
+	}, true, counts)
+
+	assertJobStatus(t, dbClient, "job-panic-fallback", openai.BatchStatusFailed)
+}
+
+func TestHandlePanicRecovery_NilParams_DoesNotPanic(t *testing.T) {
+	ctx := testLoggerCtx()
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
+	p.handlePanicRecovery(ctx, nil, false, nil)
+	p.handlePanicRecovery(ctx, &jobExecutionParams{}, false, nil)
+}
+
 func assertJobStatus(t *testing.T, dbClient db.BatchDBClient, jobID string, want openai.BatchStatus) {
 	t.Helper()
 	items, _, _, err := dbClient.DBGet(context.Background(), &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
