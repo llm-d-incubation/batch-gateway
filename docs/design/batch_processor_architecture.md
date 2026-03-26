@@ -99,8 +99,21 @@ Unsupported features must return OpenAI-compatible error responses.
 -   Assumption (MVP): the priority queue provides exclusive dequeue semantics. Lease/heartbeat-based recovery for worker death is out of scope for MVP.
 
 -------------------------------------------------------------------
-**TODO:**
--   Worker Crash Recovery: If a worker crashes during `in_progress`, the job is retried from scratch upon re-queueing. Partial plan files and input artifacts are treated as temporary and discarded. Resume-from-checkpoint is not supported in MVP.
+
+#### Startup Recovery
+
+When the processor starts, `recoverStaleJobs` scans the local work directory for job directories left behind by a previous container crash (OOM, panic, node eviction). For each stale directory it finds the corresponding DB record and takes action based on the job's status:
+
+-   `in_progress` (no output on disk): re-enqueue the job so another worker can process it from scratch. If SLO expired, mark as `expired`. If re-enqueue fails, mark as `failed`.
+-   `in_progress` (output exists on disk): upload partial results and mark as `failed` (inference cost is significant — preserve completed work rather than retry from scratch).
+-   `finalizing`: attempt to complete finalization (upload output). If upload fails, mark as `failed`.
+-   `cancelling`: upload partial results and transition to `cancelled`.
+-   `validating`: re-enqueue (ingestion had not started). If SLO expired, mark as `expired`.
+-   Other terminal states: clean up the directory only.
+
+After recovery, stale directories are removed. Resume-from-checkpoint is not supported — recovered jobs are retried from scratch.
+
+The `batch_startup_recovery_total{status,action}` metric tracks recovery outcomes for operational visibility.
 
 --------------------------------------------------------------------
 ### High-Level Architecture
@@ -182,14 +195,14 @@ flowchart TD
 
 Allowed transitions:
 -   `validating` (initial state: set when a batch job is created)
--   `validating → in_progress` (after polling from the queue)
+-   `validating → in_progress` (after ingestion succeeds — preProcessJob completes)
 -   `in_progress → finalizing` (after all plans drained)
 -   `finalizing → completed` (after uploading output and error files)
 -   `* → failed` (job is unable to process)
 -   `validating → expired` (SLO already exceeded before execution starts — skipped at dequeue)
 -   `in_progress → expired` (SLO exceeded during execution — partial results preserved)
--   `in_progress → cancelling` (after user's cancellation signal received)
--   `cancelling → cancelled` (after user-initiated cancellation is completed)
+-   `in_progress → cancelling` (set by the **API server** when user requests cancellation; the processor does not write this transition)
+-   `cancelling → cancelled` (set by the **processor** after handling the cancel event)
 
 Transient states:
 -   cancelling
@@ -204,6 +217,35 @@ Terminal states:
 Transient states such as `cancelling` and `finalizing` indicate that the job has already been claimed and is being handled by an active worker. They are not eligible for reassignment. If encountered in the priority queue, workers skip them; queue clean up is handled by the owning worker or system policy.
 
 Terminal states are removed from the priority queue.
+
+-------------------------------------------------------------------
+
+#### 3. Context Hierarchy
+
+The processor uses a layered context tree to propagate cancellation signals. Each context has a single cancellation trigger and a well-defined blast radius.
+
+```
+ctx (Run parameter — signal-aware, cancelled by SIGTERM/SIGINT)
+  └── jobCtx (per-job — klog.NewContext with job/tenant logger)
+        ├── sloCtx (context.WithDeadline — SLO expiry)
+        │     └── inferCtx (context.WithCancel — user cancel event)
+        │           └── execCtx (context.WithCancel — first model error cancels sibling models)
+        └── watchCancel goroutine (listens for Redis cancel events, sets cancelRequested flag)
+```
+
+| Context | Created in | Cancelled by | Effect |
+|---------|-----------|-------------|--------|
+| `ctx` | `main.go` via `interrupt.ContextWithSignal` | SIGTERM / SIGINT | Entire processor shuts down; polling loop exits, in-flight jobs see `ctx.Done()` and re-enqueue |
+| `jobCtx` | `runPollingLoop` via `klog.NewContext(ctx, jlogger)` | Parent `ctx` cancellation | Single job's lifecycle; passed to `runJob` |
+| `sloCtx` | `runJob` via `context.WithDeadline(ctx, slo)` | SLO deadline fires | Stops new request dispatch; in-flight requests finish; undispatched entries drained as `batch_expired` |
+| `inferCtx` | `runJob` via `context.WithCancel(sloCtx)` | `watchCancel` calls `inferCancelFn` on user cancel event | Aborts in-flight HTTP inference requests immediately |
+| `execCtx` | `executeJob` via `context.WithCancel(inferCtx)` | First model goroutine error calls `execCancel()` | Stops dispatch in all model goroutines; already-dispatched requests run to completion |
+
+**Design notes:**
+-   `inferCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
+-   `execCtx` is derived from `inferCtx` so both user cancel and SLO expiry stop dispatch.
+-   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown) and to drain undispatched entries with the correct error code.
+-   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
 
 -------------------------------------------------------------------
 
@@ -345,29 +387,29 @@ sequenceDiagram
 
     par Model A Goroutine
         loop For each plan entry (sorted by PrefixHash)
-            Ex->>GS: Acquire global slot
             Ex->>MS: Acquire model slot
+            Ex->>GS: Acquire global slot
             Ex->>E: Dispatch request (async)
             activate E
             E->>E: ReadAt(input.jsonl, offset, length)
             E->>B: POST inference request
             B-->>E: Return response
             E->>W: Write result
-            E->>MS: Release model slot
             E->>GS: Release global slot
+            E->>MS: Release model slot
             deactivate E
         end
     and Model B Goroutine
         loop For each plan entry (sorted by PrefixHash)
-            Ex->>GS: Acquire global slot
             Ex->>MS: Acquire model slot
+            Ex->>GS: Acquire global slot
             Ex->>E: Dispatch request (async)
             activate E
             E->>B: POST inference request
             B-->>E: Return response
             E->>W: Write result
-            E->>MS: Release model slot
             E->>GS: Release global slot
+            E->>MS: Release model slot
             deactivate E
         end
     end
@@ -379,8 +421,9 @@ sequenceDiagram
 ###### Algorithm:
 1.  Executor launches one goroutine per model.
 2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during ingestion) and dispatches requests concurrently, subject to:
-    - `GlobalConcurrency` (global semaphore: max in-flight requests across all workers. this is to protect system resource from too many goroutines being opened at once)
-    - `PerModelMaxConcurrency` (per-model semaphore: max in-flight requests per model. this is to protect downstream from too many requests being dumped at once)
+    - `PerModelMaxConcurrency` (per-model semaphore, acquired **first**: max in-flight requests per model. Protects downstream from too many requests being dumped at once)
+    - `GlobalConcurrency` (global semaphore, acquired **second**: max in-flight requests across all workers. Protects system resources from unbounded goroutine growth)
+    - **Acquisition order: per-model before global.** This prevents starving other models — if the goroutine blocks waiting for a global slot, only a per-model slot is held, not a global one that other models could use. Release order is LIFO (global first, then per-model).
 3.  When a model's plan is fully drained, its goroutine exits.
 4.  The executor waits for all model goroutines to complete before finalizing.
 
@@ -553,7 +596,17 @@ Partial upload is best-effort: upload failures are logged but do not block the t
 
 #### Tracing (OpenTelemetry)
 
-A single `"process-batch"` span covers the full job lifecycle (ingestion → execution → finalization). The following span attributes are recorded:
+The root `"process-batch"` span covers the full job lifecycle (ingestion → execution → finalization). Additional child/linked spans provide finer-grained visibility:
+
+| Span | Parent | Description |
+|------|--------|-------------|
+| `process-batch` | apiserver trace (linked via propagated trace context) | Root span for the entire job lifecycle |
+| `storage.Store` | `process-batch` (during ingestion/finalization) | File upload to shared storage (S3/filesystem) |
+| `storage.Retrieve` | `process-batch` (during ingestion) | File download from shared storage |
+| `storage.Delete` | `process-batch` (during cleanup) | File deletion from shared storage |
+| `re-enqueue` | Detached (linked to `process-batch`) | Best-effort re-enqueue after failure; uses `DetachedContext` so it survives parent cancellation |
+
+The `process-batch` span records the following attributes:
 
 | Attribute | Type | Set at | Description |
 |---|---|---|---|
@@ -635,3 +688,11 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   `component` is `processor`/`apiserver`/`garbage-collector`, and `status` is
   `success` (operation completed), `retry` (retry attempt), or `exhausted`
   (all retries failed). Emitted by the `retryclient` decorator.
+
+**Startup Recovery Metrics**
+
+- `batch_startup_recovery_total{status,action}` (counter)
+  Counts jobs recovered during processor startup after a container restart.
+  - `status`: the DB status of the recovered job (`in_progress`, `finalizing`, `cancelling`, `validating`)
+  - `action`: the recovery action taken (`re_enqueued`, `failed`, `finalized`, `cancelled`, `cleaned`)
+  Non-zero values indicate container-level crashes (OOM, panic) occurred.

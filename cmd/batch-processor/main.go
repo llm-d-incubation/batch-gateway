@@ -144,6 +144,7 @@ func run() error {
 		ready.Store(true)
 		logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	})
+	ready.Store(false)
 	if cfg.TerminateOnObservabilityFailure {
 		// Give the observability goroutine a brief chance to publish the fatal cause,
 		// so we can prefer it over a derived context-cancel error from the polling loop.

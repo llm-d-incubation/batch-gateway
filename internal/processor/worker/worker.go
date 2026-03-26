@@ -144,10 +144,10 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// create a new logger for the job with job ID
 		jlogger := klog.FromContext(ctx).WithValues("jobId", task.ID)
-		jctx := klog.NewContext(ctx, jlogger)
+		jobCtx := klog.NewContext(ctx, jlogger)
 
 		// get job item from db
-		jobItem, err := p.poller.fetchJobItemByID(jctx, task.ID)
+		jobItem, err := p.poller.fetchJobItemByID(jobCtx, task.ID)
 		if err != nil {
 			jlogger.Error(err, "Failed to fetch job item from DB")
 			p.releaseForNextPoll()
@@ -155,7 +155,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 			// re-enqueue the job to the queue so this job can be picked up later by another worker
 			// best-effort
 			jlogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
-			reEnqueueErr := p.poller.enqueueOne(jctx, task)
+			reEnqueueErr := p.poller.enqueueOne(jobCtx, task)
 			if reEnqueueErr != nil {
 				jlogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
@@ -200,7 +200,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 		// create a new logger including tenant ID (Job ID is already in the logger)
 		jlogger = jlogger.WithValues("tenantId", jobInfo.TenantID)
 		// update the context with the new logger
-		jctx = klog.NewContext(jctx, jlogger)
+		jobCtx = klog.NewContext(jobCtx, jlogger)
 
 		jlogger.V(logging.TRACE).Info("Job info object converted")
 
@@ -208,7 +208,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 			jlogger.V(logging.INFO).Info("Job is expired.")
 
 			// persistent status update (to expired status)
-			if err := p.updater.UpdatePersistentStatus(jctx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
+			if err := p.updater.UpdatePersistentStatus(jobCtx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
 				jlogger.V(logging.ERROR).Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
 			}
 
@@ -225,7 +225,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 			// transition it to "cancelled" so it doesn't get stuck forever.
 			if jobInfo.BatchJob.Status == openai.BatchStatusCancelling {
 				jlogger.V(logging.INFO).Info("Job is in cancelling state after dequeue, transitioning to cancelled")
-				if err := p.updater.UpdateCancelledStatus(jctx, jobItem, nil, "", ""); err != nil {
+				if err := p.updater.UpdateCancelledStatus(jobCtx, jobItem, nil, "", ""); err != nil {
 					jlogger.V(logging.ERROR).Error(err, "Failed to update job status to cancelled")
 				}
 				p.releaseForNextPoll()
@@ -245,7 +245,7 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// process job
 		p.wg.Add(1)
-		go p.runJob(jctx, &jobExecutionParams{
+		go p.runJob(jobCtx, &jobExecutionParams{
 			updater: p.updater,
 			jobItem: jobItem,
 			jobInfo: jobInfo,
