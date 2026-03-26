@@ -53,9 +53,23 @@ func testHelmUpgrade(t *testing.T) {
 	originalValues := helmGetValues(t)
 	t.Cleanup(func() {
 		t.Log("cleanup: restoring original helm values")
-		helmUpgradeWithValues(t, originalValues)
-		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
-		waitForReady(t, testProcessorObsURL, 60*time.Second)
+		valuesFile := filepath.Join(t.TempDir(), "restore-values.yaml")
+		if err := os.WriteFile(valuesFile, originalValues, 0o600); err != nil {
+			t.Errorf("cleanup: failed to write restore values: %v — MANUAL HELM RESTORE REQUIRED", err)
+			return
+		}
+		args := []string{"upgrade", testHelmRelease, testChartPath, "-n", testNamespace, "-f", valuesFile}
+		out, err := exec.Command("helm", args...).CombinedOutput()
+		if err != nil {
+			t.Errorf("cleanup: helm restore failed: %v\n%s\nMANUAL HELM RESTORE REQUIRED", err, out)
+			return
+		}
+		out, err = exec.Command("kubectl", "rollout", "status",
+			fmt.Sprintf("deployment/%s-processor", testHelmRelease), "-n", testNamespace, "--timeout=180s",
+		).CombinedOutput()
+		if err != nil {
+			t.Errorf("cleanup: rollout wait failed: %v\n%s", err, out)
+		}
 	})
 
 	// 1. Upgrade: set model gateway maxRetries to a value different from the baseline
@@ -172,7 +186,7 @@ func parseModelGatewayDefaultMaxRetries(t *testing.T, configYAML string) int {
 	t.Helper()
 	var root struct {
 		ModelGateways map[string]struct {
-			MaxRetries int `yaml:"max_retries"`
+			MaxRetries *int `yaml:"max_retries"`
 		} `yaml:"model_gateways"`
 	}
 	if err := yaml.Unmarshal([]byte(configYAML), &root); err != nil {
@@ -182,7 +196,10 @@ func parseModelGatewayDefaultMaxRetries(t *testing.T, configYAML string) int {
 	if !ok {
 		t.Fatalf("model_gateways.default missing in config:\n%s", configYAML)
 	}
-	return gw.MaxRetries
+	if gw.MaxRetries == nil {
+		t.Fatalf("model_gateways.default.max_retries key is absent (possible template bug):\n%s", configYAML)
+	}
+	return *gw.MaxRetries
 }
 
 // alternateIntForHelmTest returns an integer guaranteed to differ from baseline,

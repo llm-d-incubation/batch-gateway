@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -221,23 +221,28 @@ clean:
 	@rm -f coverage.out coverage.html
 	@echo "Clean complete"
 
-## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec)
+## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec, helm-unittest)
 install-pre-commit-tools:
 	@echo "Installing pre-commit tools..."
 	$(GO) install golang.org/x/tools/cmd/goimports@v0.43.0
 	$(GO) install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
+	@# helm-unittest plugin does not publish signed releases, so --verify=false is required.
+	@if command -v helm >/dev/null 2>&1; then \
+		helm plugin list | grep -q unittest || helm plugin install https://github.com/helm-unittest/helm-unittest.git --verify=false; \
+	else \
+		echo "helm not found, skipping helm-unittest plugin install"; \
+	fi
 	@echo "Pre-commit tools installed"
 
-## install-tools: Install all development tools (includes pre-commit tools + golangci-lint + helm-unittest)
+## install-tools: Install all development tools (includes pre-commit tools + golangci-lint)
 install-tools: install-pre-commit-tools
 	@echo "Installing additional development tools..."
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
-	@# helm-unittest plugin does not publish signed releases, so --verify=false is required.
-	@command -v helm >/dev/null 2>&1 && { helm plugin list | grep -q unittest || helm plugin install https://github.com/helm-unittest/helm-unittest.git --verify=false; } || echo "⚠️  helm not found, skipping helm-unittest plugin install"
 	@echo "All tools installed"
 
 ## test-helm: Run Helm chart template tests (requires helm-unittest plugin)
 test-helm:
+	@helm unittest --help >/dev/null 2>&1 || { echo "Error: helm-unittest plugin not installed. Run 'make install-tools' first."; exit 1; }
 	@echo "Running Helm chart tests..."
 	helm unittest charts/batch-gateway
 
