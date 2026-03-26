@@ -1,0 +1,155 @@
+suite: observability resources
+templates:
+  - templates/apiserver-servicemonitor.yaml
+  - templates/apiserver-configmap.yaml
+  - templates/processor-podmonitor.yaml
+  - templates/processor-configmap.yaml
+  - templates/prometheus-rule.yaml
+  - templates/grafana-dashboards-configmap.yaml
+set:
+  global.fileClient.fs.pvcName: "test-pvc"
+tests:
+  # --- ServiceMonitor ---
+
+  - it: should not render ServiceMonitor when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/apiserver-servicemonitor.yaml
+
+  - it: should render ServiceMonitor when enabled
+    set:
+      apiserver.serviceMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+        template: templates/apiserver-servicemonitor.yaml
+      - equal:
+          path: spec.endpoints[0].port
+          value: observability
+        template: templates/apiserver-servicemonitor.yaml
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "30s"
+        template: templates/apiserver-servicemonitor.yaml
+
+  - it: should apply custom ServiceMonitor interval
+    set:
+      apiserver.serviceMonitor.enabled: true
+      apiserver.serviceMonitor.interval: "60s"
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "60s"
+        template: templates/apiserver-servicemonitor.yaml
+
+  - it: should not render ServiceMonitor when apiserver is disabled
+    set:
+      apiserver.enabled: false
+      apiserver.serviceMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/apiserver-servicemonitor.yaml
+
+  # --- PodMonitor ---
+
+  - it: should not render PodMonitor when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/processor-podmonitor.yaml
+
+  - it: should render PodMonitor when enabled
+    set:
+      processor.podMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: PodMonitor
+        template: templates/processor-podmonitor.yaml
+      - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: metrics
+        template: templates/processor-podmonitor.yaml
+      - equal:
+          path: spec.podMetricsEndpoints[0].interval
+          value: "30s"
+        template: templates/processor-podmonitor.yaml
+
+  - it: should not render PodMonitor when processor is disabled
+    set:
+      processor.enabled: false
+      processor.podMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/processor-podmonitor.yaml
+
+  # --- PrometheusRule ---
+
+  - it: should not render PrometheusRule when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/prometheus-rule.yaml
+
+  - it: should render PrometheusRule when enabled
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - isKind:
+          of: PrometheusRule
+        template: templates/prometheus-rule.yaml
+      - equal:
+          path: spec.groups[0].name
+          value: batch-gateway.rules
+        template: templates/prometheus-rule.yaml
+
+  - it: should render all four alert rules when enabled
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayHighQueueWait
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayHighJobFailureRate
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayExpiredJobsDetected
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayWorkersSaturated
+          any: true
+        template: templates/prometheus-rule.yaml
+
+  # --- Grafana Dashboards ConfigMap ---
+
+  - it: should not render Grafana ConfigMap when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/grafana-dashboards-configmap.yaml
+
+  - it: should render Grafana ConfigMap when enabled
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - isKind:
+          of: ConfigMap
+        template: templates/grafana-dashboards-configmap.yaml
+      - equal:
+          path: metadata.labels["grafana_dashboard"]
+          value: "1"
+        template: templates/grafana-dashboards-configmap.yaml
