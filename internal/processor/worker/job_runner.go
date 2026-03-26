@@ -70,12 +70,31 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	defer p.wg.Done()
 	defer p.release()
+	var (
+		transitionedToInProgress bool
+		requestCounts            *openai.BatchRequestCounts
+	)
 	defer func() {
-		if r := recover(); r != nil {
-			recoverErr := fmt.Errorf("%v", r)
-			klog.FromContext(ctx).Error(recoverErr, "Panic recovered")
-			span.RecordError(recoverErr)
-			span.SetStatus(codes.Error, "panic recovered")
+		r := recover()
+		if r == nil {
+			return
+		}
+		recoverErr := fmt.Errorf("panic: %v", r)
+		klog.FromContext(ctx).Error(recoverErr, "Panic recovered")
+		span.RecordError(recoverErr)
+		span.SetStatus(codes.Error, "panic recovered")
+
+		// Move the job to a terminal failed state; otherwise it can remain in_progress forever.
+		// Try partial-result upload first if we have enough context; fall back to plain failed.
+		bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+		if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
+			if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err == nil {
+				return
+			}
+			klog.FromContext(bgCtx).Info("handleFailedWithPartial failed after panic, falling back to handleFailed")
+		}
+		if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
+			klog.FromContext(bgCtx).Error(err, "Failed to mark job as failed after panic")
 		}
 	}()
 
@@ -145,13 +164,15 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		}
 		return
 	}
+	transitionedToInProgress = true
 
 	// execution: execute inference requests
-	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, params)
+	var execErr error
+	requestCounts, execErr = p.executeJob(ctx, sloCtx, inferCtx, params)
 	params.requestCounts = requestCounts
-	if err != nil {
+	if execErr != nil {
 		switch {
-		case errors.Is(err, ErrExpired):
+		case errors.Is(execErr, ErrExpired):
 			if expiredErr := p.handleExpired(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts); expiredErr != nil {
 				logger.V(logging.ERROR).Error(expiredErr, "Failed to finalize expired job")
 				span.RecordError(expiredErr)
@@ -159,7 +180,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			}
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 
-		case errors.Is(err, ErrCancelled):
+		case errors.Is(execErr, ErrCancelled):
 			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
 				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
 				span.RecordError(cancelErr)
@@ -170,9 +191,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			}
 
 		default:
-			span.RecordError(err)
+			span.RecordError(execErr)
 			span.SetStatus(codes.Error, "execution failed")
-			p.handleJobError(ctx, params, err)
+			p.handleJobError(ctx, params, execErr)
 		}
 		return
 	}
