@@ -428,6 +428,11 @@ func (d *dbBlockingUpdateWrapper) Close() error {
 // unreachable (blocks forever), ensuring wg.Done() and release() are not
 // starved.
 func TestHandlePanicRecovery_BlockingDB_ReturnsWithinTimeout(t *testing.T) {
+	// Use a short timeout so the test completes quickly in CI.
+	orig := panicRecoveryTimeout
+	panicRecoveryTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { panicRecoveryTimeout = orig })
+
 	ctx := testLoggerCtx()
 	blockingDB := &dbBlockingUpdateWrapper{inner: newMockBatchDBClient()}
 	statusClient := mockdb.NewMockBatchStatusClient()
@@ -455,7 +460,7 @@ func TestHandlePanicRecovery_BlockingDB_ReturnsWithinTimeout(t *testing.T) {
 	select {
 	case <-done:
 		// handlePanicRecovery returned — the timeout worked.
-	case <-time.After(panicRecoveryTimeout + 5*time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("handlePanicRecovery blocked beyond panicRecoveryTimeout; timeout not applied")
 	}
 }

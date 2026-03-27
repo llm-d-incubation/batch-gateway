@@ -43,7 +43,8 @@ import (
 // operations before giving up. This prevents an unreachable database from
 // blocking wg.Done() and release() indefinitely, which would leak the
 // worker token and eventually deadlock Stop().
-const panicRecoveryTimeout = time.Minute
+// Declared as var (not const) so tests can shorten it.
+var panicRecoveryTimeout = time.Minute
 
 func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Restore parent trace context propagated from the apiserver via Redis tags
