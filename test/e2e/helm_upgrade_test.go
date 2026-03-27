@@ -163,7 +163,11 @@ func kubectlGetConfigMap(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("kubectl get configmap failed: %v\n%s", err, out)
 	}
-	return string(out)
+	result := string(out)
+	if strings.TrimSpace(result) == "" {
+		t.Fatalf("configmap %s exists but data['config.yaml'] is empty or missing", name)
+	}
+	return result
 }
 
 func waitForRollout(t *testing.T, deployment string) {

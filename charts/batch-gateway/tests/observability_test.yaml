@@ -6,6 +6,7 @@ templates:
   - templates/processor-configmap.yaml
   - templates/prometheus-rule.yaml
   - templates/grafana-dashboards-configmap.yaml
+# Required: fs file client (the default) needs a pvcName to pass template validation.
 set:
   global.fileClient.fs.pvcName: "test-pvc"
 tests:

@@ -6,6 +6,7 @@ templates:
   - templates/processor-configmap.yaml
   - templates/gc-deployment.yaml
   - templates/gc-configmap.yaml
+# Required: fs file client (the default) needs a pvcName to pass template validation.
 set:
   global.fileClient.fs.pvcName: "test-pvc"
 tests:
@@ -128,3 +129,15 @@ tests:
           path: spec.template.spec.securityContext.runAsUser
           value: 65532
         template: templates/gc-deployment.yaml
+
+  # --- Fail guard: pvcName required for fs file client ---
+
+  - it: should fail when fs pvcName is empty
+    templates:
+      - templates/processor-deployment.yaml
+    set:
+      global.fileClient.type: "fs"
+      global.fileClient.fs.pvcName: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: 'global.fileClient.fs.pvcName must be set when global.fileClient.type is "fs"'
