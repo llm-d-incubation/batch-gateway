@@ -154,8 +154,8 @@ type spyPQ struct {
 	mu             sync.Mutex
 	enqN           int
 	delN           int
-	afterDequeueFn func()  // called after a successful dequeue (non-empty result)
-	enqueueErr     error   // if non-nil, PQEnqueue returns this error (after incrementing counter)
+	afterDequeueFn func() // called after a successful dequeue (non-empty result)
+	enqueueErr     error  // if non-nil, PQEnqueue returns this error (after incrementing counter)
 }
 
 func (s *spyPQ) PQEnqueue(ctx context.Context, jobPriority *db.BatchJobPriority) error {
