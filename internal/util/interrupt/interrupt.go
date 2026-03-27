@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"k8s.io/klog/v2"
 )
@@ -16,7 +17,7 @@ import (
 // Immediately exit on the second signal.
 func ContextWithSignal(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	signalChan := make(chan os.Signal, 2)
 	signal.Notify(signalChan, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)

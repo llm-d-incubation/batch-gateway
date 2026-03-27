@@ -27,10 +27,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-logr/logr"
 	"github.com/jackc/pgx/v5"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -166,7 +166,7 @@ func (c *pgCore) store(ctx context.Context, idx *api.BaseIndexes, contents *api.
 		return err
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("DBStore: succeeded", colID, idx.ID)
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("DBStore: succeeded", colID, idx.ID)
 
 	return nil
 }
@@ -345,7 +345,7 @@ func (c *pgCore) get(
 
 	cursor = start + len(indexes)
 
-	klog.FromContext(ctx).V(logging.INFO).Info("DBGet: succeeded",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("DBGet: succeeded",
 		"nItems", len(indexes), "cursor", cursor, "expectMore", expectMore)
 
 	return indexes, contents, extras, cursor, expectMore, nil
@@ -397,7 +397,7 @@ func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api
 		return fmt.Errorf("DBUpdate: item %s not found", idx.ID)
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("DBUpdate: succeeded", colID, idx.ID)
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("DBUpdate: succeeded", colID, idx.ID)
 
 	return nil
 }
@@ -430,7 +430,7 @@ func (c *pgCore) delete(ctx context.Context, ids []string) (deletedIDs []string,
 		return nil, err
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("DBDelete: succeeded",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("DBDelete: succeeded",
 		"nDeleted", len(deletedIDs), "ids", deletedIDs)
 
 	return deletedIDs, nil

@@ -117,7 +117,7 @@ func TestExecutionProgress_RecordAndCounts(t *testing.T) {
 		jobID:   "job-1",
 	}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	ep.record(ctx, true)
 	ep.record(ctx, true)
 	ep.record(ctx, false)
@@ -155,7 +155,7 @@ func TestUploadFileAndStoreFileRecord_StorageKeyAndDBFilename(t *testing.T) {
 	jobID := "job-storage-key"
 	tenantID := "tenant-1"
 	jobInfo := setupJobWithOutputFile(t, cfg, jobID, tenantID)
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbJob := seedDBJob(t, batchDB, jobID)
 
 	fileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
@@ -197,7 +197,7 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 		FileDB: fileDB,
 	})
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
 
 	err := p.storeFileRecord(ctx, "file_abc", "output.jsonl", "tenant-1", 1024, tags)
@@ -219,7 +219,7 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 }
 
 func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 

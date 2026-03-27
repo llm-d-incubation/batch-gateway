@@ -22,8 +22,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-
-	"k8s.io/klog/v2"
 )
 
 // ErrCap is returned when attempting to create a semaphore with invalid capacity.
@@ -84,7 +82,6 @@ func (s *semaphore) Release() {
 	select {
 	case <-s.tokens:
 	default:
-		klog.Background().Error(nil, "CRITICAL: semaphore double-release detected (more releases than acquires)")
 		if s.onDoubleRelease != nil {
 			s.doubleReleaseOnce.Do(s.onDoubleRelease)
 		}

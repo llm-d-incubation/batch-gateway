@@ -26,10 +26,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 func (c *ExchangeDBClientRedis) ECConsumerGetChannel(ctx context.Context, ID string) (
@@ -38,7 +38,7 @@ func (c *ExchangeDBClientRedis) ECConsumerGetChannel(ctx context.Context, ID str
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx).WithValues("ID", ID)
+	logger := logr.FromContextOrDiscard(ctx).WithValues("ID", ID)
 
 	// Create the events listener for the job.
 	lctx, lcancel := context.WithCancel(context.Background()) // Use a background context as this should be independent of the context of this call.
@@ -121,7 +121,7 @@ func (c *ExchangeDBClientRedis) ECProducerSendEvents(ctx context.Context, events
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if len(events) == 0 {
 		err = fmt.Errorf("empty events")
 		logger.Error(err, "ECProducerSendEvents:")

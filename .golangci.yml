@@ -15,11 +15,29 @@ version: "2"
 
 linters:
   enable:
+    - depguard
     - errcheck
+    - forbidigo
+    - gocritic
     - govet
     - staticcheck
     - unused
   settings:
+    depguard:
+      rules:
+        no-stdlib-log:
+          files:
+            - "!$test"
+          deny:
+            - pkg: "log$"
+              desc: "Use logr (github.com/go-logr/logr) instead of stdlib log"
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - ruleguard
+      settings:
+        ruleguard:
+          rules: "tools/rules.go"
     errcheck:
       exclude-functions:
         # Read-only or cleanup Close — errors are unrecoverable and
@@ -29,3 +47,8 @@ linters:
         - (io.ReadCloser).Close
         - (*net.TCPListener).Close
         - (net.Conn).Close
+    forbidigo:
+      forbid:
+        - pattern: 'klog\.(ErrorS|Errorf|Error|InfoS|Infof|Info|WarningS|Warningf|Warning|V)$'
+          msg: "Use logr.Logger instead of klog for logging. Only klog.Flush/InitFlags/NewKlogr/Fatalf are allowed."
+      analyze-types: true

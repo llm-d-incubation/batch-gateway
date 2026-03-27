@@ -35,7 +35,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
 )
+
+func testLogger(t testing.TB) logr.Logger {
+	return testr.NewWithInterface(t, testr.Options{})
+}
 
 // TestNewHTTPClient_Defaults tests that NewHTTPClient sets proper defaults
 func TestNewHTTPClient_Defaults(t *testing.T) {
@@ -43,7 +50,7 @@ func TestNewHTTPClient_Defaults(t *testing.T) {
 		BaseURL: "http://localhost:8000",
 	}
 
-	client, err := NewHTTPClient(config)
+	client, err := NewHTTPClient(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -77,7 +84,7 @@ func TestNewHTTPClient_CustomConfig(t *testing.T) {
 		APIKey:          "test-api-key",
 	}
 
-	client, err := NewHTTPClient(config)
+	client, err := NewHTTPClient(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -96,7 +103,7 @@ func TestNewHTTPClient_RetryDefaults(t *testing.T) {
 		MaxRetries: 3,
 	}
 
-	client, err := NewHTTPClient(config)
+	client, err := NewHTTPClient(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -117,7 +124,7 @@ func TestNewHTTPClient_RetryCustom(t *testing.T) {
 		MaxBackoff:     30 * time.Second,
 	}
 
-	client, err := NewHTTPClient(config)
+	client, err := NewHTTPClient(config, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -158,7 +165,7 @@ func TestPost_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPClient(Config{BaseURL: server.URL})
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -196,7 +203,7 @@ func TestPost_WithRequestID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPClient(Config{BaseURL: server.URL})
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -229,7 +236,7 @@ func TestPost_WithCustomHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPClient(Config{BaseURL: server.URL})
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -262,7 +269,7 @@ func TestPost_WithAPIKey(t *testing.T) {
 	client, err := NewHTTPClient(Config{
 		BaseURL: server.URL,
 		APIKey:  expectedAPIKey,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -286,7 +293,7 @@ func TestPost_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPClient(Config{BaseURL: server.URL})
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -309,7 +316,7 @@ func TestPost_ContextTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHTTPClient(Config{BaseURL: server.URL})
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -344,7 +351,7 @@ func TestPost_RetryOn500(t *testing.T) {
 		MaxRetries:     3,
 		InitialBackoff: 10 * time.Millisecond,
 		MaxBackoff:     100 * time.Millisecond,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -384,7 +391,7 @@ func TestPost_RetryOn429(t *testing.T) {
 		MaxRetries:     3,
 		InitialBackoff: 10 * time.Millisecond,
 		MaxBackoff:     100 * time.Millisecond,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -419,7 +426,7 @@ func TestPost_NoRetryOn400(t *testing.T) {
 		MaxRetries:     3,
 		InitialBackoff: 10 * time.Millisecond,
 		MaxBackoff:     100 * time.Millisecond,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -442,8 +449,8 @@ func TestPost_NoRetryOn400(t *testing.T) {
 func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
 	body := []byte(`{"error": {"message": "Invalid API key", "type": "invalid_request_error"}}`)
 
-	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"})
-	clientErr := client.HandleErrorResponse(http.StatusUnauthorized, body)
+	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
+	clientErr := client.HandleErrorResponse(context.Background(), http.StatusUnauthorized, body)
 
 	if clientErr == nil {
 		t.Fatal("Expected non-nil error")
@@ -462,8 +469,8 @@ func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
 func TestHandleErrorResponse_PlainText(t *testing.T) {
 	body := []byte("Internal Server Error")
 
-	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"})
-	clientErr := client.HandleErrorResponse(http.StatusInternalServerError, body)
+	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
+	clientErr := client.HandleErrorResponse(context.Background(), http.StatusInternalServerError, body)
 
 	if clientErr == nil {
 		t.Fatal("Expected non-nil error")
@@ -482,8 +489,8 @@ func TestHandleErrorResponse_PlainText(t *testing.T) {
 func TestHandleErrorResponse_EmptyBody(t *testing.T) {
 	body := []byte("")
 
-	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"})
-	clientErr := client.HandleErrorResponse(http.StatusBadGateway, body)
+	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
+	clientErr := client.HandleErrorResponse(context.Background(), http.StatusBadGateway, body)
 
 	if clientErr == nil {
 		t.Fatal("Expected non-nil error")
@@ -530,7 +537,7 @@ func TestMapStatusCodeToCategory(t *testing.T) {
 // TestBuildTLSConfig_Nil tests that BuildTLSConfig returns nil for default config
 func TestBuildTLSConfig_Nil(t *testing.T) {
 	config := Config{}
-	tlsConfig, err := BuildTLSConfig(&config)
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err != nil {
 		t.Fatalf("BuildTLSConfig failed: %v", err)
@@ -546,7 +553,7 @@ func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
 	config := Config{
 		TLSInsecureSkipVerify: true,
 	}
-	tlsConfig, err := BuildTLSConfig(&config)
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err != nil {
 		t.Fatalf("BuildTLSConfig failed: %v", err)
@@ -576,7 +583,7 @@ func TestBuildTLSConfig_CustomCA(t *testing.T) {
 	config := Config{
 		TLSCACertFile: caCertFile,
 	}
-	tlsConfig, err := BuildTLSConfig(&config)
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err != nil {
 		t.Fatalf("BuildTLSConfig failed: %v", err)
@@ -596,7 +603,7 @@ func TestBuildTLSConfig_CustomCA_FileNotFound(t *testing.T) {
 	config := Config{
 		TLSCACertFile: "/nonexistent/ca.crt",
 	}
-	_, err := BuildTLSConfig(&config)
+	_, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err == nil {
 		t.Fatal("Expected error for missing CA cert file")
@@ -615,7 +622,7 @@ func TestBuildTLSConfig_CustomCA_InvalidPEM(t *testing.T) {
 	config := Config{
 		TLSCACertFile: caCertFile,
 	}
-	_, err := BuildTLSConfig(&config)
+	_, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err == nil {
 		t.Fatal("Expected error for invalid PEM certificate")
@@ -639,7 +646,7 @@ func TestBuildTLSConfig_ClientCert_BothRequired(t *testing.T) {
 				TLSClientCertFile: tt.certFile,
 				TLSClientKeyFile:  tt.keyFile,
 			}
-			_, err := BuildTLSConfig(&config)
+			_, err := BuildTLSConfig(&config, testLogger(t))
 
 			if err == nil {
 				t.Fatal("Expected error when only one of cert/key is specified")
@@ -654,7 +661,7 @@ func TestBuildTLSConfig_TLSVersions(t *testing.T) {
 		TLSMinVersion: tls.VersionTLS12,
 		TLSMaxVersion: tls.VersionTLS13,
 	}
-	tlsConfig, err := BuildTLSConfig(&config)
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err != nil {
 		t.Fatalf("BuildTLSConfig failed: %v", err)
@@ -688,7 +695,7 @@ func TestBuildTLSConfig_CombinedOptions(t *testing.T) {
 		TLSCACertFile: caCertFile,
 		TLSMinVersion: tls.VersionTLS12,
 	}
-	tlsConfig, err := BuildTLSConfig(&config)
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
 
 	if err != nil {
 		t.Fatalf("BuildTLSConfig failed: %v", err)
@@ -757,7 +764,7 @@ func TestNewHTTPClient_TLSInsecureSkipVerify_Integration(t *testing.T) {
 	client, err := NewHTTPClient(Config{
 		BaseURL:               server.URL,
 		TLSInsecureSkipVerify: true,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -784,7 +791,7 @@ func TestNewHTTPClient_TLSVerifyFails(t *testing.T) {
 	// Client without InsecureSkipVerify should fail on self-signed cert
 	client, err := NewHTTPClient(Config{
 		BaseURL: server.URL,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
@@ -827,7 +834,7 @@ func TestNewHTTPClient_WithCustomCA_Integration(t *testing.T) {
 	client, err := NewHTTPClient(Config{
 		BaseURL:       server.URL,
 		TLSCACertFile: caCertFile,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}

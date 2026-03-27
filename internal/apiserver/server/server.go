@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/batch"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/file"
@@ -36,11 +37,10 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/readiness"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"k8s.io/klog/v2"
 )
 
 type Server struct {
-	logger      klog.Logger
+	logger      logr.Logger
 	config      *common.ServerConfig
 	serverReady *atomic.Bool
 	apiHandler  http.Handler
@@ -49,7 +49,7 @@ type Server struct {
 }
 
 func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.Clientset, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	config.RedisCfg.ServiceName = "batch-apiserver"
 	config.RedisCfg.EnableTracing = config.OTel.RedisTracing
@@ -79,7 +79,7 @@ func New(ctx context.Context, config *common.ServerConfig) (*Server, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
-	logger := klog.Background().WithName("api_server")
+	logger := logr.FromContextOrDiscard(ctx).WithName("api_server")
 	serverReady := &atomic.Bool{}
 	serverReady.Store(false)
 
@@ -192,8 +192,9 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Error(nil, "server goroutine panicked", "panic", r)
-				serveDone <- fmt.Errorf("server panicked: %v", r)
+				err := fmt.Errorf("server panicked: %v", r)
+				logger.Error(err, "server goroutine panicked", "panic", r)
+				serveDone <- err
 			}
 		}()
 		var err error
@@ -244,8 +245,9 @@ func (s *Server) Start(ctx context.Context) error {
 				return err
 			}
 		case <-time.After(5 * time.Second):
-			logger.Error(nil, "timeout waiting for server goroutine to exit")
-			return fmt.Errorf("server goroutine did not exit after shutdown")
+			err := fmt.Errorf("server goroutine did not exit after shutdown")
+			logger.Error(err, "timeout waiting for server goroutine to exit")
+			return err
 		}
 
 		if err := s.clients.Close(); err != nil {
