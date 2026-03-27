@@ -218,7 +218,7 @@ func NewRedisClientChecker(rds *gredis.Client, keyPrefix, serviceName string, cm
 // Check verifies the Redis connection is healthy.
 // Concurrent calls are coalesced via singleflight so only one Check
 // executes at a time, avoiding thundering-herd pressure on Redis while
-// not serializing sequential calls (unlike the previous mutex approach).
+// not serializing sequential calls.
 func (r *RedisClientChecker) Check(ctx context.Context) error {
 	_, err, _ := r.sf.Do("check", func() (interface{}, error) {
 		return nil, CheckClient(ctx, r.rds, r.cmdTimeout, r.keyPrefix, r.serviceName)
