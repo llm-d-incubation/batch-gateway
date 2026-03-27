@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,13 +71,26 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	defer p.wg.Done()
 	defer p.release()
+	// Declared before the deferred recover so the panic handler can inspect
+	// how far execution progressed and attempt partial-result preservation.
+	var (
+		transitionedToInProgress bool
+		requestCounts            *openai.BatchRequestCounts
+	)
+	// Note: recover() only catches panics on this goroutine. Panics in child
+	// goroutines (watchCancel, per-model/per-request goroutines in executeJob)
+	// are not caught here and will crash the process.
 	defer func() {
-		if r := recover(); r != nil {
-			recoverErr := fmt.Errorf("%v", r)
-			klog.FromContext(ctx).Error(recoverErr, "Panic recovered")
-			span.RecordError(recoverErr)
-			span.SetStatus(codes.Error, "panic recovered")
+		r := recover()
+		if r == nil {
+			return
 		}
+		stackTrace := debug.Stack()
+		klog.FromContext(ctx).Error(fmt.Errorf("panic: %v\n%s", r, stackTrace), "Panic recovered")
+		span.RecordError(fmt.Errorf("panic: %v", r))
+		span.SetStatus(codes.Error, "panic recovered")
+
+		p.handlePanicRecovery(ctx, params, transitionedToInProgress, requestCounts)
 	}()
 
 	metrics.IncActiveWorkers()
@@ -145,13 +159,15 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		}
 		return
 	}
+	transitionedToInProgress = true
 
 	// execution: execute inference requests
-	requestCounts, err := p.executeJob(ctx, sloCtx, inferCtx, params)
+	var execErr error
+	requestCounts, execErr = p.executeJob(ctx, sloCtx, inferCtx, params)
 	params.requestCounts = requestCounts
-	if err != nil {
+	if execErr != nil {
 		switch {
-		case errors.Is(err, ErrExpired):
+		case errors.Is(execErr, ErrExpired):
 			if expiredErr := p.handleExpired(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts); expiredErr != nil {
 				logger.V(logging.ERROR).Error(expiredErr, "Failed to finalize expired job")
 				span.RecordError(expiredErr)
@@ -159,7 +175,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			}
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 
-		case errors.Is(err, ErrCancelled):
+		case errors.Is(execErr, ErrCancelled):
 			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
 				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
 				span.RecordError(cancelErr)
@@ -170,9 +186,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			}
 
 		default:
-			span.RecordError(err)
+			span.RecordError(execErr)
 			span.SetStatus(codes.Error, "execution failed")
-			p.handleJobError(ctx, params, err)
+			p.handleJobError(ctx, params, execErr)
 		}
 		return
 	}
@@ -195,6 +211,44 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job completed successfully")
+}
+
+// handlePanicRecovery moves a job to a terminal failed state after a panic in runJob.
+// It tries to preserve partial results when possible, falling back to a plain failure.
+// A secondary recover guard prevents a double-panic from crashing the process.
+func (p *Processor) handlePanicRecovery(
+	ctx context.Context,
+	params *jobExecutionParams,
+	transitionedToInProgress bool,
+	requestCounts *openai.BatchRequestCounts,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			klog.FromContext(ctx).Error(fmt.Errorf("panic in handlePanicRecovery: %v\n%s", r, debug.Stack()),
+				"Double panic: recovery handler itself panicked")
+		}
+	}()
+
+	if params == nil || params.updater == nil || params.jobItem == nil {
+		klog.FromContext(ctx).Error(nil, "Cannot recover job: params, updater, or jobItem is nil")
+		return
+	}
+
+	// Use context.Background() because the original ctx may be cancelled (e.g. pod shutdown)
+	// and we must ensure the DB update is not short-circuited.
+	// DB clients have their own connection/operation timeouts, so this will not block indefinitely.
+	bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+	if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
+		if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
+			klog.FromContext(bgCtx).Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
+		} else {
+			return
+		}
+	}
+	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
+		klog.FromContext(bgCtx).Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
+			"jobID", params.jobItem.ID, "tenantID", params.jobItem.TenantID)
+	}
 }
 
 // handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).

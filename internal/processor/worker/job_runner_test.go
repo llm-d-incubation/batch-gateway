@@ -188,3 +188,146 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 		t.Fatalf("expected update error, got %v", err)
 	}
 }
+
+// --- handlePanicRecovery tests ---
+
+func TestHandlePanicRecovery_BeforeInProgress_MarksFailed(t *testing.T) {
+	ctx := testLoggerCtx()
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-pre", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusValidating})},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
+	p.handlePanicRecovery(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-pre"},
+	}, false, nil)
+
+	assertJobStatus(t, dbClient, "job-panic-pre", openai.BatchStatusFailed)
+}
+
+func TestHandlePanicRecovery_AfterInProgress_WithCounts_MarksFailed(t *testing.T) {
+	ctx := testLoggerCtx()
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-partial", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	counts := &openai.BatchRequestCounts{Total: 10, Completed: 3, Failed: 0}
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
+	p.handlePanicRecovery(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-partial"},
+	}, true, counts)
+
+	assertJobStatus(t, dbClient, "job-panic-partial", openai.BatchStatusFailed)
+}
+
+func TestHandlePanicRecovery_AfterInProgress_NilCounts_MarksFailed(t *testing.T) {
+	ctx := testLoggerCtx()
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-nocounts", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
+	p.handlePanicRecovery(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-nocounts"},
+	}, true, nil)
+
+	assertJobStatus(t, dbClient, "job-panic-nocounts", openai.BatchStatusFailed)
+}
+
+func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
+	ctx, cancel := context.WithCancel(testLoggerCtx())
+	cancel()
+
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-cancelled-ctx", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := dbClient.DBStore(context.Background(), jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
+	p.handlePanicRecovery(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-cancelled-ctx"},
+	}, true, nil)
+
+	assertJobStatus(t, dbClient, "job-panic-cancelled-ctx", openai.BatchStatusFailed)
+}
+
+func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
+	ctx := testLoggerCtx()
+	dbClient := &dbUpdateFailOnceWrapper{inner: newMockBatchDBClient(), failCount: 1}
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-fallback", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	counts := &openai.BatchRequestCounts{Total: 10, Completed: 3, Failed: 0}
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
+	p.handlePanicRecovery(ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem: jobItem,
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-fallback"},
+	}, true, counts)
+
+	assertJobStatus(t, dbClient, "job-panic-fallback", openai.BatchStatusFailed)
+}
+
+func TestHandlePanicRecovery_NilParams_DoesNotPanic(t *testing.T) {
+	ctx := testLoggerCtx()
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
+	p.handlePanicRecovery(ctx, nil, false, nil)
+	p.handlePanicRecovery(ctx, &jobExecutionParams{}, false, nil)
+}
+
+func assertJobStatus(t *testing.T, dbClient db.BatchDBClient, jobID string, want openai.BatchStatus) {
+	t.Helper()
+	items, _, _, err := dbClient.DBGet(context.Background(), &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet %s: err=%v len=%d", jobID, err, len(items))
+	}
+	var status openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &status); err != nil {
+		t.Fatalf("unmarshal status for %s: %v", jobID, err)
+	}
+	if status.Status != want {
+		t.Fatalf("job %s: expected status %s, got %s", jobID, want, status.Status)
+	}
+}
