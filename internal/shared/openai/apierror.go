@@ -21,23 +21,27 @@ import (
 	"net/http"
 )
 
-// APIError represents an error that originates from the API
+// APIError represents an error that originates from the API.
+// Per the OpenAI spec, Code is a nullable string in the JSON body (e.g. "model_not_found"),
+// Type is the error category (e.g. "invalid_request_error"), and HTTPStatus carries
+// the HTTP status code used for the response header.
 type APIError struct {
-	Code    int     `json:"code,omitempty"`
-	Type    string  `json:"type"`
-	Message string  `json:"message"`
-	Param   *string `json:"param"`
+	HTTPStatus int     `json:"-"`
+	Code       *string `json:"code"`
+	Type       string  `json:"type"`
+	Message    string  `json:"message"`
+	Param      *string `json:"param"`
 }
 
-func NewAPIError(code int, errorType string, message string, param *string) APIError {
+func NewAPIError(httpStatus int, errorType string, message string, param *string) APIError {
 	if errorType == "" {
-		errorType = ErrorCodeToType(code)
+		errorType = ErrorCodeToType(httpStatus)
 	}
 	return APIError{
-		Code:    code,
-		Type:    errorType,
-		Message: message,
-		Param:   param,
+		HTTPStatus: httpStatus,
+		Type:       errorType,
+		Message:    message,
+		Param:      param,
 	}
 }
 
@@ -46,30 +50,25 @@ type ErrorResponse struct {
 }
 
 func ErrorCodeToType(code int) string {
+	// Values match the error.type field in actual OpenAI API responses.
 	// https://platform.openai.com/docs/guides/error-codes
-	// https://www.npmjs.com/package/openai
-	errorType := ""
 	switch code {
 	case http.StatusBadRequest:
-		errorType = "BadRequestError"
+		return "invalid_request_error"
 	case http.StatusUnauthorized:
-		errorType = "AuthenticationError"
+		return "authentication_error"
 	case http.StatusForbidden:
-		errorType = "PermissionDeniedError"
+		return "permission_error"
 	case http.StatusNotFound:
-		errorType = "NotFoundError"
+		return "not_found_error"
 	case http.StatusUnprocessableEntity:
-		errorType = "UnprocessableEntityError"
+		return "invalid_request_error"
 	case http.StatusTooManyRequests:
-		errorType = "RateLimitError"
-	case http.StatusNotImplemented:
-		errorType = "NotImplementedError"
+		return "rate_limit_error"
 	default:
 		if code >= http.StatusInternalServerError {
-			errorType = "InternalServerError"
-		} else {
-			errorType = "APIConnectionError"
+			return "server_error"
 		}
+		return "api_error"
 	}
-	return errorType
 }

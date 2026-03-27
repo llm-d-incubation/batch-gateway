@@ -140,10 +140,12 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 func withFileIDs(outputFileID, errorFileID string) func(*openai.BatchStatusInfo) {
 	return func(info *openai.BatchStatusInfo) {
 		if outputFileID != "" {
-			info.OutputFileID = outputFileID
+			s := outputFileID
+			info.OutputFileID = &s
 		}
 		if errorFileID != "" {
-			info.ErrorFileID = errorFileID
+			s := errorFileID
+			info.ErrorFileID = &s
 		}
 	}
 }

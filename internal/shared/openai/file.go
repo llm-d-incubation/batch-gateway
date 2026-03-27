@@ -74,8 +74,8 @@ type FileObject struct {
 	// required. The Unix timestamp (in seconds) for when the file was created.
 	CreatedAt int64 `json:"created_at"`
 
-	// The Unix timestamp (in seconds) for when the file will expire.
-	ExpiresAt int64 `json:"expires_at"`
+	// optional, nullable. The Unix timestamp (in seconds) for when the file will expire.
+	ExpiresAt *int64 `json:"expires_at"`
 
 	// required. The name of the file.
 	Filename string `json:"filename"`

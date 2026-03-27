@@ -225,7 +225,7 @@ func (p *Processor) storeFileRecord(
 		ID:        fileID,
 		Bytes:     size,
 		CreatedAt: now,
-		ExpiresAt: expiresAt,
+		ExpiresAt: &expiresAt,
 		Filename:  fileName,
 		Object:    "file",
 		Purpose:   openai.FileObjectPurposeBatchOutput,

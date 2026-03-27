@@ -246,8 +246,8 @@ func doTestCreateFileStoreValidationErrors(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
 				t.Fatalf("failed to parse error response: %v", err)
 			}
-			if errResp.Error.Code != tc.wantStatus {
-				t.Errorf("expected error code %d, got %d", tc.wantStatus, errResp.Error.Code)
+			if errResp.Error.Code != nil {
+				t.Errorf("expected error code null (no explicit code), got %q", *errResp.Error.Code)
 			}
 			if errResp.Error.Message != tc.wantMessage {
 				t.Errorf("expected message %q, got %q", tc.wantMessage, errResp.Error.Message)
@@ -298,8 +298,8 @@ func doTestCreateFileSuccess(t *testing.T) {
 	if fileObj.CreatedAt <= 0 {
 		t.Errorf("expected createdAt > 0, got %d", fileObj.CreatedAt)
 	}
-	if fileObj.ExpiresAt <= 0 {
-		t.Errorf("expected expiresAt > 0, got %d", fileObj.ExpiresAt)
+	if fileObj.ExpiresAt == nil || *fileObj.ExpiresAt <= 0 {
+		t.Errorf("expected expiresAt > 0, got %v", fileObj.ExpiresAt)
 	}
 
 	// Verify file was stored in DB
@@ -466,8 +466,8 @@ func doTestCreateFileExpiresAfter(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &fileObj); err != nil {
 					t.Fatalf("failed to parse response: %v", err)
 				}
-				if fileObj.ExpiresAt <= fileObj.CreatedAt {
-					t.Errorf("expected expiresAt > createdAt, got expiresAt=%d, createdAt=%d", fileObj.ExpiresAt, fileObj.CreatedAt)
+				if fileObj.ExpiresAt == nil || *fileObj.ExpiresAt <= fileObj.CreatedAt {
+					t.Errorf("expected expiresAt > createdAt, got expiresAt=%v, createdAt=%d", fileObj.ExpiresAt, fileObj.CreatedAt)
 				}
 			}
 		})
@@ -757,8 +757,8 @@ func doTestRetrieveFile(t *testing.T) {
 		if fileObj.CreatedAt != createdFile.CreatedAt {
 			t.Errorf("expected created_at %d, got %d", createdFile.CreatedAt, fileObj.CreatedAt)
 		}
-		if fileObj.ExpiresAt != createdFile.ExpiresAt {
-			t.Errorf("expected expires_at %d, got %d", createdFile.ExpiresAt, fileObj.ExpiresAt)
+		if (fileObj.ExpiresAt == nil) != (createdFile.ExpiresAt == nil) || (fileObj.ExpiresAt != nil && *fileObj.ExpiresAt != *createdFile.ExpiresAt) {
+			t.Errorf("expected expires_at %v, got %v", createdFile.ExpiresAt, fileObj.ExpiresAt)
 		}
 		if fileObj.Status != createdFile.Status {
 			t.Errorf("expected status '%s', got '%s'", createdFile.Status, fileObj.Status)
