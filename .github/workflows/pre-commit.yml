@@ -21,7 +21,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install Go tools (goimports, gosec)
+      - name: Install Go tools (goimports, gosec, ruleguard)
         run: make install-pre-commit-tools
 
       - name: Run golangci-lint

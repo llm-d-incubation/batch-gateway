@@ -25,8 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
-	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -90,7 +90,7 @@ func (p *Processor) finalizeJob(
 	requestCounts *openai.BatchRequestCounts,
 	cancelRequested *atomic.Bool,
 ) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
 	// in_progress → finalizing

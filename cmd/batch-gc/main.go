@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -43,16 +44,14 @@ func main() {
 	defer klog.Flush()
 
 	if err := run(); err != nil {
-		klog.ErrorS(err, "Garbage collector failed")
-		klog.Flush()
-		os.Exit(1)
+		klog.Fatalf("Garbage collector failed: %v", err)
 	}
 }
 
 func run() error {
 	hostname, _ := os.Hostname()
-	logger := klog.Background().WithValues("hostname", hostname, "service", "batch-gc")
-	ctx := klog.NewContext(context.Background(), logger)
+	logger := klog.NewKlogr().WithValues("hostname", hostname, "service", "batch-gc")
+	ctx := logr.NewContext(context.Background(), logger)
 
 	flagSet := flag.NewFlagSet("batch-gc", flag.ExitOnError)
 	configFile := flagSet.String("config", "./config.yaml", "path to YAML config file")

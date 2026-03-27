@@ -19,6 +19,8 @@ package inference
 import (
 	"fmt"
 	"time"
+
+	"github.com/go-logr/logr"
 )
 
 // GatewayClientConfig holds a fully-resolved, self-contained gateway configuration
@@ -78,14 +80,14 @@ type GatewayResolver struct {
 //
 // Clients with identical settings (URL, API key, HTTP/TLS config) share a single
 // HTTPClient instance to reuse connection pools.
-func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayResolver, error) {
+func NewGatewayResolver(modelGateways map[string]GatewayClientConfig, logger logr.Logger) (*GatewayResolver, error) {
 	defaultGW, ok := modelGateways["default"]
 	if !ok {
 		// this is checked on validation but we'll be defensive here
 		return nil, fmt.Errorf("modelGateways must contain a \"default\" entry")
 	}
 
-	defaultClient, err := NewInferenceClient(defaultGW.toHTTPClientConfig())
+	defaultClient, err := NewInferenceClient(defaultGW.toHTTPClientConfig(), logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create default inference client: %w", err)
 	}
@@ -108,7 +110,7 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 			continue
 		}
 
-		client, err := NewInferenceClient(gw.toHTTPClientConfig())
+		client, err := NewInferenceClient(gw.toHTTPClientConfig(), logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}

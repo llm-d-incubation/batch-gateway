@@ -28,8 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
-	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -98,7 +98,7 @@ func (ep *executionProgress) record(ctx context.Context, success bool) {
 		Completed: ep.completed.Load(),
 		Failed:    ep.failed.Load(),
 	}); err != nil {
-		klog.FromContext(ctx).V(logging.DEBUG).Error(err, "Failed to update progress counts (best-effort)")
+		logr.FromContextOrDiscard(ctx).Error(err, "Failed to update progress counts (best-effort)")
 	}
 }
 
@@ -131,7 +131,7 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown)
 // and to drain undispatched entries with the correct error code.
 func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
 	jobRootDir, err := p.jobRootDir(params.jobInfo.JobID, params.jobInfo.TenantID)
@@ -323,8 +323,8 @@ func (p *Processor) processModel(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 ) error {
-	logger := klog.FromContext(ctx).WithValues("model", modelID)
-	ctx = klog.NewContext(ctx, logger)
+	logger := logr.FromContextOrDiscard(ctx).WithValues("model", modelID)
+	ctx = logr.NewContext(ctx, logger)
 
 	planPath := filepath.Join(plansDir, safeModelID+".plan")
 	entries, err := readPlanEntries(planPath)
@@ -488,7 +488,7 @@ func (p *Processor) drainUnprocessedRequests(
 	errCode string,
 	errMessage string,
 ) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// Allocate a single read buffer sized to the largest entry to avoid per-entry allocations.
 	var maxLen uint32
@@ -561,7 +561,7 @@ func (p *Processor) executeOneRequest(
 	// parse the request line into a batch_types.Request object
 	var req batch_types.Request
 	if err := json.Unmarshal(trimmed, &req); err != nil {
-		klog.FromContext(ctx).Error(err, "failed to parse request line, recording as error")
+		logr.FromContextOrDiscard(ctx).Error(err, "failed to parse request line, recording as error")
 		return &outputLine{
 			ID: newBatchRequestID(requestID),
 			Error: &outputError{
@@ -572,7 +572,7 @@ func (p *Processor) executeOneRequest(
 	}
 
 	// model id, job id and tenant id are already set in the context
-	logger := klog.FromContext(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
+	logger := logr.FromContextOrDiscard(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
@@ -608,10 +608,11 @@ func (p *Processor) executeOneRequest(
 		}
 	} else if inferResp == nil {
 		// ok status without error but no response
-		logger.Error(nil, "inference returned no error but response is nil")
+		err := fmt.Errorf("inference returned no error but response is nil")
+		logger.Error(err, "Inference request failed")
 		result.Error = &outputError{
 			Code:    string(httpclient.ErrCategoryServer),
-			Message: "inference returned no error but response is nil",
+			Message: err.Error(),
 		}
 	} else {
 		// success — unmarshal the response body

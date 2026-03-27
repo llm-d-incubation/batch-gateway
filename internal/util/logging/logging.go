@@ -20,17 +20,15 @@ package logging
 import (
 	"net/http"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 )
 
 const (
-	ERROR   = 1
-	WARNING = 2
-	INFO    = 3
-	DEBUG   = 4
-	TRACE   = 5
+	INFO  = 1
+	DEBUG = 3
+	TRACE = 5
 )
 
-func FromRequest(r *http.Request) klog.Logger {
-	return klog.FromContext(r.Context())
+func FromRequest(r *http.Request) logr.Logger {
+	return logr.FromContextOrDiscard(r.Context())
 }

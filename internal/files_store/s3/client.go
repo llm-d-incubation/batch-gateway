@@ -32,8 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"k8s.io/klog/v2"
-
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	fsio "github.com/llm-d-incubation/batch-gateway/internal/files_store/io"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
@@ -116,8 +115,6 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	s3Client := s3.NewFromConfig(awsCfg, s3Opts...)
 
-	klog.InfoS("BatchFiles S3 client initialized", "endpoint", cfg.Endpoint, "region", cfg.Region, "prefix", cfg.Prefix)
-
 	return &Client{
 		s3Client:         s3Client,
 		uploader:         manager.NewUploader(s3Client), //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
@@ -178,7 +175,7 @@ func (c *Client) ensureBucket(ctx context.Context, bucket string) error {
 	}
 
 	c.knownBuckets.Store(bucket, true)
-	klog.FromContext(ctx).V(logging.INFO).Info("Bucket created", "bucket", bucket)
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("Bucket created", "bucket", bucket)
 	return nil
 }
 
@@ -235,7 +232,7 @@ func (c *Client) Store(ctx context.Context, fileName, bucket string, fileSizeLim
 		ModTime:     time.Now(),
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File stored successfully",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File stored successfully",
 		"bucket", bucket, "key", key, "size", metadata.Size, "lines", metadata.LinesNumber)
 
 	return metadata, nil
@@ -275,7 +272,7 @@ func (c *Client) Retrieve(ctx context.Context, fileName, bucket string) (io.Read
 		ModTime:  modTime,
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File retrieved successfully",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File retrieved successfully",
 		"bucket", bucket, "key", key, "size", metadata.Size)
 
 	return out.Body, metadata, nil
@@ -298,7 +295,7 @@ func (c *Client) Delete(ctx context.Context, fileName, bucket string) error {
 		return err
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File deleted successfully",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File deleted successfully",
 		"bucket", bucket, "key", key)
 
 	return nil

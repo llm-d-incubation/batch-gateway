@@ -54,7 +54,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
@@ -101,7 +101,7 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
@@ -139,7 +139,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
@@ -177,7 +177,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
@@ -204,7 +204,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 	defer inputFile.Close()
 
 	badEntry := planEntry{Offset: 99999, Length: 10}
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil)
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
@@ -253,7 +253,7 @@ func TestProcessModel_Success(t *testing.T) {
 	var errBuf bytes.Buffer
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
@@ -314,7 +314,7 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 
 	// Cancel context to simulate the real flow: watchCancel cancels abortCtx (which
 	// propagates to execCtx passed to processModel) AND sets cancelRequested.
-	ctx, cancel := context.WithCancel(testLoggerCtx())
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
 	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
@@ -382,7 +382,7 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	_ = env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 
 	if flushErr := outWriter.Flush(); flushErr != nil {
@@ -462,7 +462,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	var errBuf bytes.Buffer
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
@@ -507,7 +507,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
-	ctx, cancel := context.WithCancel(testLoggerCtx())
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 
 	var errBuf bytes.Buffer
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
@@ -543,7 +543,7 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
@@ -591,7 +591,7 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
 	cancelReq := &atomic.Bool{}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
@@ -625,7 +625,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
-	ctx, cancel := context.WithCancel(testLoggerCtx())
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
 	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
@@ -654,7 +654,7 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cancelReq := &atomic.Bool{}
 	cancelReq.Store(true)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	abortCtx, abortFn := context.WithCancel(ctx)
 	abortFn()
 
@@ -692,7 +692,7 @@ func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
@@ -730,7 +730,7 @@ func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	cancelReq := &atomic.Bool{}
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	abortCtx, abortInferFn := context.WithCancel(ctx)
 
 	type result struct {
@@ -788,7 +788,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	// SLO deadline already in the past: early check fires before any files are opened.
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
@@ -863,7 +863,7 @@ func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	// Use context.WithDeadline so sloCtx.Err() returns DeadlineExceeded (matching real code).
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(100*time.Millisecond))
 	defer sloCancel()
@@ -949,7 +949,7 @@ func TestFinalizeJob_Success(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, jobID)
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	var cancelRequested atomic.Bool
 	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested)
 	if err != nil {
@@ -995,7 +995,7 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, jobID)
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	var cancelRequested atomic.Bool
 	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested)
 	if err == nil {
@@ -1030,7 +1030,7 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 	cancelReq := &atomic.Bool{}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
@@ -1099,7 +1099,7 @@ func TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, jobID)
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 0, Failed: 1}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	var cancelRequested atomic.Bool
 	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested); err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
@@ -1150,7 +1150,7 @@ func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, jobID)
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	var cancelRequested atomic.Bool
 	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested); err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
@@ -1184,7 +1184,7 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
@@ -1212,7 +1212,7 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-ctx")
 	task := &db.BatchJobPriority{ID: "job-ctx"}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
@@ -1237,7 +1237,7 @@ func TestHandleJobError_DeadlineExceeded_ReEnqueues(t *testing.T) {
 	dbJob := seedDBJob(t, env.dbClient, "job-deadline")
 	task := &db.BatchJobPriority{ID: "job-deadline"}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
@@ -1261,7 +1261,7 @@ func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
 
 	dbJob := seedDBJob(t, env.dbClient, "job-ctx-nil")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	// task is nil — should not panic, and job status should remain unchanged
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
@@ -1289,7 +1289,7 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
@@ -1334,7 +1334,7 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := env.p.handleCancelled(ctx, &jobExecutionParams{
 		updater:       env.updater,
 		jobItem:       dbJob,
@@ -1387,7 +1387,7 @@ func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 10, Completed: 7, Failed: 3}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := env.p.handleFailedWithPartial(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
 		t.Fatalf("handleFailedWithPartial: %v", err)
 	}
@@ -1425,7 +1425,7 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 
 	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts); err != nil {
 		t.Fatalf("handleFailed: %v", err)
 	}
@@ -1489,7 +1489,7 @@ func TestUploadPartialResults_EmptyFiles(t *testing.T) {
 		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
 	}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	outputFileID, errorFileID := env.p.uploadPartialResults(ctx, jobInfo, dbJob)
 
 	if outputFileID != "" {
@@ -1524,7 +1524,7 @@ func TestUploadPartialResults_MissingFiles(t *testing.T) {
 		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID, Tags: db.Tags{}},
 	}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	outputFileID, errorFileID := env.p.uploadPartialResults(ctx, jobInfo, dbJob)
 
 	if outputFileID != "" {
@@ -1552,7 +1552,7 @@ func TestCleanupJobArtifacts_RemovesDirectory(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	p.cleanupJobArtifacts(ctx, "cleanup-job", "tenant-1")
 
 	if _, err := os.Stat(jobDir); !os.IsNotExist(err) {
@@ -1571,7 +1571,7 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	failDB := &dbStoreErrFileClient{err: errors.New("db write failed")}
 	p := mustNewProcessor(t, cfg, &clientset.Clientset{FileDB: failDB})
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	err := p.storeFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})
 	if err == nil {
 		t.Fatalf("expected error from DB failure")

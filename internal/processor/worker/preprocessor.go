@@ -28,7 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
@@ -41,33 +41,33 @@ import (
 // temp plan file is saved in the work folder's subfolder while creating the plan (<tenantID>/jobs/<jobid>/plans/<modelid>.plan.tmp)
 // then the temp plan file is renamed to the final plan file (<tenantID>/jobs/<jobid>/plans/<modelid>.plan)
 func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo, cancelRequested *atomic.Bool) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
 	planBuildStart := time.Now()
 	jobID := jobInfo.JobID
 	inputFileID := jobInfo.BatchJob.InputFileID
 	if inputFileID == "" {
 		err := fmt.Errorf("input file ID is empty")
-		logger.V(logging.ERROR).Error(err, "Input file ID is empty")
+		logger.Error(err, "Input file ID is empty")
 		return err
 	}
 
 	jobRootDir, err := p.jobRootDir(jobID, jobInfo.TenantID)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to resolve job root directory")
+		logger.Error(err, "Failed to resolve job root directory")
 		return err
 	}
 
 	// job directory creation
 	if err := os.MkdirAll(jobRootDir, 0o700); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to create job root directory", "jobRootDir", jobRootDir)
+		logger.Error(err, "Failed to create job root directory", "jobRootDir", jobRootDir)
 		return err
 	}
 
 	// input file stream open
 	reader, metadata, err := p.openInputFileStream(ctx, inputFileID)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to open input file stream", "inputFileId", inputFileID)
+		logger.Error(err, "Failed to open input file stream", "inputFileId", inputFileID)
 		return err
 	}
 	defer reader.Close()
@@ -79,7 +79,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	// create local input file
 	localInputFile, localInputFilePath, err := p.createLocalInputFile(jobID, jobInfo.TenantID)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to create local input file", "path", localInputFilePath)
+		logger.Error(err, "Failed to create local input file", "path", localInputFilePath)
 		return err
 	}
 	defer localInputFile.Close()
@@ -116,7 +116,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 			// if error occurs, fail the pre-processing and the job
 			// TODO: we might want to handle partial failure and continue to the next line in the future
 			//       with line writing error / plan entry append error below
-			logger.V(logging.ERROR).Error(err, "Failed to read line from input file")
+			logger.Error(err, "Failed to read line from input file")
 			return err
 		}
 		if done {
@@ -127,19 +127,19 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 		// write the line to the input file.
 		if _, err := writer.Write(line); err != nil {
-			logger.V(logging.ERROR).Error(err, "Failed to write line to input file", "path", localInputFilePath, "lineCount", lineCount)
+			logger.Error(err, "Failed to write line to input file", "path", localInputFilePath, "lineCount", lineCount)
 			return err
 		}
 
 		requestMeta, err := extractAndValidateLine(line)
 		if err != nil {
-			logger.V(logging.ERROR).Error(err, "Failed to validate request line", "lineCount", lineCount)
+			logger.Error(err, "Failed to validate request line", "lineCount", lineCount)
 			return err
 		}
 
 		if _, exists := seenCustomIDs[requestMeta.CustomID]; exists {
 			err := fmt.Errorf("line %d: duplicate custom_id %q", lineCount, requestMeta.CustomID)
-			logger.V(logging.ERROR).Error(err, "Duplicate custom_id in batch input")
+			logger.Error(err, "Duplicate custom_id in batch input")
 			return err
 		}
 		seenCustomIDs[requestMeta.CustomID] = struct{}{}
@@ -152,18 +152,18 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 	// flush input.jsonl file
 	if err := writer.Flush(); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to flush input file", "path", localInputFilePath)
+		logger.Error(err, "Failed to flush input file", "path", localInputFilePath)
 		return err
 	}
 
 	if err := finalizePlanFiles(acc, modelToSafe); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to finalize plan files")
+		logger.Error(err, "Failed to finalize plan files")
 		return err
 	}
 
 	// model map file writing
 	if err := writeModelMappings(jobRootDir, modelToSafe, lineCount); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to write model map file")
+		logger.Error(err, "Failed to write model map file")
 		return err
 	}
 

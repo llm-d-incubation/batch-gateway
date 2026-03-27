@@ -524,7 +524,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		removedFromQueue = nDeleted > 0
 	} else {
-		logger.V(logging.WARNING).Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
+		logger.Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
 	}
 
 	if removedFromQueue {

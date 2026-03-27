@@ -22,7 +22,14 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
 )
+
+func testLogger(t testing.TB) logr.Logger {
+	return testr.NewWithInterface(t, testr.Options{})
+}
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
@@ -80,7 +87,7 @@ func TestNewGatewayResolver_SharesClientsForSameURL(t *testing.T) {
 		"model-c": {URL: srvOther.URL},
 	}
 
-	r, err := NewGatewayResolver(modelGateways)
+	r, err := NewGatewayResolver(modelGateways, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -112,7 +119,7 @@ func TestNewGatewayResolver_DifferentURLs(t *testing.T) {
 		"model-b": {URL: srvB.URL},
 	}
 
-	r, err := NewGatewayResolver(modelGateways)
+	r, err := NewGatewayResolver(modelGateways, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -130,7 +137,7 @@ func TestNewGatewayResolver_MissingDefault_ReturnsError(t *testing.T) {
 		"llama-3": {URL: "http://gateway-a:8000"},
 	}
 
-	_, err := NewGatewayResolver(modelGateways)
+	_, err := NewGatewayResolver(modelGateways, testLogger(t))
 	if err == nil {
 		t.Fatal("expected error when \"default\" key is missing, got nil")
 	}
@@ -149,7 +156,7 @@ func TestNewGatewayResolver_PerGatewayAPIKey(t *testing.T) {
 		"model-c": {URL: srvB.URL, APIKey: "key-a"},
 	}
 
-	r, err := NewGatewayResolver(modelGateways)
+	r, err := NewGatewayResolver(modelGateways, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}
@@ -184,7 +191,7 @@ func TestNewGatewayResolver_SameURLDifferentKey_DifferentClients(t *testing.T) {
 		"model-a": {URL: srv.URL, Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
 	}
 
-	r, err := NewGatewayResolver(modelGateways)
+	r, err := NewGatewayResolver(modelGateways, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewGatewayResolver: %v", err)
 	}

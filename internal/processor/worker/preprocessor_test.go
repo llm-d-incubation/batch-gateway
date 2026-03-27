@@ -31,7 +31,7 @@ import (
 // -------------------------
 
 func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
@@ -187,7 +187,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 }
 
 func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
@@ -342,7 +342,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 }
 
 func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	dbClient := newSpyBatchDB(newMockBatchDBClient())
 	statusClient := mockdb.NewMockBatchStatusClient()
@@ -419,7 +419,7 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 }
 
 func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
@@ -497,7 +497,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 }
 
 func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
@@ -561,7 +561,7 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 }
 
 func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -618,7 +618,7 @@ func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
 }
 
 func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -663,7 +663,7 @@ func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
 }
 
 func TestRunPollingLoop_MalformedJobItem_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -724,7 +724,7 @@ func TestRunPollingLoop_MalformedJobItem_MarksFailed(t *testing.T) {
 }
 
 func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -783,7 +783,7 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 }
 
 func TestRunPollingLoop_GuardCancelAfterDequeue_ReEnqueuesBeforeLaunch(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -845,7 +845,7 @@ func TestRunPollingLoop_GuardCancelAfterDequeue_ReEnqueuesBeforeLaunch(t *testin
 }
 
 func TestRunPollingLoop_SIGTERMAfterDequeue_ReEnqueuesViaDetachedCtx(t *testing.T) {
-	parentCtx, parentCancel := context.WithCancel(testLoggerCtx())
+	parentCtx, parentCancel := context.WithCancel(testLoggerCtx(t))
 	defer parentCancel()
 
 	cfg := config.NewConfig()
@@ -908,7 +908,7 @@ func TestRunPollingLoop_SIGTERMAfterDequeue_ReEnqueuesViaDetachedCtx(t *testing.
 }
 
 func TestRunPollingLoop_GuardReEnqueueFails_FallsBackToHandleFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -1034,7 +1034,7 @@ func TestExtractAndValidateLine_MissingCustomID_ReturnsError(t *testing.T) {
 }
 
 func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
@@ -1103,7 +1103,7 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 }
 
 func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()
@@ -1175,7 +1175,7 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 }
 
 func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
 	cfg := config.NewConfig()

@@ -26,9 +26,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-logr/logr"
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	goredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem) (err error) {
@@ -37,7 +37,7 @@ func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		klog.FromContext(ctx).Error(err, "DBStore[Batch]: item validation failed")
+		logr.FromContextOrDiscard(ctx).Error(err, "DBStore[Batch]: item validation failed")
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
@@ -50,7 +50,7 @@ func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) 
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		klog.FromContext(ctx).Error(err, "DBStore[File]: item validation failed")
+		logr.FromContextOrDiscard(ctx).Error(err, "DBStore[File]: item validation failed")
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
@@ -64,7 +64,7 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx).WithValues("ID", indexes.ID)
+	logger := logr.FromContextOrDiscard(ctx).WithValues("ID", indexes.ID)
 
 	ptags, err := packTags(indexes.Tags)
 	if err != nil {
@@ -121,7 +121,7 @@ func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		klog.FromContext(ctx).Error(err, "DBUpdate[Batch]: item validation failed")
+		logr.FromContextOrDiscard(ctx).Error(err, "DBUpdate[Batch]: item validation failed")
 		return
 	}
 	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeBatch, "DBUpdate[Batch]")
@@ -133,7 +133,7 @@ func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem)
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		klog.FromContext(ctx).Error(err, "DBUpdate[File]: item validation failed")
+		logr.FromContextOrDiscard(ctx).Error(err, "DBUpdate[File]: item validation failed")
 		return
 	}
 	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeFile, "DBUpdate[File]")
@@ -146,7 +146,7 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx).WithValues("ID", indexes.ID)
+	logger := logr.FromContextOrDiscard(ctx).WithValues("ID", indexes.ID)
 
 	fields, updatedStatus, updatedTags, err := getUpdateFields(contents.Status, indexes.Tags)
 	if err != nil {
@@ -186,7 +186,7 @@ func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, lo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// Delete the items.
 	resMap := make(map[string]*goredis.IntCmd)
@@ -230,7 +230,7 @@ func (c *DSClientRedis) dbGet(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	includeSpec := strconv.FormatBool(includeStatic)
 
 	if len(IDs) > 0 {
@@ -316,7 +316,7 @@ func (c *BatchDBClientRedis) DBGet(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if query == nil {
 		logger.Info("DBGet[Batch]: empty query")
 		return
@@ -348,7 +348,7 @@ func (c *FileDBClientRedis) DBGet(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if query == nil {
 		logger.Info("DBGet[File]: empty query")
 		return

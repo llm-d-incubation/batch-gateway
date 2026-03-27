@@ -23,7 +23,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -58,7 +58,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	)
 	defer span.End()
 
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	defer p.wg.Done()
 	defer p.release()
@@ -77,7 +77,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			return
 		}
 		stackTrace := debug.Stack()
-		klog.FromContext(ctx).Error(fmt.Errorf("panic: %v\n%s", r, stackTrace), "Panic recovered")
+		logr.FromContextOrDiscard(ctx).Error(fmt.Errorf("panic: %v\n%s", r, stackTrace), "Panic recovered")
 		span.RecordError(fmt.Errorf("panic: %v", r))
 		span.SetStatus(codes.Error, "panic recovered")
 
@@ -100,7 +100,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// event watcher for cancel event
 	eventWatcher, err := p.event.ECConsumerGetChannel(ctx, params.jobInfo.JobID)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to get event watcher")
+		logger.Error(err, "Failed to get event watcher")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "event watcher failed")
 		// Re-enqueue best-effort. Use a detached context because ctx may already be
@@ -109,9 +109,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			bgCtx, bgSpan := uotel.DetachedContext(ctx, "re-enqueue")
 			defer bgSpan.End()
 			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
-				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
+				logger.Error(enqErr, "Failed to re-enqueue the job to the queue")
 				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
-					logger.V(logging.ERROR).Error(failErr, "Failed to mark job as failed after re-enqueue failure")
+					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
@@ -142,11 +142,11 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// transition to in_progress before executing requests
 	if err := params.updater.UpdatePersistentStatus(ctx, params.jobItem, openai.BatchStatusInProgress, nil, nil); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update status to in_progress")
+		logger.Error(err, "Failed to update status to in_progress")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "status transition failed")
 		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
-			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
+			logger.Error(failErr, "Failed to handle failed event")
 		}
 		return
 	}
@@ -160,7 +160,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		switch {
 		case errors.Is(execErr, ErrExpired):
 			if expiredErr := p.handleExpired(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts); expiredErr != nil {
-				logger.V(logging.ERROR).Error(expiredErr, "Failed to finalize expired job")
+				logger.Error(expiredErr, "Failed to finalize expired job")
 				span.RecordError(expiredErr)
 				span.SetStatus(codes.Error, "expired finalization failed")
 			}
@@ -168,7 +168,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 		case errors.Is(execErr, ErrCancelled):
 			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
-				logger.V(logging.ERROR).Error(cancelErr, "Failed to finalize cancelled job")
+				logger.Error(cancelErr, "Failed to finalize cancelled job")
 				span.RecordError(cancelErr)
 				span.SetStatus(codes.Error, "cancelled finalization failed")
 			}
@@ -195,11 +195,11 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			logger.V(logging.INFO).Info("Job cancelled during finalization")
 			return
 		}
-		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
+		logger.Error(err, "Failed to finalize job")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "finalize failed")
 		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, requestCounts); failErr != nil {
-			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
+			logger.Error(failErr, "Failed to handle failed event")
 		}
 		return
 	}
@@ -222,29 +222,31 @@ func (p *Processor) handlePanicRecovery(
 ) {
 	defer func() {
 		if r := recover(); r != nil {
-			klog.FromContext(ctx).Error(fmt.Errorf("panic in handlePanicRecovery: %v\n%s", r, debug.Stack()),
+			logr.FromContextOrDiscard(ctx).Error(fmt.Errorf("panic in handlePanicRecovery: %v\n%s", r, debug.Stack()),
 				"Double panic: recovery handler itself panicked")
 		}
 	}()
 
+	logger := logr.FromContextOrDiscard(ctx)
+
 	if params == nil || params.updater == nil || params.jobItem == nil {
-		klog.FromContext(ctx).Error(nil, "Cannot recover job: params, updater, or jobItem is nil")
+		logger.Error(fmt.Errorf("params, updater, or jobItem is nil"), "Cannot recover job")
 		return
 	}
 
 	// Use context.Background() because the original ctx may be cancelled (e.g. pod shutdown)
 	// and we must ensure the DB update is not short-circuited.
 	// DB clients have their own connection/operation timeouts, so this will not block indefinitely.
-	bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+	bgCtx := logr.NewContext(context.Background(), logger)
 	if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
 		if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
-			klog.FromContext(bgCtx).Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
+			logger.Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
 		} else {
 			return
 		}
 	}
 	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
-		klog.FromContext(bgCtx).Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
+		logger.Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
 			"jobID", params.jobItem.ID, "tenantID", params.jobItem.TenantID)
 	}
 }
@@ -252,7 +254,7 @@ func (p *Processor) handlePanicRecovery(
 // handleJobError routes an error to the appropriate handler (cancel, re-enqueue, or fail).
 // requestCounts and jobInfo are non-nil only when the error originates from execution (executeJob).
 func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionParams, err error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	switch {
 	case errors.Is(err, ErrCancelled):
@@ -262,7 +264,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 		params.jobInfo = nil
 		params.requestCounts = nil
 		if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
-			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
+			logger.Error(cancelErr, "Failed to handle cancelled event")
 		}
 
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
@@ -274,9 +276,9 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 			bgCtx, bgSpan := uotel.DetachedContext(ctx, "re-enqueue")
 			defer bgSpan.End()
 			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
-				logger.V(logging.ERROR).Error(enqErr, "Failed to re-enqueue the job to the queue")
+				logger.Error(enqErr, "Failed to re-enqueue the job to the queue")
 				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
-					logger.V(logging.ERROR).Error(failErr, "Failed to mark job as failed after re-enqueue failure")
+					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
@@ -287,11 +289,11 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 	default:
 		if params.requestCounts != nil && params.jobInfo != nil {
 			if failErr := p.handleFailedWithPartial(ctx, params.updater, params.jobItem, params.jobInfo, params.requestCounts); failErr != nil {
-				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event with partial output")
+				logger.Error(failErr, "Failed to handle failed event with partial output")
 			}
 		} else {
 			if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
-				logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
+				logger.Error(failErr, "Failed to handle failed event")
 			}
 		}
 	}
@@ -305,17 +307,17 @@ func (p *Processor) uploadPartialResults(
 	jobInfo *batch_types.JobInfo,
 	dbJob *db.BatchItem,
 ) (outputFileID string, errorFileID string) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	var err error
 	outputFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to upload output file (best-effort)")
+		logger.Error(err, "Failed to upload output file (best-effort)")
 	}
 
 	errorFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to upload error file (best-effort)")
+		logger.Error(err, "Failed to upload error file (best-effort)")
 	}
 
 	return outputFileID, errorFileID
@@ -334,7 +336,7 @@ func (p *Processor) handleExpired(
 	jobInfo *batch_types.JobInfo,
 	requestCounts *openai.BatchRequestCounts,
 ) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Job SLO expired, finalizing as expired")
 
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbJob)
@@ -342,7 +344,7 @@ func (p *Processor) handleExpired(
 	p.cleanupJobArtifacts(ctx, dbJob.ID, dbJob.TenantID)
 
 	if err := updater.UpdateExpiredStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update status to expired")
+		logger.Error(err, "Failed to update status to expired")
 		return err
 	}
 
@@ -363,7 +365,7 @@ func (p *Processor) handleFailedWithPartial(
 	jobInfo *batch_types.JobInfo,
 	requestCounts *openai.BatchRequestCounts,
 ) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Job failed mid-execution, uploading partial results")
 
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, jobItem)
@@ -371,7 +373,7 @@ func (p *Processor) handleFailedWithPartial(
 	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
 
 	if err := updater.UpdateFailedStatus(ctx, jobItem, requestCounts, outputFileID, errorFileID); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update status to failed")
+		logger.Error(err, "Failed to update status to failed")
 		return err
 	}
 
@@ -391,12 +393,12 @@ func (p *Processor) handleFailed(
 	jobItem *db.BatchItem,
 	requestCounts *openai.BatchRequestCounts,
 ) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	p.cleanupJobArtifacts(ctx, jobItem.ID, jobItem.TenantID)
 
 	if err := updater.UpdateFailedStatus(ctx, jobItem, requestCounts, "", ""); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update status to failed")
+		logger.Error(err, "Failed to update status to failed")
 		return err
 	}
 

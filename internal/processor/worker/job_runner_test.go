@@ -46,7 +46,7 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(testLoggerCtx(), &jobExecutionParams{
+	p.runJob(testLoggerCtx(t), &jobExecutionParams{
 		updater: NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
 		jobItem: &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
 		jobInfo: &batch_types.JobInfo{JobID: "job-1"},
@@ -54,7 +54,7 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 }
 
 func TestRunJob_EventWatcherAndReEnqueueBothFail_MarksJobFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
@@ -106,7 +106,7 @@ func TestRunJob_EventWatcherAndReEnqueueBothFail_MarksJobFailed(t *testing.T) {
 }
 
 func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
@@ -190,7 +190,7 @@ func TestRunJob_WithCancelRequested_ReachesPreProcess(t *testing.T) {
 		File:    mockfiles.NewMockBatchFilesClient(),
 	})
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	jobItem := &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-contract", TenantID: "tenantA"},
@@ -258,7 +258,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
-	err := p.handleFailed(testLoggerCtx(), updater, &db.BatchItem{
+	err := p.handleFailed(testLoggerCtx(t), updater, &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{
 			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
@@ -272,7 +272,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 // --- handlePanicRecovery tests ---
 
 func TestHandlePanicRecovery_BeforeInProgress_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -295,7 +295,7 @@ func TestHandlePanicRecovery_BeforeInProgress_MarksFailed(t *testing.T) {
 }
 
 func TestHandlePanicRecovery_AfterInProgress_WithCounts_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -319,7 +319,7 @@ func TestHandlePanicRecovery_AfterInProgress_WithCounts_MarksFailed(t *testing.T
 }
 
 func TestHandlePanicRecovery_AfterInProgress_NilCounts_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -342,7 +342,7 @@ func TestHandlePanicRecovery_AfterInProgress_NilCounts_MarksFailed(t *testing.T)
 }
 
 func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
-	ctx, cancel := context.WithCancel(testLoggerCtx())
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
 	dbClient := newMockBatchDBClient()
@@ -367,7 +367,7 @@ func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
 }
 
 func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := &dbUpdateFailOnceWrapper{inner: newMockBatchDBClient(), failCount: 1}
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -391,7 +391,7 @@ func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
 }
 
 func TestHandlePanicRecovery_NilParams_DoesNotPanic(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	p.handlePanicRecovery(ctx, nil, false, nil)
 	p.handlePanicRecovery(ctx, &jobExecutionParams{}, false, nil)

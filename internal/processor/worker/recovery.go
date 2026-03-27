@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -57,11 +57,11 @@ const (
 // Runs once at startup before the polling loop. Individual job recovery failures
 // do not prevent the processor from starting.
 func (p *Processor) recoverStaleJobs(ctx context.Context) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	dirs, err := p.discoverStaleJobDirs()
 	if err != nil {
-		logger.V(logging.WARNING).Info("Startup recovery: failed to scan workdir", "err", err)
+		logger.Error(err, "Startup recovery: failed to scan workdir")
 		return
 	}
 
@@ -75,7 +75,7 @@ func (p *Processor) recoverStaleJobs(ctx context.Context) {
 	for _, dir := range dirs {
 		jobID := filepath.Base(dir)
 		jlogger := logger.WithValues("jobId", jobID)
-		jctx := klog.NewContext(ctx, jlogger)
+		jctx := logr.NewContext(ctx, jlogger)
 
 		if err := p.recoverJob(jctx, jobID); err != nil {
 			jlogger.Error(err, "Startup recovery: failed to recover job")
@@ -92,7 +92,7 @@ func (p *Processor) discoverStaleJobDirs() ([]string, error) {
 
 // recoverJob performs phase-aware recovery for a single job based on its DB status.
 func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	dbItem, err := p.poller.fetchJobItemByID(ctx, jobID)
 	// DB unreachable — can't read status or mark as failed. Leave workdir on disk so the
@@ -107,7 +107,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 	// Job not in DB — can't update status, but we can clean up the stale directory.
 	// tenantID is unknown (directory uses SHA256 hash), so we glob for the jobID.
 	if dbItem == nil {
-		logger.V(logging.WARNING).Info("Startup recovery: job not found in DB, cleaning up stale directory")
+		logger.Info("Startup recovery: job not found in DB, cleaning up stale directory")
 		metrics.RecordStartupRecovery(string(recoveryUnknownStatus), recoveryActionCleanedUp)
 		p.cleanupStaleJobDir(ctx, jobID)
 		return nil
@@ -143,7 +143,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 			p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
 			return nil
 		}
-		logger.V(logging.WARNING).Info("Startup recovery: unexpected status, marking as failed", "status", statusStr)
+		logger.Info("Startup recovery: unexpected status, marking as failed", "status", statusStr)
 		return p.recoverWithFailed(ctx, dbItem, nil, nil)
 	}
 }
@@ -153,7 +153,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 // We upload directly (instead of calling finalizeJob) so that file IDs are available
 // for the fallback path if the status update fails.
 func (p *Processor) recoverFinalizing(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	counts := p.extractRequestCounts(dbItem)
 
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbItem)
@@ -173,7 +173,7 @@ func (p *Processor) recoverFinalizing(ctx context.Context, dbItem *db.BatchItem,
 
 // recoverCancelling completes a cancellation that was interrupted by crash.
 func (p *Processor) recoverCancelling(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	counts := p.extractRequestCounts(dbItem)
 
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbItem)
@@ -196,11 +196,11 @@ func (p *Processor) recoverCancelling(ctx context.Context, dbItem *db.BatchItem,
 // — upload partial results and mark as failed.
 // If output is empty or absent, inference barely started — re-enqueue for retry.
 func (p *Processor) recoverInProgress(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	hasOutput, err := p.outputFileHasContent(dbItem.ID, dbItem.TenantID)
 	if err != nil {
-		logger.V(logging.WARNING).Info("Startup recovery: failed to check output file, treating as empty", "err", err)
+		logger.Error(err, "Startup recovery: failed to check output file, treating as empty")
 	}
 
 	if hasOutput {
@@ -210,7 +210,7 @@ func (p *Processor) recoverInProgress(ctx context.Context, dbItem *db.BatchItem,
 }
 
 func (p *Processor) recoverInProgressWithPartial(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	counts := p.extractRequestCounts(dbItem)
 
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbItem)
@@ -229,7 +229,7 @@ func (p *Processor) recoverInProgressWithPartial(ctx context.Context, dbItem *db
 }
 
 func (p *Processor) recoverInProgressReEnqueue(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	slo, err := p.extractRecoverySLO(dbItem, jobInfo)
 	if err != nil {
@@ -263,7 +263,7 @@ func (p *Processor) recoverInProgressReEnqueue(ctx context.Context, dbItem *db.B
 
 // recoverValidating re-enqueues a job that crashed before inference started.
 func (p *Processor) recoverValidating(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	slo, err := p.extractRecoverySLO(dbItem, jobInfo)
 	if err != nil {
@@ -304,7 +304,7 @@ type recoveryFallback struct {
 // Used when the primary recovery action fails and DB is reachable.
 // If fb is non-nil, its counts and file IDs are preserved in the failed status.
 func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem, cause error, fb *recoveryFallback) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	var counts *openai.BatchRequestCounts
 	var outputFileID, errorFileID string
@@ -321,12 +321,12 @@ func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem,
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
 	metrics.RecordStartupRecovery(string(p.getJobStatus(dbItem)), recoveryActionFailed)
-	logger.V(logging.WARNING).Info("Startup recovery: marked as failed (recovery action failed)", "cause", cause)
+	logger.Info("Startup recovery: marked as failed (recovery action failed)", "cause", cause)
 	return nil
 }
 
 func (p *Processor) recoverExpired(ctx context.Context, dbItem *db.BatchItem, previousStatus string) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	if err := p.updater.UpdatePersistentStatus(ctx, dbItem, openai.BatchStatusExpired, nil, nil); err != nil {
 		logger.Error(err, "Startup recovery: failed to update expired status")
@@ -419,16 +419,16 @@ func (p *Processor) getJobStatus(dbItem *db.BatchItem) openai.BatchStatus {
 // cleanupStaleJobDir removes a job directory when tenantID is unknown (job not in DB).
 // Scans all tenant hash directories under workdir to find the matching jobID.
 func (p *Processor) cleanupStaleJobDir(ctx context.Context, jobID string) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	pattern := filepath.Join(p.cfg.WorkDir, "*", jobsDirName, jobID)
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to glob for stale job directory")
+		logger.Error(err, "Failed to glob for stale job directory")
 		return
 	}
 	for _, dir := range matches {
 		if err := os.RemoveAll(dir); err != nil {
-			logger.V(logging.ERROR).Error(err, "Failed to remove stale job directory", "path", dir)
+			logger.Error(err, "Failed to remove stale job directory", "path", dir)
 		} else {
 			logger.V(logging.INFO).Info("Removed stale job directory", "path", dir)
 		}
