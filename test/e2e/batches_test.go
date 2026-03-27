@@ -76,18 +76,27 @@ func doTestBatchCancel(t *testing.T) {
 	}
 	t.Logf("cancel response status: %s", batch.Status)
 
-	// The cancel response should be cancelling (batch is in_progress, so
+	// The cancel response is normally "cancelling" (batch is in_progress, so
 	// the apiserver sends a cancel event rather than directly cancelling).
-	if batch.Status != openai.BatchStatusCancelling {
-		t.Errorf("expected status %q immediately after cancel call, got %q",
-			openai.BatchStatusCancelling, batch.Status)
+	// However, if all requests completed before cancel was processed, the
+	// batch may already be "completed" — this is an inherent TOCTOU race.
+	switch batch.Status {
+	case openai.BatchStatusCancelling, openai.BatchStatusCompleted:
+		// both are acceptable
+	default:
+		t.Errorf("expected status %q or %q immediately after cancel call, got %q",
+			openai.BatchStatusCancelling, openai.BatchStatusCompleted, batch.Status)
 	}
 
-	// Wait for the batch to reach cancelled state.
-	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
+	// Wait for the batch to reach a terminal state. Both cancelled and
+	// completed are valid outcomes — all requests may finish before the
+	// cancel event is processed by the worker, which is an acknowledged
+	// race in the architecture (see finalizer.go).
+	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled, openai.BatchStatusCompleted)
 
-	t.Logf("batch %s cancelled (completed=%d, failed=%d, total=%d, output_file_id=%s, error_file_id=%s)",
+	t.Logf("batch %s final_status=%s (completed=%d, failed=%d, total=%d, output_file_id=%s, error_file_id=%s)",
 		batchID,
+		finalBatch.Status,
 		finalBatch.RequestCounts.Completed,
 		finalBatch.RequestCounts.Failed,
 		finalBatch.RequestCounts.Total,
@@ -96,7 +105,9 @@ func doTestBatchCancel(t *testing.T) {
 
 	// Verify that in-flight inference requests were actually aborted by the inference client
 	// (context cancellation propagated through abortCtx → execCtx → HTTP request).
-	if testKubectlAvailable {
+	// Only check when the batch was actually cancelled — if it completed first, there
+	// were no in-flight requests to abort.
+	if finalBatch.Status == openai.BatchStatusCancelled && testKubectlAvailable {
 		out, err := exec.Command("kubectl", "logs",
 			"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
 			"-n", testNamespace,
