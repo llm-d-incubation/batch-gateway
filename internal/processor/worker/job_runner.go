@@ -39,6 +39,13 @@ import (
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
+// panicRecoveryTimeout bounds how long handlePanicRecovery waits for DB
+// operations before giving up. This prevents an unreachable database from
+// blocking wg.Done() and release() indefinitely, which would leak the
+// worker token and eventually deadlock Stop().
+// Declared as var (not const) so tests can shorten it.
+var panicRecoveryTimeout = time.Minute
+
 func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Restore parent trace context propagated from the apiserver via Redis tags
 	if len(params.jobInfo.TraceContext) > 0 {
@@ -236,8 +243,12 @@ func (p *Processor) handlePanicRecovery(
 
 	// Use context.Background() because the original ctx may be cancelled (e.g. pod shutdown)
 	// and we must ensure the DB update is not short-circuited.
-	// DB clients have their own connection/operation timeouts, so this will not block indefinitely.
-	bgCtx := logr.NewContext(context.Background(), logger)
+	// Bound the recovery with a timeout so that an unreachable DB cannot block
+	// wg.Done() and release() indefinitely, which would leak the worker token
+	// and eventually deadlock Stop().
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), panicRecoveryTimeout)
+	defer bgCancel()
+	bgCtx = logr.NewContext(bgCtx, logger)
 	if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
 		if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
 			logger.Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
