@@ -363,7 +363,7 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		ID:        fileID,
 		Bytes:     fileMeta.Size,
 		CreatedAt: createdAt,
-		ExpiresAt: expiresAt,
+		ExpiresAt: &expiresAt,
 		Filename:  origName,
 		Object:    "file",
 		Purpose:   purpose,

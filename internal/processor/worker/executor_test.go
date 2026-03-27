@@ -967,7 +967,7 @@ func TestFinalizeJob_Success(t *testing.T) {
 	if statusInfo.Status != openai.BatchStatusCompleted {
 		t.Fatalf("status = %s, want %s", statusInfo.Status, openai.BatchStatusCompleted)
 	}
-	if statusInfo.OutputFileID == "" {
+	if statusInfo.OutputFileID == nil {
 		t.Fatalf("expected OutputFileID to be set")
 	}
 }
@@ -1113,10 +1113,10 @@ func TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted(t *testing.T) {
 	if err := json.Unmarshal(items[0].Status, &statusInfo); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
-	if statusInfo.OutputFileID != "" {
-		t.Errorf("OutputFileID = %q, want empty (output file was empty)", statusInfo.OutputFileID)
+	if statusInfo.OutputFileID != nil {
+		t.Errorf("OutputFileID = %q, want nil (output file was empty)", *statusInfo.OutputFileID)
 	}
-	if statusInfo.ErrorFileID == "" {
+	if statusInfo.ErrorFileID == nil {
 		t.Errorf("ErrorFileID should be set when error file has content")
 	}
 }
@@ -1164,11 +1164,11 @@ func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
 	if err := json.Unmarshal(items[0].Status, &statusInfo); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
-	if statusInfo.OutputFileID == "" {
+	if statusInfo.OutputFileID == nil {
 		t.Errorf("OutputFileID should be set when output file has content")
 	}
-	if statusInfo.ErrorFileID != "" {
-		t.Errorf("ErrorFileID = %q, want empty (error file was empty)", statusInfo.ErrorFileID)
+	if statusInfo.ErrorFileID != nil {
+		t.Errorf("ErrorFileID = %q, want nil (error file was empty)", *statusInfo.ErrorFileID)
 	}
 }
 
@@ -1358,10 +1358,10 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 	if got.RequestCounts.Total != 5 || got.RequestCounts.Completed != 3 || got.RequestCounts.Failed != 2 {
 		t.Fatalf("request_counts = %+v, want {5,3,2}", got.RequestCounts)
 	}
-	if got.OutputFileID == "" {
+	if got.OutputFileID == nil {
 		t.Fatal("expected output_file_id to be set")
 	}
-	if got.ErrorFileID == "" {
+	if got.ErrorFileID == nil {
 		t.Fatal("expected error_file_id to be set")
 	}
 }
@@ -1406,10 +1406,10 @@ func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
 	if got.RequestCounts.Total != 10 || got.RequestCounts.Completed != 7 || got.RequestCounts.Failed != 3 {
 		t.Fatalf("request_counts = %+v, want {10,7,3}", got.RequestCounts)
 	}
-	if got.OutputFileID == "" {
+	if got.OutputFileID == nil {
 		t.Fatal("expected output_file_id to be set")
 	}
-	if got.ErrorFileID == "" {
+	if got.ErrorFileID == nil {
 		t.Fatal("expected error_file_id to be set")
 	}
 }
@@ -1444,11 +1444,11 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 	if got.RequestCounts.Total != 8 || got.RequestCounts.Completed != 8 || got.RequestCounts.Failed != 0 {
 		t.Fatalf("request_counts = %+v, want {8,8,0}", got.RequestCounts)
 	}
-	if got.OutputFileID != "" {
-		t.Fatalf("expected empty output_file_id, got %s", got.OutputFileID)
+	if got.OutputFileID != nil {
+		t.Fatalf("expected nil output_file_id, got %s", *got.OutputFileID)
 	}
-	if got.ErrorFileID != "" {
-		t.Fatalf("expected empty error_file_id, got %s", got.ErrorFileID)
+	if got.ErrorFileID != nil {
+		t.Fatalf("expected nil error_file_id, got %s", *got.ErrorFileID)
 	}
 }
 

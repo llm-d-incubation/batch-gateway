@@ -212,7 +212,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 		// queue wait metrics recording
 		if jobPriorityData, err := batch_utils.GetJobPriorityDataFromQueueItem(task); err == nil {
 			queueWait := time.Since(time.Unix(jobPriorityData.CreatedAt, 0))
-			metrics.RecordQueueWaitDuration(queueWait, jobItem.TenantID)
+			metrics.RecordQueueWaitDuration(queueWait)
 			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
 		} else {
 			pollLogger.Error(err, "Failed to get job priority data from queue item")
