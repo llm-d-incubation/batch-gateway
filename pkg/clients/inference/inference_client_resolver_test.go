@@ -18,11 +18,19 @@ package inference
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/go-logr/stdr"
 )
+
+func testLogger() logr.Logger {
+	return stdr.New(log.Default())
+}
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()

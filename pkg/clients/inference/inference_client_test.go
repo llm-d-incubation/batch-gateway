@@ -28,7 +28,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -38,14 +37,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
-	"github.com/go-logr/stdr"
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 )
-
-func testLogger() logr.Logger {
-	return stdr.New(log.Default())
-}
 
 // TestInferenceClient aggregates all HTTPClient test cases
 // Run with: go test -run TestInferenceClient
