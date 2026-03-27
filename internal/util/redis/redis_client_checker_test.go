@@ -105,4 +105,3 @@ func TestRedisClientChecker_Sequential_NotCached(t *testing.T) {
 		t.Fatalf("expected 3 sequential executions, got %d (singleflight incorrectly cached)", got)
 	}
 }
-
