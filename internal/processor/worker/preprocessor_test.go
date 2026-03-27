@@ -783,7 +783,7 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 }
 
 func TestRunPollingLoop_GuardCancelAfterDequeue_ReEnqueuesBeforeLaunch(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
@@ -845,7 +845,7 @@ func TestRunPollingLoop_GuardCancelAfterDequeue_ReEnqueuesBeforeLaunch(t *testin
 }
 
 func TestRunPollingLoop_SIGTERMAfterDequeue_ReEnqueuesViaDetachedCtx(t *testing.T) {
-	parentCtx, parentCancel := context.WithCancel(testLoggerCtx())
+	parentCtx, parentCancel := context.WithCancel(testLoggerCtx(t))
 	defer parentCancel()
 
 	cfg := config.NewConfig()
@@ -908,7 +908,7 @@ func TestRunPollingLoop_SIGTERMAfterDequeue_ReEnqueuesViaDetachedCtx(t *testing.
 }
 
 func TestRunPollingLoop_GuardReEnqueueFails_FallsBackToHandleFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond

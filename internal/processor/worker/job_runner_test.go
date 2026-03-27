@@ -190,7 +190,7 @@ func TestRunJob_WithCancelRequested_ReachesPreProcess(t *testing.T) {
 		File:    mockfiles.NewMockBatchFilesClient(),
 	})
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	jobItem := &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-contract", TenantID: "tenantA"},

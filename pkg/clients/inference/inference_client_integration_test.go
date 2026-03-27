@@ -23,14 +23,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"testing"
 	"time"
 
-	"github.com/go-logr/stdr"
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 )
 
@@ -112,7 +110,7 @@ func testHTTPClientBasicInference(t *testing.T) {
 	client, err := NewInferenceClient(&HTTPClientConfig{
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
-	}, stdr.New(log.Default()))
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +192,7 @@ func testHTTPClientLatencySimulation(t *testing.T) {
 	client, err := NewInferenceClient(&HTTPClientConfig{
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
-	}, stdr.New(log.Default()))
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -282,7 +280,7 @@ func testHTTPClientFailureInjection(t *testing.T) {
 			Timeout:        10 * time.Second,
 			MaxRetries:     5,
 			InitialBackoff: 50 * time.Millisecond,
-		}, stdr.New(log.Default()))
+		}, testLogger(t))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
