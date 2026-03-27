@@ -92,10 +92,13 @@ func TestRedisClientChecker_Sequential_NotCached(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		checker.sf.Do("check", func() (interface{}, error) {
+		_, err, _ := checker.sf.Do("check", func() (interface{}, error) {
 			callCount.Add(1)
 			return nil, nil
 		})
+		if err != nil {
+			t.Fatalf("unexpected error on call %d: %v", i, err)
+		}
 	}
 
 	if got := callCount.Load(); got != 3 {
