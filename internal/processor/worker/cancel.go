@@ -18,6 +18,8 @@ package worker
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 
 	"github.com/go-logr/logr"
 
@@ -28,6 +30,13 @@ import (
 
 func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {
 	logger := logr.FromContextOrDiscard(ctx)
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error(fmt.Errorf("panic: %v\n%s", r, debug.Stack()), "watchCancel: panic recovered, triggering cancel")
+			params.cancelRequested.Store(true)
+			params.abortInferFn()
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():

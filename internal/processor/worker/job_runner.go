@@ -75,9 +75,10 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		transitionedToInProgress bool
 		requestCounts            *openai.BatchRequestCounts
 	)
-	// Note: recover() only catches panics on this goroutine. Panics in child
-	// goroutines (watchCancel, per-model/per-request goroutines in executeJob)
-	// are not caught here and will crash the process.
+	// Note: recover() only catches panics on this goroutine. Child goroutines
+	// (watchCancel, per-model/per-request goroutines in executeJob) have their
+	// own panic recovery guards that contain the blast radius to a single
+	// request/model/job rather than crashing the entire process.
 	defer func() {
 		r := recover()
 		if r == nil {

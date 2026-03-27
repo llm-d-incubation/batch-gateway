@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -222,6 +223,13 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 		// This ensures the first real error reaches errCh before any context.Canceled
 		// from other models whose contexts were cancelled by execCancel.
 		go func(safeModelID, modelID string) {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error(fmt.Errorf("panic: %v\n%s", r, debug.Stack()), "processModel: panic recovered", "modelID", modelID)
+					execCancel()
+					errCh <- fmt.Errorf("panic in processModel for model %s: %v", modelID, r)
+				}
+			}()
 			err := p.processModel(
 				execCtx,
 				sloCtx,
@@ -370,6 +378,12 @@ dispatch:
 			defer wg.Done()
 			defer modelSem.Release()
 			defer p.globalSem.Release()
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error(fmt.Errorf("panic: %v\n%s", r, debug.Stack()), "executeOneRequest: panic recovered", "offset", entry.Offset)
+					errOnce.Do(func() { modelErr = fmt.Errorf("panic in executeOneRequest at offset %d: %v", entry.Offset, r) })
+				}
+			}()
 
 			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
 			if execErr != nil {
