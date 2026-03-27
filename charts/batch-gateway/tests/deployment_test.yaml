@@ -130,7 +130,7 @@ tests:
           value: 65532
         template: templates/gc-deployment.yaml
 
-  # --- Fail guard: pvcName required for fs file client ---
+  # --- Fail guards ---
 
   - it: should fail when fs pvcName is empty
     templates:
@@ -141,3 +141,25 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: 'global.fileClient.fs.pvcName must be set when global.fileClient.type is "fs"'
+
+  - it: should fail when TLS has both secretName and certManager
+    templates:
+      - templates/apiserver-deployment.yaml
+    set:
+      apiserver.tls.enabled: true
+      apiserver.tls.secretName: "my-secret"
+      apiserver.tls.certManager.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "apiserver.tls: secretName and certManager are mutually exclusive — set only one"
+
+  - it: should fail when TLS enabled but neither secretName nor certManager
+    templates:
+      - templates/apiserver-deployment.yaml
+    set:
+      apiserver.tls.enabled: true
+      apiserver.tls.secretName: ""
+      apiserver.tls.certManager.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "apiserver.tls: enabled but neither secretName nor certManager is configured"

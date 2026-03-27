@@ -15,6 +15,8 @@
 package e2e_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,7 +28,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const helmCmdTimeout = 5 * time.Minute
+
 var testChartPath = getEnvOrDefault("TEST_CHART_PATH", "../../charts/batch-gateway")
+
+// execContextFailureHint appends a short note when CommandContext hit its deadline,
+// so CI logs distinguish slow/hung helm or kubectl from other failures.
+func execContextFailureHint(err error) string {
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		return "\n(context deadline exceeded — helm/kubectl may be slow or hung)"
+	}
+	return ""
+}
 
 func testHelmUpgrade(t *testing.T) {
 	if !testKubectlAvailable {
@@ -59,16 +72,20 @@ func testHelmUpgrade(t *testing.T) {
 			return
 		}
 		args := []string{"upgrade", testHelmRelease, testChartPath, "-n", testNamespace, "-f", valuesFile}
-		out, err := exec.Command("helm", args...).CombinedOutput()
+		ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "helm", args...).CombinedOutput()
 		if err != nil {
-			t.Errorf("cleanup: helm restore failed: %v\n%s\nMANUAL HELM RESTORE REQUIRED", err, out)
+			t.Errorf("cleanup: helm restore failed: %v%s\n%s\nMANUAL HELM RESTORE REQUIRED", err, execContextFailureHint(err), out)
 			return
 		}
-		out, err = exec.Command("kubectl", "rollout", "status",
+		rollCtx, rollCancel := context.WithTimeout(context.Background(), helmCmdTimeout)
+		defer rollCancel()
+		out, err = exec.CommandContext(rollCtx, "kubectl", "rollout", "status",
 			fmt.Sprintf("deployment/%s-processor", testHelmRelease), "-n", testNamespace, "--timeout=180s",
 		).CombinedOutput()
 		if err != nil {
-			t.Errorf("cleanup: rollout wait failed: %v\n%s", err, out)
+			t.Errorf("cleanup: rollout wait failed: %v%s\n%s", err, execContextFailureHint(err), out)
 		}
 	})
 
@@ -114,11 +131,13 @@ func testHelmUpgrade(t *testing.T) {
 // helmGetValues returns the current release values as raw YAML bytes (all computed values).
 func helmGetValues(t *testing.T) []byte {
 	t.Helper()
-	out, err := exec.Command("helm", "get", "values",
+	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "helm", "get", "values",
 		testHelmRelease, "-n", testNamespace, "-a", "-o", "yaml",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("helm get values failed: %v\n%s", err, out)
+		t.Fatalf("helm get values failed: %v%s\n%s", err, execContextFailureHint(err), out)
 	}
 	return out
 }
@@ -146,9 +165,11 @@ func helmUpgradeWithValues(t *testing.T, values []byte, extraArgs ...string) {
 	args = append(args, extraArgs...)
 
 	t.Logf("helm %s", strings.Join(args, " "))
-	out, err := exec.Command("helm", args...).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "helm", args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("helm upgrade failed: %v\n%s", err, out)
+		t.Fatalf("helm upgrade failed: %v%s\n%s", err, execContextFailureHint(err), out)
 	}
 	t.Logf("helm upgrade output: %s", strings.TrimSpace(string(out)))
 }
@@ -156,12 +177,14 @@ func helmUpgradeWithValues(t *testing.T, values []byte, extraArgs ...string) {
 func kubectlGetConfigMap(t *testing.T, name string) string {
 	t.Helper()
 
-	out, err := exec.Command("kubectl", "get", "configmap", name,
+	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "kubectl", "get", "configmap", name,
 		"-n", testNamespace,
 		"-o", "jsonpath={.data['config\\.yaml']}",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl get configmap failed: %v\n%s", err, out)
+		t.Fatalf("kubectl get configmap failed: %v%s\n%s", err, execContextFailureHint(err), out)
 	}
 	result := string(out)
 	if strings.TrimSpace(result) == "" {
@@ -174,13 +197,15 @@ func waitForRollout(t *testing.T, deployment string) {
 	t.Helper()
 
 	t.Logf("waiting for rollout of %s...", deployment)
-	out, err := exec.Command("kubectl", "rollout", "status",
+	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 		fmt.Sprintf("deployment/%s", deployment),
 		"-n", testNamespace,
 		"--timeout=180s",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("rollout of %s failed: %v\n%s", deployment, err, out)
+		t.Fatalf("rollout of %s failed: %v%s\n%s", deployment, err, execContextFailureHint(err), out)
 	}
 	t.Logf("rollout of %s complete", deployment)
 }
