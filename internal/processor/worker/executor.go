@@ -98,7 +98,7 @@ func (ep *executionProgress) record(ctx context.Context, success bool) {
 		Completed: ep.completed.Load(),
 		Failed:    ep.failed.Load(),
 	}); err != nil {
-		logr.FromContextOrDiscard(ctx).V(logging.DEBUG).Error(err, "Failed to update progress counts (best-effort)")
+		logr.FromContextOrDiscard(ctx).Error(err, "Failed to update progress counts (best-effort)")
 	}
 }
 
@@ -608,10 +608,11 @@ func (p *Processor) executeOneRequest(
 		}
 	} else if inferResp == nil {
 		// ok status without error but no response
-		logger.Error(nil, "inference returned no error but response is nil")
+		err := fmt.Errorf("inference returned no error but response is nil")
+		logger.Error(err, "Inference request failed")
 		result.Error = &outputError{
 			Code:    string(httpclient.ErrCategoryServer),
-			Message: "inference returned no error but response is nil",
+			Message: err.Error(),
 		}
 	} else {
 		// success — unmarshal the response body

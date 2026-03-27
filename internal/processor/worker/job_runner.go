@@ -230,7 +230,7 @@ func (p *Processor) handlePanicRecovery(
 	logger := logr.FromContextOrDiscard(ctx)
 
 	if params == nil || params.updater == nil || params.jobItem == nil {
-		logger.Error(nil, "Cannot recover job: params, updater, or jobItem is nil")
+		logger.Error(fmt.Errorf("params, updater, or jobItem is nil"), "Cannot recover job")
 		return
 	}
 
@@ -238,16 +238,15 @@ func (p *Processor) handlePanicRecovery(
 	// and we must ensure the DB update is not short-circuited.
 	// DB clients have their own connection/operation timeouts, so this will not block indefinitely.
 	bgCtx := logr.NewContext(context.Background(), logger)
-	bgLogger := logr.FromContextOrDiscard(bgCtx)
 	if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
 		if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
-			bgLogger.Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
+			logger.Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
 		} else {
 			return
 		}
 	}
 	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
-		bgLogger.Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
+		logger.Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
 			"jobID", params.jobItem.ID, "tenantID", params.jobItem.TenantID)
 	}
 }

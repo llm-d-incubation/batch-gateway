@@ -192,8 +192,9 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Error(nil, "server goroutine panicked", "panic", r)
-				serveDone <- fmt.Errorf("server panicked: %v", r)
+				err := fmt.Errorf("server panicked: %v", r)
+				logger.Error(err, "server goroutine panicked", "panic", r)
+				serveDone <- err
 			}
 		}()
 		var err error
@@ -244,8 +245,9 @@ func (s *Server) Start(ctx context.Context) error {
 				return err
 			}
 		case <-time.After(5 * time.Second):
-			logger.Error(nil, "timeout waiting for server goroutine to exit")
-			return fmt.Errorf("server goroutine did not exit after shutdown")
+			err := fmt.Errorf("server goroutine did not exit after shutdown")
+			logger.Error(err, "timeout waiting for server goroutine to exit")
+			return err
 		}
 
 		if err := s.clients.Close(); err != nil {
