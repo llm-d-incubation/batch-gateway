@@ -23,10 +23,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/go-logr/logr"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )

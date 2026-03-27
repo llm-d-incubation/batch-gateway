@@ -45,7 +45,7 @@ func main() {
 	defer klog.Flush()
 
 	if err := run(); err != nil {
-		klog.Fatalf("Processor failed to start: %v", err)
+		klog.Fatalf("Processor failed: %v", err)
 	}
 }
 

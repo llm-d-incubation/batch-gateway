@@ -27,8 +27,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/go-resty/resty/v2"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 

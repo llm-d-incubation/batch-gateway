@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	dbRedis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
@@ -32,7 +33,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/retryclient"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
-	"github.com/go-logr/logr"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"

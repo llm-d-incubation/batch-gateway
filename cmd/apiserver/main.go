@@ -20,7 +20,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -35,7 +34,7 @@ func main() {
 	defer klog.Flush()
 
 	if err := run(); err != nil {
-		klog.Fatalf("Failed to load config: %v", err)
+		klog.Fatalf("apiserver failed: %v", err)
 	}
 }
 
@@ -46,7 +45,7 @@ func run() error {
 	config := common.NewConfig()
 	if err := config.Load(); err != nil {
 		logger.Error(err, "Failed to load config")
-		os.Exit(1)
+		return err
 	}
 
 	// graceful shutdown
@@ -57,7 +56,7 @@ func run() error {
 	shutdownTracer, err := uotel.InitTracer(ctx)
 	if err != nil {
 		logger.Error(err, "Failed to initialize tracer")
-		os.Exit(1)
+		return err
 	}
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

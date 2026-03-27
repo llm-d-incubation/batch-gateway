@@ -21,9 +21,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"github.com/go-logr/logr"
 )
 
 type Poller struct {

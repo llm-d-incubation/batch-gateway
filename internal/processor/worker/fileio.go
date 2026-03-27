@@ -27,8 +27,8 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/go-logr/logr"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 const (

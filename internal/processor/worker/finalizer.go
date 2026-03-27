@@ -25,8 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
