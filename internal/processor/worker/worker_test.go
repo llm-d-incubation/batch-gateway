@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
@@ -21,7 +20,7 @@ func TestClientsetFields_Assigned(t *testing.T) {
 func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 0
-	_, err := NewProcessor(cfg, &clientset.Clientset{}, logr.Discard())
+	_, err := NewProcessor(cfg, &clientset.Clientset{}, testLogger())
 	if err == nil {
 		t.Fatalf("expected error for NumWorkers=0")
 	}
@@ -30,7 +29,7 @@ func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
 func TestNewProcessor_InvalidGlobalConcurrency(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.GlobalConcurrency = -1
-	_, err := NewProcessor(cfg, &clientset.Clientset{}, logr.Discard())
+	_, err := NewProcessor(cfg, &clientset.Clientset{}, testLogger())
 	if err == nil {
 		t.Fatalf("expected error for GlobalConcurrency=-1")
 	}

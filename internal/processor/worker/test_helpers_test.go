@@ -14,7 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"log"
+
 	"github.com/go-logr/logr"
+	"github.com/go-logr/stdr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
@@ -35,8 +38,12 @@ import (
 
 const mockFilesRootDir = "/tmp/batch-gateway-files"
 
+func testLogger() logr.Logger {
+	return stdr.New(log.Default())
+}
+
 func testLoggerCtx() context.Context {
-	return logr.NewContext(context.Background(), logr.Discard())
+	return logr.NewContext(context.Background(), testLogger())
 }
 
 func mustJSON(t *testing.T, v any) []byte {
@@ -255,7 +262,7 @@ func (s *spyBatchDB) StatusCalls(status openai.BatchStatus) int {
 
 func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *clientset.Clientset) *Processor {
 	t.Helper()
-	p, err := NewProcessor(cfg, clients, logr.Discard())
+	p, err := NewProcessor(cfg, clients, testLogger())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -310,7 +317,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(inferClient),
-	}, logr.Discard())
+	}, testLogger())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}

@@ -28,6 +28,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -38,8 +39,13 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/stdr"
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 )
+
+func testLogger() logr.Logger {
+	return stdr.New(log.Default())
+}
 
 // TestInferenceClient aggregates all HTTPClient test cases
 // Run with: go test -run TestInferenceClient
@@ -102,7 +108,7 @@ func testNewHTTPInferenceClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, err := NewInferenceClient(&tt.config, logr.Discard())
+			client, err := NewInferenceClient(&tt.config, testLogger())
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -158,7 +164,7 @@ func testGenerate(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -216,7 +222,7 @@ func testGenerate(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -250,7 +256,7 @@ func testGenerate(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -281,7 +287,7 @@ func testGenerate(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 10 * time.Second,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -424,7 +430,7 @@ func testErrorHandling(t *testing.T) {
 				}))
 				t.Cleanup(testServer.Close)
 
-				client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, logr.Discard())
+				client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, testLogger())
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -466,7 +472,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, logr.Discard())
+		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -503,7 +509,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, logr.Discard())
+		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -542,7 +548,7 @@ func testErrorHandling(t *testing.T) {
 		}))
 		t.Cleanup(testServer.Close)
 
-		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, logr.Discard())
+		client, err := NewInferenceClient(&HTTPClientConfig{BaseURL: testServer.URL}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -592,7 +598,7 @@ func testErrorHandling(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			Timeout: 100 * time.Millisecond,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -697,7 +703,7 @@ func testRetryLogic(t *testing.T) {
 					BaseURL:        testServer.URL,
 					MaxRetries:     3,
 					InitialBackoff: 10 * time.Millisecond,
-				}, logr.Discard())
+				}, testLogger())
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
@@ -753,7 +759,7 @@ func testRetryLogic(t *testing.T) {
 			BaseURL:        testServer.URL,
 			MaxRetries:     2,
 			InitialBackoff: 10 * time.Millisecond,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -788,7 +794,7 @@ func testRetryLogic(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:    testServer.URL,
 			MaxRetries: 0, // Retry disabled
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -903,7 +909,7 @@ func testTLSConfiguration(t *testing.T) {
 			// No TLS options specified
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -916,7 +922,7 @@ func testTLSConfiguration(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:               "https://localhost:8000",
 			TLSInsecureSkipVerify: false, // Default: use system root CAs
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -932,7 +938,7 @@ func testTLSConfiguration(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:               "https://localhost:8443",
 			TLSInsecureSkipVerify: true, // Skip cert verification for testing
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -952,7 +958,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSCACertFile: caCertFile,
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -976,7 +982,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -998,7 +1004,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -1020,7 +1026,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSMaxVersion: tls.VersionTLS13,
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
@@ -1043,7 +1049,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSCACertFile: filepath.Join(certDir, "nonexistent.pem"),
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err == nil {
 			t.Error("expected non-nil error for missing CA cert file")
 		}
@@ -1063,7 +1069,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSCACertFile: invalidPemFile,
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err == nil {
 			t.Error("expected non-nil error for invalid PEM")
 		}
@@ -1084,7 +1090,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientKeyFile:  clientKeyFile,
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err == nil {
 			t.Error("expected non-nil error for missing client cert")
 		}
@@ -1105,7 +1111,7 @@ func testTLSConfiguration(t *testing.T) {
 			// Missing TLSClientKeyFile
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err == nil {
 			t.Error("expected non-nil error for incomplete mTLS config")
 		}
@@ -1126,7 +1132,7 @@ func testTLSConfiguration(t *testing.T) {
 			// Missing TLSClientCertFile
 		}
 
-		tlsConfig, err := httpclient.BuildTLSConfig(&config, logr.Discard())
+		tlsConfig, err := httpclient.BuildTLSConfig(&config, testLogger())
 		if err == nil {
 			t.Error("expected non-nil error for incomplete mTLS config")
 		}
@@ -1147,7 +1153,7 @@ func testTLSConfiguration(t *testing.T) {
 			TLSClientCertFile: clientCertFile,
 			TLSClientKeyFile:  clientKeyFile,
 			TLSMinVersion:     tls.VersionTLS12,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1173,7 +1179,7 @@ func testAuthentication(t *testing.T) {
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
 			APIKey:  "sk-test-key-123",
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1201,7 +1207,7 @@ func testAuthentication(t *testing.T) {
 
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL: testServer.URL,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1226,7 +1232,7 @@ func testNetworkErrors(t *testing.T) {
 			Timeout:        1 * time.Second,
 			MaxRetries:     2,
 			InitialBackoff: 10 * time.Millisecond,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1260,7 +1266,7 @@ func testNetworkErrors(t *testing.T) {
 			Timeout:        1 * time.Second,
 			MaxRetries:     1,
 			InitialBackoff: 10 * time.Millisecond,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1306,7 +1312,7 @@ func testNetworkErrors(t *testing.T) {
 			BaseURL:        testServer.URL,
 			MaxRetries:     3,
 			InitialBackoff: 10 * time.Millisecond,
-		}, logr.Discard())
+		}, testLogger())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
