@@ -21,11 +21,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install Go tools (goimports, gosec)
+      - name: Install Go tools (goimports, gosec, ruleguard)
         run: make install-pre-commit-tools
-
-      - name: Install ruleguard (needed by gocritic/ruleguard rules)
-        run: go install github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.4.5
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7

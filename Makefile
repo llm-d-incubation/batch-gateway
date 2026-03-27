@@ -221,11 +221,12 @@ clean:
 	@rm -f coverage.out coverage.html
 	@echo "Clean complete"
 
-## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec, helm-unittest)
+## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec, ruleguard, helm-unittest)
 install-pre-commit-tools:
 	@echo "Installing pre-commit tools..."
 	$(GO) install golang.org/x/tools/cmd/goimports@v0.43.0
 	$(GO) install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
+	$(GO) install github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.4.5
 	@if command -v helm >/dev/null 2>&1; then \
 		helm plugin list | grep -q unittest || helm plugin install https://github.com/helm-unittest/helm-unittest.git; \
 	else \
@@ -233,11 +234,10 @@ install-pre-commit-tools:
 	fi
 	@echo "Pre-commit tools installed"
 
-## install-tools: Install all development tools (includes pre-commit tools + golangci-lint + ruleguard)
+## install-tools: Install all development tools (includes pre-commit tools + golangci-lint)
 install-tools: install-pre-commit-tools
 	@echo "Installing additional development tools..."
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
-	$(GO) install github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.4.5
 	@echo "All tools installed"
 
 ## test-helm: Run Helm chart template tests (requires helm-unittest plugin)
