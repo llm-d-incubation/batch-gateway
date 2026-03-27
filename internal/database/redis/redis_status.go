@@ -24,8 +24,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	goredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
@@ -33,7 +33,7 @@ func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL in
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
 		logger.Error(err, "StatusSet:")
@@ -72,7 +72,7 @@ func (c *ExchangeDBClientRedis) StatusGet(ctx context.Context, ID string) (data 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
 		logger.Error(err, "StatusGet:")
@@ -107,7 +107,7 @@ func (c *ExchangeDBClientRedis) StatusDelete(ctx context.Context, ID string) (nD
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
 		logger.Error(err, "StatusDelete:")

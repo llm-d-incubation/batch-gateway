@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
@@ -40,7 +41,7 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -587,7 +588,7 @@ func newRecoveryTestProcessorWithFailDB(t *testing.T, workDir string, failOn int
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -626,7 +627,7 @@ func TestRecoverJob_Cancelling_AllUpdatesFail_ReturnsError(t *testing.T) {
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -670,7 +671,7 @@ func TestRecoverJob_Validating_EnqueueFails_FallsBackToFailed(t *testing.T) {
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -718,7 +719,7 @@ func TestRecoverJob_InProgressReEnqueue_EnqueueFails_FallsBackToFailed(t *testin
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}

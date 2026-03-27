@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	klog "k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
@@ -36,8 +36,7 @@ import (
 const mockFilesRootDir = "/tmp/batch-gateway-files"
 
 func testLoggerCtx() context.Context {
-	l := klog.Background()
-	return klog.NewContext(context.Background(), l)
+	return logr.NewContext(context.Background(), logr.Discard())
 }
 
 func mustJSON(t *testing.T, v any) []byte {
@@ -256,7 +255,7 @@ func (s *spyBatchDB) StatusCalls(status openai.BatchStatus) int {
 
 func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *clientset.Clientset) *Processor {
 	t.Helper()
-	p, err := NewProcessor(cfg, clients)
+	p, err := NewProcessor(cfg, clients, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -311,7 +310,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(inferClient),
-	})
+	}, logr.Discard())
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}

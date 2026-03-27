@@ -28,7 +28,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
-	"k8s.io/klog/v2"
+
+	"github.com/go-logr/logr"
 )
 
 const defaultServiceName = "batch-gateway"
@@ -68,7 +69,7 @@ func DetachedContext(ctx context.Context, name string) (context.Context, trace.S
 	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
 		links = append(links, trace.Link{SpanContext: sc})
 	}
-	bgCtx := klog.NewContext(context.Background(), klog.FromContext(ctx))
+	bgCtx := logr.NewContext(context.Background(), logr.FromContextOrDiscard(ctx))
 	return StartSpan(bgCtx, name, trace.WithLinks(links...))
 }
 
@@ -79,7 +80,7 @@ func DetachedContext(ctx context.Context, name string) (context.Context, trace.S
 func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err error) {
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
-		klog.FromContext(ctx).Info("OTEL_EXPORTER_OTLP_ENDPOINT not set, tracing disabled")
+		logr.FromContextOrDiscard(ctx).Info("OTEL_EXPORTER_OTLP_ENDPOINT not set, tracing disabled")
 		return func(context.Context) error { return nil }, nil
 	}
 
@@ -109,7 +110,7 @@ func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err 
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
-	klog.FromContext(ctx).Info("OpenTelemetry tracing initialized", "endpoint", endpoint, "service", serviceName)
+	logr.FromContextOrDiscard(ctx).Info("OpenTelemetry tracing initialized", "endpoint", endpoint, "service", serviceName)
 
 	return tp.Shutdown, nil
 }

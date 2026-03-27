@@ -21,8 +21,8 @@ import (
 	_ "embed"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"k8s.io/klog/v2"
 )
 
 //go:embed file_schema.sql
@@ -60,7 +60,7 @@ func NewPostgresFileDBClient(ctx context.Context, config *PostgreSQLConfig) (*Po
 		return nil, err
 	}
 
-	klog.FromContext(ctx).Info("NewPostgresFileDBClient: client created successfully")
+	logr.FromContextOrDiscard(ctx).Info("NewPostgresFileDBClient: client created successfully")
 	return &PostgresFileDBClient{pgCore}, nil
 }
 

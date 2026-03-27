@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJobPriority) (err error) {
@@ -38,7 +38,7 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		err = fmt.Errorf("empty item")
 		logger.Error(err, "PQEnqueue:")
@@ -94,7 +94,7 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		err = fmt.Errorf("empty item")
 		logger.Error(err, "PQDelete:")
@@ -135,7 +135,7 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// Get items from the queue.
 	if timeout > 0 {

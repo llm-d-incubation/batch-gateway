@@ -27,11 +27,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	gredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -64,7 +64,7 @@ func NewRedisClient(ctx context.Context, cnf *RedisClientConfig) (*gredis.Client
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if cnf == nil {
 		err = fmt.Errorf("redis config was not provided")
 		logger.Error(err, "NewRedisClient")
@@ -167,7 +167,7 @@ func CheckClient(ctx context.Context, rds *gredis.Client, cmdTimeout time.Durati
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	cctx, ccancel := context.WithTimeout(ctx, cmdTimeout)
 	err = rds.Set(cctx, getPingKeyName(keyPrefix, serviceName), "ping", 10*time.Second).Err()
 	ccancel()

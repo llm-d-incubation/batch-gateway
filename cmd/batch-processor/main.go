@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
@@ -44,17 +45,15 @@ func main() {
 	defer klog.Flush()
 
 	if err := run(); err != nil {
-		klog.ErrorS(err, "Processor failed to start")
-		klog.Flush() // Must flush manually before os.Exit
-		os.Exit(1)
+		klog.Fatalf("Processor failed to start: %v", err)
 	}
 }
 
 func run() error {
 	// load configuration & logging setup
 	hostname, _ := os.Hostname()
-	logger := klog.Background().WithValues("hostname", hostname, "service", "batch-processor")
-	ctx := klog.NewContext(context.Background(), logger)
+	logger := klog.NewKlogr().WithValues("hostname", hostname, "service", "batch-processor")
+	ctx := logr.NewContext(context.Background(), logger)
 
 	cfg := config.NewConfig()
 	fs := flag.NewFlagSet("batch-gateway-processor", flag.ExitOnError)
@@ -119,7 +118,7 @@ func run() error {
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc, err := worker.NewProcessor(cfg, procClients)
+	proc, err := worker.NewProcessor(cfg, procClients, logger)
 	if err != nil {
 		logger.Error(err, "Failed to create processor")
 		return err
@@ -164,7 +163,7 @@ func run() error {
 
 func startObservabilityServer(
 	ctx context.Context,
-	logger klog.Logger,
+	logger logr.Logger,
 	cfg *config.ProcessorConfig,
 	ready *atomic.Bool,
 	cancel context.CancelFunc,
@@ -276,7 +275,7 @@ func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, w
 
 // buildProcessorClients constructs all processor clients using the same backend as the apiserver
 func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*clientset.Clientset, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	cfg.RedisCfg.ServiceName = "batch-processor"
 	cfg.RedisCfg.EnableTracing = cfg.OTel.RedisTracing

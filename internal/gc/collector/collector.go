@@ -24,7 +24,7 @@ import (
 	"os"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	fs "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
@@ -70,7 +70,7 @@ const pageSize = 100
 
 // collectBatchJobs fetches and processes expired batch jobs.
 func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	query := &db.BatchQuery{BaseQuery: db.BaseQuery{Expired: true}}
 
 	cursor := 0
@@ -107,7 +107,7 @@ func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result)
 
 // collectFiles fetches and processes expired files.
 func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// includeStatic=true to retrieve Spec (contains the filename needed for physical file deletion).
 	query := &db.FileQuery{
@@ -150,7 +150,7 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 // It blocks until the context is cancelled, executing a GC cycle immediately on start
 // and then on every tick of the interval.
 func (c *GarbageCollector) RunLoop(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.Info("Starting garbage collection loop", "interval", c.interval)
 
 	// Run immediately on startup before waiting for the first tick.
@@ -172,7 +172,7 @@ func (c *GarbageCollector) RunLoop(ctx context.Context) error {
 
 // run executes a single GC cycle and logs the result.
 func (c *GarbageCollector) run(ctx context.Context) *Result {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	result := &Result{}
 
@@ -199,7 +199,7 @@ func (c *GarbageCollector) run(ctx context.Context) *Result {
 
 // processBatch deletes an expired batch job. Returns true if the job was deleted.
 func (c *GarbageCollector) processBatch(ctx context.Context, job *db.BatchItem) (bool, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	if c.dryRun {
 		logger.V(logging.DEBUG).Info("Expired job found", "jobID", job.ID, "expiry", job.Expiry, "action", "dry-run")
@@ -221,7 +221,7 @@ func (c *GarbageCollector) processBatch(ctx context.Context, job *db.BatchItem) 
 
 // processFile deletes an expired file's physical storage and DB metadata. Returns true if the file was deleted.
 func (c *GarbageCollector) processFile(ctx context.Context, file *db.FileItem) (bool, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	if c.dryRun {
 		logger.V(logging.DEBUG).Info("Expired file found", "fileID", file.ID, "expiry", file.Expiry, "action", "dry-run")
