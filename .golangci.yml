@@ -26,6 +26,8 @@ linters:
     depguard:
       rules:
         no-stdlib-log:
+          files:
+            - "!$test"
           deny:
             - pkg: "log$"
               desc: "Use logr (github.com/go-logr/logr) instead of stdlib log"

@@ -25,7 +25,7 @@ jobs:
         run: make install-pre-commit-tools
 
       - name: Install ruleguard (needed by gocritic/ruleguard rules)
-        run: go install github.com/quasilyte/go-ruleguard/cmd/ruleguard@latest
+        run: go install github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.4.5
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v7
