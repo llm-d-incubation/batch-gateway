@@ -193,7 +193,9 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 		if err != nil {
 			jlogger.Error(err, "Failed to convert job object in DB to job info object")
 			p.releaseForNextPoll()
-			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+			if failErr := p.handleFailed(jobCtx, p.updater, jobItem, nil); failErr != nil {
+				jlogger.Error(failErr, "Failed to mark malformed job as failed")
+			}
 			continue
 		}
 

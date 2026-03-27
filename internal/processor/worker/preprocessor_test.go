@@ -664,6 +664,67 @@ func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
 	}
 }
 
+func TestRunPollingLoop_MalformedJobItem_MarksFailed(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pq := &spyPQ{inner: mockdb.NewMockBatchPriorityQueueClient()}
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-malformed-1"
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: "tenantA",
+			Tags: db.Tags{
+				"tenant": "tenantA",
+			},
+		},
+		BaseContents: db.BaseContents{
+			// Invalid JSON in Spec forces DBItemToBatch -> FromDBItemToJobInfoObject to fail,
+			// while keeping Status valid so handleFailed can still write a terminal status.
+			Spec: []byte(`{"input_file_id":`),
+			Status: mustJSON(t, openai.BatchStatusInfo{
+				Status: openai.BatchStatusValidating,
+			}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore job item: %v", err)
+	}
+	if err := pq.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+	initialEnqueueCalls := pq.EnqueueCalls()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer cancel()
+	if err := p.runPollingLoop(runCtx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	if dbClient.StatusCalls(openai.BatchStatusFailed) < 1 {
+		t.Fatalf("expected malformed dequeued job to be marked failed")
+	}
+	if pq.EnqueueCalls() != initialEnqueueCalls {
+		t.Fatalf("expected malformed dequeued job not to be re-enqueued")
+	}
+}
+
 func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 	ctx := testLoggerCtx()
 
