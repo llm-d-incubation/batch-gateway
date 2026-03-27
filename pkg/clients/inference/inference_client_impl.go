@@ -92,7 +92,7 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	var rawData interface{}
 	if len(resp) > 0 {
 		if jsonErr := json.Unmarshal(resp, &rawData); jsonErr != nil {
-			logger.V(0).Info("Failed to unmarshal response as JSON", "request_id", req.RequestID, "error", jsonErr)
+			logger.Info("Failed to unmarshal response as JSON", "request_id", req.RequestID, "error", jsonErr)
 			rawData = nil
 		}
 	}

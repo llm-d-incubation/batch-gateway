@@ -61,7 +61,7 @@ func (p *Processor) recoverStaleJobs(ctx context.Context) {
 
 	dirs, err := p.discoverStaleJobDirs()
 	if err != nil {
-		logger.V(0).Info("Startup recovery: failed to scan workdir", "err", err)
+		logger.Error(err, "Startup recovery: failed to scan workdir")
 		return
 	}
 
@@ -107,7 +107,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 	// Job not in DB — can't update status, but we can clean up the stale directory.
 	// tenantID is unknown (directory uses SHA256 hash), so we glob for the jobID.
 	if dbItem == nil {
-		logger.V(0).Info("Startup recovery: job not found in DB, cleaning up stale directory")
+		logger.Info("Startup recovery: job not found in DB, cleaning up stale directory")
 		metrics.RecordStartupRecovery(string(recoveryUnknownStatus), recoveryActionCleanedUp)
 		p.cleanupStaleJobDir(ctx, jobID)
 		return nil
@@ -143,7 +143,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 			p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
 			return nil
 		}
-		logger.V(0).Info("Startup recovery: unexpected status, marking as failed", "status", statusStr)
+		logger.Info("Startup recovery: unexpected status, marking as failed", "status", statusStr)
 		return p.recoverWithFailed(ctx, dbItem, nil, nil)
 	}
 }
@@ -200,7 +200,7 @@ func (p *Processor) recoverInProgress(ctx context.Context, dbItem *db.BatchItem,
 
 	hasOutput, err := p.outputFileHasContent(dbItem.ID, dbItem.TenantID)
 	if err != nil {
-		logger.V(0).Info("Startup recovery: failed to check output file, treating as empty", "err", err)
+		logger.Error(err, "Startup recovery: failed to check output file, treating as empty")
 	}
 
 	if hasOutput {
@@ -321,7 +321,7 @@ func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem,
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
 	metrics.RecordStartupRecovery(string(p.getJobStatus(dbItem)), recoveryActionFailed)
-	logger.V(0).Info("Startup recovery: marked as failed (recovery action failed)", "cause", cause)
+	logger.Info("Startup recovery: marked as failed (recovery action failed)", "cause", cause)
 	return nil
 }
 

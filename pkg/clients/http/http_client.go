@@ -265,7 +265,7 @@ func BuildTLSConfig(config *Config, logger logr.Logger) (*tls.Config, error) {
 	// 1. InsecureSkipVerify (testing only)
 	if config.TLSInsecureSkipVerify {
 		tlsConfig.InsecureSkipVerify = true
-		logger.V(0).Info("WARNING: TLS certificate verification is disabled - this is insecure and should only be used for testing")
+		logger.Info("WARNING: TLS certificate verification is disabled - this is insecure and should only be used for testing")
 	}
 
 	// 2. Custom CA certificate (for private CAs)

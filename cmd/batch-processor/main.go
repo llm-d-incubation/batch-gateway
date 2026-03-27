@@ -102,7 +102,6 @@ func run() error {
 	// read only channel for observability server's fatal error
 	obsFatalCh := startObservabilityServer(
 		ctx,
-		logger,
 		cfg,
 		&ready,
 		cancel,
@@ -163,12 +162,12 @@ func run() error {
 
 func startObservabilityServer(
 	ctx context.Context,
-	logger logr.Logger,
 	cfg *config.ProcessorConfig,
 	ready *atomic.Bool,
 	cancel context.CancelFunc,
 	terminateOnObservabilityFailure bool,
 ) <-chan error {
+	logger := logr.FromContextOrDiscard(ctx)
 	errCh := make(chan error, 1)
 
 	go func() {

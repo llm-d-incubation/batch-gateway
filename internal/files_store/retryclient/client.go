@@ -63,7 +63,7 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 	attempts, err := retry.Do(ctx, &c.cfg, func(attempt int) error {
 		if attempt > 1 {
 			recordRetry("store", c.component)
-			logr.FromContextOrDiscard(ctx).V(0).Info("Retrying file store",
+			logr.FromContextOrDiscard(ctx).Info("Retrying file store",
 				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
 			// Seek failure means the reader cannot be rewound, so subsequent
 			// Store attempts would send partial/empty data. Abort immediately.
@@ -97,7 +97,7 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 				_ = rc.Close()
 			}
 			recordRetry("retrieve", c.component)
-			logr.FromContextOrDiscard(ctx).V(0).Info("Retrying file retrieve",
+			logr.FromContextOrDiscard(ctx).Info("Retrying file retrieve",
 				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
 		}
 
@@ -119,7 +119,7 @@ func (c *Client) Delete(ctx context.Context, fileName, folderName string) error 
 	attempts, err := retry.Do(ctx, &c.cfg, func(attempt int) error {
 		if attempt > 1 {
 			recordRetry("delete", c.component)
-			logr.FromContextOrDiscard(ctx).V(0).Info("Retrying file delete",
+			logr.FromContextOrDiscard(ctx).Info("Retrying file delete",
 				"file", fileName, "attempt", attempt, "maxRetries", c.cfg.MaxRetries)
 		}
 		return c.inner.Delete(ctx, fileName, folderName)
