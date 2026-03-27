@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -376,17 +375,15 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 	defer evCh.CloseFn()
 
 	var cancelRequested atomic.Bool
-	var cancellingOnce sync.Once
-	inferCtx, inferCancelFn := context.WithCancel(ctx)
+	abortCtx, abortInferFn := context.WithCancel(ctx)
 
 	// Start watching cancel in background
 	params := &jobExecutionParams{
 		eventWatcher:    evCh,
 		updater:         updater,
 		jobItem:         jobItem,
-		inferCancelFn:   inferCancelFn,
+		abortInferFn:    abortInferFn,
 		cancelRequested: &cancelRequested,
-		cancellingOnce:  &cancellingOnce,
 	}
 	go p.watchCancel(ctx, params)
 
@@ -404,12 +401,12 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 		t.Fatalf("cancelRequested was not set")
 	}
 
-	// Verify inference context was cancelled
+	// Verify abort context was cancelled
 	select {
-	case <-inferCtx.Done():
-		// success — inferCancelFn was called
+	case <-abortCtx.Done():
+		// success — abortInferFn was called
 	case <-time.After(2 * time.Second):
-		t.Fatal("inferCtx was not cancelled within 2s after cancel event")
+		t.Fatal("abortCtx was not cancelled within 2s after cancel event")
 	}
 
 	// Verify that watchCancel does NOT update status to cancelling

@@ -21,8 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -61,13 +59,6 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	defer span.End()
 
 	logger := klog.FromContext(ctx)
-
-	if params.cancelRequested == nil {
-		params.cancelRequested = &atomic.Bool{}
-	}
-	if params.cancellingOnce == nil {
-		params.cancellingOnce = &sync.Once{}
-	}
 
 	defer p.wg.Done()
 	defer p.release()
@@ -130,12 +121,12 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	}
 	defer eventWatcher.CloseFn()
 
-	// inferCtx is cancelled when the user requests batch cancellation, propagating
+	// abortCtx is cancelled when the user requests batch cancellation, propagating
 	// the signal to all in-flight inference HTTP requests so they abort promptly.
 	// It is derived from sloCtx so the SLO deadline is also respected.
-	inferCtx, inferCancelFn := context.WithCancel(sloCtx)
-	params.inferCancelFn = inferCancelFn
-	defer inferCancelFn()
+	abortCtx, abortInferFn := context.WithCancel(sloCtx)
+	params.abortInferFn = abortInferFn
+	defer abortInferFn()
 
 	// watch for cancel event
 	params.eventWatcher = eventWatcher
@@ -163,7 +154,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// execution: execute inference requests
 	var execErr error
-	requestCounts, execErr = p.executeJob(ctx, sloCtx, inferCtx, params)
+	requestCounts, execErr = p.executeJob(ctx, sloCtx, abortCtx, params)
 	params.requestCounts = requestCounts
 	if execErr != nil {
 		switch {
@@ -195,11 +186,18 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// finalization: upload output, update status to completed
 	if err := p.finalizeJob(ctx, params.updater, params.jobItem, params.jobInfo, requestCounts, params.cancelRequested); err != nil {
+		if errors.Is(err, ErrCancelled) {
+			// Cancel arrived during finalization — DB already updated to cancelled.
+			// Treat as successful cancellation (same as handleCancelled).
+			p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
+			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+			metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
+			logger.V(logging.INFO).Info("Job cancelled during finalization")
+			return
+		}
 		logger.V(logging.ERROR).Error(err, "Failed to finalize job")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "finalize failed")
-		// Upload retries already exhausted inside finalizeJob — don't re-attempt upload.
-		// Pass requestCounts so they are recorded in the failed status.
 		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, requestCounts); failErr != nil {
 			logger.V(logging.ERROR).Error(failErr, "Failed to handle failed event")
 		}
@@ -258,11 +256,12 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 
 	switch {
 	case errors.Is(err, ErrCancelled):
-		// Ingestion cancel: no output files exist yet
-		cancelParams := *params
-		cancelParams.jobInfo = nil
-		cancelParams.requestCounts = nil
-		if cancelErr := p.handleCancelled(ctx, &cancelParams); cancelErr != nil {
+		// Ingestion cancel: no output files exist yet, so clear these fields
+		// to tell handleCancelled to skip partial-output upload.
+		// Safe to mutate params — callers return immediately after handleJobError.
+		params.jobInfo = nil
+		params.requestCounts = nil
+		if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
 			logger.V(logging.ERROR).Error(cancelErr, "Failed to handle cancelled event")
 		}
 
@@ -322,11 +321,12 @@ func (p *Processor) uploadPartialResults(
 	return outputFileID, errorFileID
 }
 
-// handleExpired finalizes a job whose SLO deadline fired during execution.
-// Partial results are preserved: completed requests remain in the output file,
-// and unexecuted requests were already written to the error file as "batch_expired"
-// by drainUnprocessedRequests. This function uploads both files and transitions
-// the job directly to expired status (in_progress → expired).
+// handleExpired finalizes a job whose SLO deadline fired.
+// Two cases reach here:
+// (1) deadline expired before dispatch began — no output/error files exist, uploadPartialResults is a no-op;
+// 2) deadline expired during execution — completed requests remain in the output file and undispatched entries were drained
+// as "batch_expired" by drainUnprocessedRequests.
+// In both cases, this function uploads whatever files exist and transitions the job to expired status.
 func (p *Processor) handleExpired(
 	ctx context.Context,
 	updater *StatusUpdater,
@@ -335,7 +335,7 @@ func (p *Processor) handleExpired(
 	requestCounts *openai.BatchRequestCounts,
 ) error {
 	logger := klog.FromContext(ctx)
-	logger.V(logging.INFO).Info("Job SLO expired mid-execution, uploading partial results")
+	logger.V(logging.INFO).Info("Job SLO expired, finalizing as expired")
 
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbJob)
 

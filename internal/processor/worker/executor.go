@@ -122,19 +122,15 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 //   - System error:   (counts, firstErr)      — drain as batch_failed
 //   - Pod shutdown:   (nil, ctx.Err())        — no flush, caller re-enqueues
 
-// inferCtx is cancelled when the user requests batch cancellation. Cancelling it aborts all
+// abortCtx is cancelled when the user requests batch cancellation. Cancelling it aborts all
 // in-flight inference HTTP requests immediately, freeing downstream resources (GPU slots, EPP
-// capacity). inferCtx is derived from sloCtx in the caller so the SLO deadline is also respected.
+// capacity). abortCtx is derived from sloCtx in the caller so the SLO deadline is also respected.
 //
 // Dispatch abort relies solely on context cancellation (checkAbortCondition checks ctx.Err()).
 // The cancelRequested flag is NOT polled to stop dispatch; it is only consulted in the
 // error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown)
 // and to drain undispatched entries with the correct error code.
-func (p *Processor) executeJob(ctx, sloCtx, inferCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
-	if params.cancelRequested == nil {
-		params.cancelRequested = &atomic.Bool{}
-	}
-
+func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
@@ -199,9 +195,9 @@ func (p *Processor) executeJob(ctx, sloCtx, inferCtx context.Context, params *jo
 
 	// one goroutine per model; concurrency within each model is bounded
 	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit).
-	// execCtx is derived from inferCtx (which itself is derived from sloCtx) so both the SLO
+	// execCtx is derived from abortCtx (which itself is derived from sloCtx) so both the SLO
 	// deadline and user-initiated cancellation propagate to all dispatch loops and inference calls.
-	execCtx, execCancel := context.WithCancel(inferCtx)
+	execCtx, execCancel := context.WithCancel(abortCtx)
 	defer execCancel()
 
 	progress := &executionProgress{
@@ -313,9 +309,10 @@ func (p *Processor) executeJob(ctx, sloCtx, inferCtx context.Context, params *jo
 // This prevents starving other models — blocking on global only wastes a local slot.
 //
 // Error strategy in this function: when a goroutine encounters a fatal error, modelErr is captured
-// via errOnce but the context is NOT cancelled within this function. Already-dispatched
-// goroutines run to completion. Context cancellation is propagated at the executeJob level
-// (execCancel), which stops dispatch across all models.
+// via errOnce but the context is NOT cancelled within this function. Context cancellation is
+// propagated at the executeJob level (execCancel), which stops dispatch across all models.
+// Already-dispatched goroutines may finish with errors or cancellation rather than successful
+// completion, depending on when execCancel fires.
 func (p *Processor) processModel(
 	ctx context.Context,
 	sloCtx context.Context,
@@ -384,7 +381,7 @@ dispatch:
 			// If cancel was requested while this request was in-flight,
 			// overwrite the result as batch_cancelled and write to the error file
 			// so that output lines + error lines == total requests.
-			// Note: inferCtx is already cancelled at this point, so the HTTP
+			// Note: abortCtx is already cancelled at this point, so the HTTP
 			// request was aborted and this goroutine returns almost immediately.
 			if cancelRequested.Load() {
 				result.Response = nil

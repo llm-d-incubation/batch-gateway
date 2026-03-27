@@ -125,7 +125,7 @@ func (p *Processor) finalizeJob(
 			return fmt.Errorf("failed to update job status to cancelled: %w", err)
 		}
 		setRequestCountAttrs(ctx, requestCounts)
-		return nil
+		return ErrCancelled
 	}
 
 	// finalizing → completed

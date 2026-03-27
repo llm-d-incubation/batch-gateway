@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -283,8 +284,8 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 	cancelRequested.Store(true)
 
 	err := p.finalizeJob(ctx, updater, staleJob, jobInfo, counts, &cancelRequested)
-	if err != nil {
-		t.Fatalf("finalizeJob error: %v", err)
+	if !errors.Is(err, ErrCancelled) {
+		t.Fatalf("expected ErrCancelled, got: %v", err)
 	}
 
 	// Verify that the final status written to the DB is cancelled, not completed.

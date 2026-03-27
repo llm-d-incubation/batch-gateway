@@ -192,8 +192,8 @@ func (p *Processor) recoverCancelling(ctx context.Context, dbItem *db.BatchItem,
 }
 
 // recoverInProgress handles a job that crashed during inference execution.
-// If output data exists on disk (bufio auto-flushed >= 1MB), the inference cost is
-// significant — upload partial results and mark as failed.
+// If the output file exists and has non-zero size, inference made meaningful progress
+// — upload partial results and mark as failed.
 // If output is empty or absent, inference barely started — re-enqueue for retry.
 func (p *Processor) recoverInProgress(ctx context.Context, dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) error {
 	logger := klog.FromContext(ctx)

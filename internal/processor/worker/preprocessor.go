@@ -100,7 +100,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	inputFileReader := bufio.NewReaderSize(reader, 1024*1024)
 
 	for {
-		// Ingestion uses the parent ctx (not inferCtx), so user-cancel signals do not
+		// Ingestion uses the parent ctx (not abortCtx), so user-cancel signals do not
 		// propagate through the context tree. Check cancelRequested explicitly.
 		if ctx.Err() != nil {
 			return ctx.Err()

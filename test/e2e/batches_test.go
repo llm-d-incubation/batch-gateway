@@ -95,7 +95,7 @@ func doTestBatchCancel(t *testing.T) {
 		finalBatch.ErrorFileID)
 
 	// Verify that in-flight inference requests were actually aborted by the inference client
-	// (context cancellation propagated through inferCtx → execCtx → HTTP request).
+	// (context cancellation propagated through abortCtx → execCtx → HTTP request).
 	if testKubectlAvailable {
 		out, err := exec.Command("kubectl", "logs",
 			"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),

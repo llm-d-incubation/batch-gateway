@@ -20,7 +20,7 @@ The current design focuses on:
     backend layout)
 -   Maintaining OpenAI-compatible request/response schema parity
 
-This document describes the proposed 3-phase processing architecture and scheduling model.
+This document describes the ingestion → execution → finalization processing architecture and scheduling model.
 
 -------------------------------------------------------------------
 
@@ -214,7 +214,7 @@ Terminal states:
 -   expired
 -   cancelled
 
-Transient states such as `cancelling` and `finalizing` indicate that the job has already been claimed and is being handled by an active worker. They are not eligible for reassignment. If encountered in the priority queue, workers skip them; queue clean up is handled by the owning worker or system policy.
+Transient states such as `cancelling` and `finalizing` indicate that the job has already been claimed and is being handled by an active worker. They are not eligible for reassignment. If a worker dequeues a job and finds it in `cancelling` state (e.g. the API server wrote `cancelling` between dequeue and the runnable check), the worker transitions it directly to `cancelled` so it cannot stick indefinitely. Other non-runnable transient states (e.g. `finalizing`) are skipped; queue cleanup is handled by the owning worker or system policy.
 
 Terminal states are removed from the priority queue.
 
@@ -228,9 +228,9 @@ The processor uses a layered context tree to propagate cancellation signals. Eac
 ctx (Run parameter — signal-aware, cancelled by SIGTERM/SIGINT)
   └── jobCtx (per-job — klog.NewContext with job/tenant logger)
         ├── sloCtx (context.WithDeadline — SLO expiry)
-        │     └── inferCtx (context.WithCancel — user cancel event)
+        │     └── abortCtx (context.WithCancel — user cancel event)
         │           └── execCtx (context.WithCancel — first model error cancels sibling models)
-        └── watchCancel goroutine (listens for Redis cancel events, sets cancelRequested flag)
+        └── watchCancel goroutine (listens for Redis cancel events, sets cancelRequested flag and calls abortInferFn)
 ```
 
 | Context | Created in | Cancelled by | Effect |
@@ -238,12 +238,12 @@ ctx (Run parameter — signal-aware, cancelled by SIGTERM/SIGINT)
 | `ctx` | `main.go` via `interrupt.ContextWithSignal` | SIGTERM / SIGINT | Entire processor shuts down; polling loop exits, in-flight jobs see `ctx.Done()` and re-enqueue |
 | `jobCtx` | `runPollingLoop` via `klog.NewContext(ctx, jlogger)` | Parent `ctx` cancellation | Single job's lifecycle; passed to `runJob` |
 | `sloCtx` | `runJob` via `context.WithDeadline(ctx, slo)` | SLO deadline fires | Stops new request dispatch; in-flight requests finish; undispatched entries drained as `batch_expired` |
-| `inferCtx` | `runJob` via `context.WithCancel(sloCtx)` | `watchCancel` calls `inferCancelFn` on user cancel event | Aborts in-flight HTTP inference requests immediately |
-| `execCtx` | `executeJob` via `context.WithCancel(inferCtx)` | First model goroutine error calls `execCancel()` | Stops dispatch in all model goroutines; already-dispatched requests run to completion |
+| `abortCtx` | `runJob` via `context.WithCancel(sloCtx)` | `watchCancel` calls `abortInferFn` on user cancel event | Aborts in-flight HTTP inference requests immediately |
+| `execCtx` | `executeJob` via `context.WithCancel(abortCtx)` | First model goroutine error calls `execCancel()` | Stops dispatch in all model goroutines; already-dispatched requests run to completion |
 
 **Design notes:**
--   `inferCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
--   `execCtx` is derived from `inferCtx` so both user cancel and SLO expiry stop dispatch.
+-   `abortCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
+-   `execCtx` is derived from `abortCtx` so both user cancel and SLO expiry stop dispatch.
 -   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown) and to drain undispatched entries with the correct error code.
 -   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
 

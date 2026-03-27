@@ -312,7 +312,7 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	errWriter := bufio.NewWriter(&errBuf)
 	writers := &outputWriters{output: writer, errors: errWriter}
 
-	// Cancel context to simulate the real flow: watchCancel cancels inferCtx (which
+	// Cancel context to simulate the real flow: watchCancel cancels abortCtx (which
 	// propagates to execCtx passed to processModel) AND sets cancelRequested.
 	ctx, cancel := context.WithCancel(testLoggerCtx())
 	cancel()
@@ -638,7 +638,7 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	}
 }
 
-// TestExecuteJob_UserCancelFlag verifies that when inferCtx is cancelled and cancelRequested
+// TestExecuteJob_UserCancelFlag verifies that when abortCtx is cancelled and cancelRequested
 // is set (matching the real watchCancel flow), executeJob returns ErrCancelled. Context
 // cancellation stops dispatch; cancelRequested is used in the error-handling path to
 // return the correct sentinel error.
@@ -655,10 +655,10 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cancelReq.Store(true)
 
 	ctx := testLoggerCtx()
-	inferCtx, inferCancel := context.WithCancel(ctx)
-	inferCancel()
+	abortCtx, abortFn := context.WithCancel(ctx)
+	abortFn()
 
-	_, err := env.p.executeJob(ctx, ctx, inferCtx, &jobExecutionParams{
+	_, err := env.p.executeJob(ctx, ctx, abortCtx, &jobExecutionParams{
 		updater:         env.updater,
 		jobInfo:         jobInfo,
 		cancelRequested: cancelReq,
@@ -703,10 +703,10 @@ func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	}
 }
 
-// TestExecuteJob_InferCtxCancel_AbortsInflightRequests verifies that cancelling inferCtx
+// TestExecuteJob_AbortCtxCancel_AbortsInflightRequests verifies that cancelling abortCtx
 // aborts in-flight inference requests. The mock blocks until it sees context cancellation,
 // simulating a long-running inference call that should be interrupted.
-func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
+func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -731,7 +731,7 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 
 	cancelReq := &atomic.Bool{}
 	ctx := testLoggerCtx()
-	inferCtx, inferCancelFn := context.WithCancel(ctx)
+	abortCtx, abortInferFn := context.WithCancel(ctx)
 
 	type result struct {
 		counts *openai.BatchRequestCounts
@@ -739,7 +739,7 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		counts, err := env.p.executeJob(ctx, ctx, inferCtx, &jobExecutionParams{
+		counts, err := env.p.executeJob(ctx, ctx, abortCtx, &jobExecutionParams{
 			updater:         env.updater,
 			jobInfo:         jobInfo,
 			cancelRequested: cancelReq,
@@ -749,7 +749,7 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 
 	<-inferStarted
 	cancelReq.Store(true)
-	inferCancelFn()
+	abortInferFn()
 
 	select {
 	case res := <-resCh:
@@ -769,7 +769,7 @@ func TestExecuteJob_InferCtxCancel_AbortsInflightRequests(t *testing.T) {
 			t.Errorf("Failed = %d, want 1 (aborted request counted as failed)", res.counts.Failed)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("executeJob did not return within 5s after inferCtx cancellation")
+		t.Fatal("executeJob did not return within 5s after abortCtx cancellation")
 	}
 }
 
@@ -833,7 +833,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 //
 // This exercises the full context-cancellation chain for SLO expiry:
 //
-//	sloCtx (WithDeadline) → inferCtx (WithCancel) → execCtx (WithCancel)
+//	sloCtx (WithDeadline) → abortCtx (WithCancel) → execCtx (WithCancel)
 //	         DeadlineExceeded       Canceled                Canceled
 //
 // checkAbortCondition sees Canceled on execCtx to stop dispatch;

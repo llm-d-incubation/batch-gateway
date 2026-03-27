@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// The entry point for the worker process.
+// The entry point for the batch processor.
 
 package main
 

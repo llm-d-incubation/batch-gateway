@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
@@ -166,6 +168,84 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 	}
 	if updated.Status != openai.BatchStatusFailed {
 		t.Fatalf("expected failed status, got %s", updated.Status)
+	}
+}
+
+// TestRunJob_WithCancelRequested_ReachesPreProcess verifies that runJob with a properly
+// initialized cancelRequested field proceeds past the event watcher setup and into
+// preProcessJob without panicking.
+func TestRunJob_WithCancelRequested_ReachesPreProcess(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.NumWorkers = 1
+	cfg.WorkDir = t.TempDir()
+
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+	eventClient := mockdb.NewMockBatchEventChannelClient()
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  newMockFileDBClient(),
+		Status:  statusClient,
+		Event:   eventClient,
+		File:    mockfiles.NewMockBatchFilesClient(),
+	})
+
+	ctx := testLoggerCtx()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: "job-contract", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{
+			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	// InputFileID is set so preProcessJob proceeds past the empty-check and reaches
+	// the cancelRequested.Load() call. Without cancelRequested initialized, this panics.
+	jobInfo := &batch_types.JobInfo{
+		JobID: "job-contract",
+		BatchJob: &openai.Batch{
+			ID: "job-contract",
+			BatchSpec: openai.BatchSpec{
+				InputFileID: "file-123",
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{Status: openai.BatchStatusInProgress},
+		},
+		TenantID: "tenantA",
+	}
+
+	if !p.acquire(context.Background()) {
+		t.Fatalf("expected token acquire before runJob")
+	}
+	p.wg.Add(1)
+
+	var cancelRequested atomic.Bool
+	p.runJob(ctx, &jobExecutionParams{
+		updater:         NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:         jobItem,
+		jobInfo:         jobInfo,
+		cancelRequested: &cancelRequested,
+		task: &db.BatchJobPriority{
+			ID:  "job-contract",
+			SLO: time.Now().Add(1 * time.Hour),
+		},
+	})
+
+	// preProcessJob will fail (file doesn't exist on disk) and handleJobError marks it failed.
+	// The key assertion: we reached handleFailed (not a silent panic recovery).
+	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-contract"}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+
+	var updated openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &updated); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if updated.Status != openai.BatchStatusFailed {
+		t.Fatalf("expected failed status (preprocess error handled), got %s", updated.Status)
 	}
 }
 

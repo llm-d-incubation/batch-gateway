@@ -18,7 +18,6 @@ package worker
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
@@ -28,17 +27,19 @@ import (
 
 // jobExecutionParams holds the job-scoped state shared across processing stages.
 // Contexts are NOT stored here — they are passed explicitly per Go convention.
+//
+// cancelRequested must be a non-nil *atomic.Bool — it is shared across goroutines
+// (watchCancel, preProcessJob, executeJob, finalizeJob).
 type jobExecutionParams struct {
 	updater *StatusUpdater
 	jobItem *db.BatchItem
 	jobInfo *batch_types.JobInfo
 	task    *db.BatchJobPriority
 
-	eventWatcher  *db.BatchEventsChan
-	inferCancelFn context.CancelFunc
+	eventWatcher *db.BatchEventsChan
+	abortInferFn context.CancelFunc
 
 	cancelRequested *atomic.Bool
-	cancellingOnce  *sync.Once
 
 	requestCounts *openai.BatchRequestCounts
 }

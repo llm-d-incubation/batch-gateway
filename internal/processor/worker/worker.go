@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -248,10 +249,11 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 		// process job
 		p.wg.Add(1)
 		go p.runJob(jobCtx, &jobExecutionParams{
-			updater: p.updater,
-			jobItem: jobItem,
-			jobInfo: jobInfo,
-			task:    task,
+			updater:         p.updater,
+			jobItem:         jobItem,
+			jobInfo:         jobInfo,
+			task:            task,
+			cancelRequested: &atomic.Bool{},
 		})
 	}
 }
