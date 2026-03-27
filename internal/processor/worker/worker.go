@@ -109,7 +109,7 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	// construction — no mutex, no OnDoubleRelease method.
 	makeGuard := func(name string) func() {
 		return func() {
-			logger.Error(nil, "Semaphore double-release detected, initiating graceful shutdown", "semaphore", name)
+			logger.Error(fmt.Errorf("semaphore double-release"), "Initiating graceful shutdown", "semaphore", name)
 			stopAccepting()
 		}
 	}

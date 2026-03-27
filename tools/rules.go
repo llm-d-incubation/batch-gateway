@@ -26,3 +26,10 @@ func NoVLevelOnError(m dsl.Matcher) {
 	m.Match(`$_.V($lvl).Error($*_)`).
 		Report("Do not use V() with Error(); errors should always be logged regardless of verbosity.")
 }
+
+// NoNilError flags .Error(nil, ...) — if there is no error, use Info
+// instead. Error() should always receive a real error.
+func NoNilError(m dsl.Matcher) {
+	m.Match(`$_.Error(nil, $*_)`).
+		Report("Do not pass nil to Error(); if there is no error, use Info() instead.")
+}
