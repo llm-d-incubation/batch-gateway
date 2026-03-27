@@ -37,7 +37,7 @@ linters:
         - ruleguard
       settings:
         ruleguard:
-          rules: "gorules/rules.go"
+          rules: "tools/rules.go"
     errcheck:
       exclude-functions:
         # Read-only or cleanup Close — errors are unrecoverable and
