@@ -276,6 +276,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			pollLogger.V(logging.INFO).Info("Polling context cancelled before job launch, re-enqueueing")
 			p.releaseForNextPoll()
 			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-guard")
+			defer bgSpan.End()
 			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue job during graceful shutdown, marking as failed")
 				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil); failErr != nil {
@@ -285,7 +286,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
 			}
-			bgSpan.End()
 			return nil
 		}
 
