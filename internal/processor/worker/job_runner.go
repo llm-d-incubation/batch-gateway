@@ -85,9 +85,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		if r == nil {
 			return
 		}
-		recoverErr := fmt.Errorf("panic: %v\n%s", r, debug.Stack())
-		klog.FromContext(ctx).Error(recoverErr, "Panic recovered")
-		span.RecordError(recoverErr)
+		stackTrace := debug.Stack()
+		klog.FromContext(ctx).Error(fmt.Errorf("panic: %v\n%s", r, stackTrace), "Panic recovered")
+		span.RecordError(fmt.Errorf("panic: %v", r))
 		span.SetStatus(codes.Error, "panic recovered")
 
 		p.handlePanicRecovery(ctx, params, transitionedToInProgress, requestCounts)
