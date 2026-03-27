@@ -18,6 +18,7 @@ linters:
     - depguard
     - errcheck
     - forbidigo
+    - gocritic
     - govet
     - staticcheck
     - unused
@@ -26,8 +27,15 @@ linters:
       rules:
         no-stdlib-log:
           deny:
-            - pkg: "^log$"
+            - pkg: "log$"
               desc: "Use logr (github.com/go-logr/logr) instead of stdlib log"
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - ruleguard
+      settings:
+        ruleguard:
+          rules: "gorules/rules.go"
     errcheck:
       exclude-functions:
         # Read-only or cleanup Close — errors are unrecoverable and
@@ -41,6 +49,4 @@ linters:
       forbid:
         - pattern: 'klog\.(ErrorS|Errorf|Error|InfoS|Infof|Info|WarningS|Warningf|Warning|V)$'
           msg: "Use logr.Logger instead of klog for logging. Only klog.Flush/InitFlags/NewKlogr/Fatalf are allowed."
-        - pattern: '\.V\([1-9]\d*\)'
-          msg: "Use named constants from internal/util/logging (INFO=1, DEBUG=3, TRACE=5) instead of magic numbers."
       analyze-types: true

@@ -233,10 +233,11 @@ install-pre-commit-tools:
 	fi
 	@echo "Pre-commit tools installed"
 
-## install-tools: Install all development tools (includes pre-commit tools + golangci-lint)
+## install-tools: Install all development tools (includes pre-commit tools + golangci-lint + ruleguard)
 install-tools: install-pre-commit-tools
 	@echo "Installing additional development tools..."
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+	$(GO) install github.com/quasilyte/go-ruleguard/cmd/ruleguard@latest
 	@echo "All tools installed"
 
 ## test-helm: Run Helm chart template tests (requires helm-unittest plugin)
