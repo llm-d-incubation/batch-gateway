@@ -48,14 +48,16 @@ func doTestBatchCancel(t *testing.T) {
 	//   - Fast requests (max_tokens=1): complete in ~150ms, ensuring output file has entries.
 	//   - Slow requests (max_tokens=200): take ~20s each at 100ms inter-token-latency,
 	//     ensuring cancel arrives while they are still in-flight or undispatched.
-	//   - 20 slow requests exceed PerModelMaxConcurrency (default 10), guaranteeing some
-	//     remain undispatched and get drained to the error file as batch_cancelled.
+	//   - 50 slow requests far exceed PerModelMaxConcurrency (default 10), guaranteeing
+	//     many remain undispatched and get drained to the error file as batch_cancelled.
+	//     The large count also ensures requests are still in-flight when cancel fires
+	//     after the 2-second sleep.
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
 			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, i))
 	}
-	for i := 1; i <= 20; i++ {
+	for i := 1; i <= 50; i++ {
 		lines = append(lines, fmt.Sprintf(
 			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, i))
 	}
@@ -76,27 +78,18 @@ func doTestBatchCancel(t *testing.T) {
 	}
 	t.Logf("cancel response status: %s", batch.Status)
 
-	// The cancel response is normally "cancelling" (batch is in_progress, so
+	// The cancel response should be cancelling (batch is in_progress, so
 	// the apiserver sends a cancel event rather than directly cancelling).
-	// However, if all requests completed before cancel was processed, the
-	// batch may already be "completed" — this is an inherent TOCTOU race.
-	switch batch.Status {
-	case openai.BatchStatusCancelling, openai.BatchStatusCompleted:
-		// both are acceptable
-	default:
-		t.Errorf("expected status %q or %q immediately after cancel call, got %q",
-			openai.BatchStatusCancelling, openai.BatchStatusCompleted, batch.Status)
+	if batch.Status != openai.BatchStatusCancelling {
+		t.Errorf("expected status %q immediately after cancel call, got %q",
+			openai.BatchStatusCancelling, batch.Status)
 	}
 
-	// Wait for the batch to reach a terminal state. Both cancelled and
-	// completed are valid outcomes — all requests may finish before the
-	// cancel event is processed by the worker, which is an acknowledged
-	// race in the architecture (see finalizer.go).
-	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled, openai.BatchStatusCompleted)
+	// Wait for the batch to reach cancelled state.
+	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
 
-	t.Logf("batch %s final_status=%s (completed=%d, failed=%d, total=%d, output_file_id=%s, error_file_id=%s)",
+	t.Logf("batch %s cancelled (completed=%d, failed=%d, total=%d, output_file_id=%s, error_file_id=%s)",
 		batchID,
-		finalBatch.Status,
 		finalBatch.RequestCounts.Completed,
 		finalBatch.RequestCounts.Failed,
 		finalBatch.RequestCounts.Total,
@@ -105,9 +98,7 @@ func doTestBatchCancel(t *testing.T) {
 
 	// Verify that in-flight inference requests were actually aborted by the inference client
 	// (context cancellation propagated through abortCtx → execCtx → HTTP request).
-	// Only check when the batch was actually cancelled — if it completed first, there
-	// were no in-flight requests to abort.
-	if finalBatch.Status == openai.BatchStatusCancelled && testKubectlAvailable {
+	if testKubectlAvailable {
 		out, err := exec.Command("kubectl", "logs",
 			"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
 			"-n", testNamespace,
