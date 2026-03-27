@@ -162,11 +162,11 @@ tests:
           path: data["config.yaml"]
           pattern: 'process_time_bucket:\n\s+start: 0\.1\n\s+factor: 2\n\s+count: 15'
 
-  - it: should render upload_retry config
+  - it: should render file_client retry config
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'upload_retry:\n\s+max_retries: 3\n\s+initial_backoff: "1s"\n\s+max_backoff: "10s"'
+          pattern: 'retry:\n\s+max_retries: 3\n\s+initial_backoff: "1s"\n\s+max_backoff: "10s"'
 
   - it: should not render ConfigMap when processor is disabled
     set:
