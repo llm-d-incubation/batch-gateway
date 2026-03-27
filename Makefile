@@ -227,7 +227,7 @@ install-pre-commit-tools:
 	$(GO) install golang.org/x/tools/cmd/goimports@v0.43.0
 	$(GO) install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
 	@if command -v helm >/dev/null 2>&1; then \
-		helm plugin list | grep -q unittest || helm plugin install https://github.com/helm-unittest/helm-unittest.git; \
+		helm plugin list | grep -q unittest || helm plugin install --verify=false https://github.com/helm-unittest/helm-unittest.git; \
 	else \
 		echo "helm not found, skipping helm-unittest plugin install"; \
 	fi
