@@ -46,7 +46,7 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(testLoggerCtx(), &jobExecutionParams{
+	p.runJob(testLoggerCtx(t), &jobExecutionParams{
 		updater: NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
 		jobItem: &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
 		jobInfo: &batch_types.JobInfo{JobID: "job-1"},
@@ -54,7 +54,7 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 }
 
 func TestRunJob_EventWatcherAndReEnqueueBothFail_MarksJobFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
@@ -106,7 +106,7 @@ func TestRunJob_EventWatcherAndReEnqueueBothFail_MarksJobFailed(t *testing.T) {
 }
 
 func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
@@ -190,7 +190,7 @@ func TestRunJob_WithCancelRequested_ReachesPreProcess(t *testing.T) {
 		File:    mockfiles.NewMockBatchFilesClient(),
 	})
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 
 	jobItem := &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-contract", TenantID: "tenantA"},
@@ -258,7 +258,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 	updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
 
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
-	err := p.handleFailed(testLoggerCtx(), updater, &db.BatchItem{
+	err := p.handleFailed(testLoggerCtx(t), updater, &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{
 			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
@@ -272,7 +272,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 // --- handlePanicRecovery tests ---
 
 func TestHandlePanicRecovery_BeforeInProgress_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -295,7 +295,7 @@ func TestHandlePanicRecovery_BeforeInProgress_MarksFailed(t *testing.T) {
 }
 
 func TestHandlePanicRecovery_AfterInProgress_WithCounts_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -319,7 +319,7 @@ func TestHandlePanicRecovery_AfterInProgress_WithCounts_MarksFailed(t *testing.T
 }
 
 func TestHandlePanicRecovery_AfterInProgress_NilCounts_MarksFailed(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -342,7 +342,7 @@ func TestHandlePanicRecovery_AfterInProgress_NilCounts_MarksFailed(t *testing.T)
 }
 
 func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
-	ctx, cancel := context.WithCancel(testLoggerCtx())
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
 	dbClient := newMockBatchDBClient()
@@ -367,7 +367,7 @@ func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
 }
 
 func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	dbClient := &dbUpdateFailOnceWrapper{inner: newMockBatchDBClient(), failCount: 1}
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -391,10 +391,78 @@ func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
 }
 
 func TestHandlePanicRecovery_NilParams_DoesNotPanic(t *testing.T) {
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
 	p.handlePanicRecovery(ctx, nil, false, nil)
 	p.handlePanicRecovery(ctx, &jobExecutionParams{}, false, nil)
+}
+
+// dbBlockingUpdateWrapper blocks DBUpdate until its context is cancelled,
+// simulating an unreachable database.
+type dbBlockingUpdateWrapper struct {
+	inner db.BatchDBClient
+}
+
+func (d *dbBlockingUpdateWrapper) DBStore(ctx context.Context, item *db.BatchItem) error {
+	return d.inner.DBStore(ctx, item)
+}
+func (d *dbBlockingUpdateWrapper) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
+	return d.inner.DBGet(ctx, query, includeStatic, start, limit)
+}
+func (d *dbBlockingUpdateWrapper) DBUpdate(ctx context.Context, _ *db.BatchItem) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (d *dbBlockingUpdateWrapper) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
+	return d.inner.DBDelete(ctx, IDs)
+}
+func (d *dbBlockingUpdateWrapper) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parentCtx, timeLimit)
+}
+func (d *dbBlockingUpdateWrapper) Close() error {
+	return d.inner.Close()
+}
+
+// TestHandlePanicRecovery_BlockingDB_ReturnsWithinTimeout verifies that
+// handlePanicRecovery returns within a bounded time even when the DB is
+// unreachable (blocks forever), ensuring wg.Done() and release() are not
+// starved.
+func TestHandlePanicRecovery_BlockingDB_ReturnsWithinTimeout(t *testing.T) {
+	// Use a short timeout so the test completes quickly in CI.
+	orig := panicRecoveryTimeout
+	panicRecoveryTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { panicRecoveryTimeout = orig })
+
+	ctx := testLoggerCtx(t)
+	blockingDB := &dbBlockingUpdateWrapper{inner: newMockBatchDBClient()}
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-block", TenantID: "tenantA"},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	if err := blockingDB.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: blockingDB, Status: statusClient})
+
+	done := make(chan struct{})
+	go func() {
+		p.handlePanicRecovery(ctx, &jobExecutionParams{
+			updater: NewStatusUpdater(blockingDB, statusClient, 86400),
+			jobItem: jobItem,
+			jobInfo: &batch_types.JobInfo{JobID: "job-panic-block"},
+		}, false, nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// handlePanicRecovery returned — the timeout worked.
+	case <-time.After(5 * time.Second):
+		t.Fatal("handlePanicRecovery blocked beyond panicRecoveryTimeout; timeout not applied")
+	}
 }
 
 func assertJobStatus(t *testing.T, dbClient db.BatchDBClient, jobID string, want openai.BatchStatus) {

@@ -110,7 +110,7 @@ func testHTTPClientBasicInference(t *testing.T) {
 	client, err := NewInferenceClient(&HTTPClientConfig{
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +192,7 @@ func testHTTPClientLatencySimulation(t *testing.T) {
 	client, err := NewInferenceClient(&HTTPClientConfig{
 		BaseURL: fmt.Sprintf("http://localhost:%d", testPort),
 		Timeout: 10 * time.Second,
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,7 +280,7 @@ func testHTTPClientFailureInjection(t *testing.T) {
 			Timeout:        10 * time.Second,
 			MaxRetries:     5,
 			InitialBackoff: 50 * time.Millisecond,
-		})
+		}, testLogger(t))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

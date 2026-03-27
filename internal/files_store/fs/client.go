@@ -26,8 +26,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"k8s.io/klog/v2"
-
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	fsio "github.com/llm-d-incubation/batch-gateway/internal/files_store/io"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
@@ -76,8 +75,6 @@ func New(basePath string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open root directory: %w", err)
 	}
-
-	klog.InfoS("BatchFiles fs client initialized", "root", absPath)
 
 	return &Client{
 		root: root,
@@ -166,7 +163,7 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 		return nil, err
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File stored successfully",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File stored successfully",
 		"path", relPath, "size", metadata.Size, "lines", metadata.LinesNumber)
 
 	return metadata, nil
@@ -197,7 +194,7 @@ func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.
 		ModTime:  info.ModTime(),
 	}
 
-	klog.FromContext(ctx).V(logging.INFO).Info("File retrieved successfully",
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File retrieved successfully",
 		"path", relPath, "size", metadata.Size)
 
 	return file, metadata, nil
@@ -216,7 +213,7 @@ func (c *Client) Delete(ctx context.Context, fileName, folderName string) error 
 		return err
 	}
 
-	logger := klog.FromContext(ctx).V(logging.INFO)
+	logger := logr.FromContextOrDiscard(ctx).V(logging.INFO)
 	logger.Info("File deleted successfully", "path", relPath)
 
 	if err := c.root.Remove(folderName); err == nil {

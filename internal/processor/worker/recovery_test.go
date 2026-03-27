@@ -40,7 +40,7 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRecoverStaleJobs_NoStaleJobs(t *testing.T) {
 	workDir := t.TempDir()
 	p, _, _ := newRecoveryTestProcessor(t, workDir)
 
-	p.recoverStaleJobs(testLoggerCtx())
+	p.recoverStaleJobs(testLoggerCtx(t))
 }
 
 func TestRecoverStaleJobs_DiscoversDirs(t *testing.T) {
@@ -199,7 +199,7 @@ func TestRecoverJob_Finalizing(t *testing.T) {
 	createOutputFile(t, jobDir, `{"id":"batch_req_1","custom_id":"req-1","response":{"status_code":200}}`+"\n")
 	createErrorFile(t, jobDir, `{"id":"batch_req_2","custom_id":"req-2","error":{"code":"server_error","message":"fail"}}`+"\n")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestRecoverJob_Cancelling(t *testing.T) {
 	jobDir := createJobDir(t, p, jobID, tenantID)
 	createOutputFile(t, jobDir, `{"id":"batch_req_1","custom_id":"req-1","response":{"status_code":200}}`+"\n")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestRecoverJob_InProgress_WithPartialOutput(t *testing.T) {
 	jobDir := createJobDir(t, p, jobID, tenantID)
 	createOutputFile(t, jobDir, `{"id":"batch_req_1","custom_id":"req-1","response":{"status_code":200}}`+"\n")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestRecoverJob_InProgress_EmptyOutput_ReEnqueues(t *testing.T) {
 	jobDir := createJobDir(t, p, jobID, tenantID)
 	createOutputFile(t, jobDir, "")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestRecoverJob_InProgress_NoOutputFile_ReEnqueues(t *testing.T) {
 
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestRecoverJob_InProgress_EmptyOutput_ExpiredSLO_MarksExpiredWithoutEnqueue
 	jobDir := createJobDir(t, p, jobID, tenantID)
 	createOutputFile(t, jobDir, "")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestRecoverJob_Validating_ReEnqueues(t *testing.T) {
 
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestRecoverJob_Validating_ReEnqueuesWithExactTaggedSLO(t *testing.T) {
 	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID, openai.BatchStatusValidating, nil, wantSLO)
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestRecoverJob_Validating_ExpiredSLO_MarksExpiredWithoutEnqueue(t *testing.
 	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID, openai.BatchStatusValidating, nil, expiredSLO)
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestRecoverJob_Validating_MissingSLO_FallsBackToFailed(t *testing.T) {
 
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestRecoverJob_TerminalStatus_CleansUp(t *testing.T) {
 
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -515,7 +515,7 @@ func TestRecoverJob_NotInDB_CleansUp(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob: %v", err)
 	}
@@ -587,7 +587,7 @@ func newRecoveryTestProcessorWithFailDB(t *testing.T, workDir string, failOn int
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestRecoverJob_Cancelling_AllUpdatesFail_ReturnsError(t *testing.T) {
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestRecoverJob_Cancelling_AllUpdatesFail_ReturnsError(t *testing.T) {
 	jobDir := createJobDir(t, p, jobID, tenantID)
 	createOutputFile(t, jobDir, `{"id":"batch_req_1"}`+"\n")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	recoverErr := p.recoverJob(ctx, jobID)
 	if recoverErr == nil {
 		t.Fatal("expected error when all DB updates fail")
@@ -670,7 +670,7 @@ func TestRecoverJob_Validating_EnqueueFails_FallsBackToFailed(t *testing.T) {
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestRecoverJob_Validating_EnqueueFails_FallsBackToFailed(t *testing.T) {
 	seedDBJobWithStatus(t, batchDB, jobID, tenantID, openai.BatchStatusValidating, nil)
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob should succeed via fallback, got: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestRecoverJob_InProgressReEnqueue_EnqueueFails_FallsBackToFailed(t *testin
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	})
+	}, testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -731,7 +731,7 @@ func TestRecoverJob_InProgressReEnqueue_EnqueueFails_FallsBackToFailed(t *testin
 	seedDBJobWithStatus(t, batchDB, jobID, tenantID, openai.BatchStatusInProgress, nil)
 	createJobDir(t, p, jobID, tenantID)
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob should succeed via fallback, got: %v", err)
 	}
@@ -776,7 +776,7 @@ func TestRecoverJob_Cancelling_UpdateFails_FallbackSucceeds_PreservesCounts(t *t
 	jobDir := createJobDir(t, p, jobID, tenantID)
 	createOutputFile(t, jobDir, `{"id":"batch_req_1"}`+"\n")
 
-	ctx := testLoggerCtx()
+	ctx := testLoggerCtx(t)
 	if err := p.recoverJob(ctx, jobID); err != nil {
 		t.Fatalf("recoverJob should succeed via fallback, got: %v", err)
 	}

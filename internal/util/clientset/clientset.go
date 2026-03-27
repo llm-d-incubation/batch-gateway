@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	dbRedis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
@@ -36,7 +37,6 @@ import (
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
-	"k8s.io/klog/v2"
 )
 
 // Clientset holds all clients.
@@ -62,7 +62,7 @@ func NewFSFileClient(ctx context.Context, cfg *fsclient.Config) (fsapi.BatchFile
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fs file client: %w", err)
 	}
-	klog.FromContext(ctx).Info("Filesystem-based file client created", "base_path", cfg.BasePath)
+	logr.FromContextOrDiscard(ctx).Info("Filesystem-based file client created", "base_path", cfg.BasePath)
 	return c, nil
 }
 
@@ -86,7 +86,7 @@ func NewS3FileClient(ctx context.Context, cfg *s3client.Config) (fsapi.BatchFile
 	if err != nil {
 		return nil, fmt.Errorf("failed to create s3 file client: %w", err)
 	}
-	klog.FromContext(ctx).Info("S3 file client created", "region", cfg.Region, "endpoint", cfg.Endpoint)
+	logr.FromContextOrDiscard(ctx).Info("S3 file client created", "region", cfg.Region, "endpoint", cfg.Endpoint)
 	return c, nil
 }
 
@@ -111,7 +111,7 @@ func NewRedisDBClients(ctx context.Context, cfg *uredis.RedisClientConfig) (dbap
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create redis file-db client: %w", err)
 	}
-	klog.FromContext(ctx).Info("Redis-based database client created")
+	logr.FromContextOrDiscard(ctx).Info("Redis-based database client created")
 	return batchDB, fileDB, nil
 }
 
@@ -136,7 +136,7 @@ func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfi
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
 	}
-	klog.FromContext(ctx).Info("PostgreSQL-based database client created")
+	logr.FromContextOrDiscard(ctx).Info("PostgreSQL-based database client created")
 	return batchDB, fileDB, nil
 }
 
@@ -156,7 +156,7 @@ func NewClientset(
 	component ucom.Component,
 ) (*Clientset, error) {
 
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// check required parameters
 	if redisCfg == nil {
@@ -230,7 +230,7 @@ func NewClientset(
 
 	// build inference client(s)
 	if modelGatewaysConfigs != nil {
-		resolver, err := inference.NewGatewayResolver(modelGatewaysConfigs)
+		resolver, err := inference.NewGatewayResolver(modelGatewaysConfigs, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create inference client(s): %w", err)
 		}

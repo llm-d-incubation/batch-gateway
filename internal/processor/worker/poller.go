@@ -21,9 +21,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"k8s.io/klog/v2"
 )
 
 type Poller struct {
@@ -49,11 +49,11 @@ func (p *Poller) validate() error {
 }
 
 func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	tasks, err := p.pq.PQDequeue(ctx, 0, 1) // get only one job without blocking the queue
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to dequeue a batch job")
+		logger.Error(err, "Failed to dequeue a batch job")
 		return nil, err
 	}
 
@@ -68,7 +68,7 @@ func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 }
 
 func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	err := p.pq.PQEnqueue(ctx, task)
 	if err != nil {
 		logger.Error(err, "CRITICAL: Failed to enqueue a job")
@@ -78,7 +78,7 @@ func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) erro
 }
 
 func (p *Poller) fetchJobItemByID(ctx context.Context, jobID string) (*db.BatchItem, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	jobs, _, _, err := p.db.DBGet(ctx,
 		&db.BatchQuery{
@@ -86,7 +86,7 @@ func (p *Poller) fetchJobItemByID(ctx context.Context, jobID string) (*db.BatchI
 		},
 		true, 0, 1)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to fetch job item from DB")
+		logger.Error(err, "Failed to fetch job item from DB")
 		return nil, err
 	}
 

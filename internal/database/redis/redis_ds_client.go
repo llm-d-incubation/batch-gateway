@@ -25,10 +25,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	goredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -169,7 +169,7 @@ func NewDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTim
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if conf == nil {
 		err := fmt.Errorf("empty redis config")
 		logger.Error(err, "NewBatchDSClientRedis:")
