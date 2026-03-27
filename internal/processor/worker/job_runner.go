@@ -164,7 +164,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 				span.RecordError(expiredErr)
 				span.SetStatus(codes.Error, "expired finalization failed")
 			}
-			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+			metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
 
 		case errors.Is(execErr, ErrCancelled):
 			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
@@ -173,7 +173,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 				span.SetStatus(codes.Error, "cancelled finalization failed")
 			}
 			if requestCounts != nil {
-				metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+				metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
 			}
 
 		default:
@@ -190,7 +190,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			// Cancel arrived during finalization — DB already updated to cancelled.
 			// Treat as successful cancellation (same as handleCancelled).
 			p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
-			metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+			metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
 			metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 			logger.V(logging.INFO).Info("Job cancelled during finalization")
 			return
@@ -206,7 +206,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// cleanup local artifacts (best-effort)
 	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
-	metrics.RecordJobProcessingDuration(time.Since(jobStart), params.jobItem.TenantID, metrics.GetSizeBucket(int(requestCounts.Total)))
+	metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job completed successfully")
 }

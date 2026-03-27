@@ -659,10 +659,10 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   - `expired_execution` — SLO deadline fired during execution; partial results preserved
   - `none` — no additional reason beyond the result (e.g. success, cancelled)
 
-- `job_processing_duration_seconds{tenantID,size_bucket}` (histogram)
+- `job_processing_duration_seconds{size_bucket}` (histogram)
   Measures total job processing duration (end-to-end, including ingestion and execution).
 
-- `job_queue_wait_duration_seconds{tenantID}` (histogram)
+- `job_queue_wait_duration_seconds` (histogram)
   Measures how long a job waited in the priority queue before being picked up.
 
 **Worker Utilization Metrics**
@@ -685,7 +685,7 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 
 **Duration Metrics**
 
-- `plan_build_duration_seconds{tenantID,size_bucket}` (histogram)
+- `plan_build_duration_seconds{size_bucket}` (histogram)
   Measures ingestion and plan build duration.
 
 - `model_request_execution_duration_seconds{model}` (histogram)
@@ -706,6 +706,6 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 
 - `batch_startup_recovery_total{status,action}` (counter)
   Counts jobs recovered during processor startup after a container restart.
-  - `status`: the DB status of the recovered job (`in_progress`, `finalizing`, `cancelling`, `validating`)
-  - `action`: the recovery action taken (`re_enqueued`, `failed`, `finalized`, `cancelled`, `cleaned`)
-  Non-zero values indicate container-level crashes (OOM, panic) occurred.
+  - `status`: the recovered job status at the time recovery ran. Common values include `in_progress`, `finalizing`, `cancelling`, `validating`, and `unknown` when the DB lookup failed or no DB record existed.
+  - `action`: the recovery action taken. Values include `re_enqueued`, `failed`, `finalized`, `cancelled`, `expired`, `cleaned_up`, and `error`.
+  Non-zero values indicate container-level crashes (OOM, panic) or stale on-disk artifacts from a prior processor instance.
