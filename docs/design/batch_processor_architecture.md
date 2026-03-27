@@ -252,8 +252,10 @@ graph TD
 
 **Design notes:**
 -   The fork is intentional: `pollingCtx` controls the loop, `jobCtx` controls the job. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. By contrast, **SIGTERM / SIGINT cancel `ctx`**, so both polling and in-flight jobs see cancellation and re-enqueue / teardown as designed.
--   `abortCtx` ← `sloCtx` ← `jobCtx`: SLO deadline and user cancel both propagate down to inference requests automatically.
--   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason and drain undispatched entries with the correct error code.
+-   `abortCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
+-   `execCtx` is derived from `abortCtx` so both user cancel and SLO expiry stop dispatch.
+-   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown) and to drain undispatched entries with the correct error code.
+-   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
 -   Pre-launch operations (DB fetch, conversion, expired/runnable checks) run under `pollingCtx` so they abort promptly when the guard fires. `jobCtx` is created from `jobBaseCtx` only at the moment we commit to launching `runJob`.
 -   On semaphore double-release: guard cancels `pollingCtx` → pre-launch aborts or guard re-enqueue fires → `Run` returns → `main.go` sets `ready=false` → K8s removes the pod from service (readiness probe fails). If re-enqueue also fails, the job is marked failed as a terminal fallback. The pod is restarted only if a liveness probe or restart policy triggers it.
 
