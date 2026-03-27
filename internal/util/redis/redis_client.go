@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -32,6 +31,7 @@ import (
 	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	gredis "github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -200,7 +200,7 @@ func getPingKeyName(prefix, serviceName string) string {
 
 type RedisClientChecker struct {
 	rds         *gredis.Client
-	lock        *sync.Mutex
+	sf          singleflight.Group
 	keyPrefix   string
 	serviceName string
 	cmdTimeout  time.Duration
@@ -209,15 +209,19 @@ type RedisClientChecker struct {
 func NewRedisClientChecker(rds *gredis.Client, keyPrefix, serviceName string, cmdTimeout time.Duration) *RedisClientChecker {
 	return &RedisClientChecker{
 		rds:         rds,
-		lock:        &sync.Mutex{},
 		keyPrefix:   keyPrefix,
 		serviceName: serviceName,
 		cmdTimeout:  cmdTimeout,
 	}
 }
 
-func (r *RedisClientChecker) Check(ctx context.Context) (err error) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	return CheckClient(ctx, r.rds, r.cmdTimeout, r.keyPrefix, r.serviceName)
+// Check verifies the Redis connection is healthy.
+// Concurrent calls are coalesced via singleflight so only one Check
+// executes at a time, avoiding thundering-herd pressure on Redis while
+// not serializing sequential calls.
+func (r *RedisClientChecker) Check(ctx context.Context) error {
+	_, err, _ := r.sf.Do("check", func() (interface{}, error) {
+		return nil, CheckClient(ctx, r.rds, r.cmdTimeout, r.keyPrefix, r.serviceName)
+	})
+	return err
 }
