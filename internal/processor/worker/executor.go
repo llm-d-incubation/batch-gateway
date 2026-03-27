@@ -76,23 +76,51 @@ type outputError struct {
 	Message string `json:"message"`
 }
 
+// progressUpdateInterval is the minimum time between Redis progress updates.
+// Updates within this window are skipped — the next update after the interval
+// will include all accumulated progress. Declared as var so tests can override.
+var progressUpdateInterval = time.Second
+
 // executionProgress tracks per-request progress across goroutines
-// and pushes lightweight updates to the status store after every request.
+// and pushes throttled updates to the status store.
 type executionProgress struct {
-	completed atomic.Int64
-	failed    atomic.Int64
-	total     int64
-	updater   *StatusUpdater
-	jobID     string
+	completed  atomic.Int64
+	failed     atomic.Int64
+	total      int64
+	updater    *StatusUpdater
+	jobID      string
+	lastUpdate atomic.Int64 // unix nanoseconds of last Redis push
 }
 
+// record increments the appropriate counter and pushes a throttled progress
+// update to Redis. Updates are skipped if less than progressUpdateInterval
+// has elapsed since the last push, reducing Redis writes from O(requests)
+// to O(job_duration / interval).
 func (ep *executionProgress) record(ctx context.Context, success bool) {
 	if success {
 		ep.completed.Add(1)
 	} else {
 		ep.failed.Add(1)
 	}
-	// best-effort: status store failure should not block request processing
+	now := time.Now().UnixNano()
+	last := ep.lastUpdate.Load()
+	if now-last < int64(progressUpdateInterval) {
+		return
+	}
+	// Best-effort CAS: if another goroutine raced us, skip this update.
+	if !ep.lastUpdate.CompareAndSwap(last, now) {
+		return
+	}
+	ep.push(ctx)
+}
+
+// flush pushes the final progress to Redis unconditionally, ensuring the
+// last update reflects the true counts regardless of throttling.
+func (ep *executionProgress) flush(ctx context.Context) {
+	ep.push(ctx)
+}
+
+func (ep *executionProgress) push(ctx context.Context) {
 	if err := ep.updater.UpdateProgressCounts(ctx, ep.jobID, &openai.BatchRequestCounts{
 		Total:     ep.total,
 		Completed: ep.completed.Load(),
@@ -245,6 +273,10 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 			firstErr = err
 		}
 	}
+
+	// Push final progress to Redis so the last throttled update doesn't
+	// leave stale counts visible to polling clients.
+	progress.flush(ctx)
 
 	if firstErr != nil {
 		// prefer parent-context / user-cancel errors for correct routing in handleJobError

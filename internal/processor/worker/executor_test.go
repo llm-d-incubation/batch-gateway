@@ -13,6 +13,7 @@ import (
 	"time"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
@@ -1575,5 +1576,79 @@ func TestStoreOutputFileRecord_DBError(t *testing.T) {
 	err := p.storeFileRecord(ctx, "file_x", "output.jsonl", "tenant-1", 100, db.Tags{})
 	if err == nil {
 		t.Fatalf("expected error from DB failure")
+	}
+}
+
+// countingStatusClient wraps a status client and counts StatusSet calls.
+type countingStatusClient struct {
+	db.BatchStatusClient
+	count atomic.Int32
+}
+
+func (c *countingStatusClient) StatusSet(ctx context.Context, ID string, TTL int, data []byte) error {
+	c.count.Add(1)
+	return c.BatchStatusClient.StatusSet(ctx, ID, TTL, data)
+}
+
+func TestExecutionProgress_Throttle(t *testing.T) {
+	orig := progressUpdateInterval
+	progressUpdateInterval = 50 * time.Millisecond
+	t.Cleanup(func() { progressUpdateInterval = orig })
+
+	statusClient := &countingStatusClient{BatchStatusClient: mockdb.NewMockBatchStatusClient()}
+	updater := NewStatusUpdater(newMockBatchDBClient(), statusClient, 86400)
+
+	progress := &executionProgress{
+		total:   100,
+		updater: updater,
+		jobID:   "job-throttle",
+	}
+
+	ctx := testLoggerCtx(t)
+
+	// Record 100 requests as fast as possible — most should be throttled.
+	for i := 0; i < 100; i++ {
+		progress.record(ctx, true)
+	}
+
+	throttled := statusClient.count.Load()
+	if throttled >= 100 {
+		t.Fatalf("expected throttled updates < 100, got %d (no throttling occurred)", throttled)
+	}
+	if throttled == 0 {
+		t.Fatalf("expected at least 1 Redis update, got 0")
+	}
+	t.Logf("100 requests produced %d Redis updates (throttled)", throttled)
+}
+
+func TestExecutionProgress_Flush(t *testing.T) {
+	orig := progressUpdateInterval
+	progressUpdateInterval = time.Hour // effectively disable throttled updates
+	t.Cleanup(func() { progressUpdateInterval = orig })
+
+	statusClient := &countingStatusClient{BatchStatusClient: mockdb.NewMockBatchStatusClient()}
+	updater := NewStatusUpdater(newMockBatchDBClient(), statusClient, 86400)
+
+	progress := &executionProgress{
+		total:   10,
+		updater: updater,
+		jobID:   "job-flush",
+	}
+
+	ctx := testLoggerCtx(t)
+
+	// Record some requests — all should be throttled (interval=1h).
+	for i := 0; i < 10; i++ {
+		progress.record(ctx, true)
+	}
+
+	beforeFlush := statusClient.count.Load()
+
+	// flush should push unconditionally.
+	progress.flush(ctx)
+
+	afterFlush := statusClient.count.Load()
+	if afterFlush <= beforeFlush {
+		t.Fatalf("expected flush to push at least 1 update, before=%d after=%d", beforeFlush, afterFlush)
 	}
 }
