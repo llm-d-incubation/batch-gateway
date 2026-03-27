@@ -53,29 +53,25 @@ type Processor struct {
 	inference *inference.GatewayResolver // model → gateway routing
 	files     *fileManager
 
-	// onSemaphoreDoubleRelease is called when any semaphore detects a double-release.
-	// Set by registerSemaphoreGuards; used by processModel for per-model semaphores.
-	onSemaphoreDoubleRelease func()
+	// guardCallback is called when any semaphore detects a double-release.
+	// Set during Run(); passed to per-model semaphores in processModel.
+	guardCallback func()
 }
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
 ) (*Processor, error) {
-	tokenSem, err := semaphore.New(cfg.NumWorkers)
-	if err != nil {
-		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, err)
+	if cfg.NumWorkers <= 0 {
+		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, semaphore.ErrCap)
 	}
-	globalSem, err := semaphore.New(cfg.GlobalConcurrency)
-	if err != nil {
-		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, err)
+	if cfg.GlobalConcurrency <= 0 {
+		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, semaphore.ErrCap)
 	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
 		cfg:       cfg,
-		tokens:    tokenSem,
-		globalSem: globalSem,
 		poller:    poller,
 		updater:   updater,
 		event:     clients.Event,
@@ -104,9 +100,29 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	// cancelling in-flight jobs.
 	pollingCtx, stopAccepting := context.WithCancel(ctx)
 	defer stopAccepting()
-	p.registerSemaphoreGuards(pollingCtx, stopAccepting)
 
 	logger := klog.FromContext(ctx)
+
+	// Create semaphores here (not in NewProcessor) so the double-release guard
+	// callback can capture stopAccepting. This keeps semaphores immutable after
+	// construction — no mutex, no OnDoubleRelease method.
+	makeGuard := func(name string) func() {
+		return func() {
+			logger.Error(nil, "Semaphore double-release detected, initiating graceful shutdown", "semaphore", name)
+			stopAccepting()
+		}
+	}
+	var err error
+	p.tokens, err = semaphore.New(p.cfg.NumWorkers, makeGuard("num-workers"))
+	if err != nil {
+		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
+	}
+	p.globalSem, err = semaphore.New(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
+	if err != nil {
+		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, err)
+	}
+	p.guardCallback = makeGuard("per-model-concurrency")
+
 	logger.V(logging.INFO).Info(
 		"Processor run started",
 		"loopInterval", p.cfg.PollInterval,
@@ -114,25 +130,6 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	)
 
 	return p.runPollingLoop(pollingCtx, ctx)
-}
-
-// registerSemaphoreGuards installs double-release callbacks on all semaphores.
-// On detection the processor cancels the polling context, initiating graceful
-// shutdown: the polling loop stops accepting new jobs while in-flight jobs
-// finish normally.
-//
-// pollingCtx is used only for its logger; cancel is the CancelFunc that stops the polling loop.
-func (p *Processor) registerSemaphoreGuards(pollingCtx context.Context, cancel context.CancelFunc) {
-	logger := klog.FromContext(pollingCtx)
-	makeGuard := func(name string) func() {
-		return func() {
-			logger.Error(nil, "Semaphore double-release detected, initiating graceful shutdown", "semaphore", name)
-			cancel()
-		}
-	}
-	p.tokens.OnDoubleRelease(makeGuard("num-workers"))
-	p.globalSem.OnDoubleRelease(makeGuard("global-concurrency"))
-	p.onSemaphoreDoubleRelease = makeGuard("per-model-concurrency")
 }
 
 // Stop gracefully stops the processor, waiting for all workers to finish.

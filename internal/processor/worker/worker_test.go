@@ -7,6 +7,7 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
 
 func TestClientsetFields_Assigned(t *testing.T) {
@@ -69,16 +70,17 @@ func TestProcessorStop_DoneAndContextPaths(t *testing.T) {
 	p.Stop(ctx)
 }
 
-func TestRegisterSemaphoreGuards_CancelsPollingContext(t *testing.T) {
-	cfg := config.NewConfig()
-	p := mustNewProcessor(t, cfg, validProcessorClients())
-
+func TestSemaphoreGuard_CancelsPollingContext(t *testing.T) {
 	pollingCtx, stopAccepting := context.WithCancel(context.Background())
 	defer stopAccepting()
-	p.registerSemaphoreGuards(pollingCtx, stopAccepting)
 
-	// Simulate a double-release on globalSem (no prior Acquire).
-	p.globalSem.Release()
+	sem, err := semaphore.New(1, func() { stopAccepting() })
+	if err != nil {
+		t.Fatalf("failed to create semaphore: %v", err)
+	}
+
+	// Simulate a double-release (no prior Acquire).
+	sem.Release()
 
 	// pollingCtx should be cancelled by the guard callback.
 	select {
@@ -88,17 +90,18 @@ func TestRegisterSemaphoreGuards_CancelsPollingContext(t *testing.T) {
 	}
 }
 
-func TestRegisterSemaphoreGuards_JobBaseCtxSurvives(t *testing.T) {
-	cfg := config.NewConfig()
-	p := mustNewProcessor(t, cfg, validProcessorClients())
-
+func TestSemaphoreGuard_JobBaseCtxSurvives(t *testing.T) {
 	parentCtx := context.Background()
 	pollingCtx, stopAccepting := context.WithCancel(parentCtx)
 	defer stopAccepting()
-	p.registerSemaphoreGuards(pollingCtx, stopAccepting)
+
+	sem, err := semaphore.New(1, func() { stopAccepting() })
+	if err != nil {
+		t.Fatalf("failed to create semaphore: %v", err)
+	}
 
 	// Trigger guard — polling context dies, but parentCtx (job base) stays alive.
-	p.globalSem.Release()
+	sem.Release()
 
 	select {
 	case <-pollingCtx.Done():

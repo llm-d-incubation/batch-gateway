@@ -334,12 +334,9 @@ func (p *Processor) processModel(
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
-	modelSem, err := semaphore.New(p.cfg.PerModelMaxConcurrency)
+	modelSem, err := semaphore.New(p.cfg.PerModelMaxConcurrency, p.guardCallback)
 	if err != nil {
 		return fmt.Errorf("failed to create model semaphore: %w", err)
-	}
-	if p.onSemaphoreDoubleRelease != nil {
-		modelSem.OnDoubleRelease(p.onSemaphoreDoubleRelease)
 	}
 
 	var (

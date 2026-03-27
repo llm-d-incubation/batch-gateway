@@ -25,6 +25,7 @@ import (
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
@@ -259,6 +260,17 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
+	// Tests that call executeJob/processModel directly (without Run) need
+	// semaphores initialized. Run() normally does this with guard callbacks,
+	// but tests use nil callbacks since they don't need graceful shutdown.
+	p.tokens, err = semaphore.New(cfg.NumWorkers, nil)
+	if err != nil {
+		t.Fatalf("worker semaphore: %v", err)
+	}
+	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	if err != nil {
+		t.Fatalf("global semaphore: %v", err)
+	}
 	return p
 }
 
@@ -302,6 +314,14 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	})
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
+	}
+	p.tokens, err = semaphore.New(cfg.NumWorkers, nil)
+	if err != nil {
+		t.Fatalf("worker semaphore: %v", err)
+	}
+	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	if err != nil {
+		t.Fatalf("global semaphore: %v", err)
 	}
 	p.poller = NewPoller(pqClient, dbClient)
 
