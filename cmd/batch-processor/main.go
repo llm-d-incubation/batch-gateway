@@ -144,6 +144,8 @@ func run() error {
 		ready.Store(true)
 		logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	})
+	// Run may return before ctx is cancelled (e.g. semaphore guard shutdown).
+	// Mark not-ready immediately so the readiness probe reflects the actual state.
 	ready.Store(false)
 	if cfg.TerminateOnObservabilityFailure {
 		// Give the observability goroutine a brief chance to publish the fatal cause,

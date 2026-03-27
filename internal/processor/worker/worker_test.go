@@ -69,6 +69,48 @@ func TestProcessorStop_DoneAndContextPaths(t *testing.T) {
 	p.Stop(ctx)
 }
 
+func TestRegisterSemaphoreGuards_CancelsPollingContext(t *testing.T) {
+	cfg := config.NewConfig()
+	p := mustNewProcessor(t, cfg, validProcessorClients())
+
+	pollingCtx, stopAccepting := context.WithCancel(context.Background())
+	defer stopAccepting()
+	p.registerSemaphoreGuards(pollingCtx, stopAccepting)
+
+	// Simulate a double-release on globalSem (no prior Acquire).
+	p.globalSem.Release()
+
+	// pollingCtx should be cancelled by the guard callback.
+	select {
+	case <-pollingCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("pollingCtx should have been cancelled by the semaphore guard")
+	}
+}
+
+func TestRegisterSemaphoreGuards_JobBaseCtxSurvives(t *testing.T) {
+	cfg := config.NewConfig()
+	p := mustNewProcessor(t, cfg, validProcessorClients())
+
+	parentCtx := context.Background()
+	pollingCtx, stopAccepting := context.WithCancel(parentCtx)
+	defer stopAccepting()
+	p.registerSemaphoreGuards(pollingCtx, stopAccepting)
+
+	// Trigger guard — polling context dies, but parentCtx (job base) stays alive.
+	p.globalSem.Release()
+
+	select {
+	case <-pollingCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("pollingCtx should have been cancelled")
+	}
+
+	if parentCtx.Err() != nil {
+		t.Fatal("parentCtx (job base) must NOT be cancelled when the semaphore guard fires")
+	}
+}
+
 func TestProcessorTokenHelpers(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1

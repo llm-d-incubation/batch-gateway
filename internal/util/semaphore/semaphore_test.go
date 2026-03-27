@@ -339,6 +339,100 @@ func TestReleaseWithoutAcquire(t *testing.T) {
 	})
 }
 
+func TestOnDoubleRelease(t *testing.T) {
+	t.Run("callback fires on double release", func(t *testing.T) {
+		sem, err := New(1)
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		var called atomic.Int32
+		sem.OnDoubleRelease(func() { called.Add(1) })
+
+		if err := sem.Acquire(context.Background()); err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		sem.Release()
+		sem.Release() // double release
+
+		if called.Load() != 1 {
+			t.Fatalf("expected callback to fire once, got %d", called.Load())
+		}
+	})
+
+	t.Run("callback fires at most once", func(t *testing.T) {
+		sem, err := New(1)
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		var called atomic.Int32
+		sem.OnDoubleRelease(func() { called.Add(1) })
+
+		sem.Release() // first double release
+		sem.Release() // second double release
+
+		if called.Load() != 1 {
+			t.Fatalf("expected callback to fire exactly once, got %d", called.Load())
+		}
+	})
+
+	t.Run("no callback when nil", func(t *testing.T) {
+		sem, err := New(1)
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		// No callback set — should not panic on double release
+		sem.Release()
+	})
+
+	t.Run("normal acquire-release does not trigger callback", func(t *testing.T) {
+		sem, err := New(2)
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		var called atomic.Int32
+		sem.OnDoubleRelease(func() { called.Add(1) })
+
+		for i := 0; i < 100; i++ {
+			if err := sem.Acquire(context.Background()); err != nil {
+				t.Fatalf("acquire %d: %v", i, err)
+			}
+			sem.Release()
+		}
+
+		if called.Load() != 0 {
+			t.Fatalf("callback should not fire during normal usage, got %d", called.Load())
+		}
+	})
+
+	t.Run("concurrent double releases fire callback exactly once", func(t *testing.T) {
+		sem, err := New(1)
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		var called atomic.Int32
+		sem.OnDoubleRelease(func() { called.Add(1) })
+
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem.Release()
+			}()
+		}
+		wg.Wait()
+
+		if called.Load() != 1 {
+			t.Fatalf("expected callback exactly once under concurrent double-release, got %d", called.Load())
+		}
+	})
+}
+
 func BenchmarkAcquireRelease(b *testing.B) {
 	sem, err := New(10)
 	if err != nil {

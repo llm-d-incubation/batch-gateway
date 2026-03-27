@@ -45,10 +45,12 @@ const (
 	// - If data inconsistency, use ReasonDBInconsistency
 	// - If retryable backend error, use ReasonDBTransient
 	// - If not runnable, use ReasonNotRunnableState
+	// - If semaphore guard triggered graceful shutdown, use ReasonGuardShutdown
 	// - Otherwise, fall back to ReasonSystemError
 
 	// Reason labels
 	ReasonSystemError      = "system_error"       // unexpected internal errors (panic, serialization failure, invariant violation)
+	ReasonGuardShutdown    = "guard_shutdown"      // semaphore double-release guard triggered graceful shutdown; job re-enqueued
 	ReasonDBTransient      = "db_transient"       // temporary backend/storage error; safe to retry
 	ReasonDBInconsistency  = "db_inconsistency"   // PQ item exists but DB item missing or corrupted
 	ReasonNotRunnableState = "not_runnable_state" // job status is not runnable by processor policy

@@ -29,8 +29,8 @@
       "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(http_requests_total{namespace=\"$namespace\"}[5m])) by (method, path, code)",
-          "legendFormat": "{{method}} {{path}} {{code}}"
+          "expr": "sum(rate(http_requests_total{namespace=\"$namespace\"}[5m])) by (method, path, status)",
+          "legendFormat": "{{method}} {{path}} {{status}}"
         }
       ],
       "fieldConfig": {
@@ -43,8 +43,8 @@
       "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(http_requests_total{namespace=\"$namespace\", code=~\"4..|5..\"}[5m])) by (code)",
-          "legendFormat": "{{code}}"
+          "expr": "sum(rate(http_requests_total{namespace=\"$namespace\", status=~\"4..|5..\"}[5m])) by (status)",
+          "legendFormat": "{{status}}"
         }
       ],
       "fieldConfig": {

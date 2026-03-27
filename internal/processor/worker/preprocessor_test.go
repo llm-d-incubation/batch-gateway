@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -607,7 +608,7 @@ func TestRunPollingLoop_ExpiredJob_UpdatesExpiredStatus(t *testing.T) {
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
-	if err := p.runPollingLoop(runCtx); err != nil {
+	if err := p.runPollingLoop(runCtx, runCtx); err != nil {
 		t.Fatalf("runPollingLoop: %v", err)
 	}
 
@@ -652,7 +653,7 @@ func TestRunPollingLoop_DBTransient_ReEnqueuesTask(t *testing.T) {
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
-	if err := p.runPollingLoop(runCtx); err != nil {
+	if err := p.runPollingLoop(runCtx, runCtx); err != nil {
 		t.Fatalf("runPollingLoop: %v", err)
 	}
 
@@ -710,7 +711,7 @@ func TestRunPollingLoop_MalformedJobItem_MarksFailed(t *testing.T) {
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
-	if err := p.runPollingLoop(runCtx); err != nil {
+	if err := p.runPollingLoop(runCtx, runCtx); err != nil {
 		t.Fatalf("runPollingLoop: %v", err)
 	}
 
@@ -771,13 +772,202 @@ func TestRunPollingLoop_NotRunnableJob_SkipsWithoutStatusUpdate(t *testing.T) {
 
 	runCtx, cancel := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancel()
-	if err := p.runPollingLoop(runCtx); err != nil {
+	if err := p.runPollingLoop(runCtx, runCtx); err != nil {
 		t.Fatalf("runPollingLoop: %v", err)
 	}
 
 	// no persistent status transition should be attempted for not-runnable jobs.
 	if dbClient.StatusCalls(openai.BatchStatusCompleted) > 0 || dbClient.StatusCalls(openai.BatchStatusFailed) > 0 || dbClient.StatusCalls(openai.BatchStatusExpired) > 0 {
 		t.Fatalf("expected no status updates for not-runnable job")
+	}
+}
+
+func TestRunPollingLoop_GuardCancelAfterDequeue_ReEnqueuesBeforeLaunch(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pollingCtx, pollingCancel := context.WithCancel(ctx)
+	defer pollingCancel()
+
+	pq := &spyPQ{
+		inner: mockdb.NewMockBatchPriorityQueueClient(),
+		afterDequeueFn: func() {
+			pollingCancel()
+		},
+	}
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-guard-requeue-1"
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: "tenantA",
+			Tags:     db.Tags{"tenant": "tenantA"},
+		},
+		BaseContents: db.BaseContents{
+			Spec: mustJSON(t, openai.BatchSpec{
+				InputFileID: "unused",
+			}),
+			Status: mustJSON(t, openai.BatchStatusInfo{
+				Status: openai.BatchStatusValidating,
+			}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore job item: %v", err)
+	}
+	if err := pq.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+	initialEnqueueCalls := pq.EnqueueCalls()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	if err := p.runPollingLoop(pollingCtx, ctx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	if pq.EnqueueCalls() <= initialEnqueueCalls {
+		t.Fatalf("expected task re-enqueue when guard cancels pollingCtx after dequeue")
+	}
+}
+
+func TestRunPollingLoop_SIGTERMAfterDequeue_ReEnqueuesViaDetachedCtx(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(testLoggerCtx())
+	defer parentCancel()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pollingCtx, pollingCancel := context.WithCancel(parentCtx)
+	defer pollingCancel()
+
+	pq := &spyPQ{
+		inner: mockdb.NewMockBatchPriorityQueueClient(),
+		afterDequeueFn: func() {
+			parentCancel()
+		},
+	}
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-sigterm-requeue-1"
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: "tenantA",
+			Tags:     db.Tags{"tenant": "tenantA"},
+		},
+		BaseContents: db.BaseContents{
+			Spec: mustJSON(t, openai.BatchSpec{
+				InputFileID: "unused",
+			}),
+			Status: mustJSON(t, openai.BatchStatusInfo{
+				Status: openai.BatchStatusValidating,
+			}),
+		},
+	}
+	if err := dbClient.DBStore(parentCtx, jobItem); err != nil {
+		t.Fatalf("DBStore job item: %v", err)
+	}
+	if err := pq.PQEnqueue(parentCtx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+	initialEnqueueCalls := pq.EnqueueCalls()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	if err := p.runPollingLoop(pollingCtx, parentCtx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	if pq.EnqueueCalls() <= initialEnqueueCalls {
+		t.Fatalf("expected task re-enqueue even when parent ctx (SIGTERM) is cancelled")
+	}
+}
+
+func TestRunPollingLoop_GuardReEnqueueFails_FallsBackToHandleFailed(t *testing.T) {
+	ctx := testLoggerCtx()
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pollingCtx, pollingCancel := context.WithCancel(ctx)
+	defer pollingCancel()
+
+	pq := &spyPQ{
+		inner: mockdb.NewMockBatchPriorityQueueClient(),
+		afterDequeueFn: func() {
+			pollingCancel()
+		},
+		enqueueErr: fmt.Errorf("redis unavailable"),
+	}
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-guard-fail-fallback-1"
+
+	jobItem := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{
+			ID:       jobID,
+			TenantID: "tenantA",
+			Tags:     db.Tags{"tenant": "tenantA"},
+		},
+		BaseContents: db.BaseContents{
+			Spec: mustJSON(t, openai.BatchSpec{
+				InputFileID: "unused",
+			}),
+			Status: mustJSON(t, openai.BatchStatusInfo{
+				Status: openai.BatchStatusValidating,
+			}),
+		},
+	}
+	if err := dbClient.DBStore(ctx, jobItem); err != nil {
+		t.Fatalf("DBStore job item: %v", err)
+	}
+	// Seed the queue via the inner client directly (bypasses enqueueErr).
+	if err := pq.inner.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	if err := p.runPollingLoop(pollingCtx, ctx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	if dbClient.StatusCalls(openai.BatchStatusFailed) < 1 {
+		t.Fatalf("expected handleFailed to mark job as failed when re-enqueue fails, got %d failed status calls",
+			dbClient.StatusCalls(openai.BatchStatusFailed))
 	}
 }
 

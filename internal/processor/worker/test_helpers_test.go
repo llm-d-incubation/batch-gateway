@@ -150,20 +150,30 @@ func (d *dbStoreErrFileClient) DBStore(_ context.Context, _ *db.FileItem) error 
 // ---------------------------------------------------------------------------
 
 type spyPQ struct {
-	inner db.BatchPriorityQueueClient
-	mu    sync.Mutex
-	enqN  int
-	delN  int
+	inner          db.BatchPriorityQueueClient
+	mu             sync.Mutex
+	enqN           int
+	delN           int
+	afterDequeueFn func()  // called after a successful dequeue (non-empty result)
+	enqueueErr     error   // if non-nil, PQEnqueue returns this error (after incrementing counter)
 }
 
 func (s *spyPQ) PQEnqueue(ctx context.Context, jobPriority *db.BatchJobPriority) error {
 	s.mu.Lock()
 	s.enqN++
+	injectedErr := s.enqueueErr
 	s.mu.Unlock()
+	if injectedErr != nil {
+		return injectedErr
+	}
 	return s.inner.PQEnqueue(ctx, jobPriority)
 }
 func (s *spyPQ) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) ([]*db.BatchJobPriority, error) {
-	return s.inner.PQDequeue(ctx, timeout, maxObjs)
+	items, err := s.inner.PQDequeue(ctx, timeout, maxObjs)
+	if err == nil && len(items) > 0 && s.afterDequeueFn != nil {
+		s.afterDequeueFn()
+	}
+	return items, err
 }
 func (s *spyPQ) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) (int, error) {
 	s.mu.Lock()

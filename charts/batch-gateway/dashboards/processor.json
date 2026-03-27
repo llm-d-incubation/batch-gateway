@@ -176,13 +176,13 @@
       }
     },
     {
-      "title": "File Upload Retries",
+      "title": "File storage operations (retry)",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(file_upload_retries_total{namespace=\"$namespace\"}[5m]))",
-          "legendFormat": "retries/s"
+          "expr": "sum(rate(file_storage_operations_total{namespace=\"$namespace\", status=\"retry\", component=\"processor\"}[5m])) by (operation)",
+          "legendFormat": "{{operation}} retry/s"
         }
       ],
       "fieldConfig": {
@@ -195,8 +195,8 @@
       "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum(batch_startup_recovery_total{namespace=\"$namespace\"}) by (result)",
-          "legendFormat": "{{result}}"
+          "expr": "sum(batch_startup_recovery_total{namespace=\"$namespace\"}) by (status, action)",
+          "legendFormat": "{{status}} / {{action}}"
         }
       ]
     }

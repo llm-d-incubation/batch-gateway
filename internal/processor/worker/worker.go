@@ -33,6 +33,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
@@ -51,6 +52,10 @@ type Processor struct {
 	event     db.BatchEventChannelClient // cancel-event subscription
 	inference *inference.GatewayResolver // model → gateway routing
 	files     *fileManager
+
+	// onSemaphoreDoubleRelease is called when any semaphore detects a double-release.
+	// Set by registerSemaphoreGuards; used by processModel for per-model semaphores.
+	onSemaphoreDoubleRelease func()
 }
 
 func NewProcessor(
@@ -92,6 +97,15 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 
 	p.recoverStaleJobs(ctx)
 
+	// Two context branches:
+	//   pollingCtx — controls the polling loop; cancelled by semaphore guard or SIGTERM.
+	//   ctx (unchanged) — parent for job contexts; only cancelled by SIGTERM.
+	// This separation ensures stopAccepting() halts new-job intake without
+	// cancelling in-flight jobs.
+	pollingCtx, stopAccepting := context.WithCancel(ctx)
+	defer stopAccepting()
+	p.registerSemaphoreGuards(pollingCtx, stopAccepting)
+
 	logger := klog.FromContext(ctx)
 	logger.V(logging.INFO).Info(
 		"Processor run started",
@@ -99,7 +113,26 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 		"maxWorkers", p.cfg.NumWorkers,
 	)
 
-	return p.runPollingLoop(ctx)
+	return p.runPollingLoop(pollingCtx, ctx)
+}
+
+// registerSemaphoreGuards installs double-release callbacks on all semaphores.
+// On detection the processor cancels the polling context, initiating graceful
+// shutdown: the polling loop stops accepting new jobs while in-flight jobs
+// finish normally.
+//
+// pollingCtx is used only for its logger; cancel is the CancelFunc that stops the polling loop.
+func (p *Processor) registerSemaphoreGuards(pollingCtx context.Context, cancel context.CancelFunc) {
+	logger := klog.FromContext(pollingCtx)
+	makeGuard := func(name string) func() {
+		return func() {
+			logger.Error(nil, "Semaphore double-release detected, initiating graceful shutdown", "semaphore", name)
+			cancel()
+		}
+	}
+	p.tokens.OnDoubleRelease(makeGuard("num-workers"))
+	p.globalSem.OnDoubleRelease(makeGuard("global-concurrency"))
+	p.onSemaphoreDoubleRelease = makeGuard("per-model-concurrency")
 }
 
 // Stop gracefully stops the processor, waiting for all workers to finish.
@@ -121,44 +154,47 @@ func (p *Processor) Stop(ctx context.Context) {
 }
 
 // runPollingLoop runs the job polling loop and dispatches jobs to workers.
-func (p *Processor) runPollingLoop(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+//
+// pollingCtx controls the loop: cancelled by semaphore guard or SIGTERM.
+// jobBaseCtx is the parent for per-job contexts: only cancelled by SIGTERM.
+// This ensures stopAccepting() halts new-job intake without killing in-flight jobs.
+func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error {
+	logger := klog.FromContext(pollingCtx)
 	logger.V(logging.INFO).Info("Polling loop started")
 	// worker driven non-busy wait
 	for {
-		if !p.acquire(ctx) {
+		if !p.acquire(pollingCtx) {
 			return nil
 		}
 
 		// check queue for available tasks
 		logger.V(logging.DEBUG).Info("Checking queue for available tasks")
-		task, err := p.poller.dequeueOne(ctx)
+		task, err := p.poller.dequeueOne(pollingCtx)
 
 		// when there's no waiting tasks in the queue or poller returned an error
 		if task == nil || err != nil {
 			// wait for poll interval to protect db from frequent queueing
-			if !p.releaseAndWaitPollInterval(ctx) {
+			if !p.releaseAndWaitPollInterval(pollingCtx) {
 				return nil
 			}
 			continue
 		}
 
-		// create a new logger for the job with job ID
-		jlogger := klog.FromContext(ctx).WithValues("jobId", task.ID)
-		jobCtx := klog.NewContext(ctx, jlogger)
+		// Pre-launch: use pollingCtx so guard cancel / SIGTERM interrupts
+		// DB fetch and validation promptly. jobBaseCtx is only used once
+		// we commit to launching the job goroutine.
+		pollLogger := klog.FromContext(pollingCtx).WithValues("jobId", task.ID)
+		pollCtx := klog.NewContext(pollingCtx, pollLogger)
 
 		// get job item from db
-		jobItem, err := p.poller.fetchJobItemByID(jobCtx, task.ID)
+		jobItem, err := p.poller.fetchJobItemByID(pollCtx, task.ID)
 		if err != nil {
-			jlogger.Error(err, "Failed to fetch job item from DB")
+			pollLogger.Error(err, "Failed to fetch job item from DB")
 			p.releaseForNextPoll()
-			// error is due to system issue (db connection, etc.)
-			// re-enqueue the job to the queue so this job can be picked up later by another worker
-			// best-effort
-			jlogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
-			reEnqueueErr := p.poller.enqueueOne(jobCtx, task)
+			pollLogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
+			reEnqueueErr := p.poller.enqueueOne(pollCtx, task)
 			if reEnqueueErr != nil {
-				jlogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
+				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
@@ -168,55 +204,46 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// job item is not found in the db.
 		if jobItem == nil {
-			jlogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
-			// ignore the job (data inconsistency) and continue polling
+			pollLogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
 			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonDBInconsistency)
 			continue
 		}
 
-		jlogger.V(logging.TRACE).Info("Job item found in the DB")
+		pollLogger.V(logging.TRACE).Info("Job item found in the DB")
 
 		// queue wait metrics recording
 		if jobPriorityData, err := batch_utils.GetJobPriorityDataFromQueueItem(task); err == nil {
 			queueWait := time.Since(time.Unix(jobPriorityData.CreatedAt, 0))
 			metrics.RecordQueueWaitDuration(queueWait, jobItem.TenantID)
-			jlogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
+			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
 		} else {
-			// queue createdAt is not available.
-			// log the error and continue processing as createdAt is only for metrics recording.
-			jlogger.Error(err, "Failed to get job priority data from queue item")
+			pollLogger.Error(err, "Failed to get job priority data from queue item")
 		}
 
 		// db job item to job info object conversion
 		jobInfo, err := batch_utils.FromDBItemToJobInfoObject(jobItem)
-
 		if err != nil {
-			jlogger.Error(err, "Failed to convert job object in DB to job info object")
+			pollLogger.Error(err, "Failed to convert job object in DB to job info object")
 			p.releaseForNextPoll()
-			if failErr := p.handleFailed(jobCtx, p.updater, jobItem, nil); failErr != nil {
-				jlogger.Error(failErr, "Failed to mark malformed job as failed")
+			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil); failErr != nil {
+				pollLogger.Error(failErr, "Failed to mark malformed job as failed")
 			}
 			continue
 		}
 
-		// create a new logger including tenant ID (Job ID is already in the logger)
-		jlogger = jlogger.WithValues("tenantId", jobInfo.TenantID)
-		// update the context with the new logger
-		jobCtx = klog.NewContext(jobCtx, jlogger)
+		pollLogger = pollLogger.WithValues("tenantId", jobInfo.TenantID)
+		pollCtx = klog.NewContext(pollCtx, pollLogger)
 
-		jlogger.V(logging.TRACE).Info("Job info object converted")
+		pollLogger.V(logging.TRACE).Info("Job info object converted")
 
 		if batch_utils.IsJobExpired(task) {
-			jlogger.V(logging.INFO).Info("Job is expired.")
+			pollLogger.V(logging.INFO).Info("Job is expired.")
 
-			// persistent status update (to expired status)
-			if err := p.updater.UpdatePersistentStatus(jobCtx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
-				jlogger.V(logging.ERROR).Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
+			if err := p.updater.UpdatePersistentStatus(pollCtx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
+				pollLogger.V(logging.ERROR).Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
 			}
 
-			// do not need to delete the task from the queue.
-			// ignore the job and continue polling
 			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredDequeue)
 			continue
@@ -224,29 +251,49 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// job is not in runnable state.
 		if !batch_utils.IsJobRunnable(jobInfo.BatchJob) {
-			// If the batch was marked as "cancelling" between dequeue and this check,
-			// transition it to "cancelled" so it doesn't get stuck forever.
 			if jobInfo.BatchJob.Status == openai.BatchStatusCancelling {
-				jlogger.V(logging.INFO).Info("Job is in cancelling state after dequeue, transitioning to cancelled")
-				if err := p.updater.UpdateCancelledStatus(jobCtx, jobItem, nil, "", ""); err != nil {
-					jlogger.V(logging.ERROR).Error(err, "Failed to update job status to cancelled")
+				pollLogger.V(logging.INFO).Info("Job is in cancelling state after dequeue, transitioning to cancelled")
+				if err := p.updater.UpdateCancelledStatus(pollCtx, jobItem, nil, "", ""); err != nil {
+					pollLogger.V(logging.ERROR).Error(err, "Failed to update job status to cancelled")
 				}
 				p.releaseForNextPoll()
 				metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 				continue
 			}
 
-			jlogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
+			pollLogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
 
-			// persistent status update is not needed.
-			// do not need to delete the task from the queue.
-			// ignore the job and continue polling
 			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonNotRunnableState)
 			continue
 		}
 
-		// process job
+		// Guard: if pollingCtx was cancelled between dequeue and here
+		// (e.g. semaphore double-release or SIGTERM), re-enqueue instead of launching.
+		// Use a detached context because both pollingCtx and jobBaseCtx may already
+		// be cancelled (SIGTERM cancels the parent of both).
+		if pollingCtx.Err() != nil {
+			pollLogger.V(logging.INFO).Info("Polling context cancelled before job launch, re-enqueueing")
+			p.releaseForNextPoll()
+			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-guard")
+			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
+				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue job during graceful shutdown, marking as failed")
+				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil); failErr != nil {
+					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
+				}
+				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
+			} else {
+				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
+			}
+			bgSpan.End()
+			return nil
+		}
+
+		// Commit to launching: create job context from jobBaseCtx so in-flight
+		// jobs survive pollingCtx cancellation (guard shutdown).
+		jobLogger := klog.FromContext(jobBaseCtx).WithValues("jobId", task.ID, "tenantId", jobInfo.TenantID)
+		jobCtx := klog.NewContext(jobBaseCtx, jobLogger)
+
 		p.wg.Add(1)
 		go p.runJob(jobCtx, &jobExecutionParams{
 			updater:         p.updater,

@@ -338,6 +338,9 @@ func (p *Processor) processModel(
 	if err != nil {
 		return fmt.Errorf("failed to create model semaphore: %w", err)
 	}
+	if p.onSemaphoreDoubleRelease != nil {
+		modelSem.OnDoubleRelease(p.onSemaphoreDoubleRelease)
+	}
 
 	var (
 		wg              sync.WaitGroup

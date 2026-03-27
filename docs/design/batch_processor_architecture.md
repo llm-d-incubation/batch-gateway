@@ -222,30 +222,40 @@ Terminal states are removed from the priority queue.
 
 #### 3. Context Hierarchy
 
-The processor uses a layered context tree to propagate cancellation signals. Each context has a single cancellation trigger and a well-defined blast radius.
+The processor uses a layered context tree to propagate cancellation signals.
+The critical invariant is the **fork** at `ctx`: `pollingCtx` and `jobCtx` are siblings, so cancelling the polling loop does not kill in-flight jobs.
 
-```
-ctx (Run parameter — signal-aware, cancelled by SIGTERM/SIGINT)
-  └── jobCtx (per-job — klog.NewContext with job/tenant logger)
-        ├── sloCtx (context.WithDeadline — SLO expiry)
-        │     └── abortCtx (context.WithCancel — user cancel event)
-        │           └── execCtx (context.WithCancel — first model error cancels sibling models)
-        └── watchCancel goroutine (listens for Redis cancel events, sets cancelRequested flag and calls abortInferFn)
+```mermaid
+graph TD
+    ctx(["ctx — SIGTERM / SIGINT"])
+
+    ctx -->|"semaphore guard"| pollingCtx(["pollingCtx"])
+    ctx -->|"per job"| jobCtx(["jobCtx ×N"])
+
+    pollingCtx -.-> polling["acquire · dequeue · DB fetch · validate · poll wait"]
+
+    jobCtx --> sloCtx(["sloCtx — SLO deadline"])
+    jobCtx -.-> watchCancel["watchCancel goroutine"]
+
+    sloCtx --> abortCtx(["abortCtx — user cancel"])
+    abortCtx --> execCtx(["execCtx — first model error"])
 ```
 
-| Context | Created in | Cancelled by | Effect |
-|---------|-----------|-------------|--------|
-| `ctx` | `main.go` via `interrupt.ContextWithSignal` | SIGTERM / SIGINT | Entire processor shuts down; polling loop exits, in-flight jobs see `ctx.Done()` and re-enqueue |
-| `jobCtx` | `runPollingLoop` via `klog.NewContext(ctx, jlogger)` | Parent `ctx` cancellation | Single job's lifecycle; passed to `runJob` |
-| `sloCtx` | `runJob` via `context.WithDeadline(ctx, slo)` | SLO deadline fires | Stops new request dispatch; in-flight requests finish; undispatched entries drained as `batch_expired` |
-| `abortCtx` | `runJob` via `context.WithCancel(sloCtx)` | `watchCancel` calls `abortInferFn` on user cancel event | Aborts in-flight HTTP inference requests immediately |
-| `execCtx` | `executeJob` via `context.WithCancel(abortCtx)` | First model goroutine error calls `execCancel()` | Stops dispatch in all model goroutines; already-dispatched requests run to completion |
+| Context | Cancelled by | Blast radius |
+|---------|-------------|--------------|
+| `ctx` | SIGTERM / SIGINT | Everything — polling loop exits, in-flight jobs re-enqueue |
+| `pollingCtx` | Semaphore double-release guard (also inherits `ctx` cancellation) | **Polling loop + pre-launch** — acquire, dequeue, DB fetch, validation, and guard re-enqueue all use `pollingCtx`. Stops accepting new jobs; running jobs unaffected. Jobs dequeued but not yet launched are re-enqueued (fallback: marked failed). |
+| `jobCtx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). Created only at launch commit, **after** all pre-launch checks pass. **Not** cancelled when only `pollingCtx` is cancelled (e.g. semaphore guard). |
+| `sloCtx` | SLO deadline fires | Stops dispatch; in-flight requests finish; undispatched drained as `batch_expired` |
+| `abortCtx` | `watchCancel` calls `abortInferFn` | Aborts in-flight HTTP inference requests immediately |
+| `execCtx` | First model goroutine error | Stops dispatch in all model goroutines; already-dispatched requests complete |
 
 **Design notes:**
--   `abortCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
--   `execCtx` is derived from `abortCtx` so both user cancel and SLO expiry stop dispatch.
--   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown) and to drain undispatched entries with the correct error code.
--   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
+-   The fork is intentional: `pollingCtx` controls the loop, `jobCtx` controls the job. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. By contrast, **SIGTERM / SIGINT cancel `ctx`**, so both polling and in-flight jobs see cancellation and re-enqueue / teardown as designed.
+-   `abortCtx` ← `sloCtx` ← `jobCtx`: SLO deadline and user cancel both propagate down to inference requests automatically.
+-   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason and drain undispatched entries with the correct error code.
+-   Pre-launch operations (DB fetch, conversion, expired/runnable checks) run under `pollingCtx` so they abort promptly when the guard fires. `jobCtx` is created from `jobBaseCtx` only at the moment we commit to launching `runJob`.
+-   On semaphore double-release: guard cancels `pollingCtx` → pre-launch aborts or guard re-enqueue fires → `Run` returns → `main.go` sets `ready=false` → K8s removes the pod from service (readiness probe fails). If re-enqueue also fails, the job is marked failed as a terminal fallback. The pod is restarted only if a liveness probe or restart policy triggers it.
 
 -------------------------------------------------------------------
 
@@ -639,6 +649,7 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 
   Reasons include:
   - `system_error`
+  - `guard_shutdown` — semaphore double-release guard triggered graceful shutdown; job re-enqueued
   - `db_transient`
   - `db_inconsistency`
   - `not_runnable_state`

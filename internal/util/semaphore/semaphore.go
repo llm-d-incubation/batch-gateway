@@ -21,6 +21,7 @@ package semaphore
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"k8s.io/klog/v2"
 )
@@ -42,6 +43,12 @@ type Semaphore interface {
 	// TryAcquire attempts to acquire a token without blocking.
 	// Returns true if a token was acquired, false otherwise.
 	TryAcquire() bool
+
+	// OnDoubleRelease registers a callback invoked when Release is called
+	// on an already-empty semaphore (i.e. more releases than acquires).
+	// The callback is invoked at most once. Passing nil clears the callback.
+	// Replacing the callback resets the once guard, so the new callback may fire once.
+	OnDoubleRelease(fn func())
 }
 
 // semaphore implements the Semaphore interface using a buffered channel.
@@ -49,7 +56,10 @@ type Semaphore interface {
 var _ Semaphore = (*semaphore)(nil)
 
 type semaphore struct {
-	tokens chan struct{}
+	tokens            chan struct{}
+	mu                sync.Mutex // protects onDoubleRelease and doubleReleaseOnce
+	onDoubleRelease   func()     // callback to invoke when double-release is detected
+	doubleReleaseOnce sync.Once  // ensures callback is invoked at most once
 }
 
 // New creates a new semaphore with the specified capacity.
@@ -78,9 +88,25 @@ func (s *semaphore) Release() {
 	select {
 	case <-s.tokens:
 	default:
-		// This should not happen in correct usage.
-		klog.Background().Error(nil, "CRITICAL: token channel is full, skipping release")
+		klog.Background().Error(nil, "CRITICAL: semaphore double-release detected (more releases than acquires)")
+		s.mu.Lock()
+		fn := s.onDoubleRelease
+		once := &s.doubleReleaseOnce
+		s.mu.Unlock()
+		if fn != nil {
+			once.Do(fn)
+		}
 	}
+}
+
+// OnDoubleRelease registers a callback invoked when Release is called
+// on an already-empty semaphore. The callback fires at most once.
+// Replacing the callback resets the once guard, so the new callback may fire once.
+func (s *semaphore) OnDoubleRelease(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onDoubleRelease = fn
+	s.doubleReleaseOnce = sync.Once{}
 }
 
 // TryAcquire attempts to acquire a token without blocking.
