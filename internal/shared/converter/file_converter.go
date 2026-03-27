@@ -35,8 +35,8 @@ func FileToDBItem(file *openai.FileObject, tenantID string, tags api.Tags) (*api
 	}
 
 	var expiry int64
-	if file.ExpiresAt > 0 {
-		expiry = file.ExpiresAt
+	if file.ExpiresAt != nil && *file.ExpiresAt > 0 {
+		expiry = *file.ExpiresAt
 	}
 
 	item := &api.FileItem{}

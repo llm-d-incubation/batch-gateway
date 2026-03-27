@@ -167,7 +167,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		return err
 	}
 
-	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), jobInfo.TenantID, metrics.GetSizeBucket(int(lineCount)))
+	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), metrics.GetSizeBucket(int(lineCount)))
 	modelCounts := make(map[string]int, len(modelToSafe))
 	for model, safe := range modelToSafe {
 		modelCounts[model] = len(acc.entries[safe])

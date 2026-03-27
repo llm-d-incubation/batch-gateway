@@ -116,12 +116,12 @@ func doTestRecoveryMiddlewareWithPanic(t *testing.T) {
 			}
 
 			// Check error fields
-			if resp.Error.Code != http.StatusInternalServerError {
-				t.Errorf("expected error code %d, got %d", http.StatusInternalServerError, resp.Error.Code)
+			if resp.Error.Code != nil {
+				t.Errorf("expected error code null (no explicit code), got %q", *resp.Error.Code)
 			}
 
-			if resp.Error.Type != "InternalServerError" {
-				t.Errorf("expected error type %q, got %q", "InternalServerError", resp.Error.Type)
+			if resp.Error.Type != "server_error" {
+				t.Errorf("expected error type %q, got %q", "server_error", resp.Error.Type)
 			}
 
 			if resp.Error.Message != "The server had an error while processing your request" {

@@ -812,10 +812,10 @@ func TestBatchHandler(t *testing.T) {
 		if resp.HasMore {
 			t.Errorf("Expected has_more to be false, got %v", resp.HasMore)
 		}
-		if resp.FirstID == "" {
+		if resp.FirstID == nil {
 			t.Error("Expected first_id to be set")
 		}
-		if resp.LastID == "" {
+		if resp.LastID == nil {
 			t.Error("Expected last_id to be set")
 		}
 

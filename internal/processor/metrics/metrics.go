@@ -167,7 +167,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.ProcessTimeBucket.BucketFactor,
 				cfg.ProcessTimeBucket.BucketCount,
 			),
-		}, []string{"tenantID", "size_bucket"},
+		}, []string{"size_bucket"},
 	)
 
 	// per-model in-flight requests during execution
@@ -202,7 +202,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.ProcessTimeBucket.BucketFactor,
 				cfg.ProcessTimeBucket.BucketCount,
 			),
-		}, []string{"tenantID", "size_bucket"},
+		}, []string{"size_bucket"},
 	)
 
 	// duration of queue wait time
@@ -215,7 +215,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.QueueTimeBucket.BucketFactor,
 				cfg.QueueTimeBucket.BucketCount,
 			),
-		}, []string{"tenantID"},
+		}, nil,
 	)
 
 	// Startup recovery: counts jobs discovered in workdir after a container restart.
@@ -267,8 +267,8 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 // Recorder funcs
 
 // RecordQueueWait observes the queue time
-func RecordQueueWaitDuration(duration time.Duration, tenantID string) {
-	jobQueueWaitDuration.WithLabelValues(tenantID).Observe(duration.Seconds())
+func RecordQueueWaitDuration(duration time.Duration) {
+	jobQueueWaitDuration.WithLabelValues().Observe(duration.Seconds())
 }
 
 // RecordJobProcessed increments the total processed jobs count.
@@ -277,8 +277,8 @@ func RecordJobProcessed(result string, reason string) {
 }
 
 // RecordJobProcessingDuration observes the time taken to process a job.
-func RecordJobProcessingDuration(duration time.Duration, tenantID string, sizeBucket string) {
-	jobProcessingDuration.WithLabelValues(tenantID, sizeBucket).Observe(duration.Seconds())
+func RecordJobProcessingDuration(duration time.Duration, sizeBucket string) {
+	jobProcessingDuration.WithLabelValues(sizeBucket).Observe(duration.Seconds())
 }
 
 // IncActiveWorkers increments the gauge for active workers.
@@ -307,8 +307,8 @@ func DecProcessorInflightRequests() {
 }
 
 // RecordPlanBuildDuration observes ingestion plan build duration.
-func RecordPlanBuildDuration(duration time.Duration, tenantID string, sizeBucket string) {
-	planBuildDuration.WithLabelValues(tenantID, sizeBucket).Observe(duration.Seconds())
+func RecordPlanBuildDuration(duration time.Duration, sizeBucket string) {
+	planBuildDuration.WithLabelValues(sizeBucket).Observe(duration.Seconds())
 }
 
 // IncModelInflightRequests increments the in-flight request gauge for a model.
