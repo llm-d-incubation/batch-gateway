@@ -43,7 +43,7 @@ USER_TOKEN=$(oc whoami -t)
 
 curl -sk -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
-    -X POST -d '{"name":"my-key","expiration":"1h"}' \
+    -X POST -d '{"name":"my-key","expiresIn":"1h"}' \
     https://maas.<cluster-domain>/maas-api/v1/api-keys | jq -r '.key'
 ```
 
@@ -133,6 +133,12 @@ rules:
   resources: ["secrets"]
   resourceNames: ["maas-db-config"]
   verbs: ["get"]
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -262,7 +268,7 @@ spec:
       - name: ${MAAS_TEST_GROUP}
 EOF
 
-# MaaSSubscription — per-group token rate limit
+# MaaSSubscription — per-group token rate limit (authorized group)
 oc apply -f - <<EOF
 apiVersion: maas.opendatahub.io/v1alpha1
 kind: MaaSSubscription
@@ -273,6 +279,25 @@ spec:
   owner:
     groups:
       - name: ${MAAS_TEST_GROUP}
+  modelRefs:
+    - name: facebook-opt-125m-simulated
+      namespace: ${LLM_NS}
+      tokenRateLimits:
+        - limit: 500
+          window: 1m
+EOF
+
+# MaaSSubscription — unauthorized group (has subscription but no model access)
+oc apply -f - <<EOF
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: batch-test-subscription-unauth
+  namespace: ${MAAS_POLICY_NAMESPACE}
+spec:
+  owner:
+    groups:
+      - name: tier-unauth-users
   modelRefs:
     - name: facebook-opt-125m-simulated
       namespace: ${LLM_NS}
@@ -601,12 +626,17 @@ spec:
 # Wait for OAuth restart
 sleep 30
 
-# Create group and add only the authorized user
+# Create authorized group and add authorized user
 oc adm groups new "${MAAS_TEST_GROUP}" 2>/dev/null || true
 oc adm groups add-users "${MAAS_TEST_GROUP}" "${MAAS_TEST_USER}"
+
+# Create unauthorized group (has subscription but NO model access via MaaSAuthPolicy)
+MAAS_UNAUTH_GROUP=tier-unauth-users
+oc adm groups new "${MAAS_UNAUTH_GROUP}" 2>/dev/null || true
+oc adm groups add-users "${MAAS_UNAUTH_GROUP}" "${MAAS_UNAUTH_USER}"
 ```
 
-> **Note**: The unauthorized user `testuser-unauth` is intentionally NOT added to the `tier-free-users` group. This allows testing that MaaSAuthPolicy correctly rejects users who lack group membership.
+> **Note**: The unauthorized user is in `tier-unauth-users` (not `tier-free-users`). This group has a MaaSSubscription (so the user can create API keys) but no MaaSAuthPolicy (so the user is denied model access).
 
 </details>
 
@@ -632,7 +662,7 @@ USER_TOKEN=$(KUBECONFIG="${TEMP_KUBECONFIG}" oc whoami -t)
 API_KEY=$(curl -sk \
     -H "Authorization: Bearer ${USER_TOKEN}" \
     -H "Content-Type: application/json" \
-    -X POST -d '{"name":"batch-e2e","expiration":"1h"}' \
+    -X POST -d '{"name":"batch-e2e","expiresIn":"1h"}' \
     "${GW_URL}/maas-api/v1/api-keys" | jq -r '.key')
 
 # Get MaaS API key for unauthorized user
@@ -643,7 +673,7 @@ UNAUTH_TOKEN=$(KUBECONFIG="${TEMP_KUBECONFIG}" oc whoami -t)
 UNAUTH_API_KEY=$(curl -sk \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" \
     -H "Content-Type: application/json" \
-    -X POST -d '{"name":"batch-e2e-unauth","expiration":"1h"}' \
+    -X POST -d '{"name":"batch-e2e-unauth","expiresIn":"1h"}' \
     "${GW_URL}/maas-api/v1/api-keys" | jq -r '.key')
 
 rm -f "${TEMP_KUBECONFIG}"
