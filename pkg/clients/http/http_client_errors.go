@@ -30,13 +30,35 @@ const (
 
 // ClientError represents an HTTP client error with category and context
 type ClientError struct {
-	Category ErrorCategory
-	Message  string
-	RawError error // original error message
+	Category     ErrorCategory
+	Message      string
+	RawError     error  // original error message
+	StatusCode   int    // HTTP status code (0 for non-HTTP errors like network/timeout)
+	ResponseBody []byte // raw HTTP response body (nil for non-HTTP errors)
 }
 
 func (e *ClientError) Error() string {
 	return e.Message
+}
+
+// OpenAIErrorType returns a best-effort OpenAI-style error type string.
+// There is no global enum in the OpenAI spec for this field, so we map internal
+// categories to commonly used error type values.
+func (e *ClientError) OpenAIErrorType() string {
+	switch e.Category {
+	case ErrCategoryInvalidReq:
+		return "invalid_request_error"
+	case ErrCategoryAuth:
+		return "authentication_error"
+	case ErrCategoryRateLimit:
+		return "rate_limit_error"
+	case ErrCategoryServer:
+		return "server_error"
+	case ErrCategoryParse:
+		return "invalid_response"
+	default:
+		return "unknown_error"
+	}
 }
 
 // IsRetryable checks if the error is retryable

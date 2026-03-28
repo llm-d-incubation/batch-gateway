@@ -447,7 +447,7 @@ func TestPost_NoRetryOn400(t *testing.T) {
 
 // TestHandleErrorResponse_OpenAIFormat tests parsing OpenAI-style error response
 func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
-	body := []byte(`{"error": {"message": "Invalid API key", "type": "invalid_request_error"}}`)
+	body := []byte(`{"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}}`)
 
 	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
 	clientErr := client.HandleErrorResponse(context.Background(), http.StatusUnauthorized, body)
@@ -462,6 +462,14 @@ func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
 
 	if clientErr.Message != "HTTP 401: Invalid API key" {
 		t.Errorf("Expected message 'HTTP 401: Invalid API key', got %s", clientErr.Message)
+	}
+
+	if clientErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected StatusCode 401, got %d", clientErr.StatusCode)
+	}
+
+	if string(clientErr.ResponseBody) != string(body) {
+		t.Errorf("Expected ResponseBody to be preserved, got %s", clientErr.ResponseBody)
 	}
 }
 
@@ -529,6 +537,30 @@ func TestMapStatusCodeToCategory(t *testing.T) {
 			category := MapStatusCodeToCategory(tt.statusCode)
 			if category != tt.expected {
 				t.Errorf("For status %d, expected category %s, got %s", tt.statusCode, tt.expected, category)
+			}
+		})
+	}
+}
+
+func TestClientError_OpenAIErrorType(t *testing.T) {
+	tests := []struct {
+		name     string
+		category ErrorCategory
+		want     string
+	}{
+		{name: "invalid request", category: ErrCategoryInvalidReq, want: "invalid_request_error"},
+		{name: "auth", category: ErrCategoryAuth, want: "authentication_error"},
+		{name: "rate limit", category: ErrCategoryRateLimit, want: "rate_limit_error"},
+		{name: "server", category: ErrCategoryServer, want: "server_error"},
+		{name: "parse", category: ErrCategoryParse, want: "invalid_response"},
+		{name: "unknown", category: ErrCategoryUnknown, want: "unknown_error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (&ClientError{Category: tt.category}).OpenAIErrorType()
+			if got != tt.want {
+				t.Fatalf("OpenAIErrorType() = %q, want %q", got, tt.want)
 			}
 		})
 	}

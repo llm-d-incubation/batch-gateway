@@ -842,6 +842,7 @@ install_batch_gateway() {
         --set "global.databaseType=postgresql"
         --set "apiserver.config.enablePprof=true"
         --set "processor.config.enablePprof=true"
+        --set "processor.resources.requests.memory=256Mi"
         --set "gc.enabled=true"
         --set "gc.image.pullPolicy=IfNotPresent"
         --set "gc.image.tag=${DEV_VERSION}"

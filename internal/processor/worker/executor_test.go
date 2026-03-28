@@ -77,7 +77,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	}
 }
 
-func TestExecuteOneRequest_InferenceError(t *testing.T) {
+func TestExecuteOneRequest_NonHTTPError(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -108,13 +108,166 @@ func TestExecuteOneRequest_InferenceError(t *testing.T) {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
 	if result.Error == nil {
-		t.Fatalf("expected error field in output line")
+		t.Fatalf("expected error field in output line for non-HTTP error")
 	}
 	if result.Error.Code != string(httpclient.ErrCategoryServer) {
 		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
 	}
 	if result.Response != nil {
-		t.Fatalf("expected nil response on inference error")
+		t.Fatalf("expected nil response on non-HTTP error")
+	}
+}
+
+func TestExecuteOneRequest_HTTPError(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	errorBody := []byte(`{"error":{"message":"Invalid model","type":"invalid_request_error","code":"model_not_found"}}`)
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return nil, &inference.ClientError{
+				Category:     httpclient.ErrCategoryInvalidReq,
+				Message:      "HTTP 422: Invalid model",
+				StatusCode:   422,
+				ResponseBody: errorBody,
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-http-err", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Error != nil {
+		t.Fatalf("expected nil error for HTTP error response, got: %+v", result.Error)
+	}
+	if result.Response == nil {
+		t.Fatalf("expected response field for HTTP error")
+	}
+	if result.Response.StatusCode != 422 {
+		t.Fatalf("status_code = %d, want 422", result.Response.StatusCode)
+	}
+	if result.Response.Body == nil {
+		t.Fatalf("expected non-nil body")
+	}
+	// Verify the original error body is preserved
+	errObj, ok := result.Response.Body["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected error object in body, got: %v", result.Response.Body)
+	}
+	if errObj["message"] != "Invalid model" {
+		t.Fatalf("expected error message 'Invalid model', got: %v", errObj["message"])
+	}
+	if errObj["code"] != "model_not_found" {
+		t.Fatalf("expected error code 'model_not_found', got: %v", errObj["code"])
+	}
+}
+
+func TestExecuteOneRequest_HTTPErrorEmptyBody(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return nil, &inference.ClientError{
+				Category:     httpclient.ErrCategoryServer,
+				Message:      "HTTP 502: ",
+				StatusCode:   502,
+				ResponseBody: nil,
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-empty", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Response == nil {
+		t.Fatalf("expected response field for HTTP error")
+	}
+	if result.Response.StatusCode != 502 {
+		t.Fatalf("status_code = %d, want 502", result.Response.StatusCode)
+	}
+	// Body should be empty object {}, not null
+	if result.Response.Body == nil {
+		t.Fatalf("expected non-nil body (empty object), got nil")
+	}
+	if len(result.Response.Body) != 0 {
+		t.Fatalf("expected empty body object, got: %v", result.Response.Body)
+	}
+}
+
+func TestExecuteOneRequest_HTTPErrorNonJSONBody(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return nil, &inference.ClientError{
+				Category:     httpclient.ErrCategoryServer,
+				Message:      "HTTP 500: Bad Gateway",
+				StatusCode:   500,
+				ResponseBody: []byte("<html>Bad Gateway</html>"),
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-html", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Response == nil {
+		t.Fatalf("expected response field for HTTP error")
+	}
+	// Non-JSON body should be wrapped in synthetic error object
+	errObj, ok := result.Response.Body["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected synthetic error object in body, got: %v", result.Response.Body)
+	}
+	if errObj["message"] != "<html>Bad Gateway</html>" {
+		t.Fatalf("expected original body as message, got: %v", errObj["message"])
+	}
+	if errObj["type"] != "server_error" {
+		t.Fatalf("expected type %q, got: %v", "server_error", errObj["type"])
 	}
 }
 
@@ -1068,6 +1221,126 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	}
 	if errLine.Error == nil || errLine.Response != nil {
 		t.Fatalf("error line: want error set and response nil, got response=%v error=%v", errLine.Response, errLine.Error)
+	}
+}
+
+// TestExecuteJob_HTTPErrorGoesToOutputFile verifies that HTTP error responses (4xx/5xx)
+// are written to output.jsonl (not error.jsonl) with the response field populated,
+// while non-HTTP errors go to error.jsonl with the error field populated.
+// This matches the OpenAI batch spec: error file is for non-HTTP failures only.
+func TestExecuteJob_HTTPErrorGoesToOutputFile(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	var callCount atomic.Int32
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			n := callCount.Add(1)
+			switch n {
+			case 1:
+				// success
+				return &inference.GenerateResponse{RequestID: "srv-1", Response: []byte(`{"ok":true}`)}, nil
+			case 2:
+				// HTTP 422 error — should go to output file
+				return nil, &inference.ClientError{
+					Category:     httpclient.ErrCategoryInvalidReq,
+					Message:      "HTTP 422: Invalid model",
+					StatusCode:   422,
+					ResponseBody: []byte(`{"error":{"message":"Invalid model","type":"invalid_request_error","code":"model_not_found"}}`),
+				}
+			default:
+				// non-HTTP error — should go to error file
+				return nil, &inference.ClientError{
+					Category: httpclient.ErrCategoryServer,
+					Message:  "connection refused",
+				}
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+	cancelReq := &atomic.Bool{}
+
+	ctx := testLoggerCtx(t)
+	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         env.updater,
+		jobInfo:         jobInfo,
+		cancelRequested: cancelReq,
+	})
+	if err != nil {
+		t.Fatalf("executeJob error: %v", err)
+	}
+	// Only the 200 response counts as completed; HTTP 422 and non-HTTP error are both failures.
+	if counts.Completed != 1 {
+		t.Fatalf("Completed = %d, want 1", counts.Completed)
+	}
+	if counts.Failed != 2 {
+		t.Fatalf("Failed = %d, want 2", counts.Failed)
+	}
+
+	// output.jsonl should contain 2 lines: the 200 success AND the HTTP 422 error.
+	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outputLines := readNonEmptyJSONLLines(t, outputPath)
+	if len(outputLines) != 2 {
+		t.Fatalf("output.jsonl lines = %d, want 2", len(outputLines))
+	}
+
+	// Verify both output lines: one success (200) and one HTTP error (422).
+	var found200, found422 bool
+	for _, line := range outputLines {
+		var entry outputLine
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("unmarshal output line: %v", err)
+		}
+		if entry.Error != nil {
+			t.Fatalf("output line should not have error field, got: %+v", entry.Error)
+		}
+		if entry.Response == nil {
+			t.Fatalf("output line should have response field")
+		}
+		switch entry.Response.StatusCode {
+		case 200:
+			found200 = true
+		case 422:
+			found422 = true
+			errObj, ok := entry.Response.Body["error"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("HTTP error response body should contain error object, got: %v", entry.Response.Body)
+			}
+			if errObj["code"] != "model_not_found" {
+				t.Fatalf("expected error code 'model_not_found', got: %v", errObj["code"])
+			}
+		default:
+			t.Fatalf("unexpected status code %d in output file", entry.Response.StatusCode)
+		}
+	}
+	if !found200 || !found422 {
+		t.Fatalf("expected both 200 and 422 in output file, found200=%v found422=%v", found200, found422)
+	}
+
+	// error.jsonl should contain 1 line: the non-HTTP error only.
+	errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	errorLines := readNonEmptyJSONLLines(t, errorPath)
+	if len(errorLines) != 1 {
+		t.Fatalf("error.jsonl lines = %d, want 1", len(errorLines))
+	}
+	var errEntry outputLine
+	if err := json.Unmarshal(errorLines[0], &errEntry); err != nil {
+		t.Fatalf("unmarshal error line: %v", err)
+	}
+	if errEntry.Error == nil {
+		t.Fatalf("error file line should have error field")
+	}
+	if errEntry.Response != nil {
+		t.Fatalf("error file line should not have response field")
+	}
+	if errEntry.Error.Code != string(httpclient.ErrCategoryServer) {
+		t.Fatalf("error code = %q, want %q", errEntry.Error.Code, httpclient.ErrCategoryServer)
 	}
 }
 
