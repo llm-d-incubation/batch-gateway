@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -313,6 +314,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 // uploadPartialResults uploads whatever output/error files exist locally to shared storage.
 // Returns file IDs (empty string if the file was empty or upload failed).
 // Errors are logged but not propagated — partial upload is best-effort.
+// The two uploads are independent and run concurrently.
 func (p *Processor) uploadPartialResults(
 	ctx context.Context,
 	jobInfo *batch_types.JobInfo,
@@ -320,17 +322,28 @@ func (p *Processor) uploadPartialResults(
 ) (outputFileID string, errorFileID string) {
 	logger := logr.FromContextOrDiscard(ctx)
 
-	var err error
-	outputFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
-	if err != nil {
-		logger.Error(err, "Failed to upload output file (best-effort)")
-	}
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	errorFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
-	if err != nil {
-		logger.Error(err, "Failed to upload error file (best-effort)")
-	}
+	go func() {
+		defer wg.Done()
+		var err error
+		outputFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
+		if err != nil {
+			logger.Error(err, "Failed to upload output file (best-effort)")
+		}
+	}()
 
+	go func() {
+		defer wg.Done()
+		var err error
+		errorFileID, err = p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
+		if err != nil {
+			logger.Error(err, "Failed to upload error file (best-effort)")
+		}
+	}()
+
+	wg.Wait()
 	return outputFileID, errorFileID
 }
 

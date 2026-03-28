@@ -1,14 +1,20 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
@@ -302,4 +308,155 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 	if finalStatus.Status != openai.BatchStatusCancelled {
 		t.Fatalf("expected final status to be %s, got %s", openai.BatchStatusCancelled, finalStatus.Status)
 	}
+}
+
+// --- parallel upload tests ---
+
+// concurrentFilesClient is a thread-safe mock that records Store calls and
+// supports an optional per-call delay to verify concurrent execution.
+type concurrentFilesClient struct {
+	mu        sync.Mutex
+	calls     int
+	fileNames []string
+	delay     time.Duration
+}
+
+func (c *concurrentFilesClient) Store(_ context.Context, fileName, _ string, _, _ int64, _ io.Reader) (*filesapi.BatchFileMetadata, error) {
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	c.fileNames = append(c.fileNames, fileName)
+	return &filesapi.BatchFileMetadata{Size: 42}, nil
+}
+
+func (c *concurrentFilesClient) Retrieve(_ context.Context, _, _ string) (io.ReadCloser, *filesapi.BatchFileMetadata, error) {
+	return nil, nil, nil
+}
+func (c *concurrentFilesClient) List(_ context.Context, _ string) ([]filesapi.BatchFileMetadata, error) {
+	return nil, nil
+}
+func (c *concurrentFilesClient) Delete(_ context.Context, _, _ string) error { return nil }
+func (c *concurrentFilesClient) GetContext(p context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithCancel(p)
+}
+func (c *concurrentFilesClient) Close() error { return nil }
+
+func (c *concurrentFilesClient) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func TestFinalizeJob_UploadsFilesInParallel(t *testing.T) {
+	ctx := testLoggerCtx(t)
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	// Use a delay to make sequential execution take ~200ms vs ~100ms parallel.
+	mock := &concurrentFilesClient{delay: 50 * time.Millisecond}
+	dbClient := newMockBatchDBClient()
+	fileDB := newMockFileDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDB,
+		File:    mock,
+		Status:  statusClient,
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, dbClient)
+
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
+
+	jobID := "job-parallel-upload"
+	tenantID := "tenant-1"
+	dbJob := seedDBJob(t, dbClient, jobID)
+
+	// Create both output and error files.
+	jobDir, _ := p.jobRootDir(jobID, tenantID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath := filepath.Join(jobDir, "output.jsonl")
+	errorPath := filepath.Join(jobDir, "error.jsonl")
+	if err := os.WriteFile(outputPath, []byte(`{"id":"r1","custom_id":"req-1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(errorPath, []byte(`{"id":"r2","custom_id":"req-2","error":{"code":"err","message":"fail"}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
+
+	start := time.Now()
+	err := p.finalizeJob(ctx, updater, dbJob, jobInfo, counts, nil)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("finalizeJob returned error: %v", err)
+	}
+
+	// Both files should have been uploaded.
+	if got := mock.callCount(); got != 2 {
+		t.Fatalf("expected 2 Store calls, got %d", got)
+	}
+
+	// With 50ms delay per upload, sequential would take ≥100ms.
+	// Parallel should complete in ~50-70ms. Use 90ms as threshold.
+	if elapsed >= 90*time.Millisecond {
+		t.Errorf("uploads appear sequential: elapsed=%v (expected <90ms for parallel execution with 50ms delay)", elapsed)
+	}
+	t.Logf("parallel upload elapsed: %v", elapsed)
+}
+
+func TestUploadPartialResults_UploadsFilesInParallel(t *testing.T) {
+	ctx := testLoggerCtx(t)
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &concurrentFilesClient{delay: 50 * time.Millisecond}
+	dbClient := newMockBatchDBClient()
+	fileDB := newMockFileDBClient()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDB,
+		File:    mock,
+		Status:  mockdb.NewMockBatchStatusClient(),
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-partial-parallel"
+	tenantID := "tenant-1"
+	dbJob := seedDBJob(t, dbClient, jobID)
+	createPartialOutputFiles(t, p, jobID, tenantID)
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+
+	start := time.Now()
+	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbJob)
+	elapsed := time.Since(start)
+
+	if outputFileID == "" {
+		t.Error("expected non-empty outputFileID")
+	}
+	if errorFileID == "" {
+		t.Error("expected non-empty errorFileID")
+	}
+
+	if got := mock.callCount(); got != 2 {
+		t.Fatalf("expected 2 Store calls, got %d", got)
+	}
+
+	if elapsed >= 90*time.Millisecond {
+		t.Errorf("uploads appear sequential: elapsed=%v (expected <90ms for parallel execution with 50ms delay)", elapsed)
+	}
+	t.Logf("parallel partial upload elapsed: %v", elapsed)
 }
