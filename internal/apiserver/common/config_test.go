@@ -203,6 +203,89 @@ file_client:
 	})
 }
 
+func TestGetInputHeader(t *testing.T) {
+	tests := []struct {
+		name     string
+		headers  map[string]string
+		key      string
+		fallback string
+		want     string
+	}{
+		{
+			name:     "present key returns value",
+			headers:  map[string]string{"tenant": "X-Custom-Tenant"},
+			key:      "tenant",
+			fallback: "X-Default",
+			want:     "X-Custom-Tenant",
+		},
+		{
+			name:     "missing key returns fallback",
+			headers:  map[string]string{"other": "X-Other"},
+			key:      "tenant",
+			fallback: "X-Default",
+			want:     "X-Default",
+		},
+		{
+			name:     "empty string value returns fallback",
+			headers:  map[string]string{"tenant": ""},
+			key:      "tenant",
+			fallback: "X-Default",
+			want:     "X-Default",
+		},
+		{
+			name:     "nil map returns fallback",
+			headers:  nil,
+			key:      "tenant",
+			fallback: "X-Default",
+			want:     "X-Default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ServerConfig{InputHeaders: tt.headers}
+			got := cfg.GetInputHeader(tt.key, tt.fallback)
+			if got != tt.want {
+				t.Errorf("GetInputHeader(%q, %q) = %q, want %q", tt.key, tt.fallback, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetTenantHeader(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name:    "custom tenant header",
+			headers: map[string]string{"tenant": "X-My-Tenant"},
+			want:    "X-My-Tenant",
+		},
+		{
+			name:    "nil map falls back to default",
+			headers: nil,
+			want:    DefaultTenantHeader,
+		},
+		{
+			name:    "empty tenant falls back to default",
+			headers: map[string]string{"tenant": ""},
+			want:    DefaultTenantHeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ServerConfig{InputHeaders: tt.headers}
+			got := cfg.GetTenantHeader()
+			if got != tt.want {
+				t.Errorf("GetTenantHeader() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // Helper functions
 func setupTestSSLFiles(t *testing.T) {
 	// Create testdata directory

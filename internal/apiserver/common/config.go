@@ -40,6 +40,8 @@ const (
 	DefaultBatchEventTTLSeconds = 30 * 24 * 60 * 60 // 2592000 seconds
 	// DefaultMaxFileLineCount is the default maximum number of lines per file
 	DefaultMaxFileLineCount = 50000
+	// InputHeaderKeyTenant is the key for the tenant header in InputHeaders
+	InputHeaderKeyTenant = "tenant"
 	// DefaultTenantHeader is the default HTTP header name for tenant ID
 	DefaultTenantHeader = "X-MaaS-Username"
 
@@ -103,12 +105,12 @@ func (f *FileAPIConfig) GetMaxLineCount() int64 {
 }
 
 type ServerConfig struct {
-	Host              string `yaml:"host"`
-	Port              string `yaml:"port"`
-	ObservabilityPort string `yaml:"observability_port"`
-	SSLCertFile       string `yaml:"ssl_cert_file"`
-	SSLKeyFile        string `yaml:"ssl_key_file"`
-	TenantHeader      string `yaml:"tenant_header"`
+	Host              string            `yaml:"host"`
+	Port              string            `yaml:"port"`
+	ObservabilityPort string            `yaml:"observability_port"`
+	SSLCertFile       string            `yaml:"ssl_cert_file"`
+	SSLKeyFile        string            `yaml:"ssl_key_file"`
+	InputHeaders      map[string]string `yaml:"input_headers"`
 
 	// HTTP server timeout configurations (in seconds)
 	ReadHeaderTimeoutSeconds int64 `yaml:"read_header_timeout_seconds"`
@@ -225,9 +227,6 @@ func (c *ServerConfig) applyDefaults() {
 	if c.DatabaseType == "" {
 		c.DatabaseType = "redis"
 	}
-	if c.TenantHeader == "" {
-		c.TenantHeader = DefaultTenantHeader
-	}
 	if c.ReadHeaderTimeoutSeconds <= 0 {
 		c.ReadHeaderTimeoutSeconds = DefaultReadHeaderTimeoutSeconds
 	}
@@ -264,6 +263,19 @@ func (c *ServerConfig) GetIdleTimeoutSeconds() int64 {
 	return c.IdleTimeoutSeconds
 }
 
+// GetInputHeader returns the HTTP header name mapped to the given logical key.
+// If the key is missing from InputHeaders or its value is an empty string, the
+// fallback is returned. This means setting a key to "" in YAML is equivalent to
+// leaving it unset — it does not disable header extraction.
+func (c *ServerConfig) GetInputHeader(key string, fallback string) string {
+	if c.InputHeaders != nil {
+		if v := c.InputHeaders[key]; v != "" {
+			return v
+		}
+	}
+	return fallback
+}
+
 func (c *ServerConfig) GetTenantHeader() string {
-	return c.TenantHeader
+	return c.GetInputHeader(InputHeaderKeyTenant, DefaultTenantHeader)
 }

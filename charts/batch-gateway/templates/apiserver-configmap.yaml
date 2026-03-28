@@ -11,8 +11,11 @@ data:
     host: {{ .Values.apiserver.config.host | quote }}
     port: {{ .Values.apiserver.config.port | quote }}
     observability_port: {{ .Values.apiserver.config.observabilityPort | quote }}
-    {{- if .Values.apiserver.config.tenantHeader }}
-    tenant_header: {{ .Values.apiserver.config.tenantHeader | quote }}
+    {{- if .Values.apiserver.config.inputHeaders }}
+    input_headers:
+      {{- range $key, $value := .Values.apiserver.config.inputHeaders }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
     {{- end }}
     read_header_timeout_seconds: {{ .Values.apiserver.config.readHeaderTimeoutSeconds }}
     read_timeout_seconds: {{ .Values.apiserver.config.readTimeoutSeconds }}
