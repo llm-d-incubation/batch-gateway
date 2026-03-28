@@ -53,13 +53,13 @@ type outputWriters struct {
 func (w *outputWriters) write(line []byte, isError bool) error {
 	if isError {
 		w.errorsMu.Lock()
+		defer w.errorsMu.Unlock()
 		_, err := w.errors.Write(line)
-		w.errorsMu.Unlock()
 		return err
 	}
 	w.outputMu.Lock()
+	defer w.outputMu.Unlock()
 	_, err := w.output.Write(line)
-	w.outputMu.Unlock()
 	return err
 }
 
