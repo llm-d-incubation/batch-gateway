@@ -1279,6 +1279,101 @@ func TestRedisDSClient(t *testing.T) {
 		_, _ = exchClient.PQDequeue(context.Background(), 1*time.Second, 100)
 	})
 
+	t.Run("Queue exchange operations - Zero timeout uses ZMPop", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		// Enqueue items.
+		enqueued := make([]*db_api.BatchJobPriority, 3)
+		for i := 0; i < 3; i++ {
+			enqueued[i] = &db_api.BatchJobPriority{
+				ID:   uuid.New().String(),
+				SLO:  time.Now().Add(time.Duration(i+1) * time.Hour),
+				TTL:  1000,
+				Data: []byte(fmt.Sprintf("zero-timeout-%d", i)),
+			}
+			if err := exchClient.PQEnqueue(context.Background(), enqueued[i]); err != nil {
+				t.Fatalf("Failed to enqueue: %v", err)
+			}
+		}
+
+		// Dequeue with timeout=0 (non-blocking ZMPop path).
+		items, err := exchClient.PQDequeue(context.Background(), 0, 2)
+		if err != nil {
+			t.Fatalf("PQDequeue with zero timeout should not error: %v", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("Expected 2 items, got %d", len(items))
+		}
+		// Verify priority ordering (lowest SLO first).
+		isSamePrio(t, items[0], enqueued[0])
+		isSamePrio(t, items[1], enqueued[1])
+
+		// Dequeue remaining item.
+		items, err = exchClient.PQDequeue(context.Background(), 0, 10)
+		if err != nil {
+			t.Fatalf("PQDequeue with zero timeout should not error: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(items))
+		}
+		isSamePrio(t, items[0], enqueued[2])
+
+		// Dequeue from empty queue with zero timeout — should return immediately with no items.
+		items, err = exchClient.PQDequeue(context.Background(), 0, 10)
+		if err != nil {
+			t.Fatalf("PQDequeue from empty queue with zero timeout should not error: %v", err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("Expected no items from empty queue, got %d", len(items))
+		}
+	})
+
+	t.Run("Queue exchange operations - Negative timeout uses ZMPop", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		// Enqueue an item.
+		item := &db_api.BatchJobPriority{
+			ID:   uuid.New().String(),
+			SLO:  time.Now().Add(time.Hour),
+			TTL:  1000,
+			Data: []byte("negative-timeout"),
+		}
+		if err := exchClient.PQEnqueue(context.Background(), item); err != nil {
+			t.Fatalf("Failed to enqueue: %v", err)
+		}
+
+		// Dequeue with negative timeout — should use non-blocking ZMPop path.
+		items, err := exchClient.PQDequeue(context.Background(), -1*time.Second, 1)
+		if err != nil {
+			t.Fatalf("PQDequeue with negative timeout should not error: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(items))
+		}
+		isSamePrio(t, items[0], item)
+
+		// Dequeue from empty queue with negative timeout — should return immediately.
+		items, err = exchClient.PQDequeue(context.Background(), -5*time.Second, 10)
+		if err != nil {
+			t.Fatalf("PQDequeue from empty queue with negative timeout should not error: %v", err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("Expected no items from empty queue, got %d", len(items))
+		}
+	})
+
 	t.Run("includeStatic parameter - Batch", func(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
