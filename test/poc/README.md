@@ -19,8 +19,11 @@ This directory contains demo files for testing the Batch Gateway system.
    This will start:
    - API Server at <https://localhost:8000>
    - Processor at <http://localhost:9090>
+   - Garbage Collector (GC) — runs periodic cleanup of expired batches and files
    - Jaeger UI at <http://localhost:16686>
    - Prometheus UI at <http://localhost:9091>
+   - Grafana UI at <http://localhost:3000> (anonymous admin access, no login required)
+   - MinIO (S3-compatible storage) at <http://localhost:9002>
    - Metrics endpoints at <http://localhost:8081/metrics> (API) and <http://localhost:9090/metrics> (Processor)
 
 2. **Choose Your Demo Tool**:
@@ -35,35 +38,36 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 ┌────────────────────────────────────────────────────────────────┐
 │                   Kubernetes Cluster (kind)                    │
 │                                                                │
-│  ┌──────────────────────┐          ┌──────────────────────┐    │
-│  │   API Server         │          │   Processor          │    │
-│  │  (batch-gateway-     │          │  (batch-gateway-     │    │
-│  │   apiserver)         │          │   processor)         │    |
-│  │                      │          │                      │    │
-│  │  • REST API (8000)   │          │  • Polling worker    │    │
-│  │  • Metrics (8081)    │          │  • Metrics (9090)    │    │
-│  └──────────┬───────────┘          └──────────┬───────────┘    │
-│             │                                 │                │
-│             │                                 │                │
-│             ├─────────────┬───────────────────┤                │
-│             │             │                   │                │
-│  ┌──────────▼─────────┐   │   ┌───────────────▼──────────┐     │
-│  │   PostgreSQL       │   │   │   Redis                  │     │
-│  │                    │   │   │                          │     │
-│  │  • Batch metadata  │   │   │  • Priority queue        │     │
-│  │  • File metadata   │   │   │  • Progress tracking     │     │
-│  │  • Persistent DB   │   │   │  • Event exchange        │     │
-│  └────────────────────┘   │   └──────────────────────────┘     │
-│                           │                                    │
-│           ┌───────────────▼─────────────────────┐              │
-│           │   File Storage (PVC or S3)          │              │
-│           │                                     │              │
-│           │  • Batch input files (.jsonl)       │              │
-│           │  • Batch output files (results)     │              │
-│           │  • Error files (failed requests)    │              │
-│           └─────────────────────────────────────┘              │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────┐│
+│  │   API Server         │  │   Processor          │  │   GC       ││
+│  │  (batch-gateway-     │  │  (batch-gateway-     │  │  (batch-   ││
+│  │   apiserver)         │  │   processor)         │  │  gateway-  ││
+│  │                      │  │                      │  │  gc)       ││
+│  │  • REST API (8000)   │  │  • Polling worker    │  │            ││
+│  │  • Metrics (8081)    │  │  • Metrics (9090)    │  │  • Expired ││
+│  └──────────┬───────────┘  └──────────┬───────────┘  │   cleanup ││
+│             │                         │              └──────┬─────┘│
+│             │                         │                     │      │
+│             ├─────────────┬───────────┤─────────────────────┤      │
+│             │             │           │                            │
+│  ┌──────────▼─────────┐   │   ┌───────▼──────────────────────┐    │
+│  │   PostgreSQL       │   │   │   Redis                      │    │
+│  │                    │   │   │                              │    │
+│  │  • Batch metadata  │   │   │  • Priority queue            │    │
+│  │  • File metadata   │   │   │  • Progress tracking         │    │
+│  │  • Persistent DB   │   │   │  • Event exchange            │    │
+│  └────────────────────┘   │   └──────────────────────────────┘    │
+│                           │                                       │
+│           ┌───────────────▼─────────────────────┐                 │
+│           │   MinIO (S3-compatible storage)     │                 │
+│           │                                     │                 │
+│           │  • Batch input files (.jsonl)       │                 │
+│           │  • Batch output files (results)     │                 │
+│           │  • Error files (failed requests)    │                 │
+│           │  • API (9002)                       │                 │
+│           └─────────────────────────────────────┘                 │
 │                                                                │
-│  ┌──────────────────────────────────────────────────────────┐  |
+│  ┌──────────────────────────────────────────────────────────┐  │
 │  │   Model Inference Services                               │  │
 │  │                                                          │  │
 │  │   ┌────────────────────┐       ┌────────────────────┐    │  │
@@ -84,15 +88,14 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │   Observability                                          │  │
 │  │                                                          │  │
-│  │   ┌──────────────────────┐    ┌──────────────────────┐   │  │
-│  │   │ Jaeger               │    │ Prometheus           │   │  │
-│  │   │                      │    │                      │   │  │
-│  │   │ • Distributed traces │    │ • Metrics collection │   │  │
-│  │   │ • UI (16686)         │    │ • Scrapes /metrics   │   │  │
-│  │   └──────▲───────────────┘    │ • UI (9091)          │   │  │
-│  │          │                    └───────▲──────────────┘   │  │
-│  │          │ Traces                     │ Scrapes          │  │
-│  │          └────────────────────────────┴──────────────────┤  │
+│  │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │  │
+│  │   │ Jaeger       │  │ Prometheus   │  │ Grafana      │  │  │
+│  │   │              │  │              │  │              │  │  │
+│  │   │ • Traces     │  │ • Metrics    │  │ • Dashboards │  │  │
+│  │   │ • UI (16686) │  │ • UI (9091)  │  │ • UI (3000)  │  │  │
+│  │   └──────▲───────┘  └──────▲───────┘  └──────▲───────┘  │  │
+│  │          │ Traces          │ Scrapes         │ Queries   │  │
+│  │          └─────────────────┴─────────────────┘           │  │
 │  │                                                          │  │
 │  │                      All components                      │  │
 │  └──────────────────────────────────────────────────────────┘  │
@@ -102,23 +105,26 @@ The demo environment runs the following components in a Kubernetes cluster (kind
                               │ kind extraPortMappings
                               │ (NodePort → localhost)
                               │
-                      ┌───────┴─────────┐
-                      │  localhost      │
-                      │                 │
-                      │  :8000  (API)   │
-                      │  :8081  (Obs)   │
-                      │  :9090  (Proc)  │
-                      │  :9091  (Prom)  │
-                      │  :16686 (Jaeger)│
-                      └─────────────────┘
+                      ┌───────┴──────────┐
+                      │  localhost       │
+                      │                  │
+                      │  :8000  (API)    │
+                      │  :8081  (Obs)    │
+                      │  :9090  (Proc)   │
+                      │  :9091  (Prom)   │
+                      │  :3000  (Grafana)│
+                      │  :9002  (MinIO)  │
+                      │  :16686 (Jaeger) │
+                      └──────────────────┘
 ```
 
 **Request Flow:**
 
-1. **Create Batch**: User → API Server → PostgreSQL (metadata) + Redis (queue) + File Storage (input file)
-2. **Process Batch**: Processor polls Redis → reads batch from PostgreSQL → reads input from File Storage → sends requests to vLLM simulators → writes results to File Storage → updates PostgreSQL + Redis
-3. **Retrieve Results**: User → API Server → PostgreSQL (batch status) + File Storage (output file)
-4. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints and via Prometheus
+1. **Create Batch**: User → API Server → PostgreSQL (metadata) + Redis (queue) + MinIO (input file)
+2. **Process Batch**: Processor polls Redis → reads batch from PostgreSQL → reads input from MinIO → sends requests to vLLM simulators → writes results to MinIO → updates PostgreSQL + Redis
+3. **Retrieve Results**: User → API Server → PostgreSQL (batch status) + MinIO (output file)
+4. **Garbage Collection**: GC periodically scans for expired batches and files → deletes from PostgreSQL + MinIO
+5. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints, collected by Prometheus, and visualized in Grafana dashboards
 
 ## Demo Sequences
 
@@ -201,6 +207,13 @@ Open <http://localhost:16686> in your browser to view distributed traces:
 - Select service: `batch-gateway`
 - Search by batch ID to see the full request flow
 - View span details to see timing and errors
+
+### Grafana Dashboards
+
+Open <http://localhost:3000> in your browser (anonymous admin access, no login required):
+
+- Pre-configured Prometheus datasource
+- Batch Gateway dashboards are auto-loaded from the Helm chart
 
 ### Prometheus Metrics
 
