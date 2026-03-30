@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -633,15 +634,18 @@ func (c *FileAPIHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete physical file from storage
+	// Delete physical file from storage.
+	// ErrNotExist is tolerated so that a retry of a previously half-completed
+	// delete (blob gone, metadata still present) can finish successfully.
 	storageName := ucom.FileStorageName(fileObj.ID, fileObj.Filename)
 	err = c.clients.File.Delete(ctx, storageName, folderName)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		logger.Error(err, "failed to delete physical file", "storageName", storageName, "folderName", folderName)
-		// Continue to delete metadata even if physical file deletion fails
+		common.WriteInternalServerError(w, r)
+		return
 	}
 
-	// Delete file metadata from database
+	// Delete file metadata from database.
 	deletedIDs, err := c.clients.FileDB.DBDelete(ctx, []string{fileObj.ID})
 	if err != nil {
 		logger.Error(err, "failed to delete file metadata")

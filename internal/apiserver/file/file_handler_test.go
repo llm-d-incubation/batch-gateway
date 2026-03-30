@@ -26,8 +26,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
@@ -158,6 +160,30 @@ func (c *errStoreFileClient) Delete(ctx context.Context, fileName, folderName st
 
 func (c *errStoreFileClient) Close() error {
 	return nil
+}
+
+type errDeleteFileClient struct {
+	fsapi.BatchFilesClient
+	deleteErr error
+}
+
+func (c *errDeleteFileClient) Delete(ctx context.Context, fileName, folderName string) error {
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
+	return c.BatchFilesClient.Delete(ctx, fileName, folderName)
+}
+
+type failOnceDBClient struct {
+	dbapi.FileDBClient
+	failNext atomic.Bool
+}
+
+func (c *failOnceDBClient) DBDelete(ctx context.Context, ids []string) ([]string, error) {
+	if c.failNext.CompareAndSwap(true, false) {
+		return nil, errors.New("transient DB error")
+	}
+	return c.FileDBClient.DBDelete(ctx, ids)
 }
 
 func doTestCreateFileStoreValidationErrors(t *testing.T) {
@@ -995,6 +1021,133 @@ func doTestDeleteFile(t *testing.T) {
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d for missing file_id, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	t.Run("DeletePhysicalFileErrorKeepsMetadata", func(t *testing.T) {
+		handler := setupTestHandler(t)
+		testContent := strings.Join([]string{
+			`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
+		}, "\n")
+		createdFile := createTestFile(t, handler, ctx, "delete-error.jsonl", "batch", testContent)
+
+		handler.clients.File = &errDeleteFileClient{
+			BatchFilesClient: handler.clients.File,
+			deleteErr:        errors.New("storage delete failed"),
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.DeleteFile(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected status %d, got %d, body: %s", http.StatusInternalServerError, w.Code, w.Body.String())
+		}
+
+		items, _, _, err := handler.clients.FileDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected file metadata to remain after storage delete failure, got %d items", len(items))
+		}
+	})
+
+	t.Run("DeleteRetryAfterDBFailure", func(t *testing.T) {
+		handler := setupTestHandler(t)
+		testContent := strings.Join([]string{
+			`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
+		}, "\n")
+		createdFile := createTestFile(t, handler, ctx, "delete-db-fail.jsonl", "batch", testContent)
+
+		wrappedDB := &failOnceDBClient{FileDBClient: handler.clients.FileDB}
+		wrappedDB.failNext.Store(true)
+		handler.clients.FileDB = wrappedDB
+
+		// First attempt: storage delete succeeds, DB delete fails → 500
+		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		handler.DeleteFile(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("first attempt: expected %d, got %d", http.StatusInternalServerError, w.Code)
+		}
+
+		// Metadata should still exist after DB failure
+		items, _, _, err := wrappedDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected metadata to survive DB failure, got %d items", len(items))
+		}
+
+		// Second attempt: the real fs client returns os.ErrNotExist because
+		// the blob was already removed by the first attempt's successful
+		// storage delete. The handler tolerates this and proceeds to DB delete.
+		req2 := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req2.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req2 = req2.WithContext(ctx)
+		w2 := httptest.NewRecorder()
+		handler.DeleteFile(w2, req2)
+
+		if w2.Code != http.StatusOK {
+			t.Fatalf("retry: expected %d, got %d, body: %s", http.StatusOK, w2.Code, w2.Body.String())
+		}
+
+		// Both storage and metadata should be gone
+		items2, _, _, err := wrappedDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items2) != 0 {
+			t.Fatalf("expected metadata to be deleted on retry, got %d items", len(items2))
+		}
+	})
+
+	t.Run("DeleteToleratesErrNotExist", func(t *testing.T) {
+		handler := setupTestHandler(t)
+		testContent := strings.Join([]string{
+			`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
+		}, "\n")
+		createdFile := createTestFile(t, handler, ctx, "delete-notexist.jsonl", "batch", testContent)
+
+		handler.clients.File = &errDeleteFileClient{
+			BatchFilesClient: handler.clients.File,
+			deleteErr:        os.ErrNotExist,
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.DeleteFile(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status %d for ErrNotExist (idempotent delete), got %d, body: %s",
+				http.StatusOK, w.Code, w.Body.String())
+		}
+
+		items, _, _, err := handler.clients.FileDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("expected metadata to be deleted after ErrNotExist, got %d items", len(items))
 		}
 	})
 }
