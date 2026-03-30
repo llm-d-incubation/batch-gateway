@@ -32,6 +32,7 @@ PROCESSOR_NODE_PORT="${PROCESSOR_NODE_PORT:-30090}"
 JAEGER_NODE_PORT="${JAEGER_NODE_PORT:-30086}"
 PROMETHEUS_NODE_PORT="${PROMETHEUS_NODE_PORT:-30091}"
 GRAFANA_NODE_PORT="${GRAFANA_NODE_PORT:-30030}"
+MINIO_NODE_PORT="${MINIO_NODE_PORT:-30009}"
 APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
 PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:${DEV_VERSION}}"
 GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${DEV_VERSION}}"
@@ -108,6 +109,9 @@ nodes:
     protocol: TCP
   - containerPort: ${GRAFANA_NODE_PORT}
     hostPort: ${GRAFANA_PORT}
+    protocol: TCP
+  - containerPort: ${MINIO_NODE_PORT}
+    hostPort: ${MINIO_PORT}
     protocol: TCP
 EOF
         fi
@@ -1019,6 +1023,21 @@ spec:
     port: 3000
     targetPort: 3000
     nodePort: ${GRAFANA_NODE_PORT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${MINIO_NAME}-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: ${MINIO_NAME}
+  ports:
+  - name: api
+    protocol: TCP
+    port: 9000
+    targetPort: 9000
+    nodePort: ${MINIO_NODE_PORT}
 EOF
 
     log "NodePort services created."
@@ -1120,9 +1139,10 @@ main() {
     install_postgresql
     create_secret
     create_tls_secret
-    if [ "${FILE_CLIENT_TYPE}" = "s3" ]; then
-        install_minio
-    else
+    # MinIO is always installed so that S3 integration tests can run
+    # against the dev cluster regardless of the batch file client type.
+    install_minio
+    if [ "${FILE_CLIENT_TYPE}" != "s3" ]; then
         create_pvc
     fi
     load_images
