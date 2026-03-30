@@ -7,7 +7,7 @@ dry_run: false
 interval: 1h
 
 # Maximum number of concurrent item deletions per GC cycle (default: 10)
-# max_concurrency: 10
+max_concurrency: 10
 
 # Database backend type for persistent storage: "redis" or "postgresql".
 # Connection URLs are read from the app secret (/etc/.secrets/), not from this file.
