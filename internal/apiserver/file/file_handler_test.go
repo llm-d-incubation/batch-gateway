@@ -27,9 +27,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sync/atomic"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
