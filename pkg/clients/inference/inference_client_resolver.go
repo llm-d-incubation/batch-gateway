@@ -58,6 +58,10 @@ func (gw GatewayClientConfig) toHTTPClientConfig() *HTTPClientConfig {
 	}
 }
 
+// ErrCodeModelNotFound is the request-level error code written to the batch
+// error file when a model has no configured gateway in per-model mode.
+const ErrCodeModelNotFound = "model_not_found"
+
 // GatewayResolver routes inference requests to the correct gateway client
 // based on the model name.
 //

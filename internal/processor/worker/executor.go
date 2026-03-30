@@ -633,7 +633,7 @@ func (p *Processor) executeOneRequest(
 			ID:       newBatchRequestID(requestID),
 			CustomID: req.CustomID,
 			Error: &outputError{
-				Code:    "model_not_found",
+				Code:    inference.ErrCodeModelNotFound,
 				Message: fmt.Sprintf("model %q is not configured in any gateway", modelID),
 			},
 		}
