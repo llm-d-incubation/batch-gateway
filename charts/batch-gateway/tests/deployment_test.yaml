@@ -88,25 +88,22 @@ tests:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
         template: templates/apiserver-deployment.yaml
-      - equal:
+      - isNull:
           path: spec.template.spec.securityContext.runAsUser
-          value: 65532
         template: templates/apiserver-deployment.yaml
       - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
         template: templates/processor-deployment.yaml
-      - equal:
+      - isNull:
           path: spec.template.spec.securityContext.runAsUser
-          value: 65532
         template: templates/processor-deployment.yaml
       - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
         template: templates/gc-deployment.yaml
-      - equal:
+      - isNull:
           path: spec.template.spec.securityContext.runAsUser
-          value: 65532
         template: templates/gc-deployment.yaml
 
   - it: should allow per-component podSecurityContext override
@@ -121,13 +118,11 @@ tests:
           path: spec.template.spec.securityContext.runAsUser
           value: 1000
         template: templates/processor-deployment.yaml
-      - equal:
+      - isNull:
           path: spec.template.spec.securityContext.runAsUser
-          value: 65532
         template: templates/apiserver-deployment.yaml
-      - equal:
+      - isNull:
           path: spec.template.spec.securityContext.runAsUser
-          value: 65532
         template: templates/gc-deployment.yaml
 
   # --- OTel env vars ---

@@ -404,14 +404,11 @@ helm install batch-gateway ./charts/batch-gateway \
     --set apiserver.tls.certManager.enabled=true \
     --set apiserver.tls.certManager.issuerName=selfsigned-issuer \
     --set apiserver.tls.certManager.issuerKind=ClusterIssuer \
-    --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}" \
-    --set apiserver.podSecurityContext=null \
-    --set processor.podSecurityContext=null
+    --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}"
 ```
 
 > - **`modelGateways.<model>.url`**: The processor uses the MaaS Gateway's **external hostname** (`https://maas.<domain>/...`) because the Gateway listener requires SNI matching. Internal Service FQDN causes TLS handshake failure.
 > - **`passThroughHeaders: {Authorization, X-MaaS-Subscription}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization and the correct subscription is used for token rate limiting.
-> - **`podSecurityContext=null`**: Required on OpenShift for SCC (Security Context Constraints) compatibility.
 > - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
 >   ```
 >   --set "global.fileClient.type=s3"
@@ -758,10 +755,16 @@ curl -sk -o /dev/null -w "%{http_code}" \
 # Unauthorized user creates a batch — batch is accepted (batch route validates API key only),
 # but the processor forwards requests to the LLM route with the unauthorized API key,
 # and the LLM route's AuthPolicy rejects with 403 (user not in authorized group).
+
+# Create input file
+cat > /tmp/batch-input.jsonl <<EOF
+{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"${MAAS_MODEL_NAME}","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}
+EOF
+
 FILE_ID=$(curl -sk ${GW_URL}/v1/files \
     -H "Authorization: Bearer ${UNAUTH_API_KEY}" \
     -F purpose=batch \
-    -F "file=@<(echo '{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"'${MAAS_MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}')" \
+    -F "file=@/tmp/batch-input.jsonl" \
     | jq -r '.id')
 
 BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
@@ -770,7 +773,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Poll until completed/failed — expect failed requests with 403
+# Wait for processing, then check status — expect failed requests with 403
+sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${UNAUTH_API_KEY}" | jq '{status, request_counts}'
 ```
@@ -778,11 +782,11 @@ curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
 ### 4.8 Batch Lifecycle
 
 ```bash
-# Upload input file
+# Upload input file (reuse /tmp/batch-input.jsonl from 4.7, or create it)
 FILE_ID=$(curl -sk ${GW_URL}/v1/files \
     -H "Authorization: Bearer ${API_KEY}" \
     -F purpose=batch \
-    -F "file=@<(echo '{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"'${MAAS_MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}')" \
+    -F "file=@/tmp/batch-input.jsonl" \
     | jq -r '.id')
 
 # Create batch (include X-MaaS-Subscription for token rate limiting)
@@ -793,7 +797,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Poll status until completed
+# Wait for processing, then check status
+sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${API_KEY}" | jq '.status'
 
