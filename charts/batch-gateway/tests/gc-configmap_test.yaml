@@ -15,6 +15,17 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'database_type: "postgresql"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_concurrency: 10'
+
+  - it: should render custom maxConcurrency
+    set:
+      gc.config.maxConcurrency: 20
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_concurrency: 20'
 
   - it: should render dryRun true when set
     set:

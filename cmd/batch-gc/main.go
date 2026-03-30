@@ -103,7 +103,7 @@ func run() error {
 	defer func() { _ = batchDB.Close() }()
 	defer func() { _ = fileDB.Close() }()
 
-	gc := collector.NewGarbageCollector(batchDB, fileDB, filesClient, cfg.DryRun, cfg.Interval, nil)
+	gc := collector.NewGarbageCollector(batchDB, fileDB, filesClient, cfg.DryRun, cfg.Interval, cfg.MaxConcurrency, nil)
 
 	if err := gc.RunLoop(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("garbage collector failed: %w", err)
