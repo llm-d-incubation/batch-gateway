@@ -73,14 +73,14 @@ func (p *Processor) recoverStaleJobs(ctx context.Context) {
 
 	logger.V(logging.INFO).Info("Startup recovery: found stale job directories", "count", len(dirs))
 
-	g, gCtx := errgroup.WithContext(ctx)
+	var g errgroup.Group
 	g.SetLimit(p.cfg.RecoveryMaxConcurrency)
 
 	for _, dir := range dirs {
 		jobID := filepath.Base(dir)
 		g.Go(func() error {
 			jlogger := logger.WithValues("jobId", jobID)
-			jctx := logr.NewContext(gCtx, jlogger)
+			jctx := logr.NewContext(ctx, jlogger)
 			if err := p.recoverJob(jctx, jobID); err != nil {
 				jlogger.Error(err, "Startup recovery: failed to recover job")
 			}
