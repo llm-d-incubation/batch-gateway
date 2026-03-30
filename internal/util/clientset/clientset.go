@@ -230,7 +230,7 @@ func NewClientset(
 	}
 
 	// build inference client(s)
-	// Validate() guarantees exactly one of global or per-model is set.
+	// Processor Validate() guarantees exactly one is set; apiserver passes nil for both.
 	switch {
 	case globalGatewayConfig != nil:
 		resolver, err := inference.NewGlobalResolver(*globalGatewayConfig, logger)

@@ -391,7 +391,7 @@ type ResolvedGateways struct {
 
 // ResolveModelGateways resolves API keys for all configured gateways and returns
 // a ResolvedGateways ready to pass to the inference client resolver.
-// When GlobalInferenceGateway is set, it takes precedence over per-model entries.
+// Validate() ensures exactly one of GlobalInferenceGateway or ModelGateways is set.
 func ResolveModelGateways(cfg *ProcessorConfig) (*ResolvedGateways, error) {
 	result := &ResolvedGateways{}
 

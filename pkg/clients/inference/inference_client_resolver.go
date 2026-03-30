@@ -115,6 +115,9 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 // ClientFor returns the inference client for the given model.
 // Returns nil if no matching client exists — the caller must handle this
 // as a request-level error (e.g. model not found).
+// A zero-value GatewayResolver returns nil for all models; use the public
+// constructors (NewGlobalResolver, NewPerModelResolver, NewSingleClientResolver)
+// to ensure at least one client is configured.
 func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
 	if r.globalClient != nil {
 		return r.globalClient

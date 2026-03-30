@@ -299,6 +299,9 @@ processor:
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
+    # REQUIRED: Configure exactly one of globalInferenceGateway or modelGateways.
+    # The processor will fail to start if neither is set.
+    #
     # globalInferenceGateway routes ALL inference requests to a single endpoint,
     # regardless of model name. Use this for MaaS / multi-model platforms or
     # LoRA-only deployments where all adapters share a single vLLM instance.

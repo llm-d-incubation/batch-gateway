@@ -629,6 +629,7 @@ func (p *Processor) executeOneRequest(
 
 	inferClient := p.inference.ClientFor(modelID)
 	if inferClient == nil {
+		// TODO: issue #218 follow-up — non-registered model request should be failed in ingestion stage
 		result := &outputLine{
 			ID:       newBatchRequestID(requestID),
 			CustomID: req.CustomID,

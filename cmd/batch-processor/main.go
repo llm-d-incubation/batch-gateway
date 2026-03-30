@@ -303,7 +303,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		return nil, err
 	}
 
-	// Validate() guarantees exactly one of Global or PerModel is set.
+	// Validate() guarantees exactly one of resolved.Global or resolved.PerModel is set.
 	if resolved.Global != nil {
 		logger.V(logging.INFO).Info("Processor clients initialized",
 			"mode", "global",
