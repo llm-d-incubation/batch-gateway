@@ -76,6 +76,18 @@ type outputError struct {
 	Message string `json:"message"`
 }
 
+// isSuccess returns true when the output line represents a fully successful request
+// (no non-HTTP error and a 200 HTTP status). HTTP error responses (4xx/5xx) are not
+// considered successful even though they populate the Response field.
+//
+// NOTE: because HTTP errors are written to the output file (not the error file),
+// request_counts.failed may be greater than the number of lines in the error file.
+// This diverges from OpenAI's documented behavior but aligns with the OpenAPI schema
+// (see executeOneRequest for rationale).
+func (o *outputLine) isSuccess() bool {
+	return o.Error == nil && o.Response != nil && o.Response.StatusCode == 200
+}
+
 // progressUpdateInterval is the minimum time between Redis progress updates.
 // Updates within this window are skipped — the next update after the interval
 // will include all accumulated progress. Declared as var so tests can override.
@@ -437,7 +449,7 @@ dispatch:
 				return
 			}
 
-			progress.record(ctx, result.Error == nil)
+			progress.record(ctx, result.isSuccess())
 
 			lineBytes, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
@@ -447,7 +459,9 @@ dispatch:
 			}
 			lineBytes = append(lineBytes, '\n')
 
-			// Write to error file if the result has an error, otherwise to output file.
+			// Write to error file only for non-HTTP errors (error field populated).
+			// HTTP error responses (4xx/5xx) go to output file since they carry a valid
+			// response object with status_code and body per the OpenAI batch spec.
 			isError := result.Error != nil
 			if writeErr := writers.write(lineBytes, isError); writeErr != nil {
 				kind := "output"
@@ -630,13 +644,45 @@ func (p *Processor) executeOneRequest(
 		CustomID: req.CustomID,
 	}
 
-	// response handling by case
+	// Response handling by case.
+	//
+	// Design note: HTTP errors (4xx/5xx) are written to the output file with their
+	// status code and body, rather than the error file. The OpenAI Batch API guides
+	// describe output_file_id as containing "successfully executed requests", but
+	// the OpenAPI schema defines the error field as "for requests that failed with a
+	// non-HTTP error", implying HTTP errors belong in the response. We follow the
+	// schema interpretation here, as it preserves the HTTP status code and body for
+	// callers to inspect.
 	if inferErr != nil {
-		// error is returned by the inference client
 		logger.V(logging.DEBUG).Info("Inference request failed", "error", inferErr.Message)
-		result.Error = &outputError{
-			Code:    string(inferErr.Category),
-			Message: inferErr.Message,
+		if inferErr.StatusCode > 0 {
+			// HTTP error (4xx/5xx) — populate response with status code and original body
+			// per OpenAI spec, error field is only for non-HTTP errors
+			// Ensure body is always a non-nil object to satisfy the OpenAI schema (type: object).
+			body := make(map[string]interface{})
+			if len(inferErr.ResponseBody) > 0 {
+				if err := json.Unmarshal(inferErr.ResponseBody, &body); err != nil {
+					// Non-JSON response body cannot be placed directly into a JSON object field,
+					// so we wrap it in a synthetic error structure to preserve the content.
+					body = map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": string(inferErr.ResponseBody),
+							"type":    inferErr.OpenAIErrorType(),
+						},
+					}
+				}
+			}
+			result.Response = &batch_types.ResponseData{
+				StatusCode: inferErr.StatusCode,
+				RequestID:  inferReq.RequestID,
+				Body:       body,
+			}
+		} else {
+			// Non-HTTP error (network, timeout, etc.)
+			result.Error = &outputError{
+				Code:    string(inferErr.Category),
+				Message: inferErr.Message,
+			}
 		}
 	} else if inferResp == nil {
 		// ok status without error but no response
@@ -669,7 +715,7 @@ func (p *Processor) executeOneRequest(
 		}
 	}
 
-	if result.Error != nil {
+	if !result.isSuccess() {
 		metrics.RecordRequestError(modelID)
 	}
 	return result, nil

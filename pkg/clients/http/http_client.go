@@ -204,7 +204,7 @@ func (c *HTTPClient) HandleErrorResponse(ctx context.Context, statusCode int, bo
 	// Try to parse OpenAI-style error response
 	var errorResp struct {
 		Error struct {
-			Code    int    `json:"code"`
+			Code    string `json:"code"`
 			Type    string `json:"type"`
 			Message string `json:"message"`
 			Param   string `json:"param"`
@@ -222,9 +222,11 @@ func (c *HTTPClient) HandleErrorResponse(ctx context.Context, statusCode int, bo
 	logger.V(logging.DEBUG).Info("HTTP request failed", "status", statusCode, "category", category, "message", message)
 
 	return &ClientError{
-		Category: category,
-		Message:  fmt.Sprintf("HTTP %d: %s", statusCode, message),
-		RawError: fmt.Errorf("status code: %d, body: %s", statusCode, string(body)),
+		Category:     category,
+		Message:      fmt.Sprintf("HTTP %d: %s", statusCode, message),
+		RawError:     fmt.Errorf("status code: %d, body: %s", statusCode, string(body)),
+		StatusCode:   statusCode,
+		ResponseBody: body,
 	}
 }
 
