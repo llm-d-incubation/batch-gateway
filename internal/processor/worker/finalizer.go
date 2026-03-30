@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sync/errgroup"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -103,13 +104,21 @@ func (p *Processor) finalizeJob(
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
-	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
-	if err != nil {
+	// The two uploads are independent (different local files, different S3 keys,
+	// different DB records), so we run them concurrently.
+	var outputFileID, errorFileID string
+	grp, gCtx := errgroup.WithContext(ctx)
+	grp.Go(func() error {
+		var err error
+		outputFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeOutput)
 		return err
-	}
-
-	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
-	if err != nil {
+	})
+	grp.Go(func() error {
+		var err error
+		errorFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeError)
+		return err
+	})
+	if err := grp.Wait(); err != nil {
 		return err
 	}
 
