@@ -206,6 +206,61 @@ EOF
     die "Failed to create ClusterIssuer after 5 attempts."
 }
 
+# ── Gateway URL ──────────────────────────────────────────────────────────────
+#
+# Resolves the external gateway URL. Priority:
+#
+#   1. spec.listeners[0].hostname — OpenShift router uses SNI (Server Name
+#      Indication) to route requests to the correct backend. The hostname
+#      (e.g. llm-inference.apps.xxx) must be present in the TLS ClientHello
+#      for the router to match it. Accessing via raw LB address fails because
+#      the router cannot determine which route to use without the hostname.
+#
+#   2. status.addresses[0].value — On vanilla K8s with Istio, the gateway
+#      terminates TLS directly and routes by path, not by hostname. Listeners
+#      typically have no hostname configured, so the LB address works fine.
+#
+#   3. port-forward — Fallback for clusters without a LoadBalancer (e.g.
+#      kind, minikube).
+
+set_gateway_url() {
+    # 1. Prefer spec hostname (required for SNI-based routing, e.g. OpenShift)
+    local gw_hostname
+    gw_hostname=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" \
+        -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null || echo "")
+    if [[ -n "${gw_hostname}" ]]; then
+        log "Gateway hostname: ${gw_hostname}"
+        export GATEWAY_URL="https://${gw_hostname}"
+        log "Gateway URL: ${GATEWAY_URL}"
+        return
+    fi
+
+    # 2. Fall back to status address (e.g. LoadBalancer IP/hostname on vanilla K8s)
+    local gw_addr
+    gw_addr=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" \
+        -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || echo "")
+    if [[ -n "${gw_addr}" ]]; then
+        log "Gateway address: ${gw_addr}"
+        export GATEWAY_URL="https://${gw_addr}"
+        log "Gateway URL: ${GATEWAY_URL}"
+        return
+    fi
+
+    # 3. Fall back to port-forward (no external address, e.g. kind/minikube)
+    log "No external address found, falling back to port-forward."
+    local gateway_svc
+    gateway_svc=$(kubectl get svc -n "${GATEWAY_NAMESPACE}" \
+        -l "gateway.networking.k8s.io/gateway-name=${GATEWAY_NAME}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    [ -z "${gateway_svc}" ] && die "No service found for gateway '${GATEWAY_NAME}'."
+    step "Starting port-forward: ${gateway_svc} ${GATEWAY_LOCAL_PORT}:443 -n ${GATEWAY_NAMESPACE}..."
+    kubectl port-forward "svc/${gateway_svc}" "${GATEWAY_LOCAL_PORT}:443" -n "${GATEWAY_NAMESPACE}" &
+    disown $!
+    log "Port-forward PID: $!"
+    export GATEWAY_URL="https://localhost:${GATEWAY_LOCAL_PORT}"
+    log "Gateway URL: ${GATEWAY_URL}"
+}
+
 # ── Shared Route & DestinationRule Functions ──────────────────────────────────
 
 create_batch_httproute() {

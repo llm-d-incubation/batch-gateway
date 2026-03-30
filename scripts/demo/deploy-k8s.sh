@@ -258,28 +258,6 @@ EOF
     log "llm-route created."
 }
 
-start_gateway_port_forward() {
-    local gateway_svc
-    gateway_svc="${GATEWAY_NAME}-istio"
-
-    if ! kubectl get svc "${gateway_svc}" -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
-        gateway_svc="${GATEWAY_NAME}"
-        if ! kubectl get svc "${gateway_svc}" -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
-            warn "Gateway service not found. Skipping port-forward."
-            return
-        fi
-    fi
-
-    step "Starting port-forward: ${gateway_svc} ${GATEWAY_LOCAL_PORT}:443 -n ${GATEWAY_NAMESPACE}..."
-
-    kubectl port-forward "svc/${gateway_svc}" "${GATEWAY_LOCAL_PORT}:443" -n "${GATEWAY_NAMESPACE}" &
-    local pf_pid=$!
-    disown "${pf_pid}"
-
-    log "Port-forward PID: ${pf_pid}  (stop with: kill ${pf_pid})"
-    log "Gateway available at https://localhost:${GATEWAY_LOCAL_PORT}"
-}
-
 init_test() {
     local test_title="$1"
     banner "Testing: ${test_title}"
@@ -288,18 +266,13 @@ init_test() {
         die "Gateway '${GATEWAY_NAME}' not found in namespace '${GATEWAY_NAMESPACE}'. Run '$0 install' first."
     fi
 
-    if ! pgrep -f "kubectl port-forward.*${GATEWAY_NAME}" >/dev/null; then
-        start_gateway_port_forward
-        sleep 3
-    else
-        log "Port-forward already running."
-    fi
+    # Resolve gateway URL
+    set_gateway_url
 
     step "Waiting for gateway to be accessible..."
-    local base_url="https://localhost:${GATEWAY_LOCAL_PORT}"
     local retries=30
     for i in $(seq 1 "${retries}"); do
-        if curl -sk -o /dev/null -w "%{http_code}" "${base_url}/" &>/dev/null; then
+        if curl -sk -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/" &>/dev/null; then
             log "Gateway is accessible."
             break
         fi
@@ -566,8 +539,6 @@ cmd_install() {
     apply_batch_auth_policy
     apply_batch_request_rate_limit
 
-    start_gateway_port_forward
-
     log "Deployment complete! Run '$0 test' to verify."
 }
 
@@ -575,8 +546,6 @@ cmd_install() {
 
 cmd_test() {
     init_test "Batch Gateway (llm-d)"
-
-    local gw_url="https://localhost:${GATEWAY_LOCAL_PORT}"
 
     # Auth setup: create SA + RBAC + token
     local sa_name="test-authorized-sa"
@@ -625,10 +594,10 @@ EOF
         || die "Failed to create token for SA '${unauth_sa}'"
     [[ "${unauth_token}" == ey* ]] || die "Token for SA '${unauth_sa}' doesn't look like a valid JWT"
 
-    local llm_url="${gw_url}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions"
+    local llm_url="${GATEWAY_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions"
     local inference_payload="{\"model\":\"${MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":10}"
 
-    run_tests "${llm_url}" "${gw_url}" "${MODEL_NAME}" \
+    run_tests "${llm_url}" "${GATEWAY_URL}" "${MODEL_NAME}" \
         "Authorization: Bearer ${token}" \
         "Authorization: Bearer ${unauth_token}" \
         "${inference_payload}"
@@ -731,8 +700,8 @@ usage() {
     echo "  MODEL_NAME             Model name for routing (default: random)"
     echo "  LLMD_VERSION           llm-d git ref (default: main)"
     echo "  LLMD_RELEASE_POSTFIX   Release name postfix (default: llmd)"
-    echo "  GATEWAY_LOCAL_PORT     Port-forward port (default: 8080)"
     echo "  BATCH_HELM_RELEASE     Helm release name (default: batch-gateway)"
+    echo "  GATEWAY_LOCAL_PORT     Port-forward fallback port (default: 8080)"
     echo "  BATCH_DEV_VERSION      Image tag (default: latest)"
     echo ""
     echo "Examples:"

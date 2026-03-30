@@ -783,13 +783,14 @@ EOF
 ### 4.1 Setup Test Accounts
 
 ```bash
-GW_URL="https://localhost:8080"
+# Get Gateway address (from status.addresses, populated by the controller)
+GW_ADDR=$(kubectl get gateway istio-gateway -n istio-ingress \
+    -o jsonpath='{.status.addresses[0].value}')
+GW_URL="https://${GW_ADDR}"
+
 MODEL_NAME=random
 LLM_NS=llm
 LLMD_POOL_NAME=gaie-llmd
-
-# Start port-forward to the Gateway
-kubectl port-forward svc/istio-gateway-istio ${GW_URL##*:}:443 -n istio-ingress &
 
 # Create authorized SA with RBAC to access the InferencePool
 kubectl create serviceaccount test-authorized-sa -n ${LLM_NS}
