@@ -29,8 +29,10 @@ import (
 // newTestConfig returns a minimal ServerConfig suitable for middleware tests.
 func newTestConfig(tenantHeader string) *common.ServerConfig {
 	return &common.ServerConfig{
-		Port:         "8080",
-		TenantHeader: tenantHeader,
+		Port: "8080",
+		InputHeaders: map[string]string{
+			common.InputHeaderKeyTenant: tenantHeader,
+		},
 	}
 }
 

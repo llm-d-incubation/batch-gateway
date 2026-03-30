@@ -169,7 +169,8 @@ apiserver:
     host: ""
     port: "8000"
     observabilityPort: "8081"
-    tenantHeader: "X-MaaS-Username"
+    inputHeaders:
+      tenant: "X-MaaS-Username"
     readHeaderTimeoutSeconds: 10
     readTimeoutSeconds: 900
     writeTimeoutSeconds: 120

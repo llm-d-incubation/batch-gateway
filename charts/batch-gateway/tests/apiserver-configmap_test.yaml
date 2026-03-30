@@ -16,19 +16,22 @@ tests:
           path: data["config.yaml"]
           pattern: 'database_type: "postgresql"'
 
-  - it: should render tenantHeader when set
+  - it: should render inputHeaders when set
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'tenant_header: "X-MaaS-Username"'
+          pattern: 'input_headers:'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tenant: "X-MaaS-Username"'
 
-  - it: should not render tenantHeader when empty
+  - it: should not render inputHeaders when null
     set:
-      apiserver.config.tenantHeader: ""
+      apiserver.config.inputHeaders: null
     asserts:
       - notMatchRegex:
           path: data["config.yaml"]
-          pattern: "tenant_header:"
+          pattern: "input_headers:"
 
   - it: should render TLS cert paths when TLS is enabled
     set:
