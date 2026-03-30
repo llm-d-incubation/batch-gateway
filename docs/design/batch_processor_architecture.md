@@ -506,36 +506,42 @@ Approaches:
 -   Call inference backend
 -   Return result
 
-###### Multi-Gateway Routing
-The processor supports routing requests to different inference gateway endpoints based on the model name. Configuration is a flat `model_gateways` map at the top level. The reserved key `"default"` is required and acts as the fallback for any model without an explicit entry:
+###### Gateway Routing
+The processor supports two mutually exclusive gateway modes. Exactly one must be configured; `Validate()` enforces this at startup.
+
+**Global mode** routes all inference requests to a single endpoint, regardless of model name. Use this for MaaS platforms, multi-model gateways, or LoRA-only deployments where all adapters share a single vLLM instance:
+
+```yaml
+global_inference_gateway:
+  url: "http://inference-gateway:8000"
+  request_timeout: "5m"
+  max_retries: 3
+  initial_backoff: "1s"
+  max_backoff: "60s"
+```
+
+**Per-model mode** maps specific model names to individual gateway endpoints. Only models listed here are routed; requests for unlisted models receive a request-level `model_not_found` error:
 
 ```yaml
 model_gateways:
-  "default":
+  "llama-3":
     url: "http://gateway-a:8000"
     request_timeout: "5m"
     max_retries: 3
     initial_backoff: "1s"
     max_backoff: "60s"
-    api_key_name: "default-api-key"   # key name in /etc/.secrets/
   "mistral":
     url: "http://gateway-b:8000"
-    api_key_name: "gateway-b-api-key"   # key name in /etc/.secrets/
+    api_key_name: "gateway-b-api-key"
     request_timeout: "2m"
     max_retries: 1
     initial_backoff: "1s"
     max_backoff: "30s"
 ```
 
-**Lookup order:** `model_gateways[model]` → `model_gateways["default"]` (fallback).
+Each per-model entry must be fully specified — there is no inheritance between entries. The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`), and `api_key_file` reads from an arbitrary path. TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
 
-Per-model entries inherit unset HTTP fields (`request_timeout`, `max_retries`, `initial_backoff`, `max_backoff`) from the `"default"` entry via `applyModelGatewayDefaults`, so only `url` and any fields that differ need to be specified. All HTTP fields use pointers so that `nil` (unset → inherit from default) is distinguishable from explicit zero values (e.g. `max_retries: 0` means "no retries", `request_timeout: 0` means "no timeout").
-
-The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`). TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
-
-API key resolution order: explicit `api_key_name` → default `inference-api-key` secret (read from default `api_key_name`) → no auth.
-
-`GatewayResolver` (in `internal/inference/gateway_resolver.go`) manages the client pool. Clients with identical settings (URL, API key, and all HTTP/TLS fields) share a single `HTTPClient` instance to reuse connection pools.
+`GatewayResolver` (in `pkg/clients/inference/inference_client_resolver.go`) manages the client pool. `NewGlobalResolver` creates a single client for all models; `NewPerModelResolver` creates per-model clients, sharing instances when settings are identical to reuse connection pools.
 
 #### ResultWriter
 

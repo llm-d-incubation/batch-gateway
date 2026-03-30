@@ -64,7 +64,7 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 		&config.FileClientCfg.FSConfig,
 		&config.FileClientCfg.S3Config,
 		&config.FileClientCfg.Retry,
-		nil,
+		nil, nil,
 		ucom.ComponentApiserver,
 	)
 	if err != nil {

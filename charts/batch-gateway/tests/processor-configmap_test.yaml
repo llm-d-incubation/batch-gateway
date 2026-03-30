@@ -2,25 +2,74 @@ suite: processor configmap
 templates:
   - templates/processor-configmap.yaml
 tests:
-  - it: should render a ConfigMap with default values
+  - it: should render a ConfigMap with default values (no gateway configured)
     asserts:
       - isKind:
           of: ConfigMap
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'global_inference_gateway:'
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'model_gateways:'
+
+  - it: should render global_inference_gateway when set
+    set:
+      processor.config.globalInferenceGateway:
+        url: "http://global-gw:8000"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"
+        tlsInsecureSkipVerify: false
+      processor.config.modelGateways: null
+    asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'url: "http://localhost:8000"'
+          pattern: 'global_inference_gateway:'
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'request_timeout: "5m"'
+          pattern: 'url: "http://global-gw:8000"'
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'model_gateways:'
+
+  - it: should render global_inference_gateway optional fields only when set
+    set:
+      processor.config.globalInferenceGateway:
+        url: "http://global-gw:8000"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"
+        tlsInsecureSkipVerify: true
+        apiKeyName: "global-key"
+        tlsCaCertFile: "/certs/ca.pem"
+        tlsClientCertFile: "/certs/client.pem"
+        tlsClientKeyFile: "/certs/client-key.pem"
+      processor.config.modelGateways: null
+    asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'max_retries: 3'
+          pattern: 'api_key_name: "global-key"'
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'initial_backoff: "1s"'
+          pattern: 'tls_insecure_skip_verify: true'
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'max_backoff: "60s"'
+          pattern: 'tls_ca_cert_file: "/certs/ca.pem"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tls_client_cert_file: "/certs/client.pem"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'tls_client_key_file: "/certs/client-key.pem"'
+
+  - it: should not render global_inference_gateway when not set
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'global_inference_gateway:'
 
   - it: should render recoveryMaxConcurrency with default value
     asserts:
@@ -39,15 +88,15 @@ tests:
   - it: should render per-model gateway entries
     set:
       processor.config.modelGateways:
-        "default":
-          url: "http://default-gw:8000"
+        "llama-3":
+          url: "http://llama-gw:8000"
           requestTimeout: "5m"
           maxRetries: 3
           initialBackoff: "1s"
           maxBackoff: "60s"
           tlsInsecureSkipVerify: false
-        "llama-3":
-          url: "http://llama-gw:8000"
+        "mistral":
+          url: "http://mistral-gw:8000"
           requestTimeout: "2m"
           maxRetries: 1
           initialBackoff: "500ms"
@@ -56,16 +105,16 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: '"default":'
-      - matchRegex:
-          path: data["config.yaml"]
-          pattern: 'url: "http://default-gw:8000"'
-      - matchRegex:
-          path: data["config.yaml"]
           pattern: '"llama-3":'
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'url: "http://llama-gw:8000"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '"mistral":'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'url: "http://mistral-gw:8000"'
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'request_timeout: "2m"'
@@ -73,7 +122,7 @@ tests:
   - it: should not contain stale model entries when a model is removed
     set:
       processor.config.modelGateways:
-        "default":
+        "llama-3":
           url: "http://gw:8000"
           requestTimeout: "5m"
           maxRetries: 3
@@ -82,9 +131,6 @@ tests:
           tlsInsecureSkipVerify: false
     asserts:
       - matchRegex:
-          path: data["config.yaml"]
-          pattern: '"default":'
-      - notMatchRegex:
           path: data["config.yaml"]
           pattern: '"llama-3":'
       - notMatchRegex:
@@ -94,7 +140,7 @@ tests:
   - it: should render explicit zero maxRetries as 0 in model_gateways
     set:
       processor.config.modelGateways:
-        "default":
+        "llama-3":
           url: "http://gw:8000"
           requestTimeout: "5m"
           maxRetries: 0
@@ -104,12 +150,12 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: '"default":\s*\n\s+url:.*\n\s+request_timeout:.*\n\s+max_retries: 0'
+          pattern: '"llama-3":\s*\n\s+url:.*\n\s+request_timeout:.*\n\s+max_retries: 0'
 
   - it: should render apiKeyName only when set
     set:
       processor.config.modelGateways:
-        "default":
+        "llama-3":
           url: "http://gw:8000"
           requestTimeout: "5m"
           maxRetries: 3
@@ -131,7 +177,7 @@ tests:
   - it: should render TLS fields only when set
     set:
       processor.config.modelGateways:
-        "default":
+        "llama-3":
           url: "http://gw:8000"
           requestTimeout: "5m"
           maxRetries: 3

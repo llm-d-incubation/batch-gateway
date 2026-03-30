@@ -51,11 +51,12 @@ func testHelmUpgrade(t *testing.T) {
 
 	processorCMName := fmt.Sprintf("%s-processor-config", testHelmRelease)
 
+	// dev-deploy uses per-model mode with testModel (e.g. "sim-model").
 	baselineCM := kubectlGetConfigMap(t, processorCMName)
-	originalDefaultMaxRetries := parseModelGatewayDefaultMaxRetries(t, baselineCM)
-	targetMaxRetries := alternateIntForHelmTest(originalDefaultMaxRetries)
-	if targetMaxRetries == originalDefaultMaxRetries {
-		t.Fatalf("internal: targetMaxRetries must differ from baseline (baseline=%d)", originalDefaultMaxRetries)
+	originalMaxRetries := parseModelGatewayMaxRetries(t, baselineCM, testModel)
+	targetMaxRetries := alternateIntForHelmTest(originalMaxRetries)
+	if targetMaxRetries == originalMaxRetries {
+		t.Fatalf("internal: targetMaxRetries must differ from baseline (baseline=%d)", originalMaxRetries)
 	}
 
 	// Snapshot current values so we can restore on failure.
@@ -89,23 +90,23 @@ func testHelmUpgrade(t *testing.T) {
 		}
 	})
 
-	// 1. Upgrade: set model gateway maxRetries to a value different from the baseline
+	// 1. Upgrade: set per-model gateway maxRetries to a value different from the baseline
 	// (proves helm --set changed the rendered config, not a fixed "must be zero" check).
 	t.Run("OverrideModelGatewayMaxRetries", func(t *testing.T) {
 		helmUpgrade(t,
-			"--set", fmt.Sprintf("processor.config.modelGateways.default.maxRetries=%d", targetMaxRetries),
+			"--set", fmt.Sprintf("processor.config.modelGateways.%s.maxRetries=%d", testModel, targetMaxRetries),
 		)
 
 		cm := kubectlGetConfigMap(t, processorCMName)
-		got := parseModelGatewayDefaultMaxRetries(t, cm)
+		got := parseModelGatewayMaxRetries(t, cm, testModel)
 		if got != targetMaxRetries {
-			t.Fatalf("expected model_gateways.default.max_retries %d, got %d; config:\n%s", targetMaxRetries, got, cm)
+			t.Fatalf("expected model_gateways[%s].max_retries %d, got %d; config:\n%s", testModel, targetMaxRetries, got, cm)
 		}
-		if got == originalDefaultMaxRetries {
+		if got == originalMaxRetries {
 			t.Fatalf("expected max_retries to change from baseline %d, still %d; config:\n%s",
-				originalDefaultMaxRetries, got, cm)
+				originalMaxRetries, got, cm)
 		}
-		t.Logf("ConfigMap max_retries changed from %d to %d (model_gateways.default)", originalDefaultMaxRetries, got)
+		t.Logf("ConfigMap max_retries changed from %d to %d (model_gateways[%s])", originalMaxRetries, got, testModel)
 
 		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
 		waitForReady(t, testProcessorObsURL, 60*time.Second)
@@ -117,9 +118,9 @@ func testHelmUpgrade(t *testing.T) {
 		helmUpgradeWithValues(t, originalValues)
 
 		cm := kubectlGetConfigMap(t, processorCMName)
-		if got := parseModelGatewayDefaultMaxRetries(t, cm); got != originalDefaultMaxRetries {
-			t.Fatalf("expected model_gateways.default.max_retries restored to %d, got %d; config:\n%s",
-				originalDefaultMaxRetries, got, cm)
+		if got := parseModelGatewayMaxRetries(t, cm, testModel); got != originalMaxRetries {
+			t.Fatalf("expected model_gateways[%s].max_retries restored to %d, got %d; config:\n%s",
+				testModel, originalMaxRetries, got, cm)
 		}
 
 		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
@@ -210,8 +211,8 @@ func waitForRollout(t *testing.T, deployment string) {
 	t.Logf("rollout of %s complete", deployment)
 }
 
-// parseModelGatewayDefaultMaxRetries returns model_gateways.default.max_retries from processor config.yaml.
-func parseModelGatewayDefaultMaxRetries(t *testing.T, configYAML string) int {
+// parseModelGatewayMaxRetries returns model_gateways[model].max_retries from processor config.yaml.
+func parseModelGatewayMaxRetries(t *testing.T, configYAML, model string) int {
 	t.Helper()
 	var root struct {
 		ModelGateways map[string]struct {
@@ -221,12 +222,12 @@ func parseModelGatewayDefaultMaxRetries(t *testing.T, configYAML string) int {
 	if err := yaml.Unmarshal([]byte(configYAML), &root); err != nil {
 		t.Fatalf("parse processor config.yaml: %v", err)
 	}
-	gw, ok := root.ModelGateways["default"]
+	gw, ok := root.ModelGateways[model]
 	if !ok {
-		t.Fatalf("model_gateways.default missing in config:\n%s", configYAML)
+		t.Fatalf("model_gateways[%s] missing in config:\n%s", model, configYAML)
 	}
 	if gw.MaxRetries == nil {
-		t.Fatalf("model_gateways.default.max_retries key is absent (possible template bug):\n%s", configYAML)
+		t.Fatalf("model_gateways[%s].max_retries key is absent (possible template bug):\n%s", model, configYAML)
 	}
 	return *gw.MaxRetries
 }
