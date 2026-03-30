@@ -92,12 +92,12 @@ func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result)
 		}
 
 		var mu sync.Mutex
-		grp, gCtx := errgroup.WithContext(ctx)
+		var grp errgroup.Group
 		grp.SetLimit(c.maxConcurrency)
 
 		for _, batch := range batches {
 			grp.Go(func() error {
-				deleted, err := c.processBatch(gCtx, batch)
+				deleted, err := c.processBatch(ctx, batch)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
@@ -143,12 +143,12 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 		}
 
 		var mu sync.Mutex
-		grp, gCtx := errgroup.WithContext(ctx)
+		var grp errgroup.Group
 		grp.SetLimit(c.maxConcurrency)
 
 		for _, file := range files {
 			grp.Go(func() error {
-				deleted, err := c.processFile(gCtx, file)
+				deleted, err := c.processFile(ctx, file)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
