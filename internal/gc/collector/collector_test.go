@@ -957,8 +957,8 @@ func TestCollector_Run_ConcurrencyBoundIsRespected(t *testing.T) {
 	// With concurrency=2 and 10 files at 50ms each: ~250ms (5 batches of 2).
 	// With concurrency=10: ~50ms. With concurrency=1 (sequential): ~500ms.
 	// Verify it's slower than fully parallel but faster than sequential.
-	fullyParallel := delayPerFile                               // ~50ms
-	fullySequential := time.Duration(numFiles) * delayPerFile   // ~500ms
+	fullyParallel := delayPerFile                             // ~50ms
+	fullySequential := time.Duration(numFiles) * delayPerFile // ~500ms
 	if elapsed < fullyParallel {
 		t.Errorf("completed too fast (%v) — concurrency bound may not be applied", elapsed)
 	}
