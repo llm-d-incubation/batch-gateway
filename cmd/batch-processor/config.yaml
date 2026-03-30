@@ -14,8 +14,7 @@ process_time_bucket:
 # Concurrency Control
 global_concurrency: 100
 per_model_max_concurrency: 10
-
-# Maximum number of concurrent job recoveries during startup (default: 5)
+# Maximum number of concurrent job recoveries during startup
 recovery_max_concurrency: 5
 
 # Metrics & Health Check Server Address - ":PORT" format (e.g. ":9090")
