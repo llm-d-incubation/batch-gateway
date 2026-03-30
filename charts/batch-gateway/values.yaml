@@ -45,11 +45,22 @@ global:
 
   # OpenTelemetry configuration
   otel:
-    # OTLP gRPC endpoint (e.g. "http://jaeger.default.svc.cluster.local:4317")
+    # OTLP gRPC endpoint for trace collection. Examples:
+    #   Dev (Jaeger all-in-one):     "http://jaeger.default.svc.cluster.local:4317"
+    #   OpenShift TempoStack:        "http://tempo-distributor.openshift-tempo-operator.svc:4317"
+    #   OpenShift OTEL Collector:    "http://otel-collector.openshift-distributed-tracing.svc:4317"
+    #   Grafana Alloy/Agent:         "http://alloy.monitoring.svc.cluster.local:4317"
     # Leave empty to disable tracing.
     endpoint: ""
     # Use insecure (plaintext) gRPC connection to the collector.
     insecure: true
+    # Sampling configuration (maps to standard OTel env vars).
+    # Options: "always_on", "always_off", "traceidratio", "parentbased_traceidratio"
+    # Default is "parentbased_traceidratio" (recommended for production).
+    sampler: "parentbased_traceidratio"
+    # Sampling ratio (0.0 to 1.0), used when sampler is "*traceidratio".
+    # 1.0 = 100% (dev), 0.1 = 10% (production).
+    samplerArg: "1.0"
     # Enable per-command Redis tracing spans. Can produce high span volume
     # for batch workloads — leave disabled unless actively debugging Redis.
     redisTracing: false
