@@ -1081,7 +1081,7 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Metadata should still exist after DB failure
-		items, _, _, err := wrappedDB.FileDBClient.DBGet(ctx, &dbapi.FileQuery{
+		items, _, _, err := wrappedDB.DBGet(ctx, &dbapi.FileQuery{
 			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
 		}, true, 0, 1)
 		if err != nil {
@@ -1103,7 +1103,7 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Both storage and metadata should be gone
-		items2, _, _, err := wrappedDB.FileDBClient.DBGet(ctx, &dbapi.FileQuery{
+		items2, _, _, err := wrappedDB.DBGet(ctx, &dbapi.FileQuery{
 			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
 		}, true, 0, 1)
 		if err != nil {
