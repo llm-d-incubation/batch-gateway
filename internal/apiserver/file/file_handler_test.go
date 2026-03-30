@@ -1091,7 +1091,9 @@ func doTestDeleteFile(t *testing.T) {
 			t.Fatalf("expected metadata to survive DB failure, got %d items", len(items))
 		}
 
-		// Second attempt: storage returns ErrNotExist (blob already gone), DB succeeds → 200
+		// Second attempt: the real fs client returns os.ErrNotExist because
+		// the blob was already removed by the first attempt's successful
+		// storage delete. The handler tolerates this and proceeds to DB delete.
 		req2 := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
 		req2.SetPathValue(common.PathParamFileID, createdFile.ID)
 		req2 = req2.WithContext(ctx)

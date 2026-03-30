@@ -645,8 +645,7 @@ func (c *FileAPIHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete file metadata from database
-	// This operation is idempotent even if the physical file is already deleted.
+	// Delete file metadata from database.
 	deletedIDs, err := c.clients.FileDB.DBDelete(ctx, []string{fileObj.ID})
 	if err != nil {
 		logger.Error(err, "failed to delete file metadata")
