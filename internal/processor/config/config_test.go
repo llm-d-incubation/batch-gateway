@@ -53,6 +53,9 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.DatabaseType != "redis" {
 		t.Fatalf("DatabaseType = %q, want %q", c.DatabaseType, "redis")
 	}
+	if c.RecoveryMaxConcurrency != 5 {
+		t.Fatalf("RecoveryMaxConcurrency = %d, want %d", c.RecoveryMaxConcurrency, 5)
+	}
 
 	// default gateway spot-check
 	defaultGW, ok := c.ModelGateways[DefaultModelGatewayKey]
@@ -114,6 +117,7 @@ task_wait_time: 1s
 num_workers: 1
 global_concurrency: 100
 per_model_max_concurrency: 10
+recovery_max_concurrency: 5
 work_dir: "` + dir + `/work"
 addr: ":9090"
 shutdown_timeout: 30s
@@ -202,6 +206,7 @@ task_wait_time: 1s
 num_workers: 1
 global_concurrency: 100
 per_model_max_concurrency: 10
+recovery_max_concurrency: 5
 work_dir: "` + dir + `/work"
 addr: ":9090"
 shutdown_timeout: 30s
@@ -374,6 +379,12 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 	c.ShutdownTimeout = 0
 	if err := c.Validate(); err == nil {
 		t.Fatalf("Validate() expected error for shutdown_timeout <= 0, got nil")
+	}
+
+	c = NewConfig()
+	c.RecoveryMaxConcurrency = 0
+	if err := c.Validate(); err == nil {
+		t.Fatalf("Validate() expected error for recovery_max_concurrency <= 0, got nil")
 	}
 
 	c = NewConfig()

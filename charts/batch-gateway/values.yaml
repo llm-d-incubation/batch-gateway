@@ -286,6 +286,8 @@ processor:
     numWorkers: 20
     globalConcurrency: 100
     perModelMaxConcurrency: 10
+    # Maximum number of concurrent job recoveries during startup
+    recoveryMaxConcurrency: 5
     queueTimeBucket:
       start: 0.1
       factor: 2

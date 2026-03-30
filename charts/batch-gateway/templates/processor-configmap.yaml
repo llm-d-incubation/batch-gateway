@@ -15,6 +15,7 @@ data:
     num_workers: {{ .Values.processor.config.numWorkers }}
     global_concurrency: {{ .Values.processor.config.globalConcurrency }}
     per_model_max_concurrency: {{ .Values.processor.config.perModelMaxConcurrency }}
+    recovery_max_concurrency: {{ .Values.processor.config.recoveryMaxConcurrency }}
 
     terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
     shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}

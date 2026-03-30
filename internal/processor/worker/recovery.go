@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"golang.org/x/sync/errgroup"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -72,15 +73,21 @@ func (p *Processor) recoverStaleJobs(ctx context.Context) {
 
 	logger.V(logging.INFO).Info("Startup recovery: found stale job directories", "count", len(dirs))
 
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(p.cfg.RecoveryMaxConcurrency)
+
 	for _, dir := range dirs {
 		jobID := filepath.Base(dir)
-		jlogger := logger.WithValues("jobId", jobID)
-		jctx := logr.NewContext(ctx, jlogger)
-
-		if err := p.recoverJob(jctx, jobID); err != nil {
-			jlogger.Error(err, "Startup recovery: failed to recover job")
-		}
+		g.Go(func() error {
+			jlogger := logger.WithValues("jobId", jobID)
+			jctx := logr.NewContext(gCtx, jlogger)
+			if err := p.recoverJob(jctx, jobID); err != nil {
+				jlogger.Error(err, "Startup recovery: failed to recover job")
+			}
+			return nil // individual failures shouldn't block other recoveries
+		})
 	}
+	_ = g.Wait()
 }
 
 // discoverStaleJobDirs returns paths to job directories left over from a previous execution.

@@ -15,6 +15,9 @@ process_time_bucket:
 global_concurrency: 100
 per_model_max_concurrency: 10
 
+# Maximum number of concurrent job recoveries during startup (default: 5)
+recovery_max_concurrency: 5
+
 # Metrics & Health Check Server Address - ":PORT" format (e.g. ":9090")
 addr: ":9090"
 # Observability server failure should not terminate the processor in best-effort mode by default.

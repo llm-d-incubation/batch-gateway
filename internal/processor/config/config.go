@@ -90,6 +90,10 @@ type ProcessorConfig struct {
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
 
+	// RecoveryMaxConcurrency limits concurrent job recoveries during startup.
+	// Each recovery can involve DB lookups, S3 uploads, and status updates.
+	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
+
 	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
 	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
 	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
@@ -247,6 +251,7 @@ func NewConfig() *ProcessorConfig {
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
+		RecoveryMaxConcurrency:         5,
 	}
 }
 
@@ -355,6 +360,9 @@ func (c *ProcessorConfig) Validate() error {
 
 	if c.ProgressTTLSeconds <= 0 {
 		return fmt.Errorf("progress_ttl_seconds must be > 0")
+	}
+	if c.RecoveryMaxConcurrency <= 0 {
+		return fmt.Errorf("recovery_max_concurrency must be > 0")
 	}
 
 	return nil

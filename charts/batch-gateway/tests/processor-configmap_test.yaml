@@ -22,6 +22,20 @@ tests:
           path: data["config.yaml"]
           pattern: 'max_backoff: "60s"'
 
+  - it: should render recoveryMaxConcurrency with default value
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'recovery_max_concurrency: 5'
+
+  - it: should render custom recoveryMaxConcurrency
+    set:
+      processor.config.recoveryMaxConcurrency: 10
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'recovery_max_concurrency: 10'
+
   - it: should render per-model gateway entries
     set:
       processor.config.modelGateways:
