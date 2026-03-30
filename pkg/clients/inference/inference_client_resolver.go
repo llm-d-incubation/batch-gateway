@@ -131,6 +131,8 @@ func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
 // NewSingleClientResolver wraps a single InferenceClient in a GatewayResolver
 // where all models resolve to that client. Used in tests to inject mock
 // inference clients into Clientset.
+// TODO: if httptest is imported for other reasons in the future, replace callers
+// with NewGlobalResolver + httptest.Server so this function can be removed.
 func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
 	return &GatewayResolver{globalClient: c}
 }
