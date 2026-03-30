@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,7 +57,9 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -103,7 +106,9 @@ func TestExecuteOneRequest_NonHTTPError(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
@@ -147,7 +152,9 @@ func TestExecuteOneRequest_HTTPError(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +211,9 @@ func TestExecuteOneRequest_HTTPErrorEmptyBody(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +260,9 @@ func TestExecuteOneRequest_HTTPErrorNonJSONBody(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -294,7 +305,9 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -332,7 +345,9 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
 
 	ctx := testLoggerCtx(t)
-	result, err := env.p.executeOneRequest(ctx, inputFile, entries[0], "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -359,7 +374,9 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 
 	badEntry := planEntry{Offset: 99999, Length: 10}
 	ctx := testLoggerCtx(t)
-	_, err := env.p.executeOneRequest(ctx, inputFile, badEntry, "m1", nil)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	_, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, badEntry, "m1", nil)
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
 	}
@@ -1924,4 +1941,78 @@ func TestExecutionProgress_Flush(t *testing.T) {
 	if afterFlush <= beforeFlush {
 		t.Fatalf("expected flush to push at least 1 update, before=%d after=%d", beforeFlush, afterFlush)
 	}
+}
+
+// =====================================================================
+// Tests: mergeSLOTTFTIntoHeaders
+// =====================================================================
+
+func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
+	t.Run("no deadline", func(t *testing.T) {
+		h := mergeSLOTTFTIntoHeaders(nil, context.Background())
+		if got := h[sloTTFTMSHeader]; got != "0" {
+			t.Fatalf("x-slo-ttft-ms = %q, want 0", got)
+		}
+	})
+
+	t.Run("deadline remaining milliseconds", func(t *testing.T) {
+		want := 5*time.Second + 123*time.Millisecond
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
+		defer cancel()
+		h := mergeSLOTTFTIntoHeaders(nil, ctx)
+		got, err := strconv.ParseInt(h[sloTTFTMSHeader], 10, 64)
+		if err != nil {
+			t.Fatalf("parse header: %v", err)
+		}
+		// Allow slack between deadline creation and time.Until inside merge.
+		const slackMs int64 = 150
+		hi := want.Milliseconds()
+		lo := hi - slackMs
+		if got < lo || got > hi {
+			t.Fatalf("x-slo-ttft-ms = %d, want in [%d, %d]", got, lo, hi)
+		}
+	})
+
+	t.Run("deadline in the past clamps to zero", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		h := mergeSLOTTFTIntoHeaders(nil, ctx)
+		if got := h[sloTTFTMSHeader]; got != "0" {
+			t.Fatalf("x-slo-ttft-ms = %q, want 0", got)
+		}
+	})
+
+	t.Run("preserves existing headers", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
+		defer cancel()
+		h := mergeSLOTTFTIntoHeaders(map[string]string{"a": "b"}, ctx)
+		if h["a"] != "b" {
+			t.Fatal("lost existing header")
+		}
+		got, err := strconv.ParseInt(h[sloTTFTMSHeader], 10, 64)
+		if err != nil || got <= 0 {
+			t.Fatalf("x-slo-ttft-ms = %q, want positive ms", h[sloTTFTMSHeader])
+		}
+	})
+
+	t.Run("non-nil empty map mutated in place", func(t *testing.T) {
+		want := 2 * time.Second
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
+		defer cancel()
+		in := map[string]string{}
+		h := mergeSLOTTFTIntoHeaders(in, ctx)
+		got, err := strconv.ParseInt(in[sloTTFTMSHeader], 10, 64)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		const slackMs int64 = 250
+		hi := want.Milliseconds()
+		lo := hi - slackMs
+		if got < lo || got > hi {
+			t.Fatalf("in-place map x-slo-ttft-ms = %d, want in [%d, %d]", got, lo, hi)
+		}
+		if h[sloTTFTMSHeader] != in[sloTTFTMSHeader] {
+			t.Fatalf("returned map header %q != in-place %q", h[sloTTFTMSHeader], in[sloTTFTMSHeader])
+		}
+	})
 }

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -415,7 +416,7 @@ dispatch:
 			defer modelSem.Release()
 			defer p.globalSem.Release()
 
-			result, execErr := p.executeOneRequest(ctx, inputFile, entry, modelID, passThroughHeaders)
+			result, execErr := p.executeOneRequest(ctx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
 			if execErr != nil {
 				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
 				errOnce.Do(func() { modelErr = execErr })
@@ -583,14 +584,38 @@ func (p *Processor) drainUnprocessedRequests(
 	}
 }
 
+const sloTTFTMSHeader = "x-slo-ttft-ms"
+
+// mergeSLOTTFTIntoHeaders ensures headers is non-nil and sets sloTTFTMSHeader to the remaining
+// time until sloCtx's deadline in whole milliseconds, clamped to >= 0. If sloCtx has no
+// deadline, the header value is "0".
+func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) map[string]string {
+	var ms string
+	if dl, ok := sloCtx.Deadline(); ok {
+		sloMs := time.Until(dl).Milliseconds()
+		if sloMs < 0 {
+			sloMs = 0
+		}
+		ms = strconv.FormatInt(sloMs, 10)
+	} else {
+		ms = "0"
+	}
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	headers[sloTTFTMSHeader] = ms
+	return headers
+}
+
 // executeOneRequest reads a single input line from the input file at the given plan entry offset,
 // sends it to the inference gateway, and returns the formatted output line.
 func (p *Processor) executeOneRequest(
 	ctx context.Context,
+	sloCtx context.Context,
 	inputFile *os.File,
 	entry planEntry,
 	modelID string,
-	passThroughHeaders map[string]string,
+	headers map[string]string,
 ) (*outputLine, error) {
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
@@ -620,11 +645,13 @@ func (p *Processor) executeOneRequest(
 	// model id, job id and tenant id are already set in the context
 	logger := logr.FromContextOrDiscard(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
+	headers = mergeSLOTTFTIntoHeaders(headers, sloCtx)
+
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
 		Endpoint:  req.URL,
 		Params:    req.Body,
-		Headers:   passThroughHeaders,
+		Headers:   headers,
 	}
 
 	start := time.Now()
