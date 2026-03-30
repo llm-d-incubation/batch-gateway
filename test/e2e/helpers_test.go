@@ -384,6 +384,17 @@ func validateBatchResults(t *testing.T, batch *openai.Batch, result batchResults
 		if _, ok := out.Response.Body["model"]; !ok {
 			t.Errorf("output line %d (custom_id=%s): response body missing 'model'", i+1, out.CustomID)
 		}
+		if usage, ok := out.Response.Body["usage"]; !ok {
+			t.Errorf("output line %d (custom_id=%s): response body missing 'usage'", i+1, out.CustomID)
+		} else if usageMap, ok := usage.(map[string]any); !ok {
+			t.Errorf("output line %d (custom_id=%s): usage is not an object", i+1, out.CustomID)
+		} else {
+			for _, key := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
+				if _, ok := usageMap[key]; !ok {
+					t.Errorf("output line %d (custom_id=%s): usage missing '%s'", i+1, out.CustomID, key)
+				}
+			}
+		}
 	}
 
 	// --- Validate error file ---
