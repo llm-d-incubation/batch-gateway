@@ -37,9 +37,10 @@ MAAS_POLICY_NAMESPACE="${MAAS_POLICY_NAMESPACE:-models-as-a-service}"
 MAAS_TEST_USER="${MAAS_TEST_USER:-testuser}"
 MAAS_TEST_PASS="${MAAS_TEST_PASS:-testpass}"
 MAAS_TEST_GROUP="${MAAS_TEST_GROUP:-tier-free-users}"
-# Unauthorized user (valid OpenShift user, NOT in the authorized group)
+# Unauthorized user (valid OpenShift user, has subscription but NOT authorized to access the model)
 MAAS_UNAUTH_USER="${MAAS_UNAUTH_USER:-testuser-unauth}"
 MAAS_UNAUTH_PASS="${MAAS_UNAUTH_PASS:-testpass}"
+MAAS_UNAUTH_GROUP="${MAAS_UNAUTH_GROUP:-tier-unauth-users}"
 
 # Model served by MaaS simulator sample
 MAAS_MODEL_NAME="${MAAS_MODEL_NAME:-facebook/opt-125m}"
@@ -88,6 +89,14 @@ rules:
   resources: ["secrets"]
   resourceNames: ["maas-db-config"]
   verbs: ["get"]
+  # SAR-based admin authorization (replaces hardcoded admin list)
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
+  # HTTPRoutes for model route resolution
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -211,7 +220,7 @@ spec:
       - name: ${MAAS_TEST_GROUP}
 EOF
 
-    step "Creating MaaSSubscription (token rate limit: ${MAAS_TOKEN_RATE_LIMIT} tokens/${MAAS_TOKEN_RATE_WINDOW})..."
+    step "Creating MaaSSubscription for authorized group (token rate limit: ${MAAS_TOKEN_RATE_LIMIT} tokens/${MAAS_TOKEN_RATE_WINDOW})..."
     kubectl apply -f - <<EOF
 apiVersion: maas.opendatahub.io/v1alpha1
 kind: MaaSSubscription
@@ -222,6 +231,25 @@ spec:
   owner:
     groups:
       - name: ${MAAS_TEST_GROUP}
+  modelRefs:
+    - name: ${isvc_name}
+      namespace: ${LLM_NAMESPACE}
+      tokenRateLimits:
+        - limit: ${MAAS_TOKEN_RATE_LIMIT}
+          window: ${MAAS_TOKEN_RATE_WINDOW}
+EOF
+
+    step "Creating MaaSSubscription for unauthorized group (has subscription, no model access)..."
+    kubectl apply -f - <<EOF
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: batch-test-subscription-unauth
+  namespace: ${MAAS_POLICY_NAMESPACE}
+spec:
+  owner:
+    groups:
+      - name: ${MAAS_UNAUTH_GROUP}
   modelRefs:
     - name: ${isvc_name}
       namespace: ${LLM_NAMESPACE}
@@ -285,12 +313,13 @@ wait_for_auth_policies_enforced() {
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local all_enforced=true total=0
-        while IFS= read -r status; do
+        while IFS=$'\t' read -r status message; do
             total=$((total + 1))
-            if [ "${status}" != "True" ]; then
+            # Enforced=True is ready; Enforced=False with "overridden" is also valid
+            if [ "${status}" != "True" ] && [[ "${message}" != *overridden* ]]; then
                 all_enforced=false
             fi
-        done < <(kubectl get authpolicy -A -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Enforced")].status}{"\n"}{end}' 2>/dev/null)
+        done < <(kubectl get authpolicy -A -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Enforced")].status}{"\t"}{.status.conditions[?(@.type=="Enforced")].message}{"\n"}{end}' 2>/dev/null)
 
         if ${all_enforced} && [ $total -gt 0 ]; then
             log "All AuthPolicies enforced (${total} policies)."
@@ -446,10 +475,16 @@ spec:
     if ! oc get group "${MAAS_TEST_GROUP}" &>/dev/null 2>&1; then
         oc adm groups new "${MAAS_TEST_GROUP}"
     fi
-    # Add only the authorized user to the group; unauth user is NOT in the group
+    # Authorized user -> authorized group (has model access via MaaSAuthPolicy)
     oc adm groups add-users "${MAAS_TEST_GROUP}" "${MAAS_TEST_USER}" 2>/dev/null || true
     log "User '${MAAS_TEST_USER}' added to group '${MAAS_TEST_GROUP}'."
-    log "User '${MAAS_UNAUTH_USER}' created (NOT in group '${MAAS_TEST_GROUP}')."
+
+    # Unauthorized user -> unauth group (has subscription but NO model access)
+    if ! oc get group "${MAAS_UNAUTH_GROUP}" &>/dev/null 2>&1; then
+        oc adm groups new "${MAAS_UNAUTH_GROUP}"
+    fi
+    oc adm groups add-users "${MAAS_UNAUTH_GROUP}" "${MAAS_UNAUTH_USER}" 2>/dev/null || true
+    log "User '${MAAS_UNAUTH_USER}' added to group '${MAAS_UNAUTH_GROUP}' (no model access)."
 }
 
 get_maas_gateway_host() {
@@ -481,7 +516,7 @@ get_maas_api_key() {
     key_response=$(curl -sSk \
         -H "Authorization: Bearer ${user_token}" \
         -H "Content-Type: application/json" \
-        -X POST -d '{"name":"batch-e2e","expiration":"1h"}' \
+        -X POST -d '{"name":"batch-e2e","expiresIn":"1h"}' \
         "${host}/maas-api/v1/api-keys")
     local api_key
     api_key=$(echo "${key_response}" | jq -r '.key // empty')
@@ -589,6 +624,7 @@ cmd_uninstall() {
     # Test user
     step "Removing test users..."
     oc delete group "${MAAS_TEST_GROUP}" 2>/dev/null || true
+    oc delete group "${MAAS_UNAUTH_GROUP}" 2>/dev/null || true
     oc delete user "${MAAS_TEST_USER}" 2>/dev/null || true
     oc delete identity "htpasswd:${MAAS_TEST_USER}" 2>/dev/null || true
     oc delete user "${MAAS_UNAUTH_USER}" 2>/dev/null || true

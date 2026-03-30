@@ -711,6 +711,8 @@ EOF
 
 ### 4.1 Setup Test Accounts
 ```bash
+# Get Gateway hostname (OpenShift router uses SNI-based routing, so the
+# spec hostname is required — the raw LB address won't work)
 GW_HOSTNAME=$(oc get gateway openshift-ai-inference -n openshift-ingress \
     -o jsonpath='{.spec.listeners[0].hostname}')
 GW_URL="https://${GW_HOSTNAME}"

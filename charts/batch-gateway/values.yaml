@@ -388,6 +388,8 @@ gc:
     dryRun: false
     # Interval between garbage collection cycles (Go duration format)
     interval: "30m"
+    # Maximum number of concurrent item deletions per GC cycle
+    maxConcurrency: 10
 
   # Per-component podSecurityContext override (optional).
   # If not set, inherits global.podSecurityContext.

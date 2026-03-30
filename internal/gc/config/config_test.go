@@ -183,6 +183,57 @@ file_client:
 	if cfg.Interval != 1*time.Hour {
 		t.Errorf("expected default interval 1h, got %v", cfg.Interval)
 	}
+	if cfg.MaxConcurrency != DefaultMaxConcurrency {
+		t.Errorf("expected default max_concurrency %d, got %d", DefaultMaxConcurrency, cfg.MaxConcurrency)
+	}
+}
+
+func TestLoad_CustomMaxConcurrency(t *testing.T) {
+	path := writeTempConfig(t, `
+database_type: "postgresql"
+max_concurrency: 20
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxConcurrency != 20 {
+		t.Errorf("expected max_concurrency 20, got %d", cfg.MaxConcurrency)
+	}
+}
+
+func TestLoad_ErrorZeroMaxConcurrency(t *testing.T) {
+	path := writeTempConfig(t, `
+database_type: "postgresql"
+max_concurrency: 0
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for zero max_concurrency")
+	}
+}
+
+func TestLoad_ErrorNegativeMaxConcurrency(t *testing.T) {
+	path := writeTempConfig(t, `
+database_type: "postgresql"
+max_concurrency: -5
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative max_concurrency")
+	}
 }
 
 func TestLoad_ErrorNoDatabaseType(t *testing.T) {
