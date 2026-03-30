@@ -22,9 +22,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	"golang.org/x/sync/errgroup"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	fs "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
@@ -41,18 +43,21 @@ type GarbageCollector struct {
 	filesClient     fs.BatchFilesClient
 	dryRun          bool
 	interval        time.Duration
+	maxConcurrency  int
 	onCycleComplete func(*Result)
 }
 
 // NewGarbageCollector creates a new garbage collector.
+// maxConcurrency bounds how many items are deleted in parallel within a single page.
 // onCycleComplete, if non-nil, is called after each GC cycle with the result.
-func NewGarbageCollector(batchDBClient db.BatchDBClient, fileDBClient db.FileDBClient, filesClient fs.BatchFilesClient, dryRun bool, interval time.Duration, onCycleComplete func(*Result)) *GarbageCollector {
+func NewGarbageCollector(batchDBClient db.BatchDBClient, fileDBClient db.FileDBClient, filesClient fs.BatchFilesClient, dryRun bool, interval time.Duration, maxConcurrency int, onCycleComplete func(*Result)) *GarbageCollector {
 	return &GarbageCollector{
 		batchDBClient:   batchDBClient,
 		fileDBClient:    fileDBClient,
 		filesClient:     filesClient,
 		dryRun:          dryRun,
 		interval:        interval,
+		maxConcurrency:  maxConcurrency,
 		onCycleComplete: onCycleComplete,
 	}
 }
@@ -86,15 +91,25 @@ func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result)
 			return fmt.Errorf("failed to query expired batch jobs: %w", err)
 		}
 
+		var mu sync.Mutex
+		var grp errgroup.Group
+		grp.SetLimit(c.maxConcurrency)
+
 		for _, batch := range batches {
-			deleted, err := c.processBatch(ctx, batch)
-			if err != nil {
-				result.BatchesFailed++
-				logger.Error(err, "Failed to process batch job", "jobID", batch.ID)
-			} else if deleted {
-				result.BatchesDeleted++
-			}
+			grp.Go(func() error {
+				deleted, err := c.processBatch(ctx, batch)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.BatchesFailed++
+					logger.Error(err, "Failed to process batch job", "jobID", batch.ID)
+				} else if deleted {
+					result.BatchesDeleted++
+				}
+				return nil // don't short-circuit other deletions
+			})
 		}
+		_ = grp.Wait()
 
 		if !expectMore {
 			break
@@ -127,15 +142,25 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 			return fmt.Errorf("failed to query expired files: %w", err)
 		}
 
+		var mu sync.Mutex
+		var grp errgroup.Group
+		grp.SetLimit(c.maxConcurrency)
+
 		for _, file := range files {
-			deleted, err := c.processFile(ctx, file)
-			if err != nil {
-				result.FilesFailed++
-				logger.Error(err, "Failed to process file", "fileID", file.ID)
-			} else if deleted {
-				result.FilesDeleted++
-			}
+			grp.Go(func() error {
+				deleted, err := c.processFile(ctx, file)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.FilesFailed++
+					logger.Error(err, "Failed to process file", "fileID", file.ID)
+				} else if deleted {
+					result.FilesDeleted++
+				}
+				return nil // don't short-circuit other deletions
+			})
 		}
+		_ = grp.Wait()
 
 		if !expectMore {
 			break

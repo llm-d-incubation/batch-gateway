@@ -31,10 +31,16 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
+const (
+	// DefaultMaxConcurrency is the default number of concurrent item deletions per GC cycle.
+	DefaultMaxConcurrency = 10
+)
+
 // Config holds the garbage collector configuration.
 type Config struct {
-	DryRun   bool          `yaml:"dry_run"`
-	Interval time.Duration `yaml:"interval"`
+	DryRun         bool          `yaml:"dry_run"`
+	Interval       time.Duration `yaml:"interval"`
+	MaxConcurrency int           `yaml:"max_concurrency"`
 
 	// DatabaseType selects which backend stores persistent data (batch_items, file_items).
 	// Must be "redis" or "postgresql".
@@ -71,10 +77,15 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Interval: 1 * time.Hour,
+		Interval:       1 * time.Hour,
+		MaxConcurrency: DefaultMaxConcurrency,
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if cfg.MaxConcurrency <= 0 {
+		return nil, fmt.Errorf("max_concurrency must be positive, got %d", cfg.MaxConcurrency)
 	}
 
 	if cfg.Interval <= 0 {

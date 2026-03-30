@@ -683,19 +683,14 @@ cmd_install() {
 cmd_test() {
     banner "Testing: RHOAI + Batch Gateway"
 
-    # Get Gateway hostname
-    local gw_hostname
-    gw_hostname=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" \
-        -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null || echo "")
-    [ -z "${gw_hostname}" ] && die "Gateway '${GATEWAY_NAME}' has no hostname. Is it ready?"
+    set_gateway_url
 
     local isvc_name
     isvc_name=$(echo "${MODEL_NAME}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
 
-    local gw_url="https://${gw_hostname}"
-    log "Gateway:   ${gw_url}"
-    log "Inference: ${gw_url}/${LLM_NAMESPACE}/${isvc_name}"
-    log "Batch API: ${gw_url}"
+    log "Gateway:   ${GATEWAY_URL}"
+    log "Inference: ${GATEWAY_URL}/${LLM_NAMESPACE}/${isvc_name}"
+    log "Batch API: ${GATEWAY_URL}"
 
     # Auth setup: create SA + token + RBAC
     local sa_name="test-authorized-sa"
@@ -746,10 +741,10 @@ EOF
         || die "Failed to create token for SA '${unauth_sa}'"
     [[ "${unauth_token}" == ey* ]] || die "Token for SA '${unauth_sa}' doesn't look like a valid JWT"
 
-    local llm_url="${gw_url}/${LLM_NAMESPACE}/${isvc_name}/v1/chat/completions"
+    local llm_url="${GATEWAY_URL}/${LLM_NAMESPACE}/${isvc_name}/v1/chat/completions"
     local inference_payload="{\"model\":\"${MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":10}"
 
-    run_tests "${llm_url}" "${gw_url}" "${MODEL_NAME}" \
+    run_tests "${llm_url}" "${GATEWAY_URL}" "${MODEL_NAME}" \
         "Authorization: Bearer ${token}" \
         "Authorization: Bearer ${unauth_token}" \
         "${inference_payload}"

@@ -10,6 +10,7 @@ data:
     # Garbage Collector configuration
     dry_run: {{ .Values.gc.config.dryRun }}
     interval: {{ .Values.gc.config.interval | quote }}
+    max_concurrency: {{ .Values.gc.config.maxConcurrency }}
     database_type: {{ .Values.global.databaseType | quote }}
     redis:
       db: {{ .Values.global.redis.db }}
