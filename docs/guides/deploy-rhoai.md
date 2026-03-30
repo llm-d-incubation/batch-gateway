@@ -568,6 +568,10 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "global.fileClient.fs.basePath=/tmp/batch-gateway" \
     --set "global.fileClient.fs.pvcName=batch-gateway-files" \
     --set "processor.config.modelGateways.facebook/opt-125m.url=${MODEL_URL}" \
+    --set "processor.config.modelGateways.facebook/opt-125m.requestTimeout=5m" \
+    --set "processor.config.modelGateways.facebook/opt-125m.maxRetries=3" \
+    --set "processor.config.modelGateways.facebook/opt-125m.initialBackoff=1s" \
+    --set "processor.config.modelGateways.facebook/opt-125m.maxBackoff=60s" \
     --set "processor.config.modelGateways.facebook/opt-125m.tlsInsecureSkipVerify=true" \
     --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
     --set apiserver.tls.enabled=true \

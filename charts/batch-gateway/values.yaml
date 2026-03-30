@@ -299,30 +299,37 @@ processor:
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
-    # modelGateways.default is required and acts as fallback for all models.
-    # Lookup order: modelGateways[model] -> modelGateways["default"].
-    # Each model name maps to exactly one gateway config (one entry per model).
-    # apiKeyName is a key name in the app secret (mounted at /etc/.secrets/).
-    # When omitted, the default inference-api-key is used.
-    # Per-model entries inherit HTTP fields (requestTimeout, maxRetries,
-    # initialBackoff, maxBackoff) from "default" when omitted — only url
-    # and fields that differ need to be specified.
-    modelGateways:
-      "default":
-        url: "http://localhost:8000"
-        requestTimeout: "5m"
-        maxRetries: 3
-        initialBackoff: "1s"
-        maxBackoff: "60s"
-        tlsInsecureSkipVerify: false
-      # Per-model entries (optional, only url + overrides needed):
-      # "llama-3":
-      #   url: "http://gateway-a:8000"
-      # "mistral":
-      #   url: "http://gateway-b:8000"
-      #   apiKeyName: "gateway-b-api-key"
-      #   requestTimeout: "2m"
-      #   maxRetries: 1
+    # REQUIRED: Configure exactly one of globalInferenceGateway or modelGateways.
+    # The processor will fail to start if neither is set.
+    #
+    # globalInferenceGateway routes ALL inference requests to a single endpoint,
+    # regardless of model name. Use this for MaaS / multi-model platforms or
+    # LoRA-only deployments where all adapters share a single vLLM instance.
+    # When set, modelGateways entries are ignored.
+    # globalInferenceGateway:
+    #   url: "http://inference-gateway:8000"
+    #   requestTimeout: "5m"
+    #   maxRetries: 3
+    #   initialBackoff: "1s"
+    #   maxBackoff: "60s"
+    #   tlsInsecureSkipVerify: false
+
+    # modelGateways maps specific model names to gateway configs.
+    # Only models listed here are routed; unlisted models get a request-level error.
+    # Either globalInferenceGateway or modelGateways must be configured.
+    # modelGateways:
+    #   "llama-3":
+    #     url: "http://gateway-a:8000"
+    #     requestTimeout: "5m"
+    #     maxRetries: 3
+    #     initialBackoff: "1s"
+    #     maxBackoff: "60s"
+    #     tlsInsecureSkipVerify: false
+    #   "mistral":
+    #     url: "http://gateway-b:8000"
+    #     apiKeyName: "gateway-b-api-key"
+    #     requestTimeout: "2m"
+    #     maxRetries: 1
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)

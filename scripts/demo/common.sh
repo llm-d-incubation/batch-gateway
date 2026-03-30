@@ -34,6 +34,12 @@ BATCH_INFERENCE_PORT="${BATCH_INFERENCE_PORT:-8000}"
 BATCH_APP_SECRET_NAME="${BATCH_APP_SECRET_NAME:-${BATCH_HELM_RELEASE}-secrets}"
 BATCH_FILES_PVC_NAME="${BATCH_FILES_PVC_NAME:-${BATCH_HELM_RELEASE}-files}"
 BATCH_DB_TYPE="${BATCH_DB_TYPE:-postgresql}"
+# Default HTTP settings for model gateway entries.
+# Each per-model entry must be fully specified (no inheritance).
+GW_REQUEST_TIMEOUT="${GW_REQUEST_TIMEOUT:-5m}"
+GW_MAX_RETRIES="${GW_MAX_RETRIES:-3}"
+GW_INITIAL_BACKOFF="${GW_INITIAL_BACKOFF:-1s}"
+GW_MAX_BACKOFF="${GW_MAX_BACKOFF:-60s}"
 BATCH_REDIS_RELEASE="${BATCH_REDIS_RELEASE:-redis}"
 BATCH_POSTGRESQL_RELEASE="${BATCH_POSTGRESQL_RELEASE:-postgresql}"
 # WARNING: Default passwords are for demo only. For production, override via env vars or use K8s secrets.

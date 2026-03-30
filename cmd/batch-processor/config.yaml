@@ -28,45 +28,40 @@ shutdown_timeout: "30s"
 # Work directory for processor
 work_dir: "/var/lib/batch-gateway/processor"
 
-# Model-specific inference gateway configuration.
-# Reserved key "default" is required and acts as the fallback for all models.
-# Lookup order: model_gateways[model] -> model_gateways["default"].
-# api_key_name is a key name in /etc/.secrets/; when omitted, the default
-# inference-api-key secret is used.
-model_gateways:
-  "default":
-    url: "http://localhost:8000"
-    request_timeout: "5m"
-    max_retries: 3
-    initial_backoff: "1s"
-    max_backoff: "60s"
-    tls_insecure_skip_verify: false
-    # tls_ca_cert_file: "/path/to/ca-cert.pem"
-    # tls_client_cert_file: "/path/to/client-cert.pem"
-    # tls_client_key_file: "/path/to/client-key.pem"
-  # Per-model entries (optional). Each entry must be fully specified —
-  # all HTTP fields are required and are NOT inherited from "default".
-  # api_key_name and api_key_file are mutually exclusive.
-  # "llama-3":
-  #   url: "http://gateway-a:8000"
-  #   request_timeout: "5m"
-  #   max_retries: 3
-  #   initial_backoff: "1s"
-  #   max_backoff: "60s"
-  # "mistral":
-  #   url: "http://gateway-b:8000"
-  #   api_key_name: "gateway-b-api-key"  # reads from /etc/.secrets/gateway-b-api-key
-  #   request_timeout: "2m"
-  #   max_retries: 1
-  #   initial_backoff: "1s"
-  #   max_backoff: "30s"
-  # "granite":
-  #   url: "http://gateway-c:8000"
-  #   api_key_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"  # reads from arbitrary file path
-  #   request_timeout: "5m"
-  #   max_retries: 3
-  #   initial_backoff: "1s"
-  #   max_backoff: "60s"
+# Inference gateway configuration.
+# Either global_inference_gateway or model_gateways must be configured.
+#
+# Option 1: global_inference_gateway routes ALL requests to one endpoint.
+# Use for MaaS / multi-model platforms or LoRA-only deployments
+# where all adapters share a single vLLM instance.
+# When set, model_gateways entries are ignored for routing.
+global_inference_gateway:
+  url: "http://localhost:8000"
+  request_timeout: "5m"
+  max_retries: 3
+  initial_backoff: "1s"
+  max_backoff: "60s"
+  tls_insecure_skip_verify: false
+#
+# Option 2: model_gateways maps specific model names to gateway configs.
+# Only models listed here are routed; unlisted models get a request-level error.
+# api_key_name and api_key_file are mutually exclusive.
+# model_gateways:
+#   "llama-3":
+#     url: "http://gateway-a:8000"
+#     request_timeout: "5m"
+#     max_retries: 3
+#     initial_backoff: "1s"
+#     max_backoff: "60s"
+#     tls_insecure_skip_verify: false
+#     # tls_ca_cert_file: "/path/to/ca-cert.pem"
+#     # tls_client_cert_file: "/path/to/client-cert.pem"
+#     # tls_client_key_file: "/path/to/client-key.pem"
+#   "mistral":
+#     url: "http://gateway-b:8000"
+#     api_key_name: "gateway-b-api-key"
+#     request_timeout: "2m"
+#     max_retries: 1
 
 # Default TTL for output/error files in seconds (0 = no expiration).
 # Used as fallback when the user does not provide output_expires_after in POST /v1/batches.

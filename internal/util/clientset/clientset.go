@@ -152,7 +152,8 @@ func NewClientset(
 	fsCfg *fsclient.Config,
 	s3Cfg *s3client.Config,
 	fileRetryCfg *retry.Config,
-	modelGatewaysConfigs map[string]inference.GatewayClientConfig,
+	globalGatewayConfig *inference.GatewayClientConfig,
+	perModelGatewayConfigs map[string]inference.GatewayClientConfig,
 	component ucom.Component,
 ) (*Clientset, error) {
 
@@ -229,12 +230,21 @@ func NewClientset(
 	}
 
 	// build inference client(s)
-	if modelGatewaysConfigs != nil {
-		resolver, err := inference.NewGatewayResolver(modelGatewaysConfigs, logger)
+	// Processor Validate() guarantees exactly one is set; apiserver passes nil for both.
+	switch {
+	case globalGatewayConfig != nil:
+		resolver, err := inference.NewGlobalResolver(*globalGatewayConfig, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create inference client(s): %w", err)
+			return nil, fmt.Errorf("failed to create global inference client: %w", err)
 		}
-		logger.Info("Inference client(s) created")
+		logger.Info("Global inference client created")
+		cs.Inference = resolver
+	case len(perModelGatewayConfigs) > 0:
+		resolver, err := inference.NewPerModelResolver(perModelGatewayConfigs, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create per-model inference clients: %w", err)
+		}
+		logger.Info("Per-model inference clients created", "count", len(perModelGatewayConfigs))
 		cs.Inference = resolver
 	}
 

@@ -627,12 +627,26 @@ func (p *Processor) executeOneRequest(
 		Headers:   passThroughHeaders,
 	}
 
+	inferClient := p.inference.ClientFor(modelID)
+	if inferClient == nil {
+		// TODO: issue #218 follow-up — non-registered model request should be failed in ingestion stage
+		result := &outputLine{
+			ID:       newBatchRequestID(requestID),
+			CustomID: req.CustomID,
+			Error: &outputError{
+				Code:    inference.ErrCodeModelNotFound,
+				Message: fmt.Sprintf("model %q is not configured in any gateway", modelID),
+			},
+		}
+		metrics.RecordRequestError(modelID)
+		return result, nil
+	}
+
 	start := time.Now()
 	metrics.IncProcessorInflightRequests()
 	metrics.IncModelInflightRequests(modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
 
-	inferClient := p.inference.ClientFor(modelID)
 	inferResp, inferErr := inferClient.Generate(ctx, inferReq)
 
 	metrics.DecModelInflightRequests(modelID)

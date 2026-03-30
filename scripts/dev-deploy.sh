@@ -823,7 +823,6 @@ install_batch_gateway() {
         --set "processor.image.tag=${DEV_VERSION}"
         --set "global.fileClient.type=${FILE_CLIENT_TYPE}"
         --set "global.secretName=${APP_SECRET_NAME}"
-        --set "processor.config.modelGateways.default.url=http://unused-default-gateway:8000"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.url=${vllm_sim_url}"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.requestTimeout=5m"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxRetries=3"

@@ -34,6 +34,32 @@ data:
       conn_max_idle_time: {{ .Values.global.redis.connMaxIdleTime | quote }}
       conn_max_lifetime: {{ .Values.global.redis.connMaxLifetime | quote }}
 
+    {{- with .Values.processor.config.globalInferenceGateway }}
+    global_inference_gateway:
+      url: {{ .url | quote }}
+      request_timeout: {{ .requestTimeout | quote }}
+      max_retries: {{ .maxRetries }}
+      initial_backoff: {{ .initialBackoff | quote }}
+      max_backoff: {{ .maxBackoff | quote }}
+      tls_insecure_skip_verify: {{ .tlsInsecureSkipVerify }}
+      {{- if .apiKeyName }}
+      api_key_name: {{ .apiKeyName | quote }}
+      {{- end }}
+      {{- if .apiKeyFile }}
+      api_key_file: {{ .apiKeyFile | quote }}
+      {{- end }}
+      {{- if .tlsCaCertFile }}
+      tls_ca_cert_file: {{ .tlsCaCertFile | quote }}
+      {{- end }}
+      {{- if .tlsClientCertFile }}
+      tls_client_cert_file: {{ .tlsClientCertFile | quote }}
+      {{- end }}
+      {{- if .tlsClientKeyFile }}
+      tls_client_key_file: {{ .tlsClientKeyFile | quote }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.processor.config.modelGateways }}
     model_gateways:
       {{- range $model, $cfg := .Values.processor.config.modelGateways }}
       {{ $model | quote }}:
@@ -59,6 +85,7 @@ data:
         tls_client_key_file: {{ $cfg.tlsClientKeyFile | quote }}
         {{- end }}
       {{- end }}
+    {{- end }}
 
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
     progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}

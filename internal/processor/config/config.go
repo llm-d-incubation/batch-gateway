@@ -77,9 +77,17 @@ type ProcessorConfig struct {
 	// WorkDir is the work directory for processor
 	WorkDir string `yaml:"work_dir"`
 
+	// GlobalInferenceGateway, when set, routes all inference requests to a
+	// single endpoint regardless of model name. Per-model entries in
+	// ModelGateways are ignored for routing when this is set.
+	// Use this for MaaS / multi-model platforms or LoRA adapter deployments
+	// where many model names share one inference endpoint.
+	GlobalInferenceGateway *ModelGatewayConfig `yaml:"global_inference_gateway,omitempty"`
+
 	// ModelGateways maps model names to gateway/inference settings.
-	// Reserved key "default" is required and acts as fallback for all models.
-	// Lookup order: ModelGateways[model] -> ModelGateways["default"].
+	// Only models listed here are routed; requests for unlisted models
+	// receive a request-level error.
+	// Ignored when GlobalInferenceGateway is set.
 	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
 	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
@@ -116,24 +124,20 @@ type ProcessorConfig struct {
 	} `yaml:"file_client"`
 }
 
-// DefaultModelGatewayKey is the reserved key in ModelGateways that acts as
-// the fallback gateway for any model without an explicit mapping.
-const DefaultModelGatewayKey = "default"
-
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
-// model (or the default fallback). Per-model entries inherit unset fields from
-// the "default" entry via applyModelGatewayDefaults, so only fields that differ
-// from the default need to be specified.
+// model or the global inference gateway. Each per-model entry must be fully
+// specified — there is no inheritance between entries.
 //
-// HTTP fields use pointers so that nil (unset → inherit from default) is
-// distinguishable from explicit zero values (e.g. MaxRetries=0 means "no
-// retries", RequestTimeout=0 means "no timeout").
+// HTTP fields use pointers so that nil (unset) is distinguishable from explicit
+// zero values (e.g. MaxRetries=0 means "no retries", RequestTimeout=0 means
+// "no timeout").
 //
 // API key resolution (mutually exclusive, first match wins):
 //   - api_key_file: read the token/key from an arbitrary file path
 //     (e.g. /var/run/secrets/kubernetes.io/serviceaccount/token).
 //   - api_key_name: key name under /etc/.secrets/ (mounted Kubernetes secret).
-//   - (neither set on "default"): falls back to the mounted inference-api-key secret.
+//   - (neither set): no API key is sent. For global gateway, the mounted
+//     inference-api-key secret is tried as a best-effort fallback.
 type ModelGatewayConfig struct {
 	URL        string `yaml:"url"`
 	APIKeyName string `yaml:"api_key_name"`
@@ -165,44 +169,13 @@ func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	defer file.Close()
 
 	decoder := yaml.NewDecoder(file)
-	if err := decoder.Decode(pc); err != nil {
-		return err
-	}
-
-	pc.applyModelGatewayDefaults()
-	return nil
-}
-
-// applyModelGatewayDefaults fills unset (nil) fields in per-model gateway
-// entries with the corresponding value from the "default" entry.
-// This lets users add a per-model entry with only the fields that differ.
-func (pc *ProcessorConfig) applyModelGatewayDefaults() {
-	dflt, ok := pc.ModelGateways[DefaultModelGatewayKey]
-	if !ok {
-		return
-	}
-	for model, gw := range pc.ModelGateways {
-		if model == DefaultModelGatewayKey {
-			continue
-		}
-		if gw.RequestTimeout == nil {
-			gw.RequestTimeout = dflt.RequestTimeout
-		}
-		if gw.MaxRetries == nil {
-			gw.MaxRetries = dflt.MaxRetries
-		}
-		if gw.InitialBackoff == nil {
-			gw.InitialBackoff = dflt.InitialBackoff
-		}
-		if gw.MaxBackoff == nil {
-			gw.MaxBackoff = dflt.MaxBackoff
-		}
-		pc.ModelGateways[model] = gw
-	}
+	return decoder.Decode(pc)
 }
 
 // NewConfig returns a new ProcessorConfig with default values.
-// TaskWaitTime has to be shorter than poll interval
+// Gateway fields (GlobalInferenceGateway, ModelGateways) are intentionally
+// left nil — the user must configure exactly one via YAML or env.
+// TaskWaitTime has to be shorter than poll interval.
 func NewConfig() *ProcessorConfig {
 	return &ProcessorConfig{
 		PollInterval: 5 * time.Second,
@@ -238,15 +211,6 @@ func NewConfig() *ProcessorConfig {
 				MaxRetries:     3,
 				InitialBackoff: 1 * time.Second,
 				MaxBackoff:     10 * time.Second,
-			},
-		},
-		ModelGateways: map[string]ModelGatewayConfig{
-			DefaultModelGatewayKey: {
-				URL:            "http://localhost:8000",
-				RequestTimeout: ptr.To(5 * time.Minute),
-				MaxRetries:     ptr.To(3),
-				InitialBackoff: ptr.To(1 * time.Second),
-				MaxBackoff:     ptr.To(60 * time.Second),
 			},
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
@@ -294,63 +258,21 @@ func (c *ProcessorConfig) Validate() error {
 		return fmt.Errorf("process_time_bucket must satisfy: start > 0, factor > 1, count > 0")
 	}
 
-	if _, ok := c.ModelGateways[DefaultModelGatewayKey]; !ok {
-		return fmt.Errorf("model_gateways.default is required")
+	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
+		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
+	}
+	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
+		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
+	}
+
+	if c.GlobalInferenceGateway != nil {
+		if err := validateGatewayConfig("global_inference_gateway", *c.GlobalInferenceGateway); err != nil {
+			return err
+		}
 	}
 	for model, gw := range c.ModelGateways {
-		if gw.URL == "" {
-			return fmt.Errorf("model_gateways[%s].url cannot be empty", model)
-		}
-		if gw.RequestTimeout == nil {
-			return fmt.Errorf("model_gateways[%s].request_timeout must be set", model)
-		}
-		if *gw.RequestTimeout < 0 {
-			return fmt.Errorf("model_gateways[%s].request_timeout must be >= 0", model)
-		}
-		if gw.MaxRetries == nil {
-			return fmt.Errorf("model_gateways[%s].max_retries must be set", model)
-		}
-		if *gw.MaxRetries < 0 {
-			return fmt.Errorf("model_gateways[%s].max_retries must be >= 0", model)
-		}
-		if gw.InitialBackoff == nil {
-			return fmt.Errorf("model_gateways[%s].initial_backoff must be set", model)
-		}
-		if *gw.InitialBackoff < 0 {
-			return fmt.Errorf("model_gateways[%s].initial_backoff must be >= 0", model)
-		}
-		if gw.MaxBackoff == nil {
-			return fmt.Errorf("model_gateways[%s].max_backoff must be set", model)
-		}
-		if *gw.MaxBackoff < 0 {
-			return fmt.Errorf("model_gateways[%s].max_backoff must be >= 0", model)
-		}
-		if *gw.MaxBackoff < *gw.InitialBackoff {
-			return fmt.Errorf("model_gateways[%s].max_backoff must be >= initial_backoff", model)
-		}
-		if gw.APIKeyName != "" && gw.APIKeyFile != "" {
-			return fmt.Errorf("model_gateways[%s]: api_key_name and api_key_file are mutually exclusive", model)
-		}
-		if gw.APIKeyFile != "" {
-			if _, err := os.Stat(gw.APIKeyFile); err != nil {
-				return fmt.Errorf("model_gateways[%s].api_key_file: %w", model, err)
-			}
-		}
-		if (gw.TLSClientCertFile == "") != (gw.TLSClientKeyFile == "") {
-			return fmt.Errorf("model_gateways[%s]: tls_client_cert_file and tls_client_key_file must both be set or both be empty", model)
-		}
-		if gw.TLSCACertFile != "" {
-			if _, err := os.Stat(gw.TLSCACertFile); err != nil {
-				return fmt.Errorf("model_gateways[%s].tls_ca_cert_file: %w", model, err)
-			}
-		}
-		if gw.TLSClientCertFile != "" {
-			if _, err := os.Stat(gw.TLSClientCertFile); err != nil {
-				return fmt.Errorf("model_gateways[%s].tls_client_cert_file: %w", model, err)
-			}
-			if _, err := os.Stat(gw.TLSClientKeyFile); err != nil {
-				return fmt.Errorf("model_gateways[%s].tls_client_key_file: %w", model, err)
-			}
+		if err := validateGatewayConfig(fmt.Sprintf("model_gateways[%s]", model), gw); err != nil {
+			return err
 		}
 	}
 
@@ -368,52 +290,136 @@ func (c *ProcessorConfig) Validate() error {
 	return nil
 }
 
-// ResolveModelGateways resolves API keys for all model gateways and returns a
-// fully-populated GatewayClientConfig map ready to pass to clientset.NewClientset.
-// HTTP fields have already been inherited from "default" by applyModelGatewayDefaults.
-// Falls back to the mounted inference-api-key secret if the default gateway
-// has no explicit API key configured.
-func ResolveModelGateways(gateways map[string]ModelGatewayConfig) (map[string]inference.GatewayClientConfig, error) {
-	resolved := make(map[string]inference.GatewayClientConfig, len(gateways))
-	for model, gw := range gateways {
-		apiKey := ""
-		switch {
-		case gw.APIKeyFile != "":
-			data, err := os.ReadFile(gw.APIKeyFile)
-			if err != nil {
-				return nil, fmt.Errorf("read API key file for model %q: %w", model, err)
-			}
-			apiKey = strings.TrimSpace(string(data))
-		case gw.APIKeyName != "":
-			key, err := ucom.ReadSecretFile(gw.APIKeyName)
-			if err != nil {
-				return nil, fmt.Errorf("read API key for model %q: %w", model, err)
-			}
-			apiKey = key
-		}
-		resolved[model] = inference.GatewayClientConfig{
-			URL:                   gw.URL,
-			APIKey:                apiKey,
-			Timeout:               ptr.Deref(gw.RequestTimeout),
-			MaxRetries:            ptr.Deref(gw.MaxRetries),
-			InitialBackoff:        ptr.Deref(gw.InitialBackoff),
-			MaxBackoff:            ptr.Deref(gw.MaxBackoff),
-			TLSInsecureSkipVerify: gw.TLSInsecureSkipVerify,
-			TLSCACertFile:         gw.TLSCACertFile,
-			TLSClientCertFile:     gw.TLSClientCertFile,
-			TLSClientKeyFile:      gw.TLSClientKeyFile,
+func validateGatewayConfig(prefix string, gw ModelGatewayConfig) error {
+	if gw.URL == "" {
+		return fmt.Errorf("%s.url cannot be empty", prefix)
+	}
+	if gw.RequestTimeout == nil {
+		return fmt.Errorf("%s.request_timeout must be set", prefix)
+	}
+	if *gw.RequestTimeout < 0 {
+		return fmt.Errorf("%s.request_timeout must be >= 0", prefix)
+	}
+	if gw.MaxRetries == nil {
+		return fmt.Errorf("%s.max_retries must be set", prefix)
+	}
+	if *gw.MaxRetries < 0 {
+		return fmt.Errorf("%s.max_retries must be >= 0", prefix)
+	}
+	if gw.InitialBackoff == nil {
+		return fmt.Errorf("%s.initial_backoff must be set", prefix)
+	}
+	if *gw.InitialBackoff < 0 {
+		return fmt.Errorf("%s.initial_backoff must be >= 0", prefix)
+	}
+	if gw.MaxBackoff == nil {
+		return fmt.Errorf("%s.max_backoff must be set", prefix)
+	}
+	if *gw.MaxBackoff < 0 {
+		return fmt.Errorf("%s.max_backoff must be >= 0", prefix)
+	}
+	if *gw.MaxBackoff < *gw.InitialBackoff {
+		return fmt.Errorf("%s.max_backoff must be >= initial_backoff", prefix)
+	}
+	if gw.APIKeyName != "" && gw.APIKeyFile != "" {
+		return fmt.Errorf("%s: api_key_name and api_key_file are mutually exclusive", prefix)
+	}
+	if gw.APIKeyFile != "" {
+		if _, err := os.Stat(gw.APIKeyFile); err != nil {
+			return fmt.Errorf("%s.api_key_file: %w", prefix, err)
 		}
 	}
+	if (gw.TLSClientCertFile == "") != (gw.TLSClientKeyFile == "") {
+		return fmt.Errorf("%s: tls_client_cert_file and tls_client_key_file must both be set or both be empty", prefix)
+	}
+	if gw.TLSCACertFile != "" {
+		if _, err := os.Stat(gw.TLSCACertFile); err != nil {
+			return fmt.Errorf("%s.tls_ca_cert_file: %w", prefix, err)
+		}
+	}
+	if gw.TLSClientCertFile != "" {
+		if _, err := os.Stat(gw.TLSClientCertFile); err != nil {
+			return fmt.Errorf("%s.tls_client_cert_file: %w", prefix, err)
+		}
+		if _, err := os.Stat(gw.TLSClientKeyFile); err != nil {
+			return fmt.Errorf("%s.tls_client_key_file: %w", prefix, err)
+		}
+	}
+	return nil
+}
 
-	// Apply the default API key fallback if no explicit key is configured.
-	if defaultGW, ok := resolved[DefaultModelGatewayKey]; ok && defaultGW.APIKey == "" {
-		apiKey, err := ucom.ReadSecretFile(ucom.SecretKeyInferenceAPI)
+// resolveGatewayAPIKey resolves the API key for a single gateway config entry.
+func resolveGatewayAPIKey(name string, gw ModelGatewayConfig) (string, error) {
+	switch {
+	case gw.APIKeyFile != "":
+		data, err := os.ReadFile(gw.APIKeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("read default inference API key: %w", err)
+			return "", fmt.Errorf("read API key file for %q: %w", name, err)
 		}
-		defaultGW.APIKey = apiKey
-		resolved[DefaultModelGatewayKey] = defaultGW
+		return strings.TrimSpace(string(data)), nil
+	case gw.APIKeyName != "":
+		key, err := ucom.ReadSecretFile(gw.APIKeyName)
+		if err != nil {
+			return "", fmt.Errorf("read API key for %q: %w", name, err)
+		}
+		return key, nil
+	default:
+		return "", nil
+	}
+}
+
+func toGatewayClientConfig(gw ModelGatewayConfig, apiKey string) inference.GatewayClientConfig {
+	return inference.GatewayClientConfig{
+		URL:                   gw.URL,
+		APIKey:                apiKey,
+		Timeout:               ptr.Deref(gw.RequestTimeout),
+		MaxRetries:            ptr.Deref(gw.MaxRetries),
+		InitialBackoff:        ptr.Deref(gw.InitialBackoff),
+		MaxBackoff:            ptr.Deref(gw.MaxBackoff),
+		TLSInsecureSkipVerify: gw.TLSInsecureSkipVerify,
+		TLSCACertFile:         gw.TLSCACertFile,
+		TLSClientCertFile:     gw.TLSClientCertFile,
+		TLSClientKeyFile:      gw.TLSClientKeyFile,
+	}
+}
+
+// ResolvedGateways holds the fully-resolved gateway configs ready for client construction.
+type ResolvedGateways struct {
+	Global   *inference.GatewayClientConfig
+	PerModel map[string]inference.GatewayClientConfig
+}
+
+// ResolveModelGateways resolves API keys for all configured gateways and returns
+// a ResolvedGateways ready to pass to the inference client resolver.
+// Validate() ensures exactly one of GlobalInferenceGateway or ModelGateways is set.
+func ResolveModelGateways(cfg *ProcessorConfig) (*ResolvedGateways, error) {
+	result := &ResolvedGateways{}
+
+	if cfg.GlobalInferenceGateway != nil {
+		apiKey, err := resolveGatewayAPIKey("global_inference_gateway", *cfg.GlobalInferenceGateway)
+		if err != nil {
+			return nil, err
+		}
+		if apiKey == "" {
+			if key, err := ucom.ReadSecretFile(ucom.SecretKeyInferenceAPI); err == nil {
+				apiKey = key
+			}
+		}
+		gc := toGatewayClientConfig(*cfg.GlobalInferenceGateway, apiKey)
+		result.Global = &gc
 	}
 
-	return resolved, nil
+	if len(cfg.ModelGateways) > 0 {
+		resolved := make(map[string]inference.GatewayClientConfig, len(cfg.ModelGateways))
+		for model, gw := range cfg.ModelGateways {
+			apiKey, err := resolveGatewayAPIKey(model, gw)
+			if err != nil {
+				return nil, err
+			}
+			resolved[model] = toGatewayClientConfig(gw, apiKey)
+		}
+		result.PerModel = resolved
+	}
+
+	return result, nil
 }
