@@ -143,11 +143,11 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 		}
 
 		var mu sync.Mutex
-		g, gCtx := errgroup.WithContext(ctx)
-		g.SetLimit(c.maxConcurrency)
+		grp, gCtx := errgroup.WithContext(ctx)
+		grp.SetLimit(c.maxConcurrency)
 
 		for _, file := range files {
-			g.Go(func() error {
+			grp.Go(func() error {
 				deleted, err := c.processFile(gCtx, file)
 				mu.Lock()
 				defer mu.Unlock()
@@ -160,7 +160,7 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 				return nil // don't short-circuit other deletions
 			})
 		}
-		_ = g.Wait()
+		_ = grp.Wait()
 
 		if !expectMore {
 			break
