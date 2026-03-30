@@ -142,6 +142,9 @@ open http://localhost:16686
 
 # View metrics in Prometheus
 open http://localhost:9091
+
+# View dashboards in Grafana
+open http://localhost:3000
 ```
 
 ## Useful Monitoring Commands
@@ -160,6 +163,17 @@ watch -n 5 "curl -s http://localhost:9090/metrics | grep -E '(batch_gateway_proc
 
 # Query Prometheus for metrics (requires PromQL)
 curl -s 'http://localhost:9091/api/v1/query?query=batch_gateway_processor_jobs_processed_total' | jq '.data.result'
+
+# ── Grafana API ──
+
+# List available dashboards
+curl -s http://localhost:3000/api/search | jq '.[].title'
+
+# Get a dashboard by UID (replace DASHBOARD_UID with an actual UID from the search above)
+curl -s http://localhost:3000/api/dashboards/uid/DASHBOARD_UID | jq '.dashboard.title'
+
+# Query Prometheus via Grafana's datasource proxy (same PromQL, routed through Grafana)
+curl -s 'http://localhost:3000/api/datasources/proxy/1/api/v1/query?query=batch_gateway_processor_jobs_processed_total' | jq '.data.result'
 
 # View processor logs
 kubectl logs -l app.kubernetes.io/component=processor -n default -f
