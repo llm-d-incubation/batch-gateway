@@ -92,25 +92,24 @@ func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result)
 		}
 
 		var mu sync.Mutex
-		g, gCtx := errgroup.WithContext(ctx)
-		g.SetLimit(c.maxConcurrency)
+		grp, gCtx := errgroup.WithContext(ctx)
+		grp.SetLimit(c.maxConcurrency)
 
 		for _, batch := range batches {
-			batch := batch
-			g.Go(func() error {
+			grp.Go(func() error {
 				deleted, err := c.processBatch(gCtx, batch)
 				mu.Lock()
+				defer mu.Unlock()
 				if err != nil {
 					result.BatchesFailed++
 					logger.Error(err, "Failed to process batch job", "jobID", batch.ID)
 				} else if deleted {
 					result.BatchesDeleted++
 				}
-				mu.Unlock()
 				return nil // don't short-circuit other deletions
 			})
 		}
-		_ = g.Wait()
+		_ = grp.Wait()
 
 		if !expectMore {
 			break
@@ -148,17 +147,16 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 		g.SetLimit(c.maxConcurrency)
 
 		for _, file := range files {
-			file := file
 			g.Go(func() error {
 				deleted, err := c.processFile(gCtx, file)
 				mu.Lock()
+				defer mu.Unlock()
 				if err != nil {
 					result.FilesFailed++
 					logger.Error(err, "Failed to process file", "fileID", file.ID)
 				} else if deleted {
 					result.FilesDeleted++
 				}
-				mu.Unlock()
 				return nil // don't short-circuit other deletions
 			})
 		}
