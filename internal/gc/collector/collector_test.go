@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -827,16 +828,72 @@ func TestCollector_Run_PaginationMultiplePages(t *testing.T) {
 
 // -- Concurrency tests --
 
-// slowFilesClient wraps a BatchFilesClient and adds a per-Delete delay to
-// verify that concurrent deletion is faster than sequential.
-type slowFilesClient struct {
+// concurrentFilesClient wraps a BatchFilesClient and tracks peak concurrency
+// during Delete calls. Uses a short delay to give goroutines time to overlap.
+type concurrentFilesClient struct {
 	fsapi.BatchFilesClient
 	delay time.Duration
+
+	mu        sync.Mutex
+	active    int
+	maxActive int
 }
 
-func (s *slowFilesClient) Delete(ctx context.Context, fileName, folderName string) error {
-	time.Sleep(s.delay)
-	return s.BatchFilesClient.Delete(ctx, fileName, folderName)
+func (c *concurrentFilesClient) Delete(ctx context.Context, fileName, folderName string) error {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+
+	time.Sleep(c.delay)
+
+	c.mu.Lock()
+	c.active--
+	c.mu.Unlock()
+
+	return c.BatchFilesClient.Delete(ctx, fileName, folderName)
+}
+
+func (c *concurrentFilesClient) peakConcurrency() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxActive
+}
+
+// concurrentBatchDBClient wraps a BatchDBClient and tracks peak concurrency
+// during DBDelete calls.
+type concurrentBatchDBClient struct {
+	api.BatchDBClient
+	deleteDelay time.Duration
+
+	mu        sync.Mutex
+	active    int
+	maxActive int
+}
+
+func (c *concurrentBatchDBClient) DBDelete(ctx context.Context, ids []string) ([]string, error) {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+
+	time.Sleep(c.deleteDelay)
+
+	c.mu.Lock()
+	c.active--
+	c.mu.Unlock()
+
+	return c.BatchDBClient.DBDelete(ctx, ids)
+}
+
+func (c *concurrentBatchDBClient) peakConcurrency() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxActive
 }
 
 func TestCollector_Run_FilesDeletionRunsConcurrently(t *testing.T) {
@@ -844,10 +901,9 @@ func TestCollector_Run_FilesDeletionRunsConcurrently(t *testing.T) {
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
 
-	delayPerFile := 50 * time.Millisecond
-	filesClient := &slowFilesClient{
+	filesClient := &concurrentFilesClient{
 		BatchFilesClient: newTestFilesClient(),
-		delay:            delayPerFile,
+		delay:            20 * time.Millisecond,
 	}
 
 	numFiles := 10
@@ -857,36 +913,25 @@ func TestCollector_Run_FilesDeletionRunsConcurrently(t *testing.T) {
 		_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, fmt.Sprintf("conc-file-%d", i), tenant, expiredTime))
 	}
 
-	// With maxConcurrency=10 and 10 files, parallel should complete in ~50ms.
-	// Sequential would take ~500ms (10 × 50ms).
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, numFiles, nil)
-
-	start := time.Now()
 	result := gc.run(ctx)
-	elapsed := time.Since(start)
 
 	if result.FilesDeleted != numFiles {
 		t.Errorf("Expected %d files deleted, got %d", numFiles, result.FilesDeleted)
 	}
 
-	// Sequential threshold: numFiles * delayPerFile = 500ms.
-	// Parallel should complete well under that. Use half as threshold.
-	seqDuration := time.Duration(numFiles) * delayPerFile
-	if elapsed >= seqDuration/2 {
-		t.Errorf("file deletions appear sequential: elapsed=%v (expected well under %v for concurrent execution)", elapsed, seqDuration)
+	if peak := filesClient.peakConcurrency(); peak < 2 {
+		t.Errorf("file deletions appear sequential: peak concurrency = %d, want >= 2", peak)
 	}
-	t.Logf("concurrent file deletion elapsed: %v (sequential would be ~%v)", elapsed, seqDuration)
 }
 
 func TestCollector_Run_BatchDeletionRunsConcurrently(t *testing.T) {
 	ctx := context.Background()
 
-	// Use a slow batch DB to simulate network latency on each DBDelete call.
 	realBatchDB := newTestBatchDBClient()
-	delayPerBatch := 50 * time.Millisecond
-	batchDB := &slowBatchDBClient{
+	batchDB := &concurrentBatchDBClient{
 		BatchDBClient: realBatchDB,
-		deleteDelay:   delayPerBatch,
+		deleteDelay:   20 * time.Millisecond,
 	}
 	fileDB := newTestFileDBClient()
 	filesClient := newTestFilesClient()
@@ -898,31 +943,15 @@ func TestCollector_Run_BatchDeletionRunsConcurrently(t *testing.T) {
 	}
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, numBatches, nil)
-
-	start := time.Now()
 	result := gc.run(ctx)
-	elapsed := time.Since(start)
 
 	if result.BatchesDeleted != numBatches {
 		t.Errorf("Expected %d batches deleted, got %d", numBatches, result.BatchesDeleted)
 	}
 
-	seqDuration := time.Duration(numBatches) * delayPerBatch
-	if elapsed >= seqDuration/2 {
-		t.Errorf("batch deletions appear sequential: elapsed=%v (expected well under %v for concurrent execution)", elapsed, seqDuration)
+	if peak := batchDB.peakConcurrency(); peak < 2 {
+		t.Errorf("batch deletions appear sequential: peak concurrency = %d, want >= 2", peak)
 	}
-	t.Logf("concurrent batch deletion elapsed: %v (sequential would be ~%v)", elapsed, seqDuration)
-}
-
-// slowBatchDBClient wraps a BatchDBClient and adds a per-Delete delay.
-type slowBatchDBClient struct {
-	api.BatchDBClient
-	deleteDelay time.Duration
-}
-
-func (s *slowBatchDBClient) DBDelete(ctx context.Context, ids []string) ([]string, error) {
-	time.Sleep(s.deleteDelay)
-	return s.BatchDBClient.DBDelete(ctx, ids)
 }
 
 func TestCollector_Run_ConcurrencyBoundIsRespected(t *testing.T) {
@@ -930,14 +959,13 @@ func TestCollector_Run_ConcurrencyBoundIsRespected(t *testing.T) {
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
 
-	delayPerFile := 50 * time.Millisecond
-	filesClient := &slowFilesClient{
+	maxConcurrency := 2
+	filesClient := &concurrentFilesClient{
 		BatchFilesClient: newTestFilesClient(),
-		delay:            delayPerFile,
+		delay:            20 * time.Millisecond,
 	}
 
 	numFiles := 10
-	maxConcurrency := 2
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	for i := 0; i < numFiles; i++ {
@@ -945,25 +973,16 @@ func TestCollector_Run_ConcurrencyBoundIsRespected(t *testing.T) {
 	}
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, maxConcurrency, nil)
-
-	start := time.Now()
 	result := gc.run(ctx)
-	elapsed := time.Since(start)
 
 	if result.FilesDeleted != numFiles {
 		t.Errorf("Expected %d files deleted, got %d", numFiles, result.FilesDeleted)
 	}
 
-	// With concurrency=2 and 10 files at 50ms each: ~250ms (5 batches of 2).
-	// With concurrency=10: ~50ms. With concurrency=1 (sequential): ~500ms.
-	// Verify it's slower than fully parallel but faster than sequential.
-	fullyParallel := delayPerFile                             // ~50ms
-	fullySequential := time.Duration(numFiles) * delayPerFile // ~500ms
-	if elapsed < fullyParallel {
-		t.Errorf("completed too fast (%v) — concurrency bound may not be applied", elapsed)
+	if peak := filesClient.peakConcurrency(); peak > maxConcurrency {
+		t.Errorf("concurrency bound exceeded: peak = %d, maxConcurrency = %d", peak, maxConcurrency)
 	}
-	if elapsed >= fullySequential {
-		t.Errorf("completed too slowly (%v >= %v) — concurrency does not appear to work", elapsed, fullySequential)
+	if peak := filesClient.peakConcurrency(); peak < 2 {
+		t.Errorf("concurrency too low: peak = %d, want >= 2", peak)
 	}
-	t.Logf("bounded concurrency elapsed: %v (fully parallel ~%v, sequential ~%v)", elapsed, fullyParallel, fullySequential)
 }
