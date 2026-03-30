@@ -107,18 +107,18 @@ func (p *Processor) finalizeJob(
 	// The two uploads are independent (different local files, different S3 keys,
 	// different DB records), so we run them concurrently.
 	var outputFileID, errorFileID string
-	g, gCtx := errgroup.WithContext(ctx)
-	g.Go(func() error {
+	grp, gCtx := errgroup.WithContext(ctx)
+	grp.Go(func() error {
 		var err error
 		outputFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeOutput)
 		return err
 	})
-	g.Go(func() error {
+	grp.Go(func() error {
 		var err error
 		errorFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeError)
 		return err
 	})
-	if err := g.Wait(); err != nil {
+	if err := grp.Wait(); err != nil {
 		return err
 	}
 

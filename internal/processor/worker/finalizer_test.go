@@ -355,7 +355,7 @@ func TestFinalizeJob_UploadsFilesInParallel(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
-	// Use a delay to make sequential execution take ~200ms vs ~100ms parallel.
+	// Use a delay to make sequential execution take ~100ms vs ~50ms parallel.
 	mock := &concurrentFilesClient{delay: 50 * time.Millisecond}
 	dbClient := newMockBatchDBClient()
 	fileDB := newMockFileDBClient()
