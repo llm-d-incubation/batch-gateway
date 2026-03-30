@@ -313,20 +313,31 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 // --- parallel upload tests ---
 
 // concurrentFilesClient is a thread-safe mock that records Store calls and
-// supports an optional per-call delay to verify concurrent execution.
+// tracks peak concurrency to verify parallel execution deterministically.
 type concurrentFilesClient struct {
 	mu        sync.Mutex
 	calls     int
+	active    int
+	maxActive int
 	fileNames []string
 	delay     time.Duration
 }
 
 func (c *concurrentFilesClient) Store(_ context.Context, fileName, _ string, _, _ int64, _ io.Reader) (*filesapi.BatchFileMetadata, error) {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+
 	if c.delay > 0 {
 		time.Sleep(c.delay)
 	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.active--
 	c.calls++
 	c.fileNames = append(c.fileNames, fileName)
 	return &filesapi.BatchFileMetadata{Size: 42}, nil
@@ -350,12 +361,17 @@ func (c *concurrentFilesClient) callCount() int {
 	return c.calls
 }
 
+func (c *concurrentFilesClient) peakConcurrency() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxActive
+}
+
 func TestFinalizeJob_UploadsFilesInParallel(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
-	// Use a delay to make sequential execution take ~100ms vs ~50ms parallel.
 	mock := &concurrentFilesClient{delay: 50 * time.Millisecond}
 	dbClient := newMockBatchDBClient()
 	fileDB := newMockFileDBClient()
@@ -394,25 +410,19 @@ func TestFinalizeJob_UploadsFilesInParallel(t *testing.T) {
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
 
-	start := time.Now()
 	err := p.finalizeJob(ctx, updater, dbJob, jobInfo, counts, nil)
-	elapsed := time.Since(start)
-
 	if err != nil {
 		t.Fatalf("finalizeJob returned error: %v", err)
 	}
 
-	// Both files should have been uploaded.
 	if got := mock.callCount(); got != 2 {
 		t.Fatalf("expected 2 Store calls, got %d", got)
 	}
 
-	// With 50ms delay per upload, sequential would take ≥100ms.
-	// Parallel should complete in ~50-70ms. Use 90ms as threshold.
-	if elapsed >= 90*time.Millisecond {
-		t.Errorf("uploads appear sequential: elapsed=%v (expected <90ms for parallel execution with 50ms delay)", elapsed)
+	// Assert that both uploads ran concurrently by checking peak active count.
+	if peak := mock.peakConcurrency(); peak < 2 {
+		t.Errorf("expected peak concurrency >= 2, got %d (uploads ran sequentially)", peak)
 	}
-	t.Logf("parallel upload elapsed: %v", elapsed)
 }
 
 func TestUploadPartialResults_UploadsFilesInParallel(t *testing.T) {
@@ -440,9 +450,7 @@ func TestUploadPartialResults_UploadsFilesInParallel(t *testing.T) {
 
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 
-	start := time.Now()
 	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbJob)
-	elapsed := time.Since(start)
 
 	if outputFileID == "" {
 		t.Error("expected non-empty outputFileID")
@@ -455,8 +463,7 @@ func TestUploadPartialResults_UploadsFilesInParallel(t *testing.T) {
 		t.Fatalf("expected 2 Store calls, got %d", got)
 	}
 
-	if elapsed >= 90*time.Millisecond {
-		t.Errorf("uploads appear sequential: elapsed=%v (expected <90ms for parallel execution with 50ms delay)", elapsed)
+	if peak := mock.peakConcurrency(); peak < 2 {
+		t.Errorf("expected peak concurrency >= 2, got %d (uploads ran sequentially)", peak)
 	}
-	t.Logf("parallel partial upload elapsed: %v", elapsed)
 }
