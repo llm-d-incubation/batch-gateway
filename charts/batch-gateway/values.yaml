@@ -6,14 +6,13 @@ global:
   # All three components (apiserver, processor, gc) must run with the same UID/GID
   # when sharing files on a PVC. Per-component overrides are possible via
   # <component>.podSecurityContext, but use with caution to avoid permission issues.
-  # For OpenShift, set podSecurityContext: {} to use SCC-assigned UIDs.
+  #
+  # Only runAsNonRoot is set by default. The actual UID comes from the Dockerfile
+  # (USER 65532:65532) on vanilla Kubernetes, or from the namespace UID range on
+  # OpenShift (assigned by the restricted-v2 SCC). This avoids hardcoding UIDs that
+  # conflict with OpenShift's Security Context Constraints.
   podSecurityContext:
     runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    fsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
 
   # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.

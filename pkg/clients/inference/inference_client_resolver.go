@@ -112,9 +112,16 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 	return &GatewayResolver{modelClients: modelClients}, nil
 }
 
+// IsGlobal returns true if the resolver routes all models to a single global
+// client. When true, ClientFor never returns nil.
+func (r *GatewayResolver) IsGlobal() bool {
+	return r.globalClient != nil
+}
+
 // ClientFor returns the inference client for the given model.
-// Returns nil if no matching client exists — the caller must handle this
-// as a request-level error (e.g. model not found).
+// Returns nil if no matching client exists. In normal operation, unregistered
+// models are rejected during ingestion, so nil is only expected in recovery
+// or defensive-guard paths.
 // A zero-value GatewayResolver returns nil for all models; use the public
 // constructors (NewGlobalResolver, NewPerModelResolver, NewSingleClientResolver)
 // to ensure at least one client is configured.

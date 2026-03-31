@@ -545,14 +545,6 @@ do_deploy_batch_gateway() {
         )
     fi
 
-    if is_openshift; then
-        log "OpenShift detected, clearing podSecurityContext for SCC compatibility"
-        helm_args+=(
-            --set "apiserver.podSecurityContext=null"
-            --set "processor.podSecurityContext=null"
-        )
-    fi
-
     # Append caller-specific args (modelGateways, passThroughHeaders, etc.)
     install_batch_gateway "${helm_args[@]}" "$@"
     create_batch_httproute

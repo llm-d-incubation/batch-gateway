@@ -185,12 +185,13 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 	}
 
 	// Early SLO check: if the deadline already fired before execution begins (e.g. SLO expired
-	// during ingestion), skip dispatch entirely. No output/error files are written
-	// since no requests were executed. handleExpired will transition the job to expired status.
+	// during ingestion), skip dispatch entirely. No output file is written since no requests
+	// were dispatched, but error.jsonl may already contain model_not_found entries from
+	// ingestion. handleExpired will upload whatever files exist.
 	if sloCtx.Err() == context.DeadlineExceeded {
 		logger.V(logging.INFO).Info("SLO already expired at execution start, skipping dispatch",
 			"total", modelMap.LineCount)
-		return &openai.BatchRequestCounts{Total: modelMap.LineCount}, ErrExpired
+		return &openai.BatchRequestCounts{Total: modelMap.LineCount, Failed: modelMap.RejectedCount}, ErrExpired
 	}
 
 	inputFilePath, err := p.jobInputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
@@ -217,7 +218,8 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 	if err != nil {
 		return nil, err
 	}
-	errorFile, err := os.OpenFile(errorFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	// Append mode: ingestion may have already written model_not_found errors.
+	errorFile, err := os.OpenFile(errorFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create error file: %w", err)
 	}
@@ -245,6 +247,8 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 		updater: params.updater,
 		jobID:   params.jobInfo.JobID,
 	}
+	// Seed with requests already rejected during ingestion (model not found).
+	progress.failed.Store(modelMap.RejectedCount)
 
 	errCh := make(chan error, len(modelMap.SafeToModel))
 
@@ -620,16 +624,14 @@ func (p *Processor) executeOneRequest(
 	// model id, job id and tenant id are already set in the context
 	logger := logr.FromContextOrDiscard(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
-	inferReq := &inference.GenerateRequest{
-		RequestID: newBatchRequestID(requestID),
-		Endpoint:  req.URL,
-		Params:    req.Body,
-		Headers:   passThroughHeaders,
-	}
-
+	// Per-model mode rejects unregistered models at ingestion (fast path). ClientFor can
+	// still return nil after gateway config changes between ingestion and execution, or
+	// during recovery when model_map/plan files predate the current resolver — treat as
+	// a request-level error so the rest of the batch can complete.
 	inferClient := p.inference.ClientFor(modelID)
 	if inferClient == nil {
-		// TODO: issue #218 follow-up — non-registered model request should be failed in ingestion stage
+		logger.V(logging.INFO).Info("ClientFor returned nil during execution (expected rejection at ingestion)",
+			"model", modelID)
 		result := &outputLine{
 			ID:       newBatchRequestID(requestID),
 			CustomID: req.CustomID,
@@ -640,6 +642,13 @@ func (p *Processor) executeOneRequest(
 		}
 		metrics.RecordRequestError(modelID)
 		return result, nil
+	}
+
+	inferReq := &inference.GenerateRequest{
+		RequestID: newBatchRequestID(requestID),
+		Endpoint:  req.URL,
+		Params:    req.Body,
+		Headers:   passThroughHeaders,
 	}
 
 	start := time.Now()

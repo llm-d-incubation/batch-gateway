@@ -29,17 +29,19 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
-// preProcessJob performs the pre-processing steps for the job
-// it downloads the input file from the files store in job work folder : <tenantID>/jobs/<jobid>/input.jsonl,
-// creates the plan per model, while saving the input file in the work folder.
-// temp plan file is saved in the work folder's subfolder while creating the plan (<tenantID>/jobs/<jobid>/plans/<modelid>.plan.tmp)
-// then the temp plan file is renamed to the final plan file (<tenantID>/jobs/<jobid>/plans/<modelid>.plan)
+// preProcessJob performs the pre-processing steps for the job.
+// It downloads the input file, creates per-model plan files, and writes
+// error entries for requests targeting unregistered models.
+// The rejected count is persisted in model_map.json so executeJob can
+// seed BatchRequestCounts.Failed without an extra parameter.
 func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo, cancelRequested *atomic.Bool) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
@@ -95,8 +97,37 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	seenCustomIDs := make(map[string]struct{})
 
 	// streaming loop
+	// In per-model mode, check each model against the resolver and reject
+	// unregistered models early. In global mode, all models are routed to
+	// the same endpoint so no check is needed.
+	// p.inference != nil: NewProcessor does not validate clients; unit tests often
+	// call preProcessJob without Run() and omit Inference (treat as non-per-model).
+	// Production paths hit Processor.validate() in prepare() before work runs.
+	// The guard also avoids panicking if a future caller wires a nil resolver.
+	isPerModelGateway := p.inference != nil && !p.inference.IsGlobal()
+	registeredModels := make(map[string]bool) // modelID -> registered (per-model only)
+
+	// Always truncate error.jsonl at the start of ingestion so that re-enqueued
+	// jobs don't carry stale error entries from a previous attempt.
+	// Execution opens the same file in append mode.
+	// In global mode this creates an empty file that finalization omits (size 0).
+	errorFilePath, err := p.jobErrorFilePath(jobID, jobInfo.TenantID)
+	if err != nil {
+		return err
+	}
+	errorFile, err := os.OpenFile(errorFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to create error file: %w", err)
+	}
+	errorWriter := bufio.NewWriter(errorFile)
+	defer func() {
+		_ = errorWriter.Flush()
+		errorFile.Close()
+	}()
+
 	var offset int64
 	var lineCount int64 // to count the number of lines in the input file for logging
+	var rejectedCount int64
 	inputFileReader := bufio.NewReaderSize(reader, 1024*1024)
 
 	for {
@@ -114,8 +145,6 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		line, done, err := readNormalizedLine(inputFileReader)
 		if err != nil {
 			// if error occurs, fail the pre-processing and the job
-			// TODO: we might want to handle partial failure and continue to the next line in the future
-			//       with line writing error / plan entry append error below
 			logger.Error(err, "Failed to read line from input file")
 			return err
 		}
@@ -144,6 +173,40 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		}
 		seenCustomIDs[requestMeta.CustomID] = struct{}{}
 
+		if isPerModelGateway {
+			registered, checked := registeredModels[requestMeta.ModelID]
+			if !checked {
+				registered = p.inference.ClientFor(requestMeta.ModelID) != nil
+				registeredModels[requestMeta.ModelID] = registered
+			}
+			if !registered {
+				// No plan entry exists yet, so generate a UUID for the batch request ID.
+				// newBatchRequestID adds the "batch_req_" prefix for format consistency.
+				errLine := &outputLine{
+					ID:       newBatchRequestID(uuid.NewString()),
+					CustomID: requestMeta.CustomID,
+					Error: &outputError{
+						Code:    inference.ErrCodeModelNotFound,
+						Message: fmt.Sprintf("model %q is not configured in any gateway", requestMeta.ModelID),
+					},
+				}
+				lineBytes, marshalErr := json.Marshal(errLine)
+				if marshalErr != nil {
+					return fmt.Errorf("failed to marshal model_not_found error: %w", marshalErr)
+				}
+				lineBytes = append(lineBytes, '\n')
+				if _, writeErr := errorWriter.Write(lineBytes); writeErr != nil {
+					return fmt.Errorf("failed to write model_not_found error: %w", writeErr)
+				}
+				rejectedCount++
+				metrics.RecordRequestError(requestMeta.ModelID)
+				logger.V(logging.DEBUG).Info("Rejected request for unregistered model",
+					"customId", requestMeta.CustomID, "model", requestMeta.ModelID)
+				offset += int64(len(line))
+				continue
+			}
+		}
+
 		nextOffset := accumulatePlanEntry(
 			acc, requestMeta.ModelID, modelToSafe, used, offset, uint32(len(line)), requestMeta.PrefixHash,
 		)
@@ -162,7 +225,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	}
 
 	// model map file writing
-	if err := writeModelMappings(jobRootDir, modelToSafe, lineCount); err != nil {
+	if err := writeModelMappings(jobRootDir, modelToSafe, lineCount, rejectedCount); err != nil {
 		logger.Error(err, "Failed to write model map file")
 		return err
 	}
@@ -172,7 +235,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	for model, safe := range modelToSafe {
 		modelCounts[model] = len(acc.entries[safe])
 	}
-	logger.V(logging.INFO).Info("Processor Pre-processing job completed", "inputFilePath", localInputFilePath, "planFilePath", acc.plansDir(), "lineCount", lineCount, "models", modelCounts)
+	logger.V(logging.INFO).Info("Processor Pre-processing job completed",
+		"inputFilePath", localInputFilePath, "planFilePath", acc.plansDir(),
+		"lineCount", lineCount, "rejected", rejectedCount, "models", modelCounts)
 
 	return nil
 }
@@ -246,16 +311,17 @@ func extractAndValidateLine(line []byte) (requestMeta, error) {
 	}, nil
 }
 
-func writeModelMappings(jobRootDir string, modelToSafe map[string]string, lineCount int64) error {
+func writeModelMappings(jobRootDir string, modelToSafe map[string]string, lineCount, rejectedCount int64) error {
 	safeToModel := make(map[string]string, len(modelToSafe))
 	for modelID, safeID := range modelToSafe {
 		safeToModel[safeID] = modelID
 	}
 
 	modelMap := modelMapFile{
-		ModelToSafe: modelToSafe,
-		SafeToModel: safeToModel,
-		LineCount:   lineCount,
+		ModelToSafe:   modelToSafe,
+		SafeToModel:   safeToModel,
+		LineCount:     lineCount,
+		RejectedCount: rejectedCount,
 	}
 	return writeModelMapFile(jobRootDir, modelMap)
 }

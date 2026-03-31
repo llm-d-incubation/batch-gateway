@@ -905,10 +905,16 @@ curl -sk -o /dev/null -w "%{http_code}" \
 # Unauthorized user creates a batch — batch is accepted (batch route has no authz),
 # but the processor forwards requests to the LLM route with the unauthorized token,
 # and the LLM route's AuthPolicy rejects with 403.
+
+# Create input file
+cat > /tmp/batch-input.jsonl <<EOF
+{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"${MODEL_NAME}","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}
+EOF
+
 FILE_ID=$(curl -sk ${GW_URL}/v1/files \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" \
     -F purpose=batch \
-    -F "file=@<(echo '{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}')" \
+    -F "file=@/tmp/batch-input.jsonl" \
     | jq -r '.id')
 
 BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
@@ -917,7 +923,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Poll until completed/failed — expect failed requests with 403
+# Wait for processing, then check status — expect failed requests with 403
+sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" | jq '{status, request_counts}'
 ```
@@ -925,11 +932,11 @@ curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
 ### 4.7 Batch Lifecycle
 
 ```bash
-# Upload input file
+# Upload input file (reuse /tmp/batch-input.jsonl from 4.6, or create it)
 FILE_ID=$(curl -sk ${GW_URL}/v1/files \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -F purpose=batch \
-    -F "file=@<(echo '{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}')" \
+    -F "file=@/tmp/batch-input.jsonl" \
     | jq -r '.id')
 
 # Create batch
@@ -939,7 +946,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Poll status until completed
+# Wait for processing, then check status
+sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${AUTH_TOKEN}" | jq '.status'
 
