@@ -630,7 +630,7 @@ func (p *Processor) executeOneRequest(
 	// a request-level error so the rest of the batch can complete.
 	inferClient := p.inference.ClientFor(modelID)
 	if inferClient == nil {
-		logger.Error(nil, "ClientFor returned nil during execution (expected rejection at ingestion)",
+		logger.V(logging.INFO).Info("ClientFor returned nil during execution (expected rejection at ingestion)",
 			"model", modelID)
 		result := &outputLine{
 			ID:       newBatchRequestID(requestID),
