@@ -140,7 +140,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	params.eventWatcher = eventWatcher
 	go p.watchCancel(ctx, params)
 
-	// ingestion: pre-process job
+	// ingestion: pre-process job (rejects unregistered-model requests early)
 	if err := p.preProcessJob(ctx, params.jobInfo, params.cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
