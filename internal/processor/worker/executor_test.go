@@ -12,10 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
@@ -2005,5 +2008,128 @@ func TestExecutionProgress_Flush(t *testing.T) {
 	afterFlush := statusClient.count.Load()
 	if afterFlush <= beforeFlush {
 		t.Fatalf("expected flush to push at least 1 update, before=%d after=%d", beforeFlush, afterFlush)
+	}
+}
+
+// =====================================================================
+// Tests: jsonNumericToFloat64
+// =====================================================================
+
+func TestRecordTokenUsageFromBody(t *testing.T) {
+	logger := logr.Discard()
+
+	t.Run("usage present with both fields", func(t *testing.T) {
+		body := map[string]interface{}{
+			"choices": []interface{}{},
+			"usage": map[string]interface{}{
+				"prompt_tokens":     float64(42),
+				"completion_tokens": float64(128),
+				"total_tokens":      float64(170),
+			},
+		}
+		recordTokenUsageFromBody(body, "test-model", logger)
+	})
+
+	t.Run("usage missing", func(t *testing.T) {
+		body := map[string]interface{}{
+			"choices": []interface{}{},
+		}
+		recordTokenUsageFromBody(body, "test-model", logger)
+	})
+
+	t.Run("usage present but no numeric fields", func(t *testing.T) {
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"prompt_tokens": "not-a-number",
+			},
+		}
+		recordTokenUsageFromBody(body, "test-model", logger)
+	})
+
+	t.Run("usage with only prompt_tokens", func(t *testing.T) {
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"prompt_tokens": float64(100),
+			},
+		}
+		recordTokenUsageFromBody(body, "test-model", logger)
+	})
+
+	t.Run("usage with only completion_tokens", func(t *testing.T) {
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"completion_tokens": float64(50),
+			},
+		}
+		recordTokenUsageFromBody(body, "test-model", logger)
+	})
+
+	t.Run("nil body", func(t *testing.T) {
+		recordTokenUsageFromBody(nil, "test-model", logger)
+	})
+
+	t.Run("negative token values skipped", func(t *testing.T) {
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"prompt_tokens":     float64(-10),
+				"completion_tokens": float64(50),
+			},
+		}
+		recordTokenUsageFromBody(body, "test-model", logger)
+	})
+}
+
+func TestRecordE2ELatency(t *testing.T) {
+	t.Run("nil jobInfo", func(t *testing.T) {
+		recordE2ELatency(nil, metrics.E2EStatusCompleted)
+	})
+
+	t.Run("nil BatchJob", func(t *testing.T) {
+		ji := &batch_types.JobInfo{JobID: "j1"}
+		recordE2ELatency(ji, metrics.E2EStatusCompleted)
+	})
+
+	t.Run("zero CreatedAt", func(t *testing.T) {
+		ji := &batch_types.JobInfo{
+			JobID:    "j1",
+			BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: 0}},
+		}
+		recordE2ELatency(ji, metrics.E2EStatusCompleted)
+	})
+
+	t.Run("valid CreatedAt", func(t *testing.T) {
+		ji := &batch_types.JobInfo{
+			JobID:    "j1",
+			BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-30 * time.Second).Unix()}},
+		}
+		recordE2ELatency(ji, metrics.E2EStatusCompleted)
+	})
+}
+
+func TestJsonNumericToFloat64(t *testing.T) {
+	cases := []struct {
+		name string
+		in   interface{}
+		want float64
+		ok   bool
+	}{
+		{"float64", float64(42.5), 42.5, true},
+		{"int", int(10), 10, true},
+		{"int64", int64(999), 999, true},
+		{"json.Number", json.Number("128"), 128, true},
+		{"string", "nope", 0, false},
+		{"nil", nil, 0, false},
+		{"bool", true, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := jsonNumericToFloat64(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("jsonNumericToFloat64(%v) ok=%v, want %v", tc.in, ok, tc.ok)
+			}
+			if ok && got != tc.want {
+				t.Fatalf("jsonNumericToFloat64(%v)=%v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

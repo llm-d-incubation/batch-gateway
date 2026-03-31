@@ -221,6 +221,107 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 	})
 }
 
+func histogramSampleCount(mf *dto.MetricFamily, labels map[string]string) uint64 {
+	if mf == nil {
+		return 0
+	}
+	for _, m := range mf.Metric {
+		match := true
+		for k, v := range labels {
+			found := false
+			for _, lp := range m.Label {
+				if lp.GetName() == k && lp.GetValue() == v {
+					found = true
+					break
+				}
+			}
+			if !found {
+				match = false
+				break
+			}
+		}
+		if match {
+			return m.GetHistogram().GetSampleCount()
+		}
+	}
+	return 0
+}
+
+func TestTokenUsageMetrics(t *testing.T) {
+	withIsolatedPromRegistry(t, func(reg *prometheus.Registry) {
+		cfg := *config.NewConfig()
+		if err := InitMetrics(cfg); err != nil {
+			t.Fatalf("InitMetrics: %v", err)
+		}
+
+		RecordTokenUsage(100, 50, "gpt-4")
+		RecordTokenUsage(200, 80, "gpt-4")
+		RecordTokenUsage(50, 30, "llama-3")
+
+		f := collectFamilies(t, reg)
+
+		if v := counterWithLabels(f["batch_request_prompt_tokens_total"], map[string]string{"model": "gpt-4"}); v != 300 {
+			t.Fatalf("prompt_tokens{gpt-4}=%v, want 300", v)
+		}
+		if v := counterWithLabels(f["batch_request_generation_tokens_total"], map[string]string{"model": "gpt-4"}); v != 130 {
+			t.Fatalf("generation_tokens{gpt-4}=%v, want 130", v)
+		}
+		if v := counterWithLabels(f["batch_request_prompt_tokens_total"], map[string]string{"model": "llama-3"}); v != 50 {
+			t.Fatalf("prompt_tokens{llama-3}=%v, want 50", v)
+		}
+
+		assertLabelNames(t, f["batch_request_prompt_tokens_total"], []string{"model"})
+		assertLabelNames(t, f["batch_request_generation_tokens_total"], []string{"model"})
+	})
+}
+
+func TestJobE2ELatencyMetric(t *testing.T) {
+	withIsolatedPromRegistry(t, func(reg *prometheus.Registry) {
+		cfg := *config.NewConfig()
+		if err := InitMetrics(cfg); err != nil {
+			t.Fatalf("InitMetrics: %v", err)
+		}
+
+		RecordJobE2ELatency(30*time.Second, "completed")
+		RecordJobE2ELatency(10*time.Second, "cancelled")
+
+		f := collectFamilies(t, reg)
+		if c := histogramSampleCount(f["batch_job_e2e_latency_seconds"], map[string]string{"status": "completed"}); c != 1 {
+			t.Fatalf("e2e_latency{completed} sample_count=%d, want 1", c)
+		}
+		if c := histogramSampleCount(f["batch_job_e2e_latency_seconds"], map[string]string{"status": "cancelled"}); c != 1 {
+			t.Fatalf("e2e_latency{cancelled} sample_count=%d, want 1", c)
+		}
+		assertLabelNames(t, f["batch_job_e2e_latency_seconds"], []string{"status"})
+	})
+}
+
+func TestCancellationMetric(t *testing.T) {
+	withIsolatedPromRegistry(t, func(reg *prometheus.Registry) {
+		cfg := *config.NewConfig()
+		if err := InitMetrics(cfg); err != nil {
+			t.Fatalf("InitMetrics: %v", err)
+		}
+
+		RecordCancellation(CancelPhaseQueued)
+		RecordCancellation(CancelPhaseInProgress)
+		RecordCancellation(CancelPhaseInProgress)
+		RecordCancellation(CancelPhaseFinalizing)
+
+		f := collectFamilies(t, reg)
+		if v := counterWithLabels(f["batch_cancellation_total"], map[string]string{"phase": CancelPhaseQueued}); v != 1 {
+			t.Fatalf("cancellation{queued}=%v, want 1", v)
+		}
+		if v := counterWithLabels(f["batch_cancellation_total"], map[string]string{"phase": CancelPhaseInProgress}); v != 2 {
+			t.Fatalf("cancellation{in_progress}=%v, want 2", v)
+		}
+		if v := counterWithLabels(f["batch_cancellation_total"], map[string]string{"phase": CancelPhaseFinalizing}); v != 1 {
+			t.Fatalf("cancellation{finalizing}=%v, want 1", v)
+		}
+		assertLabelNames(t, f["batch_cancellation_total"], []string{"phase"})
+	})
+}
+
 func TestInitMetrics_Twice_DoesNotError(t *testing.T) {
 	withIsolatedPromRegistry(t, func(*prometheus.Registry) {
 		cfg := *config.NewConfig()

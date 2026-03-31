@@ -121,6 +121,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
 					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
+				recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
 			}
@@ -144,7 +145,14 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	if err := p.preProcessJob(ctx, params.jobInfo, params.cancelRequested); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "pre-process failed")
+		// Snapshot jobInfo before handleJobError clears it on cancel path.
+		ji := params.jobInfo
 		p.handleJobError(ctx, params, err)
+		if errors.Is(err, ErrCancelled) {
+			recordE2ELatency(ji, metrics.E2EStatusCancelled)
+		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			recordE2ELatency(ji, metrics.E2EStatusFailed)
+		}
 		return
 	}
 
@@ -156,6 +164,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
 			logger.Error(failErr, "Failed to handle failed event")
 		}
+		recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
 		return
 	}
 	transitionedToInProgress = true
@@ -173,6 +182,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 				span.SetStatus(codes.Error, "expired finalization failed")
 			}
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
+			recordE2ELatency(params.jobInfo, metrics.E2EStatusExpired)
 
 		case errors.Is(execErr, ErrCancelled):
 			if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
@@ -183,11 +193,13 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			if requestCounts != nil {
 				metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
 			}
+			recordE2ELatency(params.jobInfo, metrics.E2EStatusCancelled)
 
 		default:
 			span.RecordError(execErr)
 			span.SetStatus(codes.Error, "execution failed")
 			p.handleJobError(ctx, params, execErr)
+			recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
 		}
 		return
 	}
@@ -199,6 +211,8 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			// Treat as successful cancellation (same as handleCancelled).
 			p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
+			recordE2ELatency(params.jobInfo, metrics.E2EStatusCancelled)
+			metrics.RecordCancellation(metrics.CancelPhaseFinalizing)
 			metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 			logger.V(logging.INFO).Info("Job cancelled during finalization")
 			return
@@ -209,12 +223,14 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, requestCounts); failErr != nil {
 			logger.Error(failErr, "Failed to handle failed event")
 		}
+		recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
 		return
 	}
 
 	// cleanup local artifacts (best-effort)
 	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 	metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
+	recordE2ELatency(params.jobInfo, metrics.E2EStatusCompleted)
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job completed successfully")
 }
@@ -292,6 +308,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
 					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
+				recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
 				logger.V(logging.INFO).Info("Re-enqueued the job to the queue")
@@ -435,6 +452,16 @@ func (p *Processor) handleFailed(
 	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 	logger.V(logging.INFO).Info("Job failed handled")
 	return nil
+}
+
+// recordE2ELatency records the full lifecycle duration from batch submission to terminal state.
+// No-op if jobInfo, BatchJob, or CreatedAt is missing (e.g. DB conversion failure).
+func recordE2ELatency(jobInfo *batch_types.JobInfo, status string) {
+	if jobInfo == nil || jobInfo.BatchJob == nil || jobInfo.BatchJob.CreatedAt == 0 {
+		return
+	}
+	createdAt := time.Unix(jobInfo.BatchJob.CreatedAt, 0)
+	metrics.RecordJobE2ELatency(time.Since(createdAt), status)
 }
 
 func setRequestCountAttrs(ctx context.Context, counts *openai.BatchRequestCounts) {

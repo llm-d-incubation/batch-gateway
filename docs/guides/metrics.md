@@ -1,7 +1,7 @@
 # Metrics
 
-**Revision:** 1.2
-**Last Modified:** 2026-03-27
+**Revision:** 1.3
+**Last Modified:** 2026-03-30
 
 Metric names below match `internal/*/metrics/metrics.go` (and related packages). Deployments may add a namespace/subsystem prefix when registering; check `/metrics` on the running binary for the exact series name.
 
@@ -54,6 +54,20 @@ Processor metrics intentionally omit unbounded identifiers such as tenant IDs. P
 **Error Metrics:**
 
 - `request_errors_by_model_total{model}` (Counter) - Total number of request errors by model.
+
+**Token Metrics:**
+
+- `batch_request_prompt_tokens_total{model}` (Counter) - Total prompt tokens consumed by batch inference requests. Only counted when the inference response includes usage data (non-streaming responses from OpenAI-compatible backends typically include this).
+
+- `batch_request_generation_tokens_total{model}` (Counter) - Total generation (completion) tokens produced by batch inference requests. Same availability caveat as prompt tokens.
+
+**Job Lifecycle Metrics:**
+
+- `batch_job_e2e_latency_seconds{status}` (Histogram) - End-to-end job latency from submission (`created_at`) to terminal state. `status` values: `completed`, `cancelled`, `expired`, `failed`. In the execution path (`runJob`), the status label reflects the intended terminal state even if the DB write fails (matching the `jobs_processed_total` convention). In the polling loop and startup recovery, DB write failures are recorded as `failed` to avoid misrepresenting the actual outcome.
+
+**Cancellation Metrics:**
+
+- `batch_cancellation_total{phase}` (Counter) - Total batch job cancellations. `phase` values: `queued` (cancelled before execution started), `in_progress` (cancelled during execution), `finalizing` (cancelled during file upload/finalization).
 
 **Startup Recovery:**
 
