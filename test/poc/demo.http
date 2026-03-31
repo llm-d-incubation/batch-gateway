@@ -166,7 +166,7 @@ Authorization: Bearer {{apiKey}}
 ### View Grafana Dashboards
 # Open in browser: http://localhost:3000
 # Anonymous admin access — no login required.
-# Pre-loaded dashboards show batch job throughput, latency, and error rates.
+# Pre-loaded batch gateway dashboards.
 
 ### List Grafana Dashboards
 GET http://localhost:3000/api/search
