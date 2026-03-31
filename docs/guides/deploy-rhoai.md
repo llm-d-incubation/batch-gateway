@@ -94,15 +94,131 @@ HTTPRoute authorization behavior:
 
 ## 2. Prerequisites
 - OpenShift cluster 4.19.9 or later.
-- Installed cert-manager. See the [cert-manager Operator for Red Hat OpenShift documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/security_and_compliance/cert-manager-operator-for-red-hat-openshift)
-- Installed LeaderWorkerSet. See the [Leader Worker Set Operator documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/ai_workloads/leader-worker-set-operator).
 - OpenShift Service Mesh v2 is not installed in the cluster.
 
 
 ## 3. Installation Steps
 
 
-### 3.1 Create OpenShift GatewayClass and Gateway
+### 3.1 Install cert-manager
+
+Install the OpenShift cert-manager operator (required by LeaderWorkerSet and batch-gateway TLS). See the [cert-manager Operator for Red Hat OpenShift documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/security_and_compliance/cert-manager-operator-for-red-hat-openshift).
+
+<details>
+<summary>Install cert-manager operator</summary>
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: cert-manager-operator
+  namespace: cert-manager-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: cert-manager-operator
+spec:
+  channel: stable-v1
+  installPlanApproval: Automatic
+  name: openshift-cert-manager-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+# Wait for cert-manager webhook to be ready (this implies the operator CSV succeeded)
+until oc get deployment cert-manager-webhook -n cert-manager &>/dev/null; do sleep 10; done
+oc rollout status deployment/cert-manager-webhook -n cert-manager --timeout=300s
+```
+
+</details>
+
+<details>
+<summary>Create a self-signed ClusterIssuer</summary>
+
+```bash
+# Wait for the cert-manager webhook TLS to be fully bootstrapped (~15s after rollout)
+sleep 15
+
+# Create a self-signed ClusterIssuer (used later by batch-gateway for TLS)
+oc apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+EOF
+```
+
+</details>
+
+### 3.2 Install LeaderWorkerSet operator
+
+LLMInferenceService requires the LeaderWorkerSet (LWS) CRD. Install the LWS operator. See the [Leader Worker Set Operator documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/ai_workloads/leader-worker-set-operator).
+
+<details>
+<summary>Install LWS operator</summary>
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-lws-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: leader-worker-set
+  namespace: openshift-lws-operator
+spec:
+  targetNamespaces:
+  - openshift-lws-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: leader-worker-set
+  namespace: openshift-lws-operator
+spec:
+  channel: stable-v1.0
+  installPlanApproval: Automatic
+  name: leader-worker-set
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+# Wait for the operator deployment to be ready
+until oc get deployment openshift-lws-operator -n openshift-lws-operator &>/dev/null; do sleep 10; done
+oc rollout status deployment/openshift-lws-operator -n openshift-lws-operator --timeout=300s
+
+# Create the LeaderWorkerSetOperator CR
+oc apply -f - <<'EOF'
+apiVersion: operator.openshift.io/v1
+kind: LeaderWorkerSetOperator
+metadata:
+  name: cluster
+  namespace: openshift-lws-operator
+spec:
+  managementState: Managed
+EOF
+
+# Wait for the LWS CRD to be available (may take ~30s for the controller to deploy)
+until oc get crd leaderworkersets.leaderworkerset.x-k8s.io &>/dev/null; do sleep 5; done
+oc wait crd/leaderworkersets.leaderworkerset.x-k8s.io --for=condition=Established --timeout=120s
+```
+
+</details>
+
+### 3.3 Create OpenShift GatewayClass and Gateway
 
 Create a GatewayClass and a Gateway named `openshift-ai-inference` in the `openshift-ingress` namespace as described in [Gateway API with OpenShift Container Platform Networking](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/ingress_and_load_balancing/configuring-ingress-cluster-traffic#ingress-gateway-api).
 
@@ -172,7 +288,7 @@ oc rollout status deployment/openshift-ai-inference-openshift-default -n openshi
 
 </details>
 
-### 3.2 Install RHCL
+### 3.4 Install RHCL
 
 Follow [Red Hat Connectivity Link docs](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3) to install RHCL
 
@@ -264,104 +380,6 @@ EOF
 
 oc wait --for=condition=ready pod -l authorino-resource=authorino \
     -n "${KUADRANT_NS}" --timeout=150s
-```
-
-</details>
-
-### 3.3 Install cert-manager
-
-The LeaderWorkerSet operator (required by LLMInferenceService) depends on cert-manager. Install the OpenShift cert-manager operator:
-
-<details>
-<summary>Install cert-manager operator</summary>
-
-```bash
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cert-manager-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: cert-manager-operator
-  namespace: cert-manager-operator
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: openshift-cert-manager-operator
-  namespace: cert-manager-operator
-spec:
-  channel: stable-v1
-  installPlanApproval: Automatic
-  name: openshift-cert-manager-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-
-# Wait for cert-manager webhook to be ready (this implies the operator CSV succeeded)
-until oc get deployment cert-manager-webhook -n cert-manager &>/dev/null; do sleep 10; done
-oc rollout status deployment/cert-manager-webhook -n cert-manager --timeout=300s
-```
-
-</details>
-
-### 3.4 Install LeaderWorkerSet operator
-
-LLMInferenceService requires the LeaderWorkerSet (LWS) CRD. Install the LWS operator:
-
-<details>
-<summary>Install LWS operator</summary>
-
-```bash
-oc apply -f - <<'EOF'
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-lws-operator
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: leader-worker-set
-  namespace: openshift-lws-operator
-spec:
-  targetNamespaces:
-  - openshift-lws-operator
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: leader-worker-set
-  namespace: openshift-lws-operator
-spec:
-  channel: stable-v1.0
-  installPlanApproval: Automatic
-  name: leader-worker-set
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-
-# Wait for the operator deployment to be ready
-until oc get deployment openshift-lws-operator -n openshift-lws-operator &>/dev/null; do sleep 10; done
-oc rollout status deployment/openshift-lws-operator -n openshift-lws-operator --timeout=300s
-
-# Create the LeaderWorkerSetOperator CR
-oc apply -f - <<'EOF'
-apiVersion: operator.openshift.io/v1
-kind: LeaderWorkerSetOperator
-metadata:
-  name: cluster
-  namespace: openshift-lws-operator
-spec:
-  managementState: Managed
-EOF
-
-# Wait for the LWS CRD to be available (may take ~30s for the controller to deploy)
-until oc get crd leaderworkersets.leaderworkerset.x-k8s.io &>/dev/null; do sleep 5; done
-oc wait crd/leaderworkersets.leaderworkerset.x-k8s.io --for=condition=Established --timeout=120s
 ```
 
 </details>
@@ -654,19 +672,9 @@ EOF
 </details>
 
 <details>
-<summary>Create ClusterIssuer and install batch-gateway</summary>
+<summary>Install batch-gateway</summary>
 
 ```bash
-# Create a self-signed ClusterIssuer for batch gateway API server
-oc apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: selfsigned-issuer
-spec:
-  selfSigned: {}
-EOF
-
 # Get model URL from LLMInferenceService
 MODEL_URL=$(oc get llminferenceservice ${ISVC_NAME} -n ${LLM_NS} \
     -o jsonpath='{.status.url}')
@@ -696,7 +704,7 @@ helm install batch-gateway ./charts/batch-gateway \
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It should point to the Gateway's model endpoint (from `llminferenceservice.status.url`), not directly to the model server, so that requests go through the Gateway's AuthPolicy and rate limiting.
 > - **`passThroughHeaders: {Authorization}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization on batch requests.
 >
-> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `issuerName` must match a ClusterIssuer (e.g. `selfsigned-issuer`). The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.7).
+> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `issuerName` must match a ClusterIssuer (e.g. `selfsigned-issuer`). The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.9).
 > - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
 >   ```
 >   --set "global.fileClient.type=s3"
