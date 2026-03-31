@@ -350,8 +350,10 @@ func (p *Processor) uploadPartialResults(
 // handleExpired finalizes a job whose SLO deadline fired.
 // Two cases reach here:
 // (1) deadline expired before dispatch began — executeJob skips dispatch (see its early-SLO comment):
-//     no completions are written to the output file, but error.jsonl may already contain
-//     model_not_found lines from ingestion. uploadPartialResults still uploads whatever exists.
+//
+//	no completions are written to the output file, but error.jsonl may already contain
+//	model_not_found lines from ingestion. uploadPartialResults still uploads whatever exists.
+//
 // (2) deadline expired during execution — completed requests remain in the output file and undispatched entries were drained
 // as "batch_expired" by drainUnprocessedRequests.
 // In both cases, this function uploads whatever files exist and transitions the job to expired status.
