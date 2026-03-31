@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -591,7 +592,9 @@ const sloTTFTMSHeader = "x-slo-ttft-ms"
 // deadline, the header value is "0".
 func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) map[string]string {
 	var ms string
-	if dl, ok := sloCtx.Deadline(); ok {
+	if sloCtx.Err() == context.Canceled {
+		return headers
+	} else if dl, ok := sloCtx.Deadline(); ok {
 		sloMs := time.Until(dl).Milliseconds()
 		if sloMs < 0 {
 			sloMs = 0
@@ -615,7 +618,7 @@ func (p *Processor) executeOneRequest(
 	inputFile *os.File,
 	entry planEntry,
 	modelID string,
-	headers map[string]string,
+	passThroughHeaders map[string]string,
 ) (*outputLine, error) {
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
@@ -645,6 +648,7 @@ func (p *Processor) executeOneRequest(
 	// model id, job id and tenant id are already set in the context
 	logger := logr.FromContextOrDiscard(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
+	headers := maps.Clone(passThroughHeaders)
 	headers = mergeSLOTTFTIntoHeaders(headers, sloCtx)
 
 	inferReq := &inference.GenerateRequest{
