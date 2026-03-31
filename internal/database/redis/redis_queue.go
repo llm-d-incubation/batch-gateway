@@ -138,17 +138,22 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	logger := logr.FromContextOrDiscard(ctx)
 
 	// Get items from the queue.
-	if timeout > 0 {
-		logger.V(logging.DEBUG).Info("PQDequeue: Start BZMPop")
+	// Use non-blocking ZMPop when timeout is zero, blocking BZMPop otherwise.
+	var vals []goredis.Z
+	if timeout <= 0 {
+		logger.V(logging.DEBUG).Info("PQDequeue: Start ZMPop (non-blocking)")
+		_, vals, err = c.redisClient.ZMPop(
+			ctx, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
+		logger.V(logging.DEBUG).Info("PQDequeue: End ZMPop")
 	} else {
-		logger.Info("PQDequeue: Start BZMPop without timeout")
+		logger.V(logging.DEBUG).Info("PQDequeue: Start BZMPop", "timeout", timeout)
+		_, vals, err = c.redisClient.BZMPop(
+			ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
+		logger.V(logging.DEBUG).Info("PQDequeue: End BZMPop")
 	}
-	_, vals, err := c.redisClient.BZMPop(
-		ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
-	logger.V(logging.DEBUG).Info("PQDequeue: End BZMPop")
 	if err != nil {
 		if unrecognizedBlockingError(err) {
-			logger.Error(err, "PQDequeue: BZMPop failed")
+			logger.Error(err, "PQDequeue: B/ZMPop failed")
 			cerr := c.redisClientChecker.Check(ctx)
 			if cerr != nil {
 				logger.Error(err, "PQDequeue: ClientCheck failed")
