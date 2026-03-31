@@ -100,6 +100,10 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	// In per-model mode, check each model against the resolver and reject
 	// unregistered models early. In global mode, all models are routed to
 	// the same endpoint so no check is needed.
+	// p.inference != nil: NewProcessor does not validate clients; unit tests often
+	// call preProcessJob without Run() and omit Inference (treat as non-per-model).
+	// Production paths hit Processor.validate() in prepare() before work runs.
+	// The guard also avoids panicking if a future caller wires a nil resolver.
 	isPerModelGateway := p.inference != nil && !p.inference.IsGlobal()
 	registeredModels := make(map[string]bool) // modelID -> registered (per-model only)
 

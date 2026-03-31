@@ -14,6 +14,7 @@ import (
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
@@ -115,6 +116,87 @@ func TestExecuteOneRequest_NonHTTPError(t *testing.T) {
 	}
 	if result.Response != nil {
 		t.Fatalf("expected nil response on non-HTTP error")
+	}
+}
+
+// TestExecuteOneRequest_NilInferenceClient covers recovery when model_map/plan files
+// reference a model that no longer has a gateway client (config drift after ingestion).
+// ClientFor returns nil; the request must fail gracefully like ingestion-time rejection,
+// not as a fatal processModel error.
+func TestExecuteOneRequest_NilInferenceClient(t *testing.T) {
+	ctx := testLoggerCtx(t)
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	resolver, err := inference.NewPerModelResolver(
+		map[string]inference.GatewayClientConfig{
+			"other-model": {URL: "http://fake:8000"},
+		},
+		testLogger(t),
+	)
+	if err != nil {
+		t.Fatalf("NewPerModelResolver: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB:   newMockBatchDBClient(),
+		FileDB:    newMockFileDBClient(),
+		File:      mockfiles.NewMockBatchFilesClient(),
+		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
+		Status:    mockdb.NewMockBatchStatusClient(),
+		Event:     mockdb.NewMockBatchEventChannelClient(),
+		Inference: resolver,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "test-job"
+	tenantID := "tenant-1"
+	requests := []batch_types.Request{
+		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+
+	jobRootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobRootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	inputPath := filepath.Join(jobRootDir, "input.jsonl")
+	rawInput := writeInputJSONL(t, inputPath, requests)
+	allEntries := planEntriesFromLines(rawInput)
+
+	plansDir := filepath.Join(jobRootDir, "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll plans: %v", err)
+	}
+	writePlanFile(t, plansDir, "m1", allEntries)
+
+	writeModelMap(t, jobRootDir, modelMapFile{
+		ModelToSafe: map[string]string{"m1": "m1"},
+		SafeToModel: map[string]string{"m1": "m1"},
+		LineCount:   1,
+	})
+
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer inputFile.Close()
+
+	result, err := p.executeOneRequest(ctx, inputFile, allEntries[0], "m1", nil)
+	if err != nil {
+		t.Fatalf("executeOneRequest: %v", err)
+	}
+	if result.Error == nil {
+		t.Fatal("expected model_not_found output line")
+	}
+	if result.Error.Code != inference.ErrCodeModelNotFound {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, inference.ErrCodeModelNotFound)
+	}
+	if result.CustomID != "req-1" {
+		t.Fatalf("CustomID = %q, want req-1", result.CustomID)
 	}
 }
 

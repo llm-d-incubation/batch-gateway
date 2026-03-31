@@ -1358,6 +1358,138 @@ func TestPreProcess_UnregisteredModel_RejectedToErrorFile(t *testing.T) {
 	}
 }
 
+// TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts covers the edge case where every
+// line targets an unregistered model: modelToSafe is empty, no plan files are written,
+// executeJob launches zero processModel goroutines, progress is seeded from RejectedCount,
+// and counts reflect Total=N, Failed=N, Completed=0.
+func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
+	ctx := testLoggerCtx(t)
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	tenantID := "tenant__tenantA"
+	folder, _ := ucom.GetFolderNameByTenantID(tenantID)
+	filename := "input.jsonl"
+
+	lines := [][]byte{
+		[]byte(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"model-x","messages":[{"role":"user","content":"a"}]}}` + "\n"),
+		[]byte(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"model-y","messages":[{"role":"user","content":"b"}]}}` + "\n"),
+		[]byte(`{"custom_id":"req-3","method":"POST","url":"/v1/chat/completions","body":{"model":"model-z","messages":[{"role":"user","content":"c"}]}}` + "\n"),
+	}
+	var remoteBuf bytes.Buffer
+	for _, ln := range lines {
+		remoteBuf.Write(ln)
+	}
+
+	inputFileID := "file-all-unregistered"
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, filename), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+	fileSpec := &openai.FileObject{Filename: filename}
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, fileSpec)},
+	}
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	resolver, err := inference.NewPerModelResolver(
+		map[string]inference.GatewayClientConfig{
+			"model-a": {URL: "http://fake:8000"},
+		},
+		testLogger(t),
+	)
+	if err != nil {
+		t.Fatalf("NewPerModelResolver: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB:   dbClient,
+		FileDB:    fileDBClient,
+		File:      filesClient,
+		Inference: resolver,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-all-unregistered"
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	var cancelRequested atomic.Bool
+	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+		t.Fatalf("preProcessJob: %v", err)
+	}
+
+	errorPath, _ := p.jobErrorFilePath(jobID, tenantID)
+	errorBytes, err := os.ReadFile(errorPath)
+	if err != nil {
+		t.Fatalf("read error file: %v", err)
+	}
+	errorLines := bytes.Split(bytes.TrimSpace(errorBytes), []byte{'\n'})
+	if len(errorLines) != 3 {
+		t.Fatalf("error file lines = %d, want 3", len(errorLines))
+	}
+
+	jobRootDir, _ := p.jobRootDir(jobID, tenantID)
+	mm, err := readModelMap(jobRootDir)
+	if err != nil {
+		t.Fatalf("readModelMap: %v", err)
+	}
+	if mm.RejectedCount != 3 {
+		t.Fatalf("RejectedCount = %d, want 3", mm.RejectedCount)
+	}
+	if len(mm.ModelToSafe) != 0 {
+		t.Fatalf("ModelToSafe = %v, want empty (no plans)", mm.ModelToSafe)
+	}
+	if len(mm.SafeToModel) != 0 {
+		t.Fatalf("SafeToModel = %v, want empty", mm.SafeToModel)
+	}
+	plansDir := filepath.Join(jobRootDir, "plans")
+	entries, err := os.ReadDir(plansDir)
+	if err != nil {
+		t.Fatalf("ReadDir plans: %v", err)
+	}
+	var planFiles int
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".plan") {
+			planFiles++
+		}
+	}
+	if planFiles != 0 {
+		t.Fatalf("plan files = %d, want 0", planFiles)
+	}
+
+	counts, execErr := p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
+		updater:         NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
+		jobInfo:         jobInfo,
+		cancelRequested: &cancelRequested,
+	})
+	if execErr != nil {
+		t.Fatalf("executeJob: %v", execErr)
+	}
+	if counts.Total != 3 || counts.Failed != 3 || counts.Completed != 0 {
+		t.Fatalf("counts = %+v, want Total=3 Failed=3 Completed=0", counts)
+	}
+}
+
 // TestPreProcess_ReEnqueue_TruncatesStaleErrorFile verifies that when a job is
 // re-enqueued (e.g. after pod shutdown), the next ingestion run truncates any
 // stale error.jsonl left by the previous attempt. Without truncation, execution's

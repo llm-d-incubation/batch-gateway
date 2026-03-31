@@ -624,18 +624,31 @@ func (p *Processor) executeOneRequest(
 	// model id, job id and tenant id are already set in the context
 	logger := logr.FromContextOrDiscard(ctx).WithValues("customId", req.CustomID, "requestId", requestID)
 
+	// Per-model mode rejects unregistered models at ingestion (fast path). ClientFor can
+	// still return nil after gateway config changes between ingestion and execution, or
+	// during recovery when model_map/plan files predate the current resolver — treat as
+	// a request-level error so the rest of the batch can complete.
+	inferClient := p.inference.ClientFor(modelID)
+	if inferClient == nil {
+		logger.Error(nil, "ClientFor returned nil during execution (expected rejection at ingestion)",
+			"model", modelID)
+		result := &outputLine{
+			ID:       newBatchRequestID(requestID),
+			CustomID: req.CustomID,
+			Error: &outputError{
+				Code:    inference.ErrCodeModelNotFound,
+				Message: fmt.Sprintf("model %q is not configured in any gateway", modelID),
+			},
+		}
+		metrics.RecordRequestError(modelID)
+		return result, nil
+	}
+
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
 		Endpoint:  req.URL,
 		Params:    req.Body,
 		Headers:   passThroughHeaders,
-	}
-
-	// Ingestion rejects requests for unregistered models, so ClientFor should
-	// never return nil here. Guard defensively for recovery paths.
-	inferClient := p.inference.ClientFor(modelID)
-	if inferClient == nil {
-		return nil, fmt.Errorf("no inference client for model %q (should have been rejected during ingestion)", modelID)
 	}
 
 	start := time.Now()
