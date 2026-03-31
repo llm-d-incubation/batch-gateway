@@ -153,7 +153,7 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	}
 	if err != nil {
 		if unrecognizedBlockingError(err) {
-			logger.Error(err, "PQDequeue: BZMPop failed")
+			logger.Error(err, "PQDequeue: B/ZMPop failed")
 			cerr := c.redisClientChecker.Check(ctx)
 			if cerr != nil {
 				logger.Error(err, "PQDequeue: ClientCheck failed")
