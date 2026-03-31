@@ -28,7 +28,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
-	"k8s.io/klog/v2"
+
+	"github.com/go-logr/logr"
 )
 
 const defaultServiceName = "batch-gateway"
@@ -58,6 +59,20 @@ func SetAttr(ctx context.Context, attrs ...attribute.KeyValue) {
 	trace.SpanFromContext(ctx).SetAttributes(attrs...)
 }
 
+// DetachedContext returns a new background context that carries a span linked to
+// the span in the original context. Use this when the original context is cancelled
+// (e.g. pod shutdown) but you still need to perform traced operations (e.g. re-enqueue).
+// The linked span appears in Jaeger as a separate trace with a link back to the original,
+// avoiding orphan spans with no connection to the parent trace.
+func DetachedContext(ctx context.Context, name string) (context.Context, trace.Span) {
+	var links []trace.Link
+	if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+		links = append(links, trace.Link{SpanContext: sc})
+	}
+	bgCtx := logr.NewContext(context.Background(), logr.FromContextOrDiscard(ctx))
+	return StartSpan(bgCtx, name, trace.WithLinks(links...))
+}
+
 // InitTracer sets up an OpenTelemetry TracerProvider with an OTLP gRPC exporter.
 // It reads the endpoint from the OTEL_EXPORTER_OTLP_ENDPOINT environment variable.
 // If the endpoint is not set, tracing is disabled (no-op) and a nil shutdown function is returned.
@@ -65,7 +80,7 @@ func SetAttr(ctx context.Context, attrs ...attribute.KeyValue) {
 func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err error) {
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
-		klog.FromContext(ctx).Info("OTEL_EXPORTER_OTLP_ENDPOINT not set, tracing disabled")
+		logr.FromContextOrDiscard(ctx).Info("OTEL_EXPORTER_OTLP_ENDPOINT not set, tracing disabled")
 		return func(context.Context) error { return nil }, nil
 	}
 
@@ -95,7 +110,7 @@ func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err 
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
-	klog.FromContext(ctx).Info("OpenTelemetry tracing initialized", "endpoint", endpoint, "service", serviceName)
+	logr.FromContextOrDiscard(ctx).Info("OpenTelemetry tracing initialized", "endpoint", endpoint, "service", serviceName)
 
 	return tp.Shutdown, nil
 }

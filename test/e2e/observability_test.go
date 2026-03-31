@@ -50,10 +50,7 @@ func doTestOtelTraces(t *testing.T) {
 	// Run a quick batch to generate traces
 	fileID := mustCreateFile(t, fmt.Sprintf("test-otel-%s.jsonl", testRunID), testJSONL)
 	batchID := mustCreateBatch(t, fileID)
-	finalBatch := waitForBatchCompletion(t, batchID)
-	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Fatalf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
-	}
+	_, _ = waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
 
 	// Give Jaeger a moment to index the traces
 	time.Sleep(3 * time.Second)

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// The entry point for the worker process.
+// The entry point for the batch processor.
 
 package main
 
@@ -28,12 +28,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
@@ -43,17 +45,15 @@ func main() {
 	defer klog.Flush()
 
 	if err := run(); err != nil {
-		klog.ErrorS(err, "Processor failed to start")
-		klog.Flush() // Must flush manually before os.Exit
-		os.Exit(1)
+		klog.Fatalf("Processor failed: %v", err)
 	}
 }
 
 func run() error {
 	// load configuration & logging setup
 	hostname, _ := os.Hostname()
-	logger := klog.Background().WithValues("hostname", hostname, "service", "batch-processor")
-	ctx := klog.NewContext(context.Background(), logger)
+	logger := klog.NewKlogr().WithValues("hostname", hostname, "service", "batch-processor")
+	ctx := logr.NewContext(context.Background(), logger)
 
 	cfg := config.NewConfig()
 	fs := flag.NewFlagSet("batch-gateway-processor", flag.ExitOnError)
@@ -102,7 +102,6 @@ func run() error {
 	// read only channel for observability server's fatal error
 	obsFatalCh := startObservabilityServer(
 		ctx,
-		logger,
 		cfg,
 		&ready,
 		cancel,
@@ -114,11 +113,11 @@ func run() error {
 		logger.Error(err, "Failed to build processor clients")
 		return err
 	}
-	defer procClients.Close()
+	defer func() { _ = procClients.Close() }()
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc, err := worker.NewProcessor(cfg, procClients)
+	proc, err := worker.NewProcessor(cfg, procClients, logger)
 	if err != nil {
 		logger.Error(err, "Failed to create processor")
 		return err
@@ -143,6 +142,9 @@ func run() error {
 		ready.Store(true)
 		logger.V(logging.INFO).Info("Processor polling loop started", "pollInterval", cfg.PollInterval.String())
 	})
+	// Run may return before ctx is cancelled (e.g. semaphore guard shutdown).
+	// Mark not-ready immediately so the readiness probe reflects the actual state.
+	ready.Store(false)
 	if cfg.TerminateOnObservabilityFailure {
 		// Give the observability goroutine a brief chance to publish the fatal cause,
 		// so we can prefer it over a derived context-cancel error from the polling loop.
@@ -160,12 +162,12 @@ func run() error {
 
 func startObservabilityServer(
 	ctx context.Context,
-	logger klog.Logger,
 	cfg *config.ProcessorConfig,
 	ready *atomic.Bool,
 	cancel context.CancelFunc,
 	terminateOnObservabilityFailure bool,
 ) <-chan error {
+	logger := logr.FromContextOrDiscard(ctx)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -272,12 +274,12 @@ func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, w
 
 // buildProcessorClients constructs all processor clients using the same backend as the apiserver
 func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*clientset.Clientset, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-processor"
 	cfg.DBClientCfg.RedisCfg.EnableTracing = cfg.OTel.RedisTracing
 
-	modelGatewaysConfigs, err := config.ResolveModelGateways(cfg.ModelGateways)
+	resolved, err := config.ResolveModelGateways(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
@@ -291,17 +293,28 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		cfg.FileClientCfg.Type,
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
-		modelGatewaysConfigs,
+		&cfg.FileClientCfg.Retry,
+		resolved.Global,
+		resolved.PerModel,
+		ucom.ComponentProcessor,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")
 		return nil, err
 	}
 
-	logger.V(logging.INFO).Info("Processor clients initialized",
-		"defaultInferenceURL", cfg.ModelGateways[config.DefaultModelGatewayKey].URL,
-		"numModelOverrides", len(cfg.ModelGateways)-1,
-		"fileClientType", cfg.FileClientCfg.Type)
+	// Validate() guarantees exactly one of resolved.Global or resolved.PerModel is set.
+	if resolved.Global != nil {
+		logger.V(logging.INFO).Info("Processor clients initialized",
+			"mode", "global",
+			"gatewayURL", resolved.Global.URL,
+			"fileClientType", cfg.FileClientCfg.Type)
+	} else {
+		logger.V(logging.INFO).Info("Processor clients initialized",
+			"mode", "per-model",
+			"numModelGateways", len(resolved.PerModel),
+			"fileClientType", cfg.FileClientCfg.Type)
+	}
 
 	return clients, nil
 }

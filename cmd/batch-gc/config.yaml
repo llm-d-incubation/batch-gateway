@@ -6,6 +6,9 @@ dry_run: false
 # Interval between garbage collection cycles
 interval: 1h
 
+# Maximum number of concurrent item deletions per GC cycle (default: 10)
+max_concurrency: 10
+
 # Database client configuration
 db_client:
   # Type selects the database backend: "redis" or "postgresql".

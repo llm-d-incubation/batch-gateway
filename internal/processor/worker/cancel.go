@@ -18,10 +18,8 @@ package worker
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -29,13 +27,7 @@ import (
 )
 
 func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {
-	logger := klog.FromContext(ctx)
-	if params.cancelRequested == nil {
-		params.cancelRequested = &atomic.Bool{}
-	}
-	if params.cancellingOnce == nil {
-		params.cancellingOnce = &sync.Once{}
-	}
+	logger := logr.FromContextOrDiscard(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -51,15 +43,11 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 			if event.Type == db.BatchEventCancel {
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
-				// signal
 				params.cancelRequested.Store(true)
+				params.abortInferFn()
 
-				// cancel the inference context to abort in-flight HTTP requests immediately,
-				// freeing downstream resources.
-				params.inferCancelFn()
-
-				// Note: We don't update the DB status to 'cancelling' here because
-				// the API server already wrote 'cancelling' to the DB before sending this event.
+				// We don't update the DB status to 'cancelling' here because
+				// the API server already wrote 'cancelling' before sending this event.
 			}
 		}
 	}
@@ -70,11 +58,10 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 // results are uploaded. When called before executeJob (ingestion), both are nil and only
 // cleanup + status transition is performed.
 func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionParams) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	var outputFileID, errorFileID string
 	if params.requestCounts != nil && params.jobInfo != nil {
-		// upload partial results
 		logger.V(logging.INFO).Info("Job cancelled mid-execution, uploading partial results")
 		outputFileID, errorFileID = p.uploadPartialResults(ctx, params.jobInfo, params.jobItem)
 	}
@@ -82,13 +69,12 @@ func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionPar
 	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 
 	if err := params.updater.UpdateCancelledStatus(ctx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update status to cancelled")
+		logger.Error(err, "Failed to update status to cancelled")
 		return err
 	}
 
 	setRequestCountAttrs(ctx, params.requestCounts)
 
-	// record processed metrics as success because we successfully finished user-initiated cancellation
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job cancelled handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil

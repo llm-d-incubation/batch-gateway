@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -97,6 +97,16 @@ package-release:
 	  sha256sum *.tar.gz > SHA256SUMS && \
 	  cat SHA256SUMS && \
 	  ls -la
+
+## publish-helm-chart: Patch chart for VERSION, package, append chart to SHA256SUMS, push to oci://ghcr.io/llm-d-incubation/charts (requires VERSION, yq, helm; GITHUB_TOKEN, GITHUB_ACTOR for push).
+publish-helm-chart:
+	@if [ -z "$(VERSION)" ]; then \
+	  echo "VERSION is required (e.g. VERSION=v1.0.0 make publish-helm-chart)"; exit 1; \
+	fi
+	@export VERSION="$(VERSION)"; \
+	export GITHUB_TOKEN="$(GITHUB_TOKEN)"; \
+	export GITHUB_ACTOR="$(GITHUB_ACTOR)"; \
+	./scripts/publish-helm-chart.sh
 
 ## generate-release: Create and push a release tag from main (requires REL_VERSION, e.g. make generate-release REL_VERSION=0.0.1)
 generate-release:
@@ -211,18 +221,32 @@ clean:
 	@rm -f coverage.out coverage.html
 	@echo "Clean complete"
 
-## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec)
+## install-pre-commit-tools: Install tools for pre-commit hooks (goimports, gosec, ruleguard, helm-unittest)
 install-pre-commit-tools:
 	@echo "Installing pre-commit tools..."
 	$(GO) install golang.org/x/tools/cmd/goimports@v0.43.0
 	$(GO) install github.com/securego/gosec/v2/cmd/gosec@v2.25.0
+	$(GO) install github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.4.5
+	@if command -v helm >/dev/null 2>&1; then \
+		helm plugin list | grep -q unittest || \
+			helm plugin install https://github.com/helm-unittest/helm-unittest.git || \
+			helm plugin install --verify=false https://github.com/helm-unittest/helm-unittest.git; \
+	else \
+		echo "helm not found, skipping helm-unittest plugin install"; \
+	fi
 	@echo "Pre-commit tools installed"
 
 ## install-tools: Install all development tools (includes pre-commit tools + golangci-lint)
 install-tools: install-pre-commit-tools
 	@echo "Installing additional development tools..."
-	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
 	@echo "All tools installed"
+
+## test-helm: Run Helm chart template tests (requires helm-unittest plugin)
+test-helm:
+	@helm unittest --help >/dev/null 2>&1 || { echo "Error: helm-unittest plugin not installed. Run 'make install-tools' first."; exit 1; }
+	@echo "Running Helm chart tests..."
+	helm unittest charts/batch-gateway
 
 ## check: Run fmt, vet, and test
 check: fmt vet test
@@ -306,10 +330,11 @@ dev-rm-cluster:
 	@echo "✅ Kind cluster deleted"
 
 ## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
+##           Use TEST_RUN to filter tests, e.g.: make test-e2e TEST_RUN=TestE2E/Batches/Cancel/InProgress
 test-e2e:
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
-	cd test/e2e && $(GO) test -v -count=1 ./... 2>&1 | tee $$OUT; \
+	cd test/e2e && $(GO) test -v -count=1 $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
 	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
 	FAIL_COUNT=$$(grep -- '--- FAIL:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \

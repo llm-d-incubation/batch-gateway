@@ -20,7 +20,8 @@ This directory contains demo files for testing the Batch Gateway system.
    - API Server at <https://localhost:8000>
    - Processor at <http://localhost:9090>
    - Jaeger UI at <http://localhost:16686>
-   - Metrics endpoints at <http://localhost:8081> (API) and <http://localhost:9090> (Processor)
+   - Prometheus UI at <http://localhost:9091>
+   - Metrics endpoints at <http://localhost:8081/metrics> (API) and <http://localhost:9090/metrics> (Processor)
 
 2. **Choose Your Demo Tool**:
    - **Using demo.http**: Install the REST Client for Visual Studio Code extension (Ctrl+Shift+X / Cmd+Shift+X)
@@ -83,17 +84,23 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │   Observability                                          │  │
 │  │                                                          │  │
-│  │   ┌──────────────────────┐                               │  │
-│  │   │ Jaeger               │                               │  │
-│  │   │                      │                               │  │
-│  │   │ • Distributed traces │◄───── All components          │  │
-│  │   │ • UI (16686)         │       send traces             |  |
-│  │   └──────────────────────┘                               │  │
+│  │   ┌──────────────────────┐    ┌──────────────────────┐   │  │
+│  │   │ Jaeger               │    │ Prometheus           │   │  │
+│  │   │                      │    │                      │   │  │
+│  │   │ • Distributed traces │    │ • Metrics collection │   │  │
+│  │   │ • UI (16686)         │    │ • Scrapes /metrics   │   │  │
+│  │   └──────▲───────────────┘    │ • UI (9091)          │   │  │
+│  │          │                    └───────▲──────────────┘   │  │
+│  │          │ Traces                     │ Scrapes          │  │
+│  │          └────────────────────────────┴──────────────────┤  │
+│  │                                                          │  │
+│  │                      All components                      │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                │
 └─────────────────────────────▲──────────────────────────────────┘
                               │
-                              │ Port-forwards
+                              │ kind extraPortMappings
+                              │ (NodePort → localhost)
                               │
                       ┌───────┴─────────┐
                       │  localhost      │
@@ -101,6 +108,7 @@ The demo environment runs the following components in a Kubernetes cluster (kind
                       │  :8000  (API)   │
                       │  :8081  (Obs)   │
                       │  :9090  (Proc)  │
+                      │  :9091  (Prom)  │
                       │  :16686 (Jaeger)│
                       └─────────────────┘
 ```
@@ -110,7 +118,7 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 1. **Create Batch**: User → API Server → PostgreSQL (metadata) + Redis (queue) + File Storage (input file)
 2. **Process Batch**: Processor polls Redis → reads batch from PostgreSQL → reads input from File Storage → sends requests to vLLM simulators → writes results to File Storage → updates PostgreSQL + Redis
 3. **Retrieve Results**: User → API Server → PostgreSQL (batch status) + File Storage (output file)
-4. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints
+4. **Monitor**: All components send traces to Jaeger; metrics exposed on /metrics endpoints and via Prometheus
 
 ## Demo Sequences
 
@@ -196,12 +204,21 @@ Open <http://localhost:16686> in your browser to view distributed traces:
 
 ### Prometheus Metrics
 
-View metrics at:
+Prometheus automatically scrapes metrics from the components.
 
-- API Server: <http://localhost:8081/metrics>
-- Processor: <http://localhost:9090/metrics>
+**Using Prometheus UI**:
 
-Key metrics to watch:
+1. Open <http://localhost:9091> in your browser
+2. Navigate to Graph tab
+3. Enter a metric name in the expression browser (e.g., `batch_gateway_processor_jobs_processed_total`)
+4. Click "Execute" to see current values or "Graph" for time-series visualization
+
+**Direct access to raw metrics** (useful for debugging):
+
+- API Server metrics endpoint: <http://localhost:8081/metrics>
+- Processor metrics endpoint: <http://localhost:9090/metrics>
+
+**Key metrics to monitor**:
 
 - `batch_gateway_api_http_requests_total`: Total API requests
 - `batch_gateway_api_batch_jobs_total`: Total batch jobs created
@@ -219,7 +236,9 @@ Key metrics to watch:
 ### Connection Refused
 
 - Ensure the batch gateway is deployed: `make dev-deploy`
-- Check that port forwarding is active (should happen automatically after deploy)
+- Verify the kind cluster is running: `kind get clusters`
+- Check that services are up: `kubectl get pods -n default`
+- The kind cluster maps NodePort services directly to localhost (no separate port-forward needed)
 
 ### TLS Certificate Errors
 

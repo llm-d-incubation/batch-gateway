@@ -55,8 +55,10 @@ curl -k -s https://localhost:8000/v1/files/$OUTPUT_FILE_ID/content \
   -H "Authorization: Bearer unused" | jq
 
 # Step 5: View metrics
-curl -s http://localhost:8081/metrics | grep batch_gateway
-curl -s http://localhost:9090/metrics | grep batch_gateway
+# Option 1: Query Prometheus UI at http://localhost:9091
+# Option 2: Direct metrics endpoints
+curl -s http://localhost:8081/metrics | grep batch_gateway  # API Server
+curl -s http://localhost:9090/metrics | grep batch_gateway  # Processor
 ```
 
 ## Demo 2: Batch Cancellation (2 minutes)
@@ -137,6 +139,9 @@ curl -s http://localhost:9090/health | jq
 
 # View traces in Jaeger
 open http://localhost:16686
+
+# View metrics in Prometheus
+open http://localhost:9091
 ```
 
 ## Useful Monitoring Commands
@@ -147,11 +152,14 @@ watch -n 2 "curl -k -s https://localhost:8000/v1/batches/$BATCH_ID \
   -H 'X-MaaS-Username: demo-user' \
   -H 'Authorization: Bearer unused' | jq '{id:.id,status:.status,request_counts:.request_counts}'"
 
-# Monitor API server metrics
+# Monitor API server metrics (direct)
 watch -n 5 "curl -s http://localhost:8081/metrics | grep -E '(batch_gateway_api_http_requests_total|batch_gateway_api_batch_jobs_total)'"
 
-# Monitor processor metrics
+# Monitor processor metrics (direct)
 watch -n 5 "curl -s http://localhost:9090/metrics | grep -E '(batch_gateway_processor_jobs_processed_total|batch_gateway_processor_job_duration_seconds)'"
+
+# Query Prometheus for metrics (requires PromQL)
+curl -s 'http://localhost:9091/api/v1/query?query=batch_gateway_processor_jobs_processed_total' | jq '.data.result'
 
 # View processor logs
 kubectl logs -l app.kubernetes.io/component=processor -n default -f
@@ -174,12 +182,17 @@ curl -k -s -X DELETE https://localhost:8000/v1/files/$FILE_ID \
 ### Q: Connection refused
 
 ```bash
-# Check if port-forward is running
-ps aux | grep port-forward
+# Check if kind cluster is running
+kind get clusters
 
-# Restart port-forward
+# Check if services are deployed
+kubectl get pods -n default
+
+# Redeploy if needed
 make dev-deploy
 ```
+
+**Note**: The kind cluster uses `extraPortMappings` to map NodePort services directly to localhost. No separate kubectl port-forward is needed.
 
 ### Q: Batch stuck in validating
 

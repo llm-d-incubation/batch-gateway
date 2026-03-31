@@ -20,7 +20,7 @@ The current design focuses on:
     backend layout)
 -   Maintaining OpenAI-compatible request/response schema parity
 
-This document describes the proposed 3-phase processing architecture and scheduling model.
+This document describes the ingestion → execution → finalization processing architecture and scheduling model.
 
 -------------------------------------------------------------------
 
@@ -99,8 +99,21 @@ Unsupported features must return OpenAI-compatible error responses.
 -   Assumption (MVP): the priority queue provides exclusive dequeue semantics. Lease/heartbeat-based recovery for worker death is out of scope for MVP.
 
 -------------------------------------------------------------------
-**TODO:**
--   Worker Crash Recovery: If a worker crashes during `in_progress`, the job is retried from scratch upon re-queueing. Partial plan files and input artifacts are treated as temporary and discarded. Resume-from-checkpoint is not supported in MVP.
+
+#### Startup Recovery
+
+When the processor starts, `recoverStaleJobs` scans the local work directory for job directories left behind by a previous container crash (OOM, panic, node eviction). For each stale directory it finds the corresponding DB record and takes action based on the job's status:
+
+-   `in_progress` (no output on disk): re-enqueue the job so another worker can process it from scratch. If SLO expired, mark as `expired`. If re-enqueue fails, mark as `failed`.
+-   `in_progress` (output exists on disk): upload partial results and mark as `failed` (inference cost is significant — preserve completed work rather than retry from scratch).
+-   `finalizing`: attempt to complete finalization (upload output). If upload fails, mark as `failed`.
+-   `cancelling`: upload partial results and transition to `cancelled`.
+-   `validating`: re-enqueue (ingestion had not started). If SLO expired, mark as `expired`.
+-   Other terminal states: clean up the directory only.
+
+After recovery, stale directories are removed. Resume-from-checkpoint is not supported — recovered jobs are retried from scratch.
+
+The `batch_startup_recovery_total{status,action}` metric tracks recovery outcomes for operational visibility.
 
 --------------------------------------------------------------------
 ### High-Level Architecture
@@ -182,14 +195,14 @@ flowchart TD
 
 Allowed transitions:
 -   `validating` (initial state: set when a batch job is created)
--   `validating → in_progress` (after polling from the queue)
+-   `validating → in_progress` (after ingestion succeeds — preProcessJob completes)
 -   `in_progress → finalizing` (after all plans drained)
 -   `finalizing → completed` (after uploading output and error files)
 -   `* → failed` (job is unable to process)
 -   `validating → expired` (SLO already exceeded before execution starts — skipped at dequeue)
 -   `in_progress → expired` (SLO exceeded during execution — partial results preserved)
--   `in_progress → cancelling` (after user's cancellation signal received)
--   `cancelling → cancelled` (after user-initiated cancellation is completed)
+-   `in_progress → cancelling` (set by the **API server** when user requests cancellation; the processor does not write this transition)
+-   `cancelling → cancelled` (set by the **processor** after handling the cancel event)
 
 Transient states:
 -   cancelling
@@ -201,9 +214,50 @@ Terminal states:
 -   expired
 -   cancelled
 
-Transient states such as `cancelling` and `finalizing` indicate that the job has already been claimed and is being handled by an active worker. They are not eligible for reassignment. If encountered in the priority queue, workers skip them; queue clean up is handled by the owning worker or system policy.
+Transient states such as `cancelling` and `finalizing` indicate that the job has already been claimed and is being handled by an active worker. They are not eligible for reassignment. If a worker dequeues a job and finds it in `cancelling` state (e.g. the API server wrote `cancelling` between dequeue and the runnable check), the worker transitions it directly to `cancelled` so it cannot stick indefinitely. Other non-runnable transient states (e.g. `finalizing`) are skipped; queue cleanup is handled by the owning worker or system policy.
 
 Terminal states are removed from the priority queue.
+
+-------------------------------------------------------------------
+
+#### 3. Context Hierarchy
+
+The processor uses a layered context tree to propagate cancellation signals.
+The critical invariant is the **fork** at `ctx`: `pollingCtx` and `jobCtx` are siblings, so cancelling the polling loop does not kill in-flight jobs.
+
+```mermaid
+graph TD
+    ctx(["ctx — SIGTERM / SIGINT"])
+
+    ctx -->|"semaphore guard"| pollingCtx(["pollingCtx"])
+    ctx -->|"per job"| jobCtx(["jobCtx ×N"])
+
+    pollingCtx -.-> polling["acquire · dequeue · DB fetch · validate · poll wait"]
+
+    jobCtx --> sloCtx(["sloCtx — SLO deadline"])
+    jobCtx -.-> watchCancel["watchCancel goroutine"]
+
+    sloCtx --> abortCtx(["abortCtx — user cancel"])
+    abortCtx --> execCtx(["execCtx — first model error"])
+```
+
+| Context | Cancelled by | Blast radius |
+|---------|-------------|--------------|
+| `ctx` | SIGTERM / SIGINT | Everything — polling loop exits, in-flight jobs re-enqueue |
+| `pollingCtx` | Semaphore double-release guard (also inherits `ctx` cancellation) | **Polling loop + pre-launch** — acquire, dequeue, DB fetch, validation, and guard re-enqueue all use `pollingCtx`. Stops accepting new jobs; running jobs unaffected. Jobs dequeued but not yet launched are re-enqueued (fallback: marked failed). |
+| `jobCtx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). Created only at launch commit, **after** all pre-launch checks pass. **Not** cancelled when only `pollingCtx` is cancelled (e.g. semaphore guard). |
+| `sloCtx` | SLO deadline fires | Stops dispatch; in-flight requests finish; undispatched drained as `batch_expired` |
+| `abortCtx` | `watchCancel` calls `abortInferFn` | Aborts in-flight HTTP inference requests immediately |
+| `execCtx` | First model goroutine error | Stops dispatch in all model goroutines; already-dispatched requests complete |
+
+**Design notes:**
+-   The fork is intentional: `pollingCtx` controls the loop, `jobCtx` controls the job. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. By contrast, **SIGTERM / SIGINT cancel `ctx`**, so both polling and in-flight jobs see cancellation and re-enqueue / teardown as designed.
+-   `abortCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
+-   `execCtx` is derived from `abortCtx` so both user cancel and SLO expiry stop dispatch.
+-   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown) and to drain undispatched entries with the correct error code.
+-   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
+-   Pre-launch operations (DB fetch, conversion, expired/runnable checks) run under `pollingCtx` so they abort promptly when the guard fires. `jobCtx` is created from `jobBaseCtx` only at the moment we commit to launching `runJob`.
+-   On semaphore double-release: guard cancels `pollingCtx` → pre-launch aborts or guard re-enqueue fires → `Run` returns → `main.go` sets `ready=false` → K8s removes the pod from service (readiness probe fails). If re-enqueue also fails, the job is marked failed as a terminal fallback. The pod is restarted only if a liveness probe or restart policy triggers it.
 
 -------------------------------------------------------------------
 
@@ -345,29 +399,29 @@ sequenceDiagram
 
     par Model A Goroutine
         loop For each plan entry (sorted by PrefixHash)
-            Ex->>GS: Acquire global slot
             Ex->>MS: Acquire model slot
+            Ex->>GS: Acquire global slot
             Ex->>E: Dispatch request (async)
             activate E
             E->>E: ReadAt(input.jsonl, offset, length)
             E->>B: POST inference request
             B-->>E: Return response
             E->>W: Write result
-            E->>MS: Release model slot
             E->>GS: Release global slot
+            E->>MS: Release model slot
             deactivate E
         end
     and Model B Goroutine
         loop For each plan entry (sorted by PrefixHash)
-            Ex->>GS: Acquire global slot
             Ex->>MS: Acquire model slot
+            Ex->>GS: Acquire global slot
             Ex->>E: Dispatch request (async)
             activate E
             E->>B: POST inference request
             B-->>E: Return response
             E->>W: Write result
-            E->>MS: Release model slot
             E->>GS: Release global slot
+            E->>MS: Release model slot
             deactivate E
         end
     end
@@ -379,8 +433,9 @@ sequenceDiagram
 ###### Algorithm:
 1.  Executor launches one goroutine per model.
 2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during ingestion) and dispatches requests concurrently, subject to:
-    - `GlobalConcurrency` (global semaphore: max in-flight requests across all workers. this is to protect system resource from too many goroutines being opened at once)
-    - `PerModelMaxConcurrency` (per-model semaphore: max in-flight requests per model. this is to protect downstream from too many requests being dumped at once)
+    - `PerModelMaxConcurrency` (per-model semaphore, acquired **first**: max in-flight requests per model. Protects downstream from too many requests being dumped at once)
+    - `GlobalConcurrency` (global semaphore, acquired **second**: max in-flight requests across all workers. Protects system resources from unbounded goroutine growth)
+    - **Acquisition order: per-model before global.** This prevents starving other models — if the goroutine blocks waiting for a global slot, only a per-model slot is held, not a global one that other models could use. Release order is LIFO (global first, then per-model).
 3.  When a model's plan is fully drained, its goroutine exits.
 4.  The executor waits for all model goroutines to complete before finalizing.
 
@@ -451,36 +506,42 @@ Approaches:
 -   Call inference backend
 -   Return result
 
-###### Multi-Gateway Routing
-The processor supports routing requests to different inference gateway endpoints based on the model name. Configuration is a flat `model_gateways` map at the top level. The reserved key `"default"` is required and acts as the fallback for any model without an explicit entry:
+###### Gateway Routing
+The processor supports two mutually exclusive gateway modes. Exactly one must be configured; `Validate()` enforces this at startup.
+
+**Global mode** routes all inference requests to a single endpoint, regardless of model name. Use this for MaaS platforms, multi-model gateways, or LoRA-only deployments where all adapters share a single vLLM instance:
+
+```yaml
+global_inference_gateway:
+  url: "http://inference-gateway:8000"
+  request_timeout: "5m"
+  max_retries: 3
+  initial_backoff: "1s"
+  max_backoff: "60s"
+```
+
+**Per-model mode** maps specific model names to individual gateway endpoints. Only models listed here are routed; requests for unlisted models receive a request-level `model_not_found` error:
 
 ```yaml
 model_gateways:
-  "default":
+  "llama-3":
     url: "http://gateway-a:8000"
     request_timeout: "5m"
     max_retries: 3
     initial_backoff: "1s"
     max_backoff: "60s"
-    api_key_name: "default-api-key"   # key name in /etc/.secrets/
   "mistral":
     url: "http://gateway-b:8000"
-    api_key_name: "gateway-b-api-key"   # key name in /etc/.secrets/
+    api_key_name: "gateway-b-api-key"
     request_timeout: "2m"
     max_retries: 1
     initial_backoff: "1s"
     max_backoff: "30s"
 ```
 
-**Lookup order:** `model_gateways[model]` → `model_gateways["default"]` (fallback).
+Each per-model entry must be fully specified — there is no inheritance between entries. The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`), and `api_key_file` reads from an arbitrary path. TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
 
-Per-model entries inherit unset HTTP fields (`request_timeout`, `max_retries`, `initial_backoff`, `max_backoff`) from the `"default"` entry via `applyModelGatewayDefaults`, so only `url` and any fields that differ need to be specified. All HTTP fields use pointers so that `nil` (unset → inherit from default) is distinguishable from explicit zero values (e.g. `max_retries: 0` means "no retries", `request_timeout: 0` means "no timeout").
-
-The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`). TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
-
-API key resolution order: explicit `api_key_name` → default `inference-api-key` secret (read from default `api_key_name`) → no auth.
-
-`GatewayResolver` (in `internal/inference/gateway_resolver.go`) manages the client pool. Clients with identical settings (URL, API key, and all HTTP/TLS fields) share a single `HTTPClient` instance to reuse connection pools.
+`GatewayResolver` (in `pkg/clients/inference/inference_client_resolver.go`) manages the client pool. `NewGlobalResolver` creates a single client for all models; `NewPerModelResolver` creates per-model clients, sharing instances when settings are identical to reuse connection pools.
 
 #### ResultWriter
 
@@ -553,7 +614,17 @@ Partial upload is best-effort: upload failures are logged but do not block the t
 
 #### Tracing (OpenTelemetry)
 
-A single `"process-batch"` span covers the full job lifecycle (ingestion → execution → finalization). The following span attributes are recorded:
+The root `"process-batch"` span covers the full job lifecycle (ingestion → execution → finalization). Additional child/linked spans provide finer-grained visibility:
+
+| Span | Parent | Description |
+|------|--------|-------------|
+| `process-batch` | apiserver trace (linked via propagated trace context) | Root span for the entire job lifecycle |
+| `storage.Store` | `process-batch` (during ingestion/finalization) | File upload to shared storage (S3/filesystem) |
+| `storage.Retrieve` | `process-batch` (during ingestion) | File download from shared storage |
+| `storage.Delete` | `process-batch` (during cleanup) | File deletion from shared storage |
+| `re-enqueue` | Detached (linked to `process-batch`) | Best-effort re-enqueue after failure; uses `DetachedContext` so it survives parent cancellation |
+
+The `process-batch` span records the following attributes:
 
 | Attribute | Type | Set at | Description |
 |---|---|---|---|
@@ -586,6 +657,7 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 
   Reasons include:
   - `system_error`
+  - `guard_shutdown` — semaphore double-release guard triggered graceful shutdown; job re-enqueued
   - `db_transient`
   - `db_inconsistency`
   - `not_runnable_state`
@@ -593,10 +665,10 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   - `expired_execution` — SLO deadline fired during execution; partial results preserved
   - `none` — no additional reason beyond the result (e.g. success, cancelled)
 
-- `job_processing_duration_seconds{tenantID,size_bucket}` (histogram)
+- `job_processing_duration_seconds{size_bucket}` (histogram)
   Measures total job processing duration (end-to-end, including ingestion and execution).
 
-- `job_queue_wait_duration_seconds{tenantID}` (histogram)
+- `job_queue_wait_duration_seconds` (histogram)
   Measures how long a job waited in the priority queue before being picked up.
 
 **Worker Utilization Metrics**
@@ -619,7 +691,7 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 
 **Duration Metrics**
 
-- `plan_build_duration_seconds{tenantID,size_bucket}` (histogram)
+- `plan_build_duration_seconds{size_bucket}` (histogram)
   Measures ingestion and plan build duration.
 
 - `model_request_execution_duration_seconds{model}` (histogram)
@@ -630,13 +702,16 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
 - `request_errors_by_model_total{model}` (counter)
   Counts inference request errors grouped by model.
 
-- `file_upload_retries_total{file_type}` (counter)
-  Counts file upload retry attempts by file type (`output` or `error`).
-  Useful for detecting storage instability.
+- `file_storage_operations_total{operation,component,status}` (counter)
+  Counts file storage operations by outcome. `operation` is `store`/`retrieve`/`delete`,
+  `component` is `processor`/`apiserver`/`garbage-collector`, and `status` is
+  `success` (operation completed), `retry` (retry attempt), or `exhausted`
+  (all retries failed). Emitted by the `retryclient` decorator.
 
-#### Metrics (Deferred / Not in MVP)
+**Startup Recovery Metrics**
 
-- `model_queue_depth{model}`
-  Per-model remaining plan entries.
-  Not included in MVP due to additional state tracking complexity.
-  May be added later if required for throughput tuning or debugging.
+- `batch_startup_recovery_total{status,action}` (counter)
+  Counts jobs recovered during processor startup after a container restart.
+  - `status`: the recovered job status at the time recovery ran. Common values include `in_progress`, `finalizing`, `cancelling`, `validating`, and `unknown` when the DB lookup failed or no DB record existed.
+  - `action`: the recovery action taken. Values include `re_enqueued`, `failed`, `finalized`, `cancelled`, `expired`, `cleaned_up`, and `error`.
+  Non-zero values indicate container-level crashes (OOM, panic) or stale on-disk artifacts from a prior processor instance.

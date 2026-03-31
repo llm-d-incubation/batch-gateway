@@ -23,10 +23,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"k8s.io/klog/v2"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
@@ -94,11 +94,11 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		return fmt.Errorf("dbJob.Status is empty")
 	}
 
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	var original openai.BatchStatusInfo
 	if err := json.Unmarshal(dbJob.Status, &original); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to unmarshal batch status")
+		logger.Error(err, "Failed to unmarshal batch status")
 		return err
 	}
 
@@ -106,7 +106,7 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	// to set additional fields (e.g. file IDs) that aren't part of the standard transition.
 	updated, err := batch_utils.BuildUpdatedStatusInfo(&original, newStatus, counts, slo)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to build updated batch status")
+		logger.Error(err, "Failed to build updated batch status")
 		return err
 	}
 
@@ -116,7 +116,7 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 
 	statusBytes, err := json.Marshal(updated)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to marshal updated batch status")
+		logger.Error(err, "Failed to marshal updated batch status")
 		return err
 	}
 
@@ -128,7 +128,7 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 			Status: statusBytes,
 		},
 	}); err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to update batch status in DB")
+		logger.Error(err, "Failed to update batch status in DB")
 		return err
 	}
 	logger.V(logging.INFO).Info("Batch status updated successfully", "newStatus", newStatus)
@@ -140,10 +140,12 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 func withFileIDs(outputFileID, errorFileID string) func(*openai.BatchStatusInfo) {
 	return func(info *openai.BatchStatusInfo) {
 		if outputFileID != "" {
-			info.OutputFileID = outputFileID
+			s := outputFileID
+			info.OutputFileID = &s
 		}
 		if errorFileID != "" {
-			info.ErrorFileID = errorFileID
+			s := errorFileID
+			info.ErrorFileID = &s
 		}
 	}
 }

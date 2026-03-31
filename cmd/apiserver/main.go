@@ -22,6 +22,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/server"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
@@ -30,46 +31,50 @@ import (
 )
 
 func main() {
-	config := common.NewConfig()
-
-	if err := config.Load(); err != nil {
-		klog.Fatalf("failed to load config: %v", err)
-	}
-
-	// make sure to flush logs before exiting
 	defer klog.Flush()
 
+	if err := run(); err != nil {
+		klog.Fatalf("apiserver failed: %v", err)
+	}
+}
+
+func run() error {
+	logger := klog.NewKlogr()
+	ctx := logr.NewContext(context.Background(), logger)
+
+	config := common.NewConfig()
+	if err := config.Load(); err != nil {
+		logger.Error(err, "Failed to load config")
+		return err
+	}
+
 	// graceful shutdown
-	parentCtx := context.Background()
-	ctx, cancel := interrupt.ContextWithSignal(parentCtx)
+	ctx, cancel := interrupt.ContextWithSignal(ctx)
 	defer cancel()
 
 	// initialize OpenTelemetry tracing
 	shutdownTracer, err := uotel.InitTracer(ctx)
 	if err != nil {
-		klog.Fatalf("failed to initialize tracer: %v", err)
+		logger.Error(err, "Failed to initialize tracer")
+		return err
 	}
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if err := shutdownTracer(shutdownCtx); err != nil {
-			klog.Errorf("Failed to shutdown tracer: %v", err)
+			logger.Error(err, "Failed to shutdown tracer")
 		}
 	}()
-
-	// start server
-	logger := klog.FromContext(ctx)
 
 	logger.Info("starting api server")
 
 	server, err := server.New(ctx, config)
 	if err != nil {
-		logger.Error(err, "failed to create api server")
-		return
+		return err
 	}
-	if err := server.Start(ctx); err != nil {
-		logger.Error(err, "failed to start api server")
-		return
+	if err = server.Start(ctx); err != nil {
+		return err
 	}
 	logger.Info("api server is terminated")
+	return nil
 }

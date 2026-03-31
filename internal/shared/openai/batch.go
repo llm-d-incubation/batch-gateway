@@ -80,7 +80,7 @@ type BatchSpec struct {
 	CompletionWindow string `json:"completion_window"`
 
 	// optional. Set of 16 key-value pairs that can be attached to an object. This can be useful for storing additional information about the object in a structured format, and querying for objects via API or the dashboard.   Keys are strings with a maximum length of 64 characters. Values are strings with a maximum length of 512 characters.
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Metadata map[string]string `json:"metadata"`
 
 	// required. The Unix timestamp (in seconds) for when the batch was created.
 	CreatedAt int64 `json:"created_at"`
@@ -90,35 +90,35 @@ type BatchStatusInfo struct {
 	// required. The current status of the batch.
 	Status BatchStatus `json:"status"`
 
-	// optional. The ID of the file containing the outputs of successfully executed requests.
-	OutputFileID string `json:"output_file_id,omitempty"`
+	// optional, nullable. The ID of the file containing the outputs of successfully executed requests.
+	OutputFileID *string `json:"output_file_id"`
 
-	// optional. The ID of the file containing the outputs of requests with errors.
-	ErrorFileID string `json:"error_file_id,omitempty"`
+	// optional, nullable. The ID of the file containing the outputs of requests with errors.
+	ErrorFileID *string `json:"error_file_id"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch was cancelled.
-	CancelledAt *int64 `json:"cancelled_at,omitempty"`
+	CancelledAt *int64 `json:"cancelled_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch started cancelling.
-	CancellingAt *int64 `json:"cancelling_at,omitempty"`
+	CancellingAt *int64 `json:"cancelling_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch was completed.
-	CompletedAt *int64 `json:"completed_at,omitempty"`
+	CompletedAt *int64 `json:"completed_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch expired.
-	ExpiredAt *int64 `json:"expired_at,omitempty"`
+	ExpiredAt *int64 `json:"expired_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch will expire.
-	ExpiresAt *int64 `json:"expires_at,omitempty"`
+	ExpiresAt *int64 `json:"expires_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch failed.
-	FailedAt *int64 `json:"failed_at,omitempty"`
+	FailedAt *int64 `json:"failed_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch started finalizing.
-	FinalizingAt *int64 `json:"finalizing_at,omitempty"`
+	FinalizingAt *int64 `json:"finalizing_at"`
 
 	// optional. The Unix timestamp (in seconds) for when the batch started processing.
-	InProgressAt *int64 `json:"in_progress_at,omitempty"`
+	InProgressAt *int64 `json:"in_progress_at"`
 
 	// optional. The Model ID used to process the batch
 	Model string `json:"model,omitempty"`
@@ -126,12 +126,12 @@ type BatchStatusInfo struct {
 	// optional. The request counts for different statuses within the batch.
 	RequestCounts BatchRequestCounts `json:"request_counts"`
 
-	// optional.
-	Errors *BatchErrors `json:"errors,omitempty"`
+	// optional, nullable.
+	Errors *BatchErrors `json:"errors"`
 
-	// optional. Represents token usage details including input tokens, output tokens, a
+	// optional, nullable. Represents token usage details including input tokens, output tokens, a
 	// breakdown of output tokens, and the total tokens used.
-	Usage *BatchUsage `json:"usage,omitempty"`
+	Usage *BatchUsage `json:"usage"`
 }
 
 type Batch struct {
@@ -148,11 +148,11 @@ type ListBatchResponse struct {
 	// required. A list of items used to generate this response.
 	Data []Batch `json:"data"`
 
-	// required. The ID of the first item in the list.
-	FirstID string `json:"first_id"`
+	// optional. The ID of the first item in the list.
+	FirstID *string `json:"first_id"`
 
-	// required. The ID of the last item in the list.
-	LastID string `json:"last_id"`
+	// optional. The ID of the last item in the list.
+	LastID *string `json:"last_id"`
 
 	// required. Whether there are more items available.
 	HasMore bool `json:"has_more"`
@@ -161,16 +161,16 @@ type ListBatchResponse struct {
 type BatchError struct {
 
 	// optional. An error code identifying the error type.
-	Code string `json:"code,omitempty"`
+	Code string `json:"code"`
 
-	// optional. optional. A human-readable message providing more details about the error.
-	Message string `json:"message,omitempty"`
+	// optional. A human-readable message providing more details about the error.
+	Message string `json:"message"`
 
-	// optional. The name of the parameter that caused the error, if applicable.
-	Param string `json:"param,omitempty"`
+	// optional, nullable. The name of the parameter that caused the error, if applicable.
+	Param *string `json:"param"`
 
-	// optional. The line number of the input file where the error occurred, if applicable.
-	Line int64 `json:"line,omitempty"`
+	// optional, nullable. The line number of the input file where the error occurred, if applicable.
+	Line *int64 `json:"line"`
 }
 
 type BatchErrors struct {
@@ -235,7 +235,7 @@ type CreateBatchRequest struct {
 	CompletionWindow string `json:"completion_window"`
 
 	// optional. Set of 16 key-value pairs that can be attached to an object. This can be useful for storing additional information about the object in a structured format, and querying for objects via API or the dashboard.   Keys are strings with a maximum length of 64 characters. Values are strings with a maximum length of 512 characters.
-	Metadata map[string]string `json:"metadata"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 
 	// optional. The expiration policy for the output and/or error file that are generated for a batch.
 	OutputExpiresAfter *OutputExpiresAfter `json:"output_expires_after"`

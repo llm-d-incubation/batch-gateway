@@ -23,8 +23,9 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/go-logr/logr"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
-	"k8s.io/klog/v2"
 )
 
 // Compile-time check: InferenceHTTPClient implements InferenceClient.
@@ -36,8 +37,8 @@ type InferenceHTTPClient struct {
 }
 
 // NewInferenceClient creates a new HTTP-based inference client
-func NewInferenceClient(config *HTTPClientConfig) (*InferenceHTTPClient, error) {
-	client, err := httpclient.NewHTTPClient(*config)
+func NewInferenceClient(config *HTTPClientConfig, logger logr.Logger) (*InferenceHTTPClient, error) {
+	client, err := httpclient.NewHTTPClient(*config, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +47,8 @@ func NewInferenceClient(config *HTTPClientConfig) (*InferenceHTTPClient, error) 
 
 // Generate makes an inference request with automatic retry logic
 func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest) (*GenerateResponse, *ClientError) {
+	logger := logr.FromContextOrDiscard(ctx)
+
 	if req == nil {
 		return nil, &ClientError{
 			Category: httpclient.ErrCategoryInvalidReq,
@@ -70,8 +73,7 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 			model = modelStr
 		}
 	}
-	klog.V(4).Infof("Sending inference request to %s with request_id=%s, model=%s",
-		endpoint, req.RequestID, model)
+	logger.V(logging.TRACE).Info("Sending inference request", "endpoint", endpoint, "request_id", req.RequestID, "model", model)
 
 	// Execute HTTP POST request using the underlying http client
 	resp, statusCode, err := c.client.Post(ctx, endpoint, req.Params, req.Headers, req.RequestID)
@@ -83,23 +85,28 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 
 	// Check for non-retryable errors after all retries exhausted
 	if statusCode != http.StatusOK {
-		return nil, c.client.HandleErrorResponse(statusCode, resp)
+		return nil, c.client.HandleErrorResponse(ctx, statusCode, resp)
 	}
 
 	// Parse response body
 	var rawData interface{}
 	if len(resp) > 0 {
 		if jsonErr := json.Unmarshal(resp, &rawData); jsonErr != nil {
-			klog.Warningf("Failed to unmarshal response as JSON for request_id=%s: %v",
-				req.RequestID, jsonErr)
+			logger.Info("Failed to unmarshal response as JSON", "request_id", req.RequestID, "error", jsonErr)
 			rawData = nil
 		}
 	}
 
-	if klog.V(4).Enabled() {
+	if logger.V(logging.TRACE).Enabled() {
 		promptTokens, completionTokens, totalTokens := extractUsage(rawData)
-		klog.V(4).Infof("Received successful response for request_id=%s, status=%d, body_size=%d, prompt_tokens=%v, completion_tokens=%v, total_tokens=%v",
-			req.RequestID, statusCode, len(resp), promptTokens, completionTokens, totalTokens)
+		logger.V(logging.TRACE).Info("Received successful response",
+			"request_id", req.RequestID,
+			"status", statusCode,
+			"body_size", len(resp),
+			"prompt_tokens", promptTokens,
+			"completion_tokens", completionTokens,
+			"total_tokens", totalTokens,
+		)
 	}
 
 	return &GenerateResponse{
@@ -111,8 +118,10 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 
 // handleRequestError processes request-level errors (network, timeout, cancellation)
 func (c *InferenceHTTPClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest) (*GenerateResponse, *ClientError) {
+	logger := logr.FromContextOrDiscard(ctx)
+
 	if errors.Is(ctx.Err(), context.Canceled) {
-		klog.V(3).Infof("Request cancelled for request_id=%s", req.RequestID)
+		logger.V(logging.DEBUG).Info("Request cancelled", "request_id", req.RequestID)
 		return nil, &ClientError{
 			Category: httpclient.ErrCategoryUnknown,
 			Message:  "request cancelled",
@@ -120,7 +129,7 @@ func (c *InferenceHTTPClient) handleRequestError(ctx context.Context, err error,
 		}
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		klog.V(3).Infof("Request timeout for request_id=%s", req.RequestID)
+		logger.V(logging.DEBUG).Info("Request timeout", "request_id", req.RequestID)
 		return nil, &ClientError{
 			Category: httpclient.ErrCategoryServer,
 			Message:  "request timeout",
@@ -128,7 +137,7 @@ func (c *InferenceHTTPClient) handleRequestError(ctx context.Context, err error,
 		}
 	}
 
-	klog.V(3).Infof("Request failed with network error for request_id=%s: %v", req.RequestID, err)
+	logger.V(logging.DEBUG).Info("Request failed with network error", "request_id", req.RequestID, "error", err)
 	return nil, &ClientError{
 		Category: httpclient.ErrCategoryServer,
 		Message:  fmt.Sprintf("failed to execute request: %v", err),

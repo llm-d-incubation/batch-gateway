@@ -26,7 +26,7 @@ import (
 
 func TestNew(t *testing.T) {
 	t.Run("creates semaphore with valid capacity", func(t *testing.T) {
-		sem, err := New(5)
+		sem, err := New(5, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -36,7 +36,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("returns error with zero capacity", func(t *testing.T) {
-		sem, err := New(0)
+		sem, err := New(0, nil)
 		if err != ErrCap {
 			t.Fatalf("expected ErrCap, got %v", err)
 		}
@@ -46,7 +46,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("returns error with negative capacity", func(t *testing.T) {
-		sem, err := New(-1)
+		sem, err := New(-1, nil)
 		if err != ErrCap {
 			t.Fatalf("expected ErrCap, got %v", err)
 		}
@@ -58,7 +58,7 @@ func TestNew(t *testing.T) {
 
 func TestAcquireRelease(t *testing.T) {
 	t.Run("acquire and release single token", func(t *testing.T) {
-		sem, err := New(1)
+		sem, err := New(1, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -72,7 +72,7 @@ func TestAcquireRelease(t *testing.T) {
 	})
 
 	t.Run("acquire blocks when capacity is exhausted", func(t *testing.T) {
-		sem, err := New(1)
+		sem, err := New(1, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -112,7 +112,7 @@ func TestAcquireRelease(t *testing.T) {
 	})
 
 	t.Run("multiple acquires and releases", func(t *testing.T) {
-		sem, err := New(3)
+		sem, err := New(3, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -139,7 +139,7 @@ func TestAcquireRelease(t *testing.T) {
 
 func TestAcquireContextCancellation(t *testing.T) {
 	t.Run("acquire returns error when context is cancelled", func(t *testing.T) {
-		sem, err := New(1)
+		sem, err := New(1, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -163,7 +163,7 @@ func TestAcquireContextCancellation(t *testing.T) {
 	})
 
 	t.Run("acquire returns error when context times out", func(t *testing.T) {
-		sem, err := New(1)
+		sem, err := New(1, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -189,7 +189,7 @@ func TestAcquireContextCancellation(t *testing.T) {
 
 func TestTryAcquire(t *testing.T) {
 	t.Run("succeeds when tokens are available", func(t *testing.T) {
-		sem, err := New(2)
+		sem, err := New(2, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -203,7 +203,7 @@ func TestTryAcquire(t *testing.T) {
 	})
 
 	t.Run("fails when capacity is exhausted", func(t *testing.T) {
-		sem, err := New(1)
+		sem, err := New(1, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -218,7 +218,7 @@ func TestTryAcquire(t *testing.T) {
 	})
 
 	t.Run("succeeds after release", func(t *testing.T) {
-		sem, err := New(1)
+		sem, err := New(1, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -241,7 +241,7 @@ func TestTryAcquire(t *testing.T) {
 func TestConcurrency(t *testing.T) {
 	t.Run("enforces capacity limit under concurrent load", func(t *testing.T) {
 		capacity := 10
-		sem, err := New(capacity)
+		sem, err := New(capacity, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -293,7 +293,7 @@ func TestConcurrency(t *testing.T) {
 	})
 
 	t.Run("all goroutines complete successfully", func(t *testing.T) {
-		sem, err := New(5)
+		sem, err := New(5, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -330,7 +330,7 @@ func TestConcurrency(t *testing.T) {
 
 func TestReleaseWithoutAcquire(t *testing.T) {
 	t.Run("release without acquire does not panic", func(t *testing.T) {
-		sem, err := New(5)
+		sem, err := New(5, nil)
 		if err != nil {
 			t.Fatalf("failed to create semaphore: %v", err)
 		}
@@ -339,8 +339,94 @@ func TestReleaseWithoutAcquire(t *testing.T) {
 	})
 }
 
+func TestDoubleReleaseCallback(t *testing.T) {
+	t.Run("callback fires on double release", func(t *testing.T) {
+		var called atomic.Int32
+		sem, err := New(1, func() { called.Add(1) })
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		if err := sem.Acquire(context.Background()); err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		sem.Release()
+		sem.Release() // double release
+
+		if called.Load() != 1 {
+			t.Fatalf("expected callback to fire once, got %d", called.Load())
+		}
+	})
+
+	t.Run("callback fires at most once", func(t *testing.T) {
+		var called atomic.Int32
+		sem, err := New(1, func() { called.Add(1) })
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		sem.Release() // first double release
+		sem.Release() // second double release
+
+		if called.Load() != 1 {
+			t.Fatalf("expected callback to fire exactly once, got %d", called.Load())
+		}
+	})
+
+	t.Run("no callback when nil", func(t *testing.T) {
+		sem, err := New(1, nil)
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		// No callback — should not panic on double release
+		sem.Release()
+	})
+
+	t.Run("normal acquire-release does not trigger callback", func(t *testing.T) {
+		var called atomic.Int32
+		sem, err := New(2, func() { called.Add(1) })
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		for i := 0; i < 100; i++ {
+			if err := sem.Acquire(context.Background()); err != nil {
+				t.Fatalf("acquire %d: %v", i, err)
+			}
+			sem.Release()
+		}
+
+		if called.Load() != 0 {
+			t.Fatalf("callback should not fire during normal usage, got %d", called.Load())
+		}
+	})
+
+	t.Run("concurrent double releases fire callback exactly once", func(t *testing.T) {
+		var called atomic.Int32
+		sem, err := New(1, func() { called.Add(1) })
+		if err != nil {
+			t.Fatalf("failed to create semaphore: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem.Release()
+			}()
+		}
+		wg.Wait()
+
+		if called.Load() != 1 {
+			t.Fatalf("expected callback exactly once under concurrent double-release, got %d", called.Load())
+		}
+	})
+}
+
 func BenchmarkAcquireRelease(b *testing.B) {
-	sem, err := New(10)
+	sem, err := New(10, nil)
 	if err != nil {
 		b.Fatalf("failed to create semaphore: %v", err)
 	}
@@ -356,7 +442,7 @@ func BenchmarkAcquireRelease(b *testing.B) {
 }
 
 func BenchmarkConcurrentAcquireRelease(b *testing.B) {
-	sem, err := New(10)
+	sem, err := New(10, nil)
 	if err != nil {
 		b.Fatalf("failed to create semaphore: %v", err)
 	}

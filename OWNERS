@@ -6,7 +6,6 @@ reviewers:
   - lioraron
   - yizhaodev
   - j-mok-dev
-  - RishabhSaini
 
 # List of usernames who may use /approve
 approvers:
@@ -14,4 +13,3 @@ approvers:
   - lioraron
   - yizhaodev
   - j-mok-dev
-  - RishabhSaini

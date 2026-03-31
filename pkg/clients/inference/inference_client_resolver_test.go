@@ -22,7 +22,14 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
 )
+
+func testLogger(t testing.TB) logr.Logger {
+	return testr.NewWithInterface(t, testr.Options{})
+}
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
@@ -41,159 +48,144 @@ func (s *stubClient) Generate(_ context.Context, _ *GenerateRequest) (*GenerateR
 }
 
 func TestNewSingleClientResolver(t *testing.T) {
-	c := &stubClient{id: "default"}
+	c := &stubClient{id: "global"}
 	r := NewSingleClientResolver(c)
 
-	got := r.ClientFor("any-model-without-override")
+	got := r.ClientFor("any-model")
 	if got != c {
-		t.Fatalf("expected default client for any model without override")
+		t.Fatalf("expected global client for any model")
 	}
 }
 
-func TestGatewayResolver_ClientFor_DefaultFallback(t *testing.T) {
-	defaultC := &stubClient{id: "default"}
+func TestGatewayResolver_GlobalClient_OverridesPerModel(t *testing.T) {
+	globalC := &stubClient{id: "global"}
 	modelC := &stubClient{id: "model-a"}
 
 	r := &GatewayResolver{
-		defaultClient: defaultC,
-		modelClients:  map[string]InferenceClient{"model-a": modelC},
+		globalClient: globalC,
+		modelClients: map[string]InferenceClient{"model-a": modelC},
 	}
 
-	if got := r.ClientFor("model-a"); got != modelC {
-		t.Fatalf("expected model-specific client for model-a, got %v", got)
+	if got := r.ClientFor("model-a"); got != globalC {
+		t.Fatalf("expected global client even for model-a when global is set")
 	}
-	if got := r.ClientFor("unknown"); got != defaultC {
-		t.Fatalf("expected default client for unknown model, got %v", got)
+	if got := r.ClientFor("unknown"); got != globalC {
+		t.Fatalf("expected global client for unknown model")
 	}
 }
 
-func TestNewGatewayResolver_SharesClientsForSameURL(t *testing.T) {
+func TestGatewayResolver_PerModelOnly_ExactMatch(t *testing.T) {
+	modelC := &stubClient{id: "model-a"}
+
+	r := &GatewayResolver{
+		modelClients: map[string]InferenceClient{"model-a": modelC},
+	}
+
+	if got := r.ClientFor("model-a"); got != modelC {
+		t.Fatalf("expected model-specific client for model-a")
+	}
+}
+
+func TestGatewayResolver_PerModelOnly_UnknownReturnsNil(t *testing.T) {
+	modelC := &stubClient{id: "model-a"}
+
+	r := &GatewayResolver{
+		modelClients: map[string]InferenceClient{"model-a": modelC},
+	}
+
+	if got := r.ClientFor("unknown"); got != nil {
+		t.Fatalf("expected nil for unknown model without global, got %v", got)
+	}
+}
+
+func TestNewGlobalResolver(t *testing.T) {
+	srv := newTestServer(t, nil)
+	defer srv.Close()
+
+	r, err := NewGlobalResolver(GatewayClientConfig{URL: srv.URL}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewGlobalResolver: %v", err)
+	}
+
+	if got := r.ClientFor("any-model"); got == nil {
+		t.Fatal("expected non-nil client from global gateway")
+	}
+}
+
+func TestNewPerModelResolver(t *testing.T) {
+	srvA := newTestServer(t, nil)
+	defer srvA.Close()
+	srvB := newTestServer(t, nil)
+	defer srvB.Close()
+
+	perModel := map[string]GatewayClientConfig{
+		"model-a": {URL: srvA.URL},
+		"model-b": {URL: srvB.URL},
+	}
+
+	r, err := NewPerModelResolver(perModel, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewPerModelResolver: %v", err)
+	}
+
+	if got := r.ClientFor("model-a"); got == nil {
+		t.Fatal("expected non-nil client for model-a")
+	}
+	if got := r.ClientFor("model-b"); got == nil {
+		t.Fatal("expected non-nil client for model-b")
+	}
+	if got := r.ClientFor("unknown"); got != nil {
+		t.Fatalf("expected nil for unknown model, got %v", got)
+	}
+}
+
+func TestNewPerModelResolver_SharesClientsForSameConfig(t *testing.T) {
 	srv := newTestServer(t, nil)
 	defer srv.Close()
 	srvOther := newTestServer(t, nil)
 	defer srvOther.Close()
 
-	modelGateways := map[string]GatewayClientConfig{
-		"default": {URL: srv.URL},
+	perModel := map[string]GatewayClientConfig{
 		"model-a": {URL: srv.URL},
 		"model-b": {URL: srv.URL},
 		"model-c": {URL: srvOther.URL},
 	}
 
-	r, err := NewGatewayResolver(modelGateways)
+	r, err := NewPerModelResolver(perModel, testLogger(t))
 	if err != nil {
-		t.Fatalf("NewGatewayResolver: %v", err)
+		t.Fatalf("NewPerModelResolver: %v", err)
 	}
 
 	cA := r.ClientFor("model-a")
 	cB := r.ClientFor("model-b")
 	cC := r.ClientFor("model-c")
-	cDefault := r.ClientFor("unknown")
 
 	if cA != cB {
-		t.Fatal("expected model-a and model-b to share the same client since they have the same URL")
+		t.Fatal("expected model-a and model-b to share client (same URL)")
 	}
-	if cA != cDefault {
-		t.Fatal("expected models with base URL to share the default client")
-	}
-	if cC == cDefault {
-		t.Fatal("expected model-c to have a different client since it has a different URL")
+	if cA == cC {
+		t.Fatal("expected model-c to have a different client (different URL)")
 	}
 }
 
-func TestNewGatewayResolver_DifferentURLs(t *testing.T) {
-	srvA := newTestServer(t, nil)
-	defer srvA.Close()
-	srvB := newTestServer(t, nil)
-	defer srvB.Close()
-
-	modelGateways := map[string]GatewayClientConfig{
-		"default": {URL: srvA.URL},
-		"model-b": {URL: srvB.URL},
-	}
-
-	r, err := NewGatewayResolver(modelGateways)
-	if err != nil {
-		t.Fatalf("NewGatewayResolver: %v", err)
-	}
-
-	cDefault := r.ClientFor("model-a")
-	cB := r.ClientFor("model-b")
-
-	if cDefault == cB {
-		t.Fatal("expected different clients for different gateway URLs")
-	}
-}
-
-func TestNewGatewayResolver_MissingDefault_ReturnsError(t *testing.T) {
-	modelGateways := map[string]GatewayClientConfig{
-		"llama-3": {URL: "http://gateway-a:8000"},
-	}
-
-	_, err := NewGatewayResolver(modelGateways)
-	if err == nil {
-		t.Fatal("expected error when \"default\" key is missing, got nil")
-	}
-}
-
-func TestNewGatewayResolver_PerGatewayAPIKey(t *testing.T) {
-	srvA := newTestServer(t, nil)
-	defer srvA.Close()
-	srvB := newTestServer(t, nil)
-	defer srvB.Close()
-
-	modelGateways := map[string]GatewayClientConfig{
-		"default": {URL: srvA.URL, APIKey: "default-key"},
-		"model-a": {URL: srvB.URL, APIKey: "key-a"},
-		"model-b": {URL: srvB.URL, APIKey: "key-b"},
-		"model-c": {URL: srvB.URL, APIKey: "key-a"},
-	}
-
-	r, err := NewGatewayResolver(modelGateways)
-	if err != nil {
-		t.Fatalf("NewGatewayResolver: %v", err)
-	}
-
-	cA := r.ClientFor("model-a")
-	cB := r.ClientFor("model-b")
-	cC := r.ClientFor("model-c")
-	cDefault := r.ClientFor("unknown")
-
-	// model-a and model-c share URL + API key → same client
-	if cA != cC {
-		t.Fatal("expected model-a and model-c to share client (same URL + API key)")
-	}
-	// model-b has same URL but different API key → different client
-	if cA == cB {
-		t.Fatal("expected model-a and model-b to have different clients (different API keys)")
-	}
-	// all differ from default (different URL)
-	if cA == cDefault || cB == cDefault {
-		t.Fatal("expected per-gateway clients to differ from default")
-	}
-}
-
-func TestNewGatewayResolver_SameURLDifferentKey_DifferentClients(t *testing.T) {
+func TestNewPerModelResolver_SameURLDifferentKey_DifferentClients(t *testing.T) {
 	srv := newTestServer(t, nil)
 	defer srv.Close()
 
-	// With no field inheritance, model-a has an empty APIKey while default has "default-key".
-	// Different clientKeys → separate client instances.
-	modelGateways := map[string]GatewayClientConfig{
-		"default": {URL: srv.URL, APIKey: "default-key", Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
-		"model-a": {URL: srv.URL, Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
+	perModel := map[string]GatewayClientConfig{
+		"model-a": {URL: srv.URL, APIKey: "key-a", Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
+		"model-b": {URL: srv.URL, APIKey: "key-b", Timeout: 5 * time.Minute, MaxRetries: 3, InitialBackoff: time.Second, MaxBackoff: time.Minute},
 	}
 
-	r, err := NewGatewayResolver(modelGateways)
+	r, err := NewPerModelResolver(perModel, testLogger(t))
 	if err != nil {
-		t.Fatalf("NewGatewayResolver: %v", err)
+		t.Fatalf("NewPerModelResolver: %v", err)
 	}
 
 	cA := r.ClientFor("model-a")
-	cDefault := r.ClientFor("unknown")
+	cB := r.ClientFor("model-b")
 
-	// Different API keys → different client instances.
-	if cA == cDefault {
-		t.Fatal("expected model with no API key and default with a key to use different clients")
+	if cA == cB {
+		t.Fatal("expected different clients for different API keys")
 	}
 }

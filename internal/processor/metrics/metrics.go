@@ -45,10 +45,12 @@ const (
 	// - If data inconsistency, use ReasonDBInconsistency
 	// - If retryable backend error, use ReasonDBTransient
 	// - If not runnable, use ReasonNotRunnableState
+	// - If semaphore guard triggered graceful shutdown, use ReasonGuardShutdown
 	// - Otherwise, fall back to ReasonSystemError
 
 	// Reason labels
 	ReasonSystemError      = "system_error"       // unexpected internal errors (panic, serialization failure, invariant violation)
+	ReasonGuardShutdown    = "guard_shutdown"     // semaphore double-release guard triggered graceful shutdown; job re-enqueued
 	ReasonDBTransient      = "db_transient"       // temporary backend/storage error; safe to retry
 	ReasonDBInconsistency  = "db_inconsistency"   // PQ item exists but DB item missing or corrupted
 	ReasonNotRunnableState = "not_runnable_state" // job status is not runnable by processor policy
@@ -91,7 +93,6 @@ var (
 	planBuildDuration             *prometheus.HistogramVec
 	modelInflightRequests         *prometheus.GaugeVec
 	modelRequestExecutionDuration *prometheus.HistogramVec
-	fileUploadRetriesTotal        *prometheus.CounterVec
 	startupRecoveryTotal          *prometheus.CounterVec
 )
 
@@ -166,7 +167,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.ProcessTimeBucket.BucketFactor,
 				cfg.ProcessTimeBucket.BucketCount,
 			),
-		}, []string{"tenantID", "size_bucket"},
+		}, []string{"size_bucket"},
 	)
 
 	// per-model in-flight requests during execution
@@ -201,7 +202,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.ProcessTimeBucket.BucketFactor,
 				cfg.ProcessTimeBucket.BucketCount,
 			),
-		}, []string{"tenantID", "size_bucket"},
+		}, []string{"size_bucket"},
 	)
 
 	// duration of queue wait time
@@ -214,16 +215,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 				cfg.QueueTimeBucket.BucketFactor,
 				cfg.QueueTimeBucket.BucketCount,
 			),
-		}, []string{"tenantID"},
-	)
-
-	// upload retries by file type (output / error)
-	fileUploadRetriesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "file_upload_retries_total",
-			Help: "Total number of file upload retry attempts by file type",
-		},
-		[]string{"file_type"},
+		}, nil,
 	)
 
 	// Startup recovery: counts jobs discovered in workdir after a container restart.
@@ -257,7 +249,6 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		planBuildDuration,
 		modelInflightRequests,
 		modelRequestExecutionDuration,
-		fileUploadRetriesTotal,
 		startupRecoveryTotal,
 	}
 
@@ -276,8 +267,8 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 // Recorder funcs
 
 // RecordQueueWait observes the queue time
-func RecordQueueWaitDuration(duration time.Duration, tenantID string) {
-	jobQueueWaitDuration.WithLabelValues(tenantID).Observe(duration.Seconds())
+func RecordQueueWaitDuration(duration time.Duration) {
+	jobQueueWaitDuration.WithLabelValues().Observe(duration.Seconds())
 }
 
 // RecordJobProcessed increments the total processed jobs count.
@@ -286,8 +277,8 @@ func RecordJobProcessed(result string, reason string) {
 }
 
 // RecordJobProcessingDuration observes the time taken to process a job.
-func RecordJobProcessingDuration(duration time.Duration, tenantID string, sizeBucket string) {
-	jobProcessingDuration.WithLabelValues(tenantID, sizeBucket).Observe(duration.Seconds())
+func RecordJobProcessingDuration(duration time.Duration, sizeBucket string) {
+	jobProcessingDuration.WithLabelValues(sizeBucket).Observe(duration.Seconds())
 }
 
 // IncActiveWorkers increments the gauge for active workers.
@@ -316,8 +307,8 @@ func DecProcessorInflightRequests() {
 }
 
 // RecordPlanBuildDuration observes ingestion plan build duration.
-func RecordPlanBuildDuration(duration time.Duration, tenantID string, sizeBucket string) {
-	planBuildDuration.WithLabelValues(tenantID, sizeBucket).Observe(duration.Seconds())
+func RecordPlanBuildDuration(duration time.Duration, sizeBucket string) {
+	planBuildDuration.WithLabelValues(sizeBucket).Observe(duration.Seconds())
 }
 
 // IncModelInflightRequests increments the in-flight request gauge for a model.
@@ -333,11 +324,6 @@ func DecModelInflightRequests(model string) {
 // RecordModelRequestExecutionDuration observes per-request execution duration by model.
 func RecordModelRequestExecutionDuration(duration time.Duration, model string) {
 	modelRequestExecutionDuration.WithLabelValues(model).Observe(duration.Seconds())
-}
-
-// RecordFileUploadRetry increments the upload retry counter for a given file type.
-func RecordFileUploadRetry(fileType FileType) {
-	fileUploadRetriesTotal.WithLabelValues(string(fileType)).Inc()
 }
 
 // RecordStartupRecovery increments the startup recovery counter.

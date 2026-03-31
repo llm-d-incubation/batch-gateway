@@ -75,13 +75,13 @@ Authorization: Bearer {{apiKey}}
 # Set @outputfileIdN with the output_file_id returned in this step
 @outputfileIdN =
 
-### Download Output File (when status = completed)
-GET {{baseUrl}}/files/{{outputfileIdN}}/content
+### List All Files
+GET {{baseUrl}}/files
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
-### List All Files
-GET {{baseUrl}}/files
+### Download Output File (when status = completed)
+GET {{baseUrl}}/files/{{outputfileIdN}}/content
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}
 
@@ -158,20 +158,25 @@ Authorization: Bearer {{apiKey}}
 # Service: batch-gateway
 # You can correlate requests using the batch ID
 
-### Check Prometheus Metrics - Request Counts
+### View Prometheus UI
+# Open in browser: http://localhost:9091
+# Prometheus scrapes metrics from both API Server and Processor
+# Try queries like: batch_gateway_processor_jobs_processed_total
+
+### Check API Server Metrics (Direct)
 GET http://localhost:8081/metrics
 Accept: text/plain
 
 # Look for:
 # - batch_gateway_api_http_requests_total
 # - batch_gateway_api_batch_jobs_total
-# - batch_gateway_processor_jobs_processed_total
 
-### Check Prometheus Metrics - Processing Duration
+### Check Processor Metrics (Direct)
 GET http://localhost:9090/metrics
 Accept: text/plain
 
 # Look for:
+# - batch_gateway_processor_jobs_processed_total
 # - batch_gateway_processor_job_duration_seconds
 # - batch_gateway_processor_inference_duration_seconds
 
@@ -192,5 +197,10 @@ Accept: application/json
 
 ### Delete File
 DELETE {{baseUrl}}/files/{{fileIdD}}
+{{tenantHeader}}: {{tenantId}}
+Authorization: Bearer {{apiKey}}
+
+### List All Files
+GET {{baseUrl}}/files
 {{tenantHeader}}: {{tenantId}}
 Authorization: Bearer {{apiKey}}

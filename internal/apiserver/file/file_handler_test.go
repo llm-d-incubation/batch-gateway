@@ -26,8 +26,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
@@ -160,6 +162,30 @@ func (c *errStoreFileClient) Close() error {
 	return nil
 }
 
+type errDeleteFileClient struct {
+	fsapi.BatchFilesClient
+	deleteErr error
+}
+
+func (c *errDeleteFileClient) Delete(ctx context.Context, fileName, folderName string) error {
+	if c.deleteErr != nil {
+		return c.deleteErr
+	}
+	return c.BatchFilesClient.Delete(ctx, fileName, folderName)
+}
+
+type failOnceDBClient struct {
+	dbapi.FileDBClient
+	failNext atomic.Bool
+}
+
+func (c *failOnceDBClient) DBDelete(ctx context.Context, ids []string) ([]string, error) {
+	if c.failNext.CompareAndSwap(true, false) {
+		return nil, errors.New("transient DB error")
+	}
+	return c.FileDBClient.DBDelete(ctx, ids)
+}
+
 func doTestCreateFileStoreValidationErrors(t *testing.T) {
 	ctx := context.Background()
 	dbClient := dbmock.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
@@ -201,17 +227,26 @@ func doTestCreateFileStoreValidationErrors(t *testing.T) {
 	cases := []struct {
 		name        string
 		storeErr    error
+		wantStatus  int
 		wantMessage string
 	}{
 		{
 			name:        "file too large",
 			storeErr:    fsapi.ErrFileTooLarge,
+			wantStatus:  http.StatusBadRequest,
 			wantMessage: fmt.Sprintf("File size exceeds the maximum allowed size of %d bytes", common.DefaultMaxFileSizeBytes),
 		},
 		{
 			name:        "too many lines",
 			storeErr:    fsapi.ErrTooManyLines,
+			wantStatus:  http.StatusBadRequest,
 			wantMessage: "File exceeds the maximum allowed line count of 10",
+		},
+		{
+			name:        "file already exists",
+			storeErr:    fsapi.ErrFileExists,
+			wantStatus:  http.StatusConflict,
+			wantMessage: "A file with this name already exists",
 		},
 	}
 
@@ -230,15 +265,15 @@ func doTestCreateFileStoreValidationErrors(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.CreateFile(w, req)
 
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected status %d, got %d, body: %s", http.StatusBadRequest, w.Code, w.Body.String())
+			if w.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d, body: %s", tc.wantStatus, w.Code, w.Body.String())
 			}
 			var errResp openai.ErrorResponse
 			if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
 				t.Fatalf("failed to parse error response: %v", err)
 			}
-			if errResp.Error.Code != http.StatusBadRequest {
-				t.Errorf("expected error code %d, got %d", http.StatusBadRequest, errResp.Error.Code)
+			if errResp.Error.Code != nil {
+				t.Errorf("expected error code null (no explicit code), got %q", *errResp.Error.Code)
 			}
 			if errResp.Error.Message != tc.wantMessage {
 				t.Errorf("expected message %q, got %q", tc.wantMessage, errResp.Error.Message)
@@ -289,8 +324,8 @@ func doTestCreateFileSuccess(t *testing.T) {
 	if fileObj.CreatedAt <= 0 {
 		t.Errorf("expected createdAt > 0, got %d", fileObj.CreatedAt)
 	}
-	if fileObj.ExpiresAt <= 0 {
-		t.Errorf("expected expiresAt > 0, got %d", fileObj.ExpiresAt)
+	if fileObj.ExpiresAt == nil || *fileObj.ExpiresAt <= 0 {
+		t.Errorf("expected expiresAt > 0, got %v", fileObj.ExpiresAt)
 	}
 
 	// Verify file was stored in DB
@@ -308,12 +343,12 @@ func doTestCreateFileSuccess(t *testing.T) {
 	}
 
 	// Verify file was actually uploaded to storage
-	fileName := fileObj.Filename
+	storageName := ucom.FileStorageName(fileObj.ID, fileObj.Filename)
 	folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
 	if err != nil {
 		t.Fatalf("failed to get folder name from tenant ID: %v", err)
 	}
-	fileReader, fileMeta, err := handler.clients.File.Retrieve(ctx, fileName, folderName)
+	fileReader, fileMeta, err := handler.clients.File.Retrieve(ctx, storageName, folderName)
 	if err != nil {
 		t.Fatalf("failed to retrieve file from storage: %v", err)
 	}
@@ -457,8 +492,8 @@ func doTestCreateFileExpiresAfter(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &fileObj); err != nil {
 					t.Fatalf("failed to parse response: %v", err)
 				}
-				if fileObj.ExpiresAt <= fileObj.CreatedAt {
-					t.Errorf("expected expiresAt > createdAt, got expiresAt=%d, createdAt=%d", fileObj.ExpiresAt, fileObj.CreatedAt)
+				if fileObj.ExpiresAt == nil || *fileObj.ExpiresAt <= fileObj.CreatedAt {
+					t.Errorf("expected expiresAt > createdAt, got expiresAt=%v, createdAt=%d", fileObj.ExpiresAt, fileObj.CreatedAt)
 				}
 			}
 		})
@@ -748,8 +783,8 @@ func doTestRetrieveFile(t *testing.T) {
 		if fileObj.CreatedAt != createdFile.CreatedAt {
 			t.Errorf("expected created_at %d, got %d", createdFile.CreatedAt, fileObj.CreatedAt)
 		}
-		if fileObj.ExpiresAt != createdFile.ExpiresAt {
-			t.Errorf("expected expires_at %d, got %d", createdFile.ExpiresAt, fileObj.ExpiresAt)
+		if (fileObj.ExpiresAt == nil) != (createdFile.ExpiresAt == nil) || (fileObj.ExpiresAt != nil && *fileObj.ExpiresAt != *createdFile.ExpiresAt) {
+			t.Errorf("expected expires_at %v, got %v", createdFile.ExpiresAt, fileObj.ExpiresAt)
 		}
 		if fileObj.Status != createdFile.Status {
 			t.Errorf("expected status '%s', got '%s'", createdFile.Status, fileObj.Status)
@@ -949,11 +984,12 @@ func doTestDeleteFile(t *testing.T) {
 		}
 
 		// Verify physical file is deleted from storage
+		storageName := ucom.FileStorageName(createdFile.ID, createdFile.Filename)
 		folderName, err := ucom.GetFolderNameByTenantID(common.DefaultTenantID)
 		if err != nil {
 			t.Fatalf("failed to get folder name from tenant ID: %v", err)
 		}
-		_, _, err = handler.clients.File.Retrieve(ctx, createdFile.Filename, folderName)
+		_, _, err = handler.clients.File.Retrieve(ctx, storageName, folderName)
 		if err == nil {
 			t.Errorf("expected physical file to be deleted, but still exists")
 		}
@@ -985,6 +1021,133 @@ func doTestDeleteFile(t *testing.T) {
 
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("expected status %d for missing file_id, got %d", http.StatusBadRequest, w.Code)
+		}
+	})
+
+	t.Run("DeletePhysicalFileErrorKeepsMetadata", func(t *testing.T) {
+		handler := setupTestHandler(t)
+		testContent := strings.Join([]string{
+			`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
+		}, "\n")
+		createdFile := createTestFile(t, handler, ctx, "delete-error.jsonl", "batch", testContent)
+
+		handler.clients.File = &errDeleteFileClient{
+			BatchFilesClient: handler.clients.File,
+			deleteErr:        errors.New("storage delete failed"),
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.DeleteFile(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected status %d, got %d, body: %s", http.StatusInternalServerError, w.Code, w.Body.String())
+		}
+
+		items, _, _, err := handler.clients.FileDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected file metadata to remain after storage delete failure, got %d items", len(items))
+		}
+	})
+
+	t.Run("DeleteRetryAfterDBFailure", func(t *testing.T) {
+		handler := setupTestHandler(t)
+		testContent := strings.Join([]string{
+			`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
+		}, "\n")
+		createdFile := createTestFile(t, handler, ctx, "delete-db-fail.jsonl", "batch", testContent)
+
+		wrappedDB := &failOnceDBClient{FileDBClient: handler.clients.FileDB}
+		wrappedDB.failNext.Store(true)
+		handler.clients.FileDB = wrappedDB
+
+		// First attempt: storage delete succeeds, DB delete fails → 500
+		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		handler.DeleteFile(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("first attempt: expected %d, got %d", http.StatusInternalServerError, w.Code)
+		}
+
+		// Metadata should still exist after DB failure
+		items, _, _, err := wrappedDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected metadata to survive DB failure, got %d items", len(items))
+		}
+
+		// Second attempt: the real fs client returns os.ErrNotExist because
+		// the blob was already removed by the first attempt's successful
+		// storage delete. The handler tolerates this and proceeds to DB delete.
+		req2 := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req2.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req2 = req2.WithContext(ctx)
+		w2 := httptest.NewRecorder()
+		handler.DeleteFile(w2, req2)
+
+		if w2.Code != http.StatusOK {
+			t.Fatalf("retry: expected %d, got %d, body: %s", http.StatusOK, w2.Code, w2.Body.String())
+		}
+
+		// Both storage and metadata should be gone
+		items2, _, _, err := wrappedDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items2) != 0 {
+			t.Fatalf("expected metadata to be deleted on retry, got %d items", len(items2))
+		}
+	})
+
+	t.Run("DeleteToleratesErrNotExist", func(t *testing.T) {
+		handler := setupTestHandler(t)
+		testContent := strings.Join([]string{
+			`{"custom_id":"request-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}}`,
+		}, "\n")
+		createdFile := createTestFile(t, handler, ctx, "delete-notexist.jsonl", "batch", testContent)
+
+		handler.clients.File = &errDeleteFileClient{
+			BatchFilesClient: handler.clients.File,
+			deleteErr:        os.ErrNotExist,
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/v1/files/"+createdFile.ID, nil)
+		req.SetPathValue(common.PathParamFileID, createdFile.ID)
+		req = req.WithContext(ctx)
+
+		w := httptest.NewRecorder()
+		handler.DeleteFile(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status %d for ErrNotExist (idempotent delete), got %d, body: %s",
+				http.StatusOK, w.Code, w.Body.String())
+		}
+
+		items, _, _, err := handler.clients.FileDB.DBGet(ctx, &dbapi.FileQuery{
+			BaseQuery: dbapi.BaseQuery{IDs: []string{createdFile.ID}},
+		}, true, 0, 1)
+		if err != nil {
+			t.Fatalf("failed to query database: %v", err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("expected metadata to be deleted after ErrNotExist, got %d items", len(items))
 		}
 	})
 }

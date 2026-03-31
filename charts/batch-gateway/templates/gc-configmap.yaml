@@ -10,6 +10,7 @@ data:
     # Garbage Collector configuration
     dry_run: {{ .Values.gc.config.dryRun }}
     interval: {{ .Values.gc.config.interval | quote }}
+    max_concurrency: {{ .Values.gc.config.maxConcurrency }}
     db_client:
       type: {{ .Values.global.databaseType | quote }}
       redis:
@@ -33,4 +34,9 @@ data:
         access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
         prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
         use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+        auto_create_bucket: {{ .Values.global.fileClient.s3.autoCreateBucket }}
+      retry:
+        max_retries: {{ .Values.global.fileClient.retry.maxRetries }}
+        initial_backoff: {{ .Values.global.fileClient.retry.initialBackoff | quote }}
+        max_backoff: {{ .Values.global.fileClient.retry.maxBackoff | quote }}
 {{- end }}

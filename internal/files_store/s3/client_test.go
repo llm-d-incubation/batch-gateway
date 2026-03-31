@@ -36,6 +36,7 @@ const testBucketName = "test-bucket"
 
 type mockS3Client struct {
 	objects map[string]mockObject
+	buckets map[string]bool
 	getErr  error
 	headErr error
 	delErr  error
@@ -55,7 +56,20 @@ type mockUploader struct {
 func newMockS3Client() *mockS3Client {
 	return &mockS3Client{
 		objects: make(map[string]mockObject),
+		buckets: make(map[string]bool),
 	}
+}
+
+func (m *mockS3Client) HeadBucket(_ context.Context, params *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+	if m.buckets[*params.Bucket] {
+		return &s3.HeadBucketOutput{}, nil
+	}
+	return nil, &types.NotFound{}
+}
+
+func (m *mockS3Client) CreateBucket(_ context.Context, params *s3.CreateBucketInput, _ ...func(*s3.Options)) (*s3.CreateBucketOutput, error) {
+	m.buckets[*params.Bucket] = true
+	return &s3.CreateBucketOutput{}, nil
 }
 
 func (m *mockUploader) Upload(_ context.Context, params *s3.PutObjectInput, _ ...func(*manager.Uploader)) (*manager.UploadOutput, error) { //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
@@ -133,9 +147,10 @@ func (m *mockS3Client) ListObjectsV2(_ context.Context, params *s3.ListObjectsV2
 
 func newTestClient(mock *mockS3Client) *Client {
 	return &Client{
-		s3Client: mock,
-		uploader: &mockUploader{s3Client: mock},
-		prefix:   "",
+		s3Client:         mock,
+		uploader:         &mockUploader{s3Client: mock},
+		prefix:           "",
+		autoCreateBucket: true,
 	}
 }
 
@@ -179,6 +194,31 @@ func TestStore(t *testing.T) {
 
 		if _, ok := mock.objects["large.txt"]; ok {
 			t.Error("expected object not to be stored")
+		}
+	})
+
+	t.Run("returns error for too many lines", func(t *testing.T) {
+		mock := newMockS3Client()
+		client := newTestClient(mock)
+		content := []byte("line1\nline2\nline3\n")
+
+		_, err := client.Store(ctx, "toomany.txt", testBucketName, 1024, 2, bytes.NewReader(content))
+		if !errors.Is(err, api.ErrTooManyLines) {
+			t.Errorf("expected ErrTooManyLines, got %v", err)
+		}
+	})
+
+	t.Run("stores file at exact line limit", func(t *testing.T) {
+		mock := newMockS3Client()
+		client := newTestClient(mock)
+		content := []byte("line1\nline2\n")
+
+		md, err := client.Store(ctx, "exactlines.txt", testBucketName, 1024, 2, bytes.NewReader(content))
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if md.LinesNumber != 2 {
+			t.Errorf("expected 2 lines, got %d", md.LinesNumber)
 		}
 	})
 

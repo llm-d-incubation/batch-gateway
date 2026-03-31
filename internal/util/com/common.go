@@ -23,8 +23,20 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 
 	"github.com/google/uuid"
+)
+
+// Component identifies a batch-gateway service component.
+// Used for metric labels and logging. Add new components here to keep
+// the set in one place.
+type Component = string
+
+const (
+	ComponentApiserver Component = "apiserver"
+	ComponentProcessor Component = "processor"
+	ComponentGC        Component = "garbage-collector"
 )
 
 var (
@@ -49,6 +61,14 @@ func RandString(n int) string {
 		b[i] = letterRunes[rand.Intn(len(letterRunes))]
 	}
 	return string(b)
+}
+
+func FileStorageName(fileID, origFilename string) string {
+	ext := filepath.Ext(origFilename)
+	if ext == "" {
+		ext = ".jsonl"
+	}
+	return fileID + ext
 }
 
 // GetFolderNameByTenantID converts a tenant ID into a filesystem and S3-safe folder name.

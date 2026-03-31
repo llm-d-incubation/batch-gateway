@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -290,10 +291,13 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String(uotel.AttrInputFileID, fileID))
 
 	// Sanitize filename
-	fileName := filepath.Base(fileHeader.Filename)
-	if fileName == "" || fileName == "." || fileName == ".." {
-		fileName = fileID + ".jsonl"
+	origName := filepath.Base(fileHeader.Filename)
+	if origName == "" || origName == "." || origName == ".." || origName == "/" {
+		origName = fileID + ".jsonl"
 	}
+
+	// Use fileID-based name for storage to guarantee uniqueness
+	storageName := ucom.FileStorageName(fileID, origName)
 
 	// Get tenant ID from context to use as folder name
 	tenantID := common.GetTenantIDFromContext(ctx)
@@ -303,7 +307,7 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		common.WriteInternalServerError(w, r)
 		return
 	}
-	fileMeta, err := c.clients.File.Store(ctx, fileName, folderName, c.config.FileAPI.GetMaxSizeBytes(), c.config.FileAPI.GetMaxLineCount(), fileReader)
+	fileMeta, err := c.clients.File.Store(ctx, storageName, folderName, c.config.FileAPI.GetMaxSizeBytes(), c.config.FileAPI.GetMaxLineCount(), fileReader)
 	if err != nil {
 		switch {
 		case errors.Is(err, fsapi.ErrFileTooLarge):
@@ -327,6 +331,16 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 			)
 			common.WriteAPIError(w, r, apiErr)
 			return
+		case errors.Is(err, fsapi.ErrFileExists):
+			logger.V(logging.DEBUG).Info("file already exists in storage", "storageName", storageName)
+			apiErr := openai.NewAPIError(
+				http.StatusConflict,
+				"",
+				"A file with this name already exists",
+				nil,
+			)
+			common.WriteAPIError(w, r, apiErr)
+			return
 		default:
 			logger.Error(err, "failed to store file content")
 			common.WriteInternalServerError(w, r)
@@ -339,8 +353,8 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	var success bool
 	defer func() {
 		if !success {
-			if err := c.clients.File.Delete(ctx, fileName, folderName); err != nil {
-				logger.Error(err, "failed to cleanup file", "fileName", fileName, "folderName", folderName)
+			if err := c.clients.File.Delete(ctx, storageName, folderName); err != nil {
+				logger.Error(err, "failed to cleanup file", "storageName", storageName, "folderName", folderName)
 			}
 		}
 	}()
@@ -350,8 +364,8 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		ID:        fileID,
 		Bytes:     fileMeta.Size,
 		CreatedAt: createdAt,
-		ExpiresAt: expiresAt,
-		Filename:  fileName,
+		ExpiresAt: &expiresAt,
+		Filename:  origName,
 		Object:    "file",
 		Purpose:   purpose,
 		Status:    openai.FileObjectStatusUploaded,
@@ -571,9 +585,10 @@ func (c *FileAPIHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Retrieve file content from storage
-	fileReader, fileMeta, err := c.clients.File.Retrieve(ctx, fileObj.Filename, folderName)
+	storageName := ucom.FileStorageName(fileObj.ID, fileObj.Filename)
+	fileReader, fileMeta, err := c.clients.File.Retrieve(ctx, storageName, folderName)
 	if err != nil {
-		logger.Error(err, "failed to retrieve file content", "fileName", fileObj.Filename, "folderName", folderName)
+		logger.Error(err, "failed to retrieve file content", "storageName", storageName, "folderName", folderName)
 		common.WriteInternalServerError(w, r)
 		return
 	}
@@ -619,14 +634,18 @@ func (c *FileAPIHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete physical file from storage
-	err = c.clients.File.Delete(ctx, fileObj.Filename, folderName)
-	if err != nil {
-		logger.Error(err, "failed to delete physical file", "fileName", fileObj.Filename, "folderName", folderName)
-		// Continue to delete metadata even if physical file deletion fails
+	// Delete physical file from storage.
+	// ErrNotExist is tolerated so that a retry of a previously half-completed
+	// delete (blob gone, metadata still present) can finish successfully.
+	storageName := ucom.FileStorageName(fileObj.ID, fileObj.Filename)
+	err = c.clients.File.Delete(ctx, storageName, folderName)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Error(err, "failed to delete physical file", "storageName", storageName, "folderName", folderName)
+		common.WriteInternalServerError(w, r)
+		return
 	}
 
-	// Delete file metadata from database
+	// Delete file metadata from database.
 	deletedIDs, err := c.clients.FileDB.DBDelete(ctx, []string{fileObj.ID})
 	if err != nil {
 		logger.Error(err, "failed to delete file metadata")

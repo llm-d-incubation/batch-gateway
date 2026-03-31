@@ -2,7 +2,10 @@ module github.com/llm-d-incubation/batch-gateway/test/e2e
 
 go 1.25
 
-require github.com/openai/openai-go/v3 v3.24.0
+require (
+	github.com/openai/openai-go/v3 v3.24.0
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/tidwall/gjson v1.18.0 // indirect

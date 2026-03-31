@@ -19,11 +19,13 @@ package inference
 import (
 	"fmt"
 	"time"
+
+	"github.com/go-logr/logr"
 )
 
-// GatewayClientConfig holds a fully-resolved, self-contained gateway configuration
-// for one model. APIKey is the actual secret value (already read from disk).
-// Every entry in the map passed to NewGatewayResolver must be fully specified —
+// GatewayClientConfig holds a fully-resolved, self-contained gateway configuration.
+// APIKey is the actual secret value (already read from disk).
+// Every entry in the map passed to NewPerModelResolver must be fully specified —
 // there is no inheritance between entries.
 type GatewayClientConfig struct {
 	URL    string
@@ -56,59 +58,50 @@ func (gw GatewayClientConfig) toHTTPClientConfig() *HTTPClientConfig {
 	}
 }
 
+// ErrCodeModelNotFound is the request-level error code written to the batch
+// error file when a model has no configured gateway in per-model mode.
+const ErrCodeModelNotFound = "model_not_found"
+
 // GatewayResolver routes inference requests to the correct gateway client
-// based on the model name. Models without an explicit mapping fall back to
-// the default client.
+// based on the model name.
+//
+// Resolution order:
+//  1. If a global client is set, return it for every model.
+//  2. Exact match in per-model clients.
+//  3. Return nil — the caller should treat this as a request-level error.
 //
 // GatewayResolver is immutable after construction — safe for concurrent reads.
 // TODO: When dynamic config reload is added, wrap with atomic.Pointer[GatewayResolver]
 // and swap the entire resolver on reload.
-//
-// This is a concrete struct rather than an interface because there is only one
-// routing strategy. Tests inject mock InferenceClient instances via NewSingleClientResolver.
-// TODO: Extract an interface if multiple routing strategies are needed.
 type GatewayResolver struct {
-	defaultClient InferenceClient
-	modelClients  map[string]InferenceClient
+	globalClient InferenceClient
+	modelClients map[string]InferenceClient
 }
 
-// NewGatewayResolver creates a GatewayResolver from a map of model-to-gateway
-// configs. The reserved key "default" is required and becomes the fallback client
-// for models without an explicit entry. Every entry must be fully self-contained.
-//
-// Clients with identical settings (URL, API key, HTTP/TLS config) share a single
-// HTTPClient instance to reuse connection pools.
-func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayResolver, error) {
-	defaultGW, ok := modelGateways["default"]
-	if !ok {
-		// this is checked on validation but we'll be defensive here
-		return nil, fmt.Errorf("modelGateways must contain a \"default\" entry")
-	}
-
-	defaultClient, err := NewInferenceClient(defaultGW.toHTTPClientConfig())
+// NewGlobalResolver creates a GatewayResolver where all models resolve to a
+// single global inference gateway. Use this when the downstream gateway handles
+// model routing internally.
+func NewGlobalResolver(config GatewayClientConfig, logger logr.Logger) (*GatewayResolver, error) {
+	client, err := NewInferenceClient(config.toHTTPClientConfig(), logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create default inference client: %w", err)
+		return nil, fmt.Errorf("failed to create global inference client: %w", err)
 	}
+	return &GatewayResolver{globalClient: client}, nil
+}
 
-	// GatewayClientConfig is used directly as the pool key: all its fields are
-	// comparable primitives, so two configs with identical settings produce the
-	// same key and reuse a single InferenceClient (and its connection pool).
-	pool := map[GatewayClientConfig]InferenceClient{
-		defaultGW: defaultClient,
-	}
-	modelClients := make(map[string]InferenceClient, len(modelGateways))
+// NewPerModelResolver creates a GatewayResolver that routes each model to its
+// own inference gateway. Clients with identical settings share a single
+// HTTPClient instance to reuse connection pools.
+func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Logger) (*GatewayResolver, error) {
+	pool := make(map[GatewayClientConfig]InferenceClient)
+	modelClients := make(map[string]InferenceClient, len(configs))
 
-	for model, gw := range modelGateways {
-		if model == "default" {
-			continue
-		}
-
+	for model, gw := range configs {
 		if client, ok := pool[gw]; ok {
 			modelClients[model] = client
 			continue
 		}
-
-		client, err := NewInferenceClient(gw.toHTTPClientConfig())
+		client, err := NewInferenceClient(gw.toHTTPClientConfig(), logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}
@@ -116,24 +109,37 @@ func NewGatewayResolver(modelGateways map[string]GatewayClientConfig) (*GatewayR
 		modelClients[model] = client
 	}
 
-	return &GatewayResolver{
-		defaultClient: defaultClient,
-		modelClients:  modelClients,
-	}, nil
+	return &GatewayResolver{modelClients: modelClients}, nil
+}
+
+// IsGlobal returns true if the resolver routes all models to a single global
+// client. When true, ClientFor never returns nil.
+func (r *GatewayResolver) IsGlobal() bool {
+	return r.globalClient != nil
 }
 
 // ClientFor returns the inference client for the given model.
-// Falls back to the default client if no model-specific mapping exists.
+// Returns nil if no matching client exists. In normal operation, unregistered
+// models are rejected during ingestion, so nil is only expected in recovery
+// or defensive-guard paths.
+// A zero-value GatewayResolver returns nil for all models; use the public
+// constructors (NewGlobalResolver, NewPerModelResolver, NewSingleClientResolver)
+// to ensure at least one client is configured.
 func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
+	if r.globalClient != nil {
+		return r.globalClient
+	}
 	if c, ok := r.modelClients[modelID]; ok {
 		return c
 	}
-	return r.defaultClient
+	return nil
 }
 
-// NewSingleClientResolver wraps a single InferenceClientI in a GatewayResolver
-// where all models resolve to that client. Currently used only in tests
-// to inject mock inference clients into Clientset.
+// NewSingleClientResolver wraps a single InferenceClient in a GatewayResolver
+// where all models resolve to that client. Used in tests to inject mock
+// inference clients into Clientset.
+// TODO: if httptest is imported for other reasons in the future, replace callers
+// with NewGlobalResolver + httptest.Server so this function can be removed.
 func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
-	return &GatewayResolver{defaultClient: c}
+	return &GatewayResolver{globalClient: c}
 }

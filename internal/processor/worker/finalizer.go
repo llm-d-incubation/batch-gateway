@@ -20,14 +20,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
-	"k8s.io/klog/v2"
+	"golang.org/x/sync/errgroup"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
@@ -35,6 +35,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
@@ -53,13 +54,17 @@ func (p *Processor) uploadFileAndStoreFileRecord(
 	var err error
 	var attrKey string
 
+	fileID := ucom.NewFileID()
+
 	if fileType == metrics.FileTypeOutput {
 		fileName = jobOutputStorageName(jobInfo.JobID)
-		fileSize, err = p.uploadOutputFile(ctx, jobInfo, fileName)
+		storageName := ucom.FileStorageName(fileID, fileName)
+		fileSize, err = p.uploadOutputFile(ctx, jobInfo, storageName)
 		attrKey = uotel.AttrOutputFileID
 	} else {
 		fileName = jobErrorStorageName(jobInfo.JobID)
-		fileSize, err = p.uploadErrorFile(ctx, jobInfo, fileName)
+		storageName := ucom.FileStorageName(fileID, fileName)
+		fileSize, err = p.uploadErrorFile(ctx, jobInfo, storageName)
 		attrKey = uotel.AttrErrorFileID
 	}
 	if err != nil {
@@ -69,7 +74,6 @@ func (p *Processor) uploadFileAndStoreFileRecord(
 		return "", nil
 	}
 
-	fileID := ucom.NewFileID()
 	uotel.SetAttr(ctx, attribute.String(attrKey, fileID))
 	if err := p.storeFileRecord(ctx, fileID, fileName, jobInfo.TenantID, fileSize, dbJob.Tags); err != nil {
 		return "", err
@@ -87,7 +91,7 @@ func (p *Processor) finalizeJob(
 	requestCounts *openai.BatchRequestCounts,
 	cancelRequested *atomic.Bool,
 ) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
 	// in_progress → finalizing
@@ -100,13 +104,21 @@ func (p *Processor) finalizeJob(
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
-	outputFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeOutput)
-	if err != nil {
+	// The two uploads are independent (different local files, different S3 keys,
+	// different DB records), so we run them concurrently.
+	var outputFileID, errorFileID string
+	grp, gCtx := errgroup.WithContext(ctx)
+	grp.Go(func() error {
+		var err error
+		outputFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeOutput)
 		return err
-	}
-
-	errorFileID, err := p.uploadFileAndStoreFileRecord(ctx, jobInfo, dbJob, metrics.FileTypeError)
-	if err != nil {
+	})
+	grp.Go(func() error {
+		var err error
+		errorFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeError)
+		return err
+	})
+	if err := grp.Wait(); err != nil {
 		return err
 	}
 
@@ -122,7 +134,7 @@ func (p *Processor) finalizeJob(
 			return fmt.Errorf("failed to update job status to cancelled: %w", err)
 		}
 		setRequestCountAttrs(ctx, requestCounts)
-		return nil
+		return ErrCancelled
 	}
 
 	// finalizing → completed
@@ -136,7 +148,7 @@ func (p *Processor) finalizeJob(
 	return nil
 }
 
-// uploadOutputFile uploads the local output file to shared storage with retry.
+// uploadOutputFile uploads the local output file to shared storage.
 // Returns the file size; returns 0 without error if the file is empty (all requests failed).
 // Per the OpenAI batch spec, output_file_id is optional and may be omitted when there are no
 // successful requests.
@@ -149,10 +161,10 @@ func (p *Processor) uploadOutputFile(
 	if err != nil {
 		return 0, err
 	}
-	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeOutput)
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID)
 }
 
-// uploadErrorFile uploads the local error file to shared storage with retry.
+// uploadErrorFile uploads the local error file to shared storage.
 // Returns the file size; returns 0 without error if the file is empty (no errors occurred).
 // Per the OpenAI batch spec, error_file_id is optional and may be omitted when no requests failed.
 func (p *Processor) uploadErrorFile(
@@ -164,18 +176,16 @@ func (p *Processor) uploadErrorFile(
 	if err != nil {
 		return 0, err
 	}
-	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID, metrics.FileTypeError)
+	return p.uploadJobFile(ctx, filePath, fileName, jobInfo.TenantID)
 }
 
-// uploadJobFile uploads a local file to shared storage with retry.
+// uploadJobFile uploads a local file to shared storage.
 // Returns the file size; returns 0 without error if the file does not exist or is empty.
+// Retry logic is handled by the retryclient decorator wrapping the file storage client.
 func (p *Processor) uploadJobFile(
 	ctx context.Context,
 	filePath, fileName, tenantID string,
-	fileType metrics.FileType,
 ) (int64, error) {
-	logger := klog.FromContext(ctx)
-
 	stat, err := os.Stat(filePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
@@ -198,32 +208,9 @@ func (p *Processor) uploadJobFile(
 		return 0, fmt.Errorf("failed to get folder name: %w", err)
 	}
 
-	retryCfg := p.cfg.UploadRetry
-	maxAttempts := retryCfg.MaxRetries + 1
-
-	// TODO: distinguish retryable (network/storage transient) vs non-retryable (auth, permission)
-	// errors and skip retries for the latter. Deferred until we have more storage backends
-	// or see real non-transient failures in production.
 	fileMeta, err := p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
-	for attempt := 1; err != nil && attempt < maxAttempts; attempt++ {
-		metrics.RecordFileUploadRetry(fileType)
-		backoff := min(retryCfg.InitialBackoff*(1<<(attempt-1)), retryCfg.MaxBackoff)
-		logger.V(logging.WARNING).Info("Retrying file upload",
-			"file", fileName, "attempt", attempt+1, "maxAttempts", maxAttempts, "backoff", backoff, "error", err)
-
-		select {
-		case <-ctx.Done():
-			return 0, fmt.Errorf("upload retry cancelled: %w", ctx.Err())
-		case <-time.After(backoff):
-		}
-
-		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
-			return 0, fmt.Errorf("failed to seek file %s for retry: %w", fileName, seekErr)
-		}
-		fileMeta, err = p.files.storage.Store(ctx, fileName, folderName, 0, 0, f)
-	}
 	if err != nil {
-		return 0, fmt.Errorf("failed to upload file %s after %d attempts: %w", fileName, maxAttempts, err)
+		return 0, fmt.Errorf("failed to upload file %s: %w", fileName, err)
 	}
 
 	return fileMeta.Size, nil
@@ -247,7 +234,7 @@ func (p *Processor) storeFileRecord(
 		ID:        fileID,
 		Bytes:     size,
 		CreatedAt: now,
-		ExpiresAt: expiresAt,
+		ExpiresAt: &expiresAt,
 		Filename:  fileName,
 		Object:    "file",
 		Purpose:   openai.FileObjectPurposeBatchOutput,

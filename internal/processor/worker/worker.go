@@ -21,9 +21,10 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
@@ -32,6 +33,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
@@ -50,26 +52,27 @@ type Processor struct {
 	event     db.BatchEventChannelClient // cancel-event subscription
 	inference *inference.GatewayResolver // model → gateway routing
 	files     *fileManager
+
+	// guardCallback is called when any semaphore detects a double-release.
+	// Set during Run(); passed to per-model semaphores in processModel.
+	guardCallback func()
 }
 
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
+	logger logr.Logger,
 ) (*Processor, error) {
-	tokenSem, err := semaphore.New(cfg.NumWorkers)
-	if err != nil {
-		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, err)
+	if cfg.NumWorkers <= 0 {
+		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, semaphore.ErrCap)
 	}
-	globalSem, err := semaphore.New(cfg.GlobalConcurrency)
-	if err != nil {
-		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, err)
+	if cfg.GlobalConcurrency <= 0 {
+		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, semaphore.ErrCap)
 	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
 		cfg:       cfg,
-		tokens:    tokenSem,
-		globalSem: globalSem,
 		poller:    poller,
 		updater:   updater,
 		event:     clients.Event,
@@ -80,30 +83,60 @@ func NewProcessor(
 
 // Run starts processor orchestration and enters the polling loop.
 // If onReady is provided, it is called after pre-flight checks succeed and
-// right before the polling loop begins accepting work.
+// stale job recovery completes, right before the polling loop begins accepting work.
 func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err := p.prepare(ctx); err != nil {
 		return err
 	}
+
+	p.recoverStaleJobs(ctx)
+
 	if onReady != nil {
 		onReady()
 	}
 
-	p.recoverStaleJobs(ctx)
+	// Two context branches:
+	//   pollingCtx — controls the polling loop; cancelled by semaphore guard or SIGTERM.
+	//   ctx (unchanged) — parent for job contexts; only cancelled by SIGTERM.
+	// This separation ensures stopAccepting() halts new-job intake without
+	// cancelling in-flight jobs.
+	pollingCtx, stopAccepting := context.WithCancel(ctx)
+	defer stopAccepting()
 
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
+
+	// Create semaphores here (not in NewProcessor) so the double-release guard
+	// callback can capture stopAccepting. This keeps semaphores immutable after
+	// construction — no mutex, no OnDoubleRelease method.
+	makeGuard := func(name string) func() {
+		return func() {
+			logger.Error(fmt.Errorf("semaphore double-release"), "Initiating graceful shutdown", "semaphore", name)
+			stopAccepting()
+		}
+	}
+	var err error
+	p.tokens, err = semaphore.New(p.cfg.NumWorkers, makeGuard("num-workers"))
+	if err != nil {
+		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
+	}
+	p.globalSem, err = semaphore.New(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
+	if err != nil {
+		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, err)
+	}
+	p.guardCallback = makeGuard("per-model-concurrency")
+
 	logger.V(logging.INFO).Info(
 		"Processor run started",
 		"loopInterval", p.cfg.PollInterval,
 		"maxWorkers", p.cfg.NumWorkers,
 	)
 
-	return p.runPollingLoop(ctx)
+	return p.runPollingLoop(pollingCtx, ctx)
 }
 
 // Stop gracefully stops the processor, waiting for all workers to finish.
 func (p *Processor) Stop(ctx context.Context) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	done := make(chan struct{})
 	go func() {
 		p.wg.Wait()
@@ -120,44 +153,47 @@ func (p *Processor) Stop(ctx context.Context) {
 }
 
 // runPollingLoop runs the job polling loop and dispatches jobs to workers.
-func (p *Processor) runPollingLoop(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+//
+// pollingCtx controls the loop: cancelled by semaphore guard or SIGTERM.
+// jobBaseCtx is the parent for per-job contexts: only cancelled by SIGTERM.
+// This ensures stopAccepting() halts new-job intake without killing in-flight jobs.
+func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error {
+	logger := logr.FromContextOrDiscard(pollingCtx)
 	logger.V(logging.INFO).Info("Polling loop started")
 	// worker driven non-busy wait
 	for {
-		if !p.acquire(ctx) {
+		if !p.acquire(pollingCtx) {
 			return nil
 		}
 
 		// check queue for available tasks
 		logger.V(logging.DEBUG).Info("Checking queue for available tasks")
-		task, err := p.poller.dequeueOne(ctx)
+		task, err := p.poller.dequeueOne(pollingCtx)
 
 		// when there's no waiting tasks in the queue or poller returned an error
 		if task == nil || err != nil {
 			// wait for poll interval to protect db from frequent queueing
-			if !p.releaseAndWaitPollInterval(ctx) {
+			if !p.releaseAndWaitPollInterval(pollingCtx) {
 				return nil
 			}
 			continue
 		}
 
-		// create a new logger for the job with job ID
-		jlogger := klog.FromContext(ctx).WithValues("jobId", task.ID)
-		jctx := klog.NewContext(ctx, jlogger)
+		// Pre-launch: use pollingCtx so guard cancel / SIGTERM interrupts
+		// DB fetch and validation promptly. jobBaseCtx is only used once
+		// we commit to launching the job goroutine.
+		pollLogger := logr.FromContextOrDiscard(pollingCtx).WithValues("jobId", task.ID)
+		pollCtx := logr.NewContext(pollingCtx, pollLogger)
 
 		// get job item from db
-		jobItem, err := p.poller.fetchJobItemByID(jctx, task.ID)
+		jobItem, err := p.poller.fetchJobItemByID(pollCtx, task.ID)
 		if err != nil {
-			jlogger.Error(err, "Failed to fetch job item from DB")
+			pollLogger.Error(err, "Failed to fetch job item from DB")
 			p.releaseForNextPoll()
-			// error is due to system issue (db connection, etc.)
-			// re-enqueue the job to the queue so this job can be picked up later by another worker
-			// best-effort
-			jlogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
-			reEnqueueErr := p.poller.enqueueOne(jctx, task)
+			pollLogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
+			reEnqueueErr := p.poller.enqueueOne(pollCtx, task)
 			if reEnqueueErr != nil {
-				jlogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
+				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
@@ -167,53 +203,46 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// job item is not found in the db.
 		if jobItem == nil {
-			jlogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
-			// ignore the job (data inconsistency) and continue polling
+			pollLogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
 			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonDBInconsistency)
 			continue
 		}
 
-		jlogger.V(logging.TRACE).Info("Job item found in the DB")
+		pollLogger.V(logging.TRACE).Info("Job item found in the DB")
 
 		// queue wait metrics recording
 		if jobPriorityData, err := batch_utils.GetJobPriorityDataFromQueueItem(task); err == nil {
 			queueWait := time.Since(time.Unix(jobPriorityData.CreatedAt, 0))
-			metrics.RecordQueueWaitDuration(queueWait, jobItem.TenantID)
-			jlogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
+			metrics.RecordQueueWaitDuration(queueWait)
+			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
 		} else {
-			// queue createdAt is not available.
-			// log the error and continue processing as createdAt is only for metrics recording.
-			jlogger.Error(err, "Failed to get job priority data from queue item")
+			pollLogger.Error(err, "Failed to get job priority data from queue item")
 		}
 
 		// db job item to job info object conversion
 		jobInfo, err := batch_utils.FromDBItemToJobInfoObject(jobItem)
-
 		if err != nil {
-			jlogger.Error(err, "Failed to convert job object in DB to job info object")
+			pollLogger.Error(err, "Failed to convert job object in DB to job info object")
 			p.releaseForNextPoll()
-			metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil); failErr != nil {
+				pollLogger.Error(failErr, "Failed to mark malformed job as failed")
+			}
 			continue
 		}
 
-		// create a new logger including tenant ID (Job ID is already in the logger)
-		jlogger = jlogger.WithValues("tenantId", jobInfo.TenantID)
-		// update the context with the new logger
-		jctx = klog.NewContext(jctx, jlogger)
+		pollLogger = pollLogger.WithValues("tenantId", jobInfo.TenantID)
+		pollCtx = logr.NewContext(pollCtx, pollLogger)
 
-		jlogger.V(logging.TRACE).Info("Job info object converted")
+		pollLogger.V(logging.TRACE).Info("Job info object converted")
 
 		if batch_utils.IsJobExpired(task) {
-			jlogger.V(logging.INFO).Info("Job is expired.")
+			pollLogger.V(logging.INFO).Info("Job is expired.")
 
-			// persistent status update (to expired status)
-			if err := p.updater.UpdatePersistentStatus(jctx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
-				jlogger.V(logging.ERROR).Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
+			if err := p.updater.UpdatePersistentStatus(pollCtx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
+				pollLogger.Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
 			}
 
-			// do not need to delete the task from the queue.
-			// ignore the job and continue polling
 			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredDequeue)
 			continue
@@ -221,23 +250,56 @@ func (p *Processor) runPollingLoop(ctx context.Context) error {
 
 		// job is not in runnable state.
 		if !batch_utils.IsJobRunnable(jobInfo.BatchJob) {
-			jlogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.BatchStatusInfo.Status)
+			if jobInfo.BatchJob.Status == openai.BatchStatusCancelling {
+				pollLogger.V(logging.INFO).Info("Job is in cancelling state after dequeue, transitioning to cancelled")
+				if err := p.updater.UpdateCancelledStatus(pollCtx, jobItem, nil, "", ""); err != nil {
+					pollLogger.Error(err, "Failed to update job status to cancelled")
+				}
+				p.releaseForNextPoll()
+				metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
+				continue
+			}
 
-			// persistent status update is not needed.
-			// do not need to delete the task from the queue.
-			// ignore the job and continue polling
+			pollLogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
+
 			p.releaseForNextPoll()
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonNotRunnableState)
 			continue
 		}
 
-		// process job
+		// Guard: if pollingCtx was cancelled between dequeue and here
+		// (e.g. semaphore double-release or SIGTERM), re-enqueue instead of launching.
+		// Use a detached context because both pollingCtx and jobBaseCtx may already
+		// be cancelled (SIGTERM cancels the parent of both).
+		if pollingCtx.Err() != nil {
+			pollLogger.V(logging.INFO).Info("Polling context cancelled before job launch, re-enqueueing")
+			p.releaseForNextPoll()
+			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-guard")
+			defer bgSpan.End()
+			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
+				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue job during graceful shutdown, marking as failed")
+				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil); failErr != nil {
+					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
+				}
+				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
+			} else {
+				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
+			}
+			return nil
+		}
+
+		// Commit to launching: create job context from jobBaseCtx so in-flight
+		// jobs survive pollingCtx cancellation (guard shutdown).
+		jobLogger := logr.FromContextOrDiscard(jobBaseCtx).WithValues("jobId", task.ID, "tenantId", jobInfo.TenantID)
+		jobCtx := logr.NewContext(jobBaseCtx, jobLogger)
+
 		p.wg.Add(1)
-		go p.runJob(jctx, &jobExecutionParams{
-			updater: p.updater,
-			jobItem: jobItem,
-			jobInfo: jobInfo,
-			task:    task,
+		go p.runJob(jobCtx, &jobExecutionParams{
+			updater:         p.updater,
+			jobItem:         jobItem,
+			jobInfo:         jobInfo,
+			task:            task,
+			cancelRequested: &atomic.Bool{},
 		})
 	}
 }
@@ -269,7 +331,7 @@ func (p *Processor) releaseForNextPoll() {
 
 // pre-flight check
 func (p *Processor) prepare(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	if err := p.validate(); err != nil {
 		return fmt.Errorf("critical clients are missing in processor: %w", err)

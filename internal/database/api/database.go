@@ -117,7 +117,7 @@ type BatchPriorityQueueClient interface {
 	// PQDequeue atomically removes and returns the job priority objects at the head of the queue,
 	// up to the maximum number of objects specified in maxItems.
 	// The function blocks up to the timeout value for a job priority object to be available.
-	// If the timeout value is zero, the function returns immediately.
+	// If the timeout value is zero or negative, the function returns immediately.
 	//
 	// Implementations MUST atomically remove dequeued items from the queue. The processor
 	// assumes exclusive dequeue semantics: a dequeued job will not be returned by any

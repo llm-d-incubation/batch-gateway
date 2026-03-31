@@ -26,9 +26,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/go-resty/resty/v2"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -66,7 +67,7 @@ type Config struct {
 }
 
 // NewHTTPClient creates a new HTTP client
-func NewHTTPClient(config Config) (*HTTPClient, error) {
+func NewHTTPClient(config Config, logger logr.Logger) (*HTTPClient, error) {
 	// Set defaults for HTTP client
 	if config.Timeout == 0 {
 		config.Timeout = 5 * time.Minute
@@ -110,7 +111,7 @@ func NewHTTPClient(config Config) (*HTTPClient, error) {
 	transport.ResponseHeaderTimeout = config.Timeout // Use the same timeout as the request
 
 	// Configure custom TLS if needed
-	tlsConfig, err := BuildTLSConfig(&config)
+	tlsConfig, err := BuildTLSConfig(&config, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build TLS config: %w", err)
 	}
@@ -146,8 +147,9 @@ func NewHTTPClient(config Config) (*HTTPClient, error) {
 		// Add retry hook for logging
 		client.AddRetryHook(func(resp *resty.Response, err error) {
 			if reqID := resp.Request.Header.Get(HeaderNameReqID); reqID != "" {
-				klog.V(3).Infof("Retrying request_id=%s (attempt %d/%d)",
-					reqID, resp.Request.Attempt, config.MaxRetries)
+				logger := logr.FromContextOrDiscard(resp.Request.Context())
+				logger.V(logging.DEBUG).Info("Retrying request", "request_id", reqID,
+					"attempt", resp.Request.Attempt, "max_retries", config.MaxRetries)
 			}
 		})
 	}
@@ -161,6 +163,8 @@ func NewHTTPClient(config Config) (*HTTPClient, error) {
 // Post makes an HTTP POST request with automatic retry logic
 // Returns the response body, status code, and any error
 func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}, headers map[string]string, requestID string) ([]byte, int, error) {
+	logger := logr.FromContextOrDiscard(ctx)
+
 	// Create resty request with context
 	restyReq := c.client.R().SetContext(ctx)
 
@@ -187,19 +191,20 @@ func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}
 
 	// Log success with retry info
 	if resp.Request.Attempt > 1 {
-		klog.V(3).Infof("Request succeeded after %d retries for request_id=%s",
-			resp.Request.Attempt-1, requestID)
+		logger.V(logging.DEBUG).Info("Request succeeded after retries", "retries", resp.Request.Attempt-1, "request_id", requestID)
 	}
 
 	return resp.Body(), resp.StatusCode(), nil
 }
 
 // HandleErrorResponse parses error response and maps to Error
-func (c *HTTPClient) HandleErrorResponse(statusCode int, body []byte) *ClientError {
+func (c *HTTPClient) HandleErrorResponse(ctx context.Context, statusCode int, body []byte) *ClientError {
+	logger := logr.FromContextOrDiscard(ctx)
+
 	// Try to parse OpenAI-style error response
 	var errorResp struct {
 		Error struct {
-			Code    int    `json:"code"`
+			Code    string `json:"code"`
 			Type    string `json:"type"`
 			Message string `json:"message"`
 			Param   string `json:"param"`
@@ -214,12 +219,14 @@ func (c *HTTPClient) HandleErrorResponse(statusCode int, body []byte) *ClientErr
 	// Map HTTP status codes to error categories
 	category := MapStatusCodeToCategory(statusCode)
 
-	klog.V(3).Infof("HTTP request failed with status=%d, category=%s, message=%s", statusCode, category, message)
+	logger.V(logging.DEBUG).Info("HTTP request failed", "status", statusCode, "category", category, "message", message)
 
 	return &ClientError{
-		Category: category,
-		Message:  fmt.Sprintf("HTTP %d: %s", statusCode, message),
-		RawError: fmt.Errorf("status code: %d, body: %s", statusCode, string(body)),
+		Category:     category,
+		Message:      fmt.Sprintf("HTTP %d: %s", statusCode, message),
+		RawError:     fmt.Errorf("status code: %d, body: %s", statusCode, string(body)),
+		StatusCode:   statusCode,
+		ResponseBody: body,
 	}
 }
 
@@ -244,7 +251,7 @@ func MapStatusCodeToCategory(statusCode int) ErrorCategory {
 
 // BuildTLSConfig constructs a custom TLS configuration based on provided options
 // Returns nil if no custom TLS config is needed (use system defaults)
-func BuildTLSConfig(config *Config) (*tls.Config, error) {
+func BuildTLSConfig(config *Config, logger logr.Logger) (*tls.Config, error) {
 	if !config.TLSInsecureSkipVerify &&
 		config.TLSCACertFile == "" &&
 		config.TLSClientCertFile == "" &&
@@ -260,7 +267,7 @@ func BuildTLSConfig(config *Config) (*tls.Config, error) {
 	// 1. InsecureSkipVerify (testing only)
 	if config.TLSInsecureSkipVerify {
 		tlsConfig.InsecureSkipVerify = true
-		klog.Warning("TLS certificate verification is disabled - this is insecure and should only be used for testing")
+		logger.Info("WARNING: TLS certificate verification is disabled - this is insecure and should only be used for testing")
 	}
 
 	// 2. Custom CA certificate (for private CAs)
@@ -276,7 +283,7 @@ func BuildTLSConfig(config *Config) (*tls.Config, error) {
 		}
 
 		tlsConfig.RootCAs = caCertPool
-		klog.V(3).Infof("Loaded custom CA certificate from %s", config.TLSCACertFile)
+		logger.V(logging.INFO).Info("Loaded custom CA certificate", "file", config.TLSCACertFile)
 	}
 
 	// 3. Client certificate (for mTLS)
@@ -287,7 +294,7 @@ func BuildTLSConfig(config *Config) (*tls.Config, error) {
 		}
 
 		tlsConfig.Certificates = []tls.Certificate{clientCert}
-		klog.V(3).Infof("Loaded client certificate from %s", config.TLSClientCertFile)
+		logger.V(logging.INFO).Info("Loaded client certificate", "file", config.TLSClientCertFile)
 	} else if config.TLSClientCertFile != "" || config.TLSClientKeyFile != "" {
 		return nil, fmt.Errorf("both TLSClientCertFile and TLSClientKeyFile must be specified for mTLS")
 	}
@@ -295,11 +302,11 @@ func BuildTLSConfig(config *Config) (*tls.Config, error) {
 	// 4. TLS version constraints
 	if config.TLSMinVersion != 0 {
 		tlsConfig.MinVersion = config.TLSMinVersion
-		klog.V(3).Infof("Set minimum TLS version to 0x%04x", config.TLSMinVersion)
+		logger.V(logging.INFO).Info("Set minimum TLS version", "version", fmt.Sprintf("0x%04x", config.TLSMinVersion))
 	}
 	if config.TLSMaxVersion != 0 {
 		tlsConfig.MaxVersion = config.TLSMaxVersion
-		klog.V(3).Infof("Set maximum TLS version to 0x%04x", config.TLSMaxVersion)
+		logger.V(logging.INFO).Info("Set maximum TLS version", "version", fmt.Sprintf("0x%04x", config.TLSMaxVersion))
 	}
 
 	return tlsConfig, nil

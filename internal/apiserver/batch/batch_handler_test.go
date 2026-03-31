@@ -148,8 +148,8 @@ func TestBatchHandler(t *testing.T) {
 					if batch.CompletionWindow != "24h" {
 						t.Errorf("Expected completion_window to be '24h', got %v", batch.CompletionWindow)
 					}
-					if batch.BatchStatusInfo.Status != openai.BatchStatusValidating {
-						t.Errorf("Expected status to be '%s', got %v", openai.BatchStatusValidating, batch.BatchStatusInfo)
+					if batch.Status != openai.BatchStatusValidating {
+						t.Errorf("Expected status to be '%s', got %v", openai.BatchStatusValidating, batch.Status)
 					}
 					if batch.RequestCounts.Total != 0 {
 						t.Errorf("Expected request_counts.total to be 0, got %v", batch.RequestCounts.Total)
@@ -812,10 +812,10 @@ func TestBatchHandler(t *testing.T) {
 		if resp.HasMore {
 			t.Errorf("Expected has_more to be false, got %v", resp.HasMore)
 		}
-		if resp.FirstID == "" {
+		if resp.FirstID == nil {
 			t.Error("Expected first_id to be set")
 		}
-		if resp.LastID == "" {
+		if resp.LastID == nil {
 			t.Error("Expected last_id to be set")
 		}
 

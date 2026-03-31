@@ -114,6 +114,34 @@ func TestStore(t *testing.T) {
 		}
 	})
 
+	t.Run("returns error for too many lines", func(t *testing.T) {
+		client := newTestClient(t)
+		content := []byte("line1\nline2\nline3\n")
+
+		_, err := client.Store(ctx, "toomany.txt", testFolder, 1024, 2, bytes.NewReader(content))
+		if !errors.Is(err, api.ErrTooManyLines) {
+			t.Errorf("expected ErrTooManyLines, got %v", err)
+		}
+
+		// Verify file was not created.
+		if _, err := client.root.Stat(filepath.Join(testFolder, "toomany.txt")); !os.IsNotExist(err) {
+			t.Error("expected file to not exist after line limit exceeded")
+		}
+	})
+
+	t.Run("stores file at exact line limit", func(t *testing.T) {
+		client := newTestClient(t)
+		content := []byte("line1\nline2\n")
+
+		md, err := client.Store(ctx, "exactlines.txt", testFolder, 1024, 2, bytes.NewReader(content))
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if md.LinesNumber != 2 {
+			t.Errorf("expected 2 lines, got %d", md.LinesNumber)
+		}
+	})
+
 	t.Run("stores file at exact size limit", func(t *testing.T) {
 		client := newTestClient(t)
 		content := []byte("12345")

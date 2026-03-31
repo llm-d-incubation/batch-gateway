@@ -28,12 +28,19 @@ import (
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
+)
+
+const (
+	// DefaultMaxConcurrency is the default number of concurrent item deletions per GC cycle.
+	DefaultMaxConcurrency = 10
 )
 
 // Config holds the garbage collector configuration.
 type Config struct {
-	DryRun   bool          `yaml:"dry_run"`
-	Interval time.Duration `yaml:"interval"`
+	DryRun         bool          `yaml:"dry_run"`
+	Interval       time.Duration `yaml:"interval"`
+	MaxConcurrency int           `yaml:"max_concurrency"`
 
 	// DB client configuration
 	DBClientCfg struct {
@@ -60,6 +67,7 @@ type FileClientConfig struct {
 	Type     string          `yaml:"type"`
 	FSConfig fsclient.Config `yaml:"fs"`
 	S3Config s3client.Config `yaml:"s3"`
+	Retry    retry.Config    `yaml:"retry"`
 }
 
 // Load reads and validates a Config from the given YAML file path.
@@ -70,10 +78,15 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Interval: 1 * time.Hour,
+		Interval:       1 * time.Hour,
+		MaxConcurrency: DefaultMaxConcurrency,
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if cfg.MaxConcurrency <= 0 {
+		return nil, fmt.Errorf("max_concurrency must be positive, got %d", cfg.MaxConcurrency)
 	}
 
 	if cfg.Interval <= 0 {
@@ -96,6 +109,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("file_client.type is required (must be \"fs\" or \"s3\")")
 	default:
 		return nil, fmt.Errorf("file_client.type must be \"fs\" or \"s3\", got %q", cfg.FileClientCfg.Type)
+	}
+
+	if err := cfg.FileClientCfg.Retry.Validate(); err != nil {
+		return nil, fmt.Errorf("file_client.retry: %w", err)
 	}
 
 	return cfg, nil

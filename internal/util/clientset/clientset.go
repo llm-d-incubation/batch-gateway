@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package com provides factory functions for creating all external clients used by
-// the batch gateway apiserver and processor. Centralising client construction here
-// ensures both processes use identical setup logic.
+// Package clientset provides factory functions for creating all external clients
+// used by the batch gateway apiserver and processor. Centralising client
+// construction here ensures both processes use identical setup logic.
 package clientset
 
 import (
@@ -24,16 +24,19 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
 	dbRedis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
 	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
+	"github.com/llm-d-incubation/batch-gateway/internal/files_store/retryclient"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
+	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
-	"k8s.io/klog/v2"
 )
 
 // Clientset holds all clients.
@@ -59,7 +62,7 @@ func NewFSFileClient(ctx context.Context, cfg *fsclient.Config) (fsapi.BatchFile
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fs file client: %w", err)
 	}
-	klog.FromContext(ctx).Info("Filesystem-based file client created", "base_path", cfg.BasePath)
+	logr.FromContextOrDiscard(ctx).Info("Filesystem-based file client created", "base_path", cfg.BasePath)
 	return c, nil
 }
 
@@ -83,7 +86,7 @@ func NewS3FileClient(ctx context.Context, cfg *s3client.Config) (fsapi.BatchFile
 	if err != nil {
 		return nil, fmt.Errorf("failed to create s3 file client: %w", err)
 	}
-	klog.FromContext(ctx).Info("S3 file client created", "region", cfg.Region, "endpoint", cfg.Endpoint)
+	logr.FromContextOrDiscard(ctx).Info("S3 file client created", "region", cfg.Region, "endpoint", cfg.Endpoint)
 	return c, nil
 }
 
@@ -108,7 +111,7 @@ func NewRedisDBClients(ctx context.Context, cfg *uredis.RedisClientConfig) (dbap
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create redis file-db client: %w", err)
 	}
-	klog.FromContext(ctx).Info("Redis-based database client created")
+	logr.FromContextOrDiscard(ctx).Info("Redis-based database client created")
 	return batchDB, fileDB, nil
 }
 
@@ -133,11 +136,13 @@ func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfi
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
 	}
-	klog.FromContext(ctx).Info("PostgreSQL-based database client created")
+	logr.FromContextOrDiscard(ctx).Info("PostgreSQL-based database client created")
 	return batchDB, fileDB, nil
 }
 
 // NewClientset creates all clients.
+// component identifies the caller (e.g. "processor", "apiserver") for metrics.
+// fileRetryCfg, if non-nil with MaxRetries > 0, wraps the file client with retry logic.
 func NewClientset(
 	ctx context.Context,
 	dbType string,
@@ -146,10 +151,13 @@ func NewClientset(
 	fileClientType string,
 	fsCfg *fsclient.Config,
 	s3Cfg *s3client.Config,
-	modelGatewaysConfigs map[string]inference.GatewayClientConfig,
+	fileRetryCfg *retry.Config,
+	globalGatewayConfig *inference.GatewayClientConfig,
+	perModelGatewayConfigs map[string]inference.GatewayClientConfig,
+	component ucom.Component,
 ) (*Clientset, error) {
 
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// check required parameters
 	if redisCfg == nil {
@@ -186,15 +194,19 @@ func NewClientset(
 		if err != nil {
 			return nil, err
 		}
-		cs.File = c
+		cs.File = fstracing.Wrap(c, "fs")
 	case "s3":
 		c, err := NewS3FileClient(ctx, s3Cfg)
 		if err != nil {
 			return nil, err
 		}
-		cs.File = c
+		cs.File = fstracing.Wrap(c, "s3")
 	default:
 		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", fileClientType)
+	}
+	if fileRetryCfg != nil && fileRetryCfg.MaxRetries > 0 {
+		cs.File = retryclient.New(cs.File, *fileRetryCfg, component)
+		logger.Info("File client wrapped with retry", "maxRetries", fileRetryCfg.MaxRetries)
 	}
 
 	// build database client
@@ -218,12 +230,21 @@ func NewClientset(
 	}
 
 	// build inference client(s)
-	if modelGatewaysConfigs != nil {
-		resolver, err := inference.NewGatewayResolver(modelGatewaysConfigs)
+	// Processor Validate() guarantees exactly one is set; apiserver passes nil for both.
+	switch {
+	case globalGatewayConfig != nil:
+		resolver, err := inference.NewGlobalResolver(*globalGatewayConfig, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create inference client(s): %w", err)
+			return nil, fmt.Errorf("failed to create global inference client: %w", err)
 		}
-		logger.Info("Inference client(s) created")
+		logger.Info("Global inference client created")
+		cs.Inference = resolver
+	case len(perModelGatewayConfigs) > 0:
+		resolver, err := inference.NewPerModelResolver(perModelGatewayConfigs, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create per-model inference clients: %w", err)
+		}
+		logger.Info("Per-model inference clients created", "count", len(perModelGatewayConfigs))
 		cs.Inference = resolver
 	}
 

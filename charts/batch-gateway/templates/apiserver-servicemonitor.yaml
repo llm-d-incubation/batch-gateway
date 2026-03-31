@@ -1,0 +1,22 @@
+{{- if and .Values.apiserver.enabled .Values.apiserver.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "batch-gateway.apiserver.fullname" . }}
+  labels:
+    {{- include "batch-gateway.apiserver.labels" . | nindent 4 }}
+    {{- with .Values.apiserver.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "batch-gateway.apiserver.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: observability
+      path: /metrics
+      interval: {{ .Values.apiserver.serviceMonitor.interval | quote }}
+{{- end }}

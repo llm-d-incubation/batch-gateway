@@ -68,7 +68,7 @@ func TestRedisClient(t *testing.T) {
 	t.Run("creates client", func(t *testing.T) {
 		rds := setupRedisClient(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			rds.Close()
+			_ = rds.Close()
 		})
 		t.Logf("Memory address of redis client: %p", rds)
 		if rds == nil {
@@ -79,7 +79,7 @@ func TestRedisClient(t *testing.T) {
 	t.Run("basic operations", func(t *testing.T) {
 		rds := setupRedisClient(t, redisUrl, redisCaCert)
 		t.Cleanup(func() {
-			rds.Close()
+			_ = rds.Close()
 		})
 
 		_, err := rds.Set(context.Background(), "k1", "v1", -1).Result()

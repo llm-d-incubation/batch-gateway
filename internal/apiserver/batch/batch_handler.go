@@ -338,8 +338,10 @@ func (c *BatchAPIHandler) ListBatches(w http.ResponseWriter, r *http.Request) {
 		HasMore: expectMore,
 	}
 	if len(batches) > 0 {
-		resp.FirstID = batches[0].ID
-		resp.LastID = batches[len(batches)-1].ID
+		first := batches[0].ID
+		last := batches[len(batches)-1].ID
+		resp.FirstID = &first
+		resp.LastID = &last
 	}
 
 	common.WriteJSONResponse(w, r, http.StatusOK, resp)
@@ -459,12 +461,12 @@ func (c *BatchAPIHandler) RetrieveBatch(w http.ResponseWriter, r *http.Request) 
 		// Log error but don't fail the request - return what we have from DB
 	}
 
-	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.BatchSpec.InputFileID)}
-	if batch.OutputFileID != "" {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.InputFileID)}
+	if batch.OutputFileID != nil {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, *batch.OutputFileID))
 	}
-	if batch.ErrorFileID != "" {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrErrorFileID, batch.ErrorFileID))
+	if batch.ErrorFileID != nil {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrErrorFileID, *batch.ErrorFileID))
 	}
 	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
@@ -488,12 +490,12 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.BatchSpec.InputFileID)}
-	if batch.OutputFileID != "" {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, batch.OutputFileID))
+	spanAttrs := []attribute.KeyValue{attribute.String(uotel.AttrInputFileID, batch.InputFileID)}
+	if batch.OutputFileID != nil {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrOutputFileID, *batch.OutputFileID))
 	}
-	if batch.ErrorFileID != "" {
-		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrErrorFileID, batch.ErrorFileID))
+	if batch.ErrorFileID != nil {
+		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrErrorFileID, *batch.ErrorFileID))
 	}
 	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
@@ -522,7 +524,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		removedFromQueue = nDeleted > 0
 	} else {
-		logger.V(logging.WARNING).Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
+		logger.Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
 	}
 
 	if removedFromQueue {

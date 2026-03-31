@@ -31,9 +31,10 @@ import (
 
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
+
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -78,7 +79,7 @@ func NewRequestMiddleware(config *common.ServerConfig) common.RouteMiddleware {
 			batchID := r.PathValue(common.PathParamBatchID)
 
 			// Create request logger with request ID and tenant ID
-			logger := klog.FromContext(r.Context())
+			logger := logr.FromContextOrDiscard(r.Context())
 			logger = logger.WithValues("requestID", requestID)
 			logger = logger.WithValues("tenantID", tenantID)
 			if fileID != "" {
@@ -88,7 +89,7 @@ func NewRequestMiddleware(config *common.ServerConfig) common.RouteMiddleware {
 				logger = logger.WithValues("batchID", batchID)
 			}
 
-			ctx := klog.NewContext(r.Context(), logger)
+			ctx := logr.NewContext(r.Context(), logger)
 			ctx = context.WithValue(ctx, common.RequestIDKey, requestID)
 			ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
 

@@ -26,8 +26,9 @@ import (
 	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -111,16 +112,16 @@ func (p *Processor) createLocalInputFile(jobID, tenantID string) (*os.File, stri
 
 // cleanupJobArtifacts removes the local job artifacts directory as best-effort.
 func (p *Processor) cleanupJobArtifacts(ctx context.Context, jobID, tenantID string) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	jobDir, err := p.jobRootDir(jobID, tenantID)
 	if err != nil {
-		logger.V(logging.ERROR).Error(err, "Failed to resolve job directory for cleanup")
+		logger.Error(err, "Failed to resolve job directory for cleanup")
 		return
 	}
 
 	if err := os.RemoveAll(jobDir); err != nil {
 		// keep going: cleanup failure should not block status transitions.
-		logger.V(logging.ERROR).Error(err, "Failed to remove job directory", "path", jobDir)
+		logger.Error(err, "Failed to remove job directory", "path", jobDir)
 		return
 	}
 	logger.V(logging.INFO).Info("Removed job directory", "path", jobDir)
@@ -149,7 +150,8 @@ func (p *Processor) openInputFileStream(ctx context.Context, inputFileID string)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get folder name by tenant id: %w", err)
 	}
-	reader, metadata, err := p.files.storage.Retrieve(ctx, fileObj.Filename, folderName)
+	storageName := ucom.FileStorageName(fileItem.ID, fileObj.Filename)
+	reader, metadata, err := p.files.storage.Retrieve(ctx, storageName, folderName)
 	if err != nil {
 		return nil, metadata, fmt.Errorf("failed to open input file stream: %w", err)
 	}

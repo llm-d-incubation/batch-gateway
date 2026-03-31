@@ -45,3 +45,9 @@ repos:
         language: system
         pass_filenames: false
         files: \.go$
+      - id: helm-unittest
+        name: helm-unittest (optional)
+        entry: bash -c 'if helm plugin list 2>/dev/null | grep -q unittest; then helm unittest charts/batch-gateway; else echo "helm-unittest not installed, skipping"; fi'
+        language: system
+        pass_filenames: false
+        files: 'charts/.*\.(yaml|tpl)$'

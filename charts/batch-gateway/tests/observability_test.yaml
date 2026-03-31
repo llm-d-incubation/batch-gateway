@@ -1,0 +1,272 @@
+suite: observability resources
+templates:
+  - templates/apiserver-servicemonitor.yaml
+  - templates/apiserver-configmap.yaml
+  - templates/processor-podmonitor.yaml
+  - templates/processor-configmap.yaml
+  - templates/prometheus-rule.yaml
+  - templates/grafana-dashboards-configmap.yaml
+# Required: fs file client (the default) needs a pvcName to pass template validation.
+set:
+  global.fileClient.fs.pvcName: "test-pvc"
+tests:
+  # --- ServiceMonitor ---
+
+  - it: should not render ServiceMonitor when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/apiserver-servicemonitor.yaml
+
+  - it: should render ServiceMonitor when enabled
+    set:
+      apiserver.serviceMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+        template: templates/apiserver-servicemonitor.yaml
+      - equal:
+          path: spec.endpoints[0].port
+          value: observability
+        template: templates/apiserver-servicemonitor.yaml
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "30s"
+        template: templates/apiserver-servicemonitor.yaml
+
+  - it: should apply custom ServiceMonitor interval
+    set:
+      apiserver.serviceMonitor.enabled: true
+      apiserver.serviceMonitor.interval: "60s"
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "60s"
+        template: templates/apiserver-servicemonitor.yaml
+
+  - it: should not render ServiceMonitor when apiserver is disabled
+    set:
+      apiserver.enabled: false
+      apiserver.serviceMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/apiserver-servicemonitor.yaml
+
+  # --- PodMonitor ---
+
+  - it: should not render PodMonitor when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/processor-podmonitor.yaml
+
+  - it: should render PodMonitor when enabled
+    set:
+      processor.podMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: PodMonitor
+        template: templates/processor-podmonitor.yaml
+      - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: metrics
+        template: templates/processor-podmonitor.yaml
+      - equal:
+          path: spec.podMetricsEndpoints[0].interval
+          value: "30s"
+        template: templates/processor-podmonitor.yaml
+
+  - it: should not render PodMonitor when processor is disabled
+    set:
+      processor.enabled: false
+      processor.podMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/processor-podmonitor.yaml
+
+  # --- PrometheusRule ---
+
+  - it: should not render PrometheusRule when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/prometheus-rule.yaml
+
+  - it: should render PrometheusRule when enabled
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - isKind:
+          of: PrometheusRule
+        template: templates/prometheus-rule.yaml
+      - equal:
+          path: spec.groups[0].name
+          value: batch-gateway.rules
+        template: templates/prometheus-rule.yaml
+
+  - it: should render all four alert rules when enabled
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayHighQueueWait
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayHighJobFailureRate
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayExpiredJobsDetected
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchGatewayWorkersSaturated
+          any: true
+        template: templates/prometheus-rule.yaml
+
+  # --- PrometheusRule expr metric name guards ---
+
+  - it: should use job_queue_wait_duration_seconds_bucket in HighQueueWait expr
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[0].expr
+          pattern: job_queue_wait_duration_seconds_bucket
+        template: templates/prometheus-rule.yaml
+
+  - it: should use jobs_processed_total in HighJobFailureRate expr
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[1].expr
+          pattern: jobs_processed_total
+        template: templates/prometheus-rule.yaml
+
+  - it: should use jobs_processed_total in ExpiredJobsDetected expr
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[2].expr
+          pattern: jobs_processed_total
+        template: templates/prometheus-rule.yaml
+
+  - it: should use active_workers and total_workers in WorkersSaturated expr
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[3].expr
+          pattern: active_workers
+        template: templates/prometheus-rule.yaml
+      - matchRegex:
+          path: spec.groups[0].rules[3].expr
+          pattern: total_workers
+        template: templates/prometheus-rule.yaml
+
+  - it: should not reference tenantID in any PrometheusRule expr
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: spec.groups[0].rules[0].expr
+          pattern: tenantID
+        template: templates/prometheus-rule.yaml
+      - notMatchRegex:
+          path: spec.groups[0].rules[1].expr
+          pattern: tenantID
+        template: templates/prometheus-rule.yaml
+      - notMatchRegex:
+          path: spec.groups[0].rules[2].expr
+          pattern: tenantID
+        template: templates/prometheus-rule.yaml
+      - notMatchRegex:
+          path: spec.groups[0].rules[3].expr
+          pattern: tenantID
+        template: templates/prometheus-rule.yaml
+
+  # --- Grafana Dashboards ConfigMap ---
+
+  - it: should not render Grafana ConfigMap when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/grafana-dashboards-configmap.yaml
+
+  - it: should render Grafana ConfigMap when enabled
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - isKind:
+          of: ConfigMap
+        template: templates/grafana-dashboards-configmap.yaml
+      - equal:
+          path: metadata.labels["grafana_dashboard"]
+          value: "1"
+        template: templates/grafana-dashboards-configmap.yaml
+
+  # --- Dashboard JSON metric name guards ---
+
+  - it: should reference expected processor metric names in dashboard JSON
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["processor.json"]
+          pattern: job_processing_duration_seconds_bucket
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["processor.json"]
+          pattern: job_queue_wait_duration_seconds_bucket
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["processor.json"]
+          pattern: plan_build_duration_seconds_bucket
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["processor.json"]
+          pattern: jobs_processed_total
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["processor.json"]
+          pattern: active_workers
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["processor.json"]
+          pattern: processor_inflight_requests
+        template: templates/grafana-dashboards-configmap.yaml
+
+  - it: should not reference tenantID in processor dashboard JSON
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: data["processor.json"]
+          pattern: tenantID
+        template: templates/grafana-dashboards-configmap.yaml
+
+  - it: should reference expected apiserver metric names in dashboard JSON
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["apiserver.json"]
+          pattern: http_requests_total
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["apiserver.json"]
+          pattern: http_request_duration_seconds_bucket
+        template: templates/grafana-dashboards-configmap.yaml

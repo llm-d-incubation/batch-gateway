@@ -19,6 +19,18 @@ The processor is a background worker component that polls for and processes batc
 
 ## Installing the Chart
 
+### From OCI registry (recommended for releases)
+
+The chart is published to GitHub Container Registry for each release. Use `--version` with the **chart semver** (same as `Chart.yaml` `version`: the git tag **without** `v`, e.g. `v1.0.0` → `1.0.0`):
+
+```bash
+helm install batch-gateway oci://ghcr.io/llm-d-incubation/charts/batch-gateway --version 1.0.0
+```
+
+Replace `1.0.0` with the version you need. Image tags in the published chart are pinned to the release version.
+
+### From source
+
 To install the chart with the release name `my-release`:
 
 ```bash
@@ -191,6 +203,61 @@ spec:
 ### Processor
 - **Liveness Probe**: `GET /health` on port 9090
 - **Readiness Probe**: `GET /health` on port 9090
+
+## Monitoring & Dashboards
+
+### Prometheus Metrics
+
+Enable ServiceMonitor/PodMonitor for automatic Prometheus scraping:
+
+```yaml
+apiserver:
+  serviceMonitor:
+    enabled: true
+
+processor:
+  podMonitor:
+    enabled: true
+```
+
+Requires the [Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator) (included in OpenShift Monitoring).
+
+### Prometheus Alerts
+
+Enable built-in alert rules:
+
+```yaml
+prometheusRule:
+  enabled: true
+```
+
+### Grafana Dashboards
+
+The chart includes pre-built dashboards in `charts/batch-gateway/dashboards/`:
+- **apiserver.json** — request rate, error rate, latency, in-flight requests
+- **processor.json** — job throughput, queue wait, worker utilization, per-model metrics
+
+**Option 1: Grafana sidecar (Kubernetes/OpenShift)**
+
+Enable the dashboard ConfigMap and configure Grafana's sidecar to auto-load it:
+
+```yaml
+grafana:
+  dashboards:
+    enabled: true
+```
+
+The ConfigMap is labeled `grafana_dashboard: "1"` for sidecar discovery.
+
+**Option 2: Manual import (any Grafana instance)**
+
+1. Copy the JSON file from `charts/batch-gateway/dashboards/`
+2. In Grafana UI: Dashboards → Import → paste JSON
+3. Select your Prometheus datasource
+
+**Option 3: OpenShift with Grafana Operator**
+
+If the [Grafana Operator](https://github.com/grafana/grafana-operator) is installed, create a `GrafanaDashboard` CR referencing the JSON. This is not automated by the chart yet — see [#176](https://github.com/llm-d-incubation/batch-gateway/issues/176) for updates.
 
 ## Security
 

@@ -105,7 +105,7 @@ func WriteAPIError(w http.ResponseWriter, r *http.Request, oaiErr openai.APIErro
 		Error: oaiErr,
 	}
 
-	WriteJSONResponse(w, r, oaiErr.Code, errorResp)
+	WriteJSONResponse(w, r, oaiErr.HTTPStatus, errorResp)
 }
 
 func WriteInternalServerError(w http.ResponseWriter, r *http.Request) {

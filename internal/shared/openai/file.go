@@ -74,8 +74,8 @@ type FileObject struct {
 	// required. The Unix timestamp (in seconds) for when the file was created.
 	CreatedAt int64 `json:"created_at"`
 
-	// The Unix timestamp (in seconds) for when the file will expire.
-	ExpiresAt int64 `json:"expires_at"`
+	// optional, nullable. The Unix timestamp (in seconds) for when the file will expire.
+	ExpiresAt *int64 `json:"expires_at"`
 
 	// required. The name of the file.
 	Filename string `json:"filename"`
@@ -87,7 +87,7 @@ type FileObject struct {
 	Purpose FileObjectPurpose `json:"purpose"`
 
 	// Deprecated. The current status of the file, which can be either `uploaded`, `processed`, or `error`.
-	Status FileObjectStatus `json:"status,omitempty"`
+	Status FileObjectStatus `json:"status"`
 
 	// Deprecated. For details on why a fine-tuning training file failed validation, see the `error` field on `fine_tuning.job`.
 	StatusDetails string `json:"status_details,omitempty"`

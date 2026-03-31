@@ -27,10 +27,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
-	"k8s.io/klog/v2"
 )
 
 func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJobPriority) (err error) {
@@ -38,7 +38,7 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		err = fmt.Errorf("empty item")
 		logger.Error(err, "PQEnqueue:")
@@ -94,7 +94,7 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		err = fmt.Errorf("empty item")
 		logger.Error(err, "PQDelete:")
@@ -135,20 +135,25 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// Get items from the queue.
-	if timeout > 0 {
-		logger.V(logging.DEBUG).Info("PQDequeue: Start BZMPop")
+	// Use non-blocking ZMPop when timeout is zero, blocking BZMPop otherwise.
+	var vals []goredis.Z
+	if timeout <= 0 {
+		logger.V(logging.DEBUG).Info("PQDequeue: Start ZMPop (non-blocking)")
+		_, vals, err = c.redisClient.ZMPop(
+			ctx, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
+		logger.V(logging.DEBUG).Info("PQDequeue: End ZMPop")
 	} else {
-		logger.Info("PQDequeue: Start BZMPop without timeout")
+		logger.V(logging.DEBUG).Info("PQDequeue: Start BZMPop", "timeout", timeout)
+		_, vals, err = c.redisClient.BZMPop(
+			ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
+		logger.V(logging.DEBUG).Info("PQDequeue: End BZMPop")
 	}
-	_, vals, err := c.redisClient.BZMPop(
-		ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
-	logger.V(logging.DEBUG).Info("PQDequeue: End BZMPop")
 	if err != nil {
 		if unrecognizedBlockingError(err) {
-			logger.Error(err, "PQDequeue: BZMPop failed")
+			logger.Error(err, "PQDequeue: B/ZMPop failed")
 			cerr := c.redisClientChecker.Check(ctx)
 			if cerr != nil {
 				logger.Error(err, "PQDequeue: ClientCheck failed")

@@ -22,14 +22,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr"
+	"golang.org/x/sync/errgroup"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	fs "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
@@ -40,18 +43,21 @@ type GarbageCollector struct {
 	filesClient     fs.BatchFilesClient
 	dryRun          bool
 	interval        time.Duration
+	maxConcurrency  int
 	onCycleComplete func(*Result)
 }
 
 // NewGarbageCollector creates a new garbage collector.
+// maxConcurrency bounds how many items are deleted in parallel within a single page.
 // onCycleComplete, if non-nil, is called after each GC cycle with the result.
-func NewGarbageCollector(batchDBClient db.BatchDBClient, fileDBClient db.FileDBClient, filesClient fs.BatchFilesClient, dryRun bool, interval time.Duration, onCycleComplete func(*Result)) *GarbageCollector {
+func NewGarbageCollector(batchDBClient db.BatchDBClient, fileDBClient db.FileDBClient, filesClient fs.BatchFilesClient, dryRun bool, interval time.Duration, maxConcurrency int, onCycleComplete func(*Result)) *GarbageCollector {
 	return &GarbageCollector{
 		batchDBClient:   batchDBClient,
 		fileDBClient:    fileDBClient,
 		filesClient:     filesClient,
 		dryRun:          dryRun,
 		interval:        interval,
+		maxConcurrency:  maxConcurrency,
 		onCycleComplete: onCycleComplete,
 	}
 }
@@ -69,7 +75,7 @@ const pageSize = 100
 
 // collectBatchJobs fetches and processes expired batch jobs.
 func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	query := &db.BatchQuery{BaseQuery: db.BaseQuery{Expired: true}}
 
 	cursor := 0
@@ -85,15 +91,25 @@ func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result)
 			return fmt.Errorf("failed to query expired batch jobs: %w", err)
 		}
 
+		var mu sync.Mutex
+		var grp errgroup.Group
+		grp.SetLimit(c.maxConcurrency)
+
 		for _, batch := range batches {
-			deleted, err := c.processBatch(ctx, batch)
-			if err != nil {
-				result.BatchesFailed++
-				logger.Error(err, "Failed to process batch job", "jobID", batch.ID)
-			} else if deleted {
-				result.BatchesDeleted++
-			}
+			grp.Go(func() error {
+				deleted, err := c.processBatch(ctx, batch)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.BatchesFailed++
+					logger.Error(err, "Failed to process batch job", "jobID", batch.ID)
+				} else if deleted {
+					result.BatchesDeleted++
+				}
+				return nil // don't short-circuit other deletions
+			})
 		}
+		_ = grp.Wait()
 
 		if !expectMore {
 			break
@@ -106,7 +122,7 @@ func (c *GarbageCollector) collectBatchJobs(ctx context.Context, result *Result)
 
 // collectFiles fetches and processes expired files.
 func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// includeStatic=true to retrieve Spec (contains the filename needed for physical file deletion).
 	query := &db.FileQuery{
@@ -126,15 +142,25 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 			return fmt.Errorf("failed to query expired files: %w", err)
 		}
 
+		var mu sync.Mutex
+		var grp errgroup.Group
+		grp.SetLimit(c.maxConcurrency)
+
 		for _, file := range files {
-			deleted, err := c.processFile(ctx, file)
-			if err != nil {
-				result.FilesFailed++
-				logger.Error(err, "Failed to process file", "fileID", file.ID)
-			} else if deleted {
-				result.FilesDeleted++
-			}
+			grp.Go(func() error {
+				deleted, err := c.processFile(ctx, file)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.FilesFailed++
+					logger.Error(err, "Failed to process file", "fileID", file.ID)
+				} else if deleted {
+					result.FilesDeleted++
+				}
+				return nil // don't short-circuit other deletions
+			})
 		}
+		_ = grp.Wait()
 
 		if !expectMore {
 			break
@@ -149,7 +175,7 @@ func (c *GarbageCollector) collectFiles(ctx context.Context, result *Result) err
 // It blocks until the context is cancelled, executing a GC cycle immediately on start
 // and then on every tick of the interval.
 func (c *GarbageCollector) RunLoop(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.Info("Starting garbage collection loop", "interval", c.interval)
 
 	// Run immediately on startup before waiting for the first tick.
@@ -171,7 +197,7 @@ func (c *GarbageCollector) RunLoop(ctx context.Context) error {
 
 // run executes a single GC cycle and logs the result.
 func (c *GarbageCollector) run(ctx context.Context) *Result {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	result := &Result{}
 
@@ -198,7 +224,7 @@ func (c *GarbageCollector) run(ctx context.Context) *Result {
 
 // processBatch deletes an expired batch job. Returns true if the job was deleted.
 func (c *GarbageCollector) processBatch(ctx context.Context, job *db.BatchItem) (bool, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	if c.dryRun {
 		logger.V(logging.DEBUG).Info("Expired job found", "jobID", job.ID, "expiry", job.Expiry, "action", "dry-run")
@@ -220,7 +246,7 @@ func (c *GarbageCollector) processBatch(ctx context.Context, job *db.BatchItem) 
 
 // processFile deletes an expired file's physical storage and DB metadata. Returns true if the file was deleted.
 func (c *GarbageCollector) processFile(ctx context.Context, file *db.FileItem) (bool, error) {
-	logger := klog.FromContext(ctx)
+	logger := logr.FromContextOrDiscard(ctx)
 
 	if c.dryRun {
 		logger.V(logging.DEBUG).Info("Expired file found", "fileID", file.ID, "expiry", file.Expiry, "action", "dry-run")
@@ -239,8 +265,9 @@ func (c *GarbageCollector) processFile(ctx context.Context, file *db.FileItem) (
 
 	// Delete the physical file first, then the DB metadata. If the file is already
 	// gone (e.g. from a previous partial GC cycle), proceed to delete the metadata.
-	if err := c.filesClient.Delete(ctx, fileObject.Filename, folderName); err != nil && !errors.Is(err, os.ErrNotExist) {
-		logger.Error(err, "Failed to delete physical file", "fileID", file.ID, "fileName", fileObject.Filename, "folderName", folderName)
+	storageName := ucom.FileStorageName(fileObject.ID, fileObject.Filename)
+	if err := c.filesClient.Delete(ctx, storageName, folderName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Error(err, "Failed to delete physical file", "fileID", file.ID, "storageName", storageName, "folderName", folderName)
 		return false, fmt.Errorf("failed to delete physical file with ID %v : %w", file.ID, err)
 	}
 

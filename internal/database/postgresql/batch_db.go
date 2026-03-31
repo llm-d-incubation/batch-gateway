@@ -21,8 +21,8 @@ import (
 	_ "embed"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"k8s.io/klog/v2"
 )
 
 //go:embed batch_schema.sql
@@ -56,7 +56,7 @@ func NewPostgresBatchDBClient(ctx context.Context, config *PostgreSQLConfig) (*P
 		return nil, err
 	}
 
-	klog.FromContext(ctx).Info("NewPostgresBatchDBClient: client created successfully")
+	logr.FromContextOrDiscard(ctx).Info("NewPostgresBatchDBClient: client created successfully")
 	return &PostgresBatchDBClient{pgCore}, nil
 }
 

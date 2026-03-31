@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,6 +43,36 @@ func (d *dbUpdateErrWrapper) GetContext(parentCtx context.Context, timeLimit tim
 	return context.WithTimeout(parentCtx, timeLimit)
 }
 func (d *dbUpdateErrWrapper) Close() error {
+	return d.inner.Close()
+}
+
+// dbUpdateFailOnceWrapper fails the first N DBUpdate calls, then delegates to inner.
+type dbUpdateFailOnceWrapper struct {
+	inner     db.BatchDBClient
+	failCount int
+	calls     int
+}
+
+func (d *dbUpdateFailOnceWrapper) DBStore(ctx context.Context, item *db.BatchItem) error {
+	return d.inner.DBStore(ctx, item)
+}
+func (d *dbUpdateFailOnceWrapper) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
+	return d.inner.DBGet(ctx, query, includeStatic, start, limit)
+}
+func (d *dbUpdateFailOnceWrapper) DBUpdate(ctx context.Context, item *db.BatchItem) error {
+	d.calls++
+	if d.calls <= d.failCount {
+		return fmt.Errorf("simulated DB update failure (call %d)", d.calls)
+	}
+	return d.inner.DBUpdate(ctx, item)
+}
+func (d *dbUpdateFailOnceWrapper) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
+	return d.inner.DBDelete(ctx, IDs)
+}
+func (d *dbUpdateFailOnceWrapper) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parentCtx, timeLimit)
+}
+func (d *dbUpdateFailOnceWrapper) Close() error {
 	return d.inner.Close()
 }
 
