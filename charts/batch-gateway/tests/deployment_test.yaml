@@ -130,6 +130,87 @@ tests:
           value: 65532
         template: templates/gc-deployment.yaml
 
+  # --- OTel env vars ---
+
+  - it: should not inject OTel env vars when endpoint is empty
+    templates:
+      - templates/apiserver-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  - it: should inject all OTel env vars when endpoint is set
+    templates:
+      - templates/apiserver-deployment.yaml
+    set:
+      global.otel.endpoint: "http://jaeger:4317"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "http://jaeger:4317"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_TRACES_SAMPLER
+            value: "parentbased_traceidratio"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_TRACES_SAMPLER_ARG
+            value: "1.0"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  - it: should not inject OTel env vars on processor when endpoint is empty
+    templates:
+      - templates/processor-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  - it: should inject all OTel env vars on processor when endpoint is set
+    templates:
+      - templates/processor-deployment.yaml
+    set:
+      global.otel.endpoint: "http://jaeger:4317"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "http://jaeger:4317"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_TRACES_SAMPLER
+            value: "parentbased_traceidratio"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
   # --- Fail guards ---
 
   - it: should fail when fs pvcName is empty

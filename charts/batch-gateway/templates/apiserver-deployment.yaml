@@ -46,10 +46,24 @@ spec:
         - --v={{ .Values.apiserver.logging.verbosity }}
         {{- if .Values.global.otel.endpoint }}
         env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: {{ .Values.global.otel.endpoint | quote }}
         - name: OTEL_EXPORTER_OTLP_INSECURE
           value: {{ .Values.global.otel.insecure | quote }}
+        - name: OTEL_TRACES_SAMPLER
+          value: {{ .Values.global.otel.sampler | quote }}
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: {{ .Values.global.otel.samplerArg | quote }}
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "k8s.namespace.name=$(NAMESPACE),k8s.pod.name=$(POD_NAME),service.version={{ .Chart.AppVersion }}"
         {{- end }}
         ports:
         - name: http
