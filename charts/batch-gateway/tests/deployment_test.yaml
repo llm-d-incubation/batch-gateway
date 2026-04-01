@@ -92,6 +92,10 @@ tests:
           path: spec.template.spec.securityContext.runAsUser
         template: templates/apiserver-deployment.yaml
       - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+        template: templates/apiserver-deployment.yaml
+      - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
         template: templates/processor-deployment.yaml
@@ -99,11 +103,19 @@ tests:
           path: spec.template.spec.securityContext.runAsUser
         template: templates/processor-deployment.yaml
       - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+        template: templates/processor-deployment.yaml
+      - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
         template: templates/gc-deployment.yaml
       - isNull:
           path: spec.template.spec.securityContext.runAsUser
+        template: templates/gc-deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
         template: templates/gc-deployment.yaml
 
   - it: should allow per-component podSecurityContext override

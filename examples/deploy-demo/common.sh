@@ -44,7 +44,7 @@ BATCH_REDIS_RELEASE="${BATCH_REDIS_RELEASE:-redis}"
 BATCH_POSTGRESQL_RELEASE="${BATCH_POSTGRESQL_RELEASE:-postgresql}"
 # WARNING: Default passwords are for demo only. For production, override via env vars or use K8s secrets.
 BATCH_POSTGRESQL_PASSWORD="${BATCH_POSTGRESQL_PASSWORD:-postgres}"
-BATCH_STORAGE_TYPE="${BATCH_STORAGE_TYPE:-fs}"
+BATCH_STORAGE_TYPE="${BATCH_STORAGE_TYPE:-s3}"
 BATCH_MINIO_RELEASE="${BATCH_MINIO_RELEASE:-minio}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
@@ -498,8 +498,9 @@ install_batch_gateway() {
 
     wait_for_deployment "${BATCH_HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 120s
     wait_for_deployment "${BATCH_HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 120s
+    wait_for_deployment "${BATCH_HELM_RELEASE}-gc" "${BATCH_NAMESPACE}" 120s
 
-    log "batch-gateway installed (apiserver + processor)."
+    log "batch-gateway installed (apiserver + processor + gc)."
 }
 
 # do_deploy_batch_gateway [extra_helm_args...]
@@ -511,9 +512,12 @@ do_deploy_batch_gateway() {
 
     install_batch_redis
     install_batch_postgresql
-    install_batch_minio
+    if [ "${BATCH_STORAGE_TYPE}" = "s3" ]; then
+        install_batch_minio
+    else
+        create_batch_pvc
+    fi
     create_batch_secret
-    create_batch_pvc
 
     local helm_args=(
         --namespace "${BATCH_NAMESPACE}"
@@ -537,6 +541,7 @@ do_deploy_batch_gateway() {
             --set "global.fileClient.s3.accessKeyId=${MINIO_ROOT_USER}"
             --set "global.fileClient.s3.prefix=${MINIO_BUCKET}"
             --set "global.fileClient.s3.usePathStyle=true"
+            --set "global.fileClient.s3.autoCreateBucket=true"
         )
     else
         helm_args+=(
