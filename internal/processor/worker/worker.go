@@ -225,7 +225,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 		if err != nil {
 			pollLogger.Error(err, "Failed to convert job object in DB to job info object")
 			p.releaseForNextPoll()
-			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil); failErr != nil {
+			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil, nil); failErr != nil {
 				pollLogger.Error(failErr, "Failed to mark malformed job as failed")
 			}
 			continue
@@ -289,10 +289,9 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			defer bgSpan.End()
 			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue job during graceful shutdown, marking as failed")
-				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil); failErr != nil {
+				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil, jobInfo); failErr != nil {
 					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
 				}
-				recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)

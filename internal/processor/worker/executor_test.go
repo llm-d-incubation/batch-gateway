@@ -1786,7 +1786,7 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}
 
 	ctx := testLoggerCtx(t)
-	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts); err != nil {
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts, nil); err != nil {
 		t.Fatalf("handleFailed: %v", err)
 	}
 
