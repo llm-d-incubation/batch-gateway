@@ -14,7 +14,7 @@ tests:
           pattern: 'observability_port: "8081"'
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'database_type: "postgresql"'
+          pattern: 'db_client:\n\s+type: "postgresql"'
 
   - it: should render inputHeaders when set
     asserts:

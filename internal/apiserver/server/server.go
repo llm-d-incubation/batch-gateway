@@ -51,15 +51,15 @@ type Server struct {
 func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.Clientset, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
-	config.RedisCfg.ServiceName = "batch-apiserver"
-	config.RedisCfg.EnableTracing = config.OTel.RedisTracing
-	config.PostgreSQLCfg.EnableTracing = config.OTel.PostgresqlTracing
+	config.DBClientCfg.RedisCfg.ServiceName = "batch-apiserver"
+	config.DBClientCfg.RedisCfg.EnableTracing = config.OTelCfg.RedisTracing
+	config.DBClientCfg.PostgreSQLCfg.EnableTracing = config.OTelCfg.PostgresqlTracing
 
 	clients, err := clientset.NewClientset(
 		ctx,
-		config.DatabaseType,
-		&config.PostgreSQLCfg,
-		&config.RedisCfg,
+		config.DBClientCfg.Type,
+		&config.DBClientCfg.PostgreSQLCfg,
+		&config.DBClientCfg.RedisCfg,
 		config.FileClientCfg.Type,
 		&config.FileClientCfg.FSConfig,
 		&config.FileClientCfg.S3Config,

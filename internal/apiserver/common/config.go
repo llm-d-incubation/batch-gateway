@@ -22,11 +22,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
-	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
-	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
+	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
 	"gopkg.in/yaml.v3"
 	"k8s.io/klog/v2"
 )
@@ -123,31 +119,16 @@ type ServerConfig struct {
 	FileAPI  FileAPIConfig  `yaml:"file_api"`
 
 	// Files client configuration
-	FileClientCfg struct {
-		Type     string          `yaml:"type"`
-		FSConfig fsclient.Config `yaml:"fs"`
-		S3Config s3client.Config `yaml:"s3"`
-		Retry    retry.Config    `yaml:"retry"`
-	} `yaml:"file_client"`
+	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
 
-	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
-	DatabaseType string `yaml:"database_type"`
-
-	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
-	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
-
-	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
-	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
-	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
+	// DB client configuration
+	DBClientCfg sharedcfg.DBClientConfig `yaml:"db_client"`
 
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
-	// OTel holds OpenTelemetry-related settings.
-	OTel struct {
-		RedisTracing      bool `yaml:"redis_tracing"`
-		PostgresqlTracing bool `yaml:"postgresql_tracing"`
-	} `yaml:"otel"`
+	// OTelCfg holds OpenTelemetry-related settings.
+	OTelCfg sharedcfg.OTelConfig `yaml:"otel"`
 }
 
 func NewConfig() *ServerConfig {
@@ -224,8 +205,8 @@ func (c *ServerConfig) applyDefaults() {
 	if c.ObservabilityPort == "" {
 		c.ObservabilityPort = "8081"
 	}
-	if c.DatabaseType == "" {
-		c.DatabaseType = "redis"
+	if c.DBClientCfg.Type == "" {
+		c.DBClientCfg.Type = "redis"
 	}
 	if c.ReadHeaderTimeoutSeconds <= 0 {
 		c.ReadHeaderTimeoutSeconds = DefaultReadHeaderTimeoutSeconds

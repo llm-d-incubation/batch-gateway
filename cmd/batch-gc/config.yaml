@@ -9,23 +9,25 @@ interval: 1h
 # Maximum number of concurrent item deletions per GC cycle (default: 10)
 max_concurrency: 10
 
-# Database backend type for persistent storage: "redis" or "postgresql".
-# Connection URLs are read from the app secret (/etc/.secrets/), not from this file.
-database_type: "postgresql"
+# Database client configuration
+db_client:
+  # Type selects the database backend: "redis" or "postgresql".
+  # Connection URLs are read from the app secret (/etc/.secrets/), not from this file.
+  type: "postgresql"
 
-# Redis client settings (connection URL is read from the app secret, not here).
-# 0 (or "0s") means go-redis library default.
-# redis:
-#   db: 0
-#   enable_tls: false
-#   insecure: false
-#   timeout: "0s"
-#   max_retries: 0
-#   min_retry_backoff: "0s"
-#   max_retry_backoff: "0s"
-#   pool_timeout: "0s"
-#   conn_max_idle_time: "0s"
-#   conn_max_lifetime: "0s"
+  # Redis client settings (connection URL is read from the app secret, not here).
+  # 0 (or "0s") means go-redis library default.
+  # redis:
+  #   db: 0
+  #   enable_tls: false
+  #   insecure: false
+  #   timeout: "0s"
+  #   max_retries: 0
+  #   min_retry_backoff: "0s"
+  #   max_retry_backoff: "0s"
+  #   pool_timeout: "0s"
+  #   conn_max_idle_time: "0s"
+  #   conn_max_lifetime: "0s"
 
 # File storage backend configuration.
 file_client:

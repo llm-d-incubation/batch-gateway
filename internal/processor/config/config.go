@@ -24,12 +24,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
-	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
-	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
+	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
@@ -64,11 +61,8 @@ type ProcessorConfig struct {
 	// Covers the full lifecycle from submission to terminal state, which can span hours for large jobs.
 	E2ELatencyBucket BucketConfig `yaml:"e2e_latency_bucket"`
 
-	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
-	DatabaseType string `yaml:"database_type"`
-
-	// PostgreSQLCfg holds PostgreSQL connection settings (used when DatabaseType is "postgresql").
-	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`
+	// DB client configuration
+	DBClientCfg sharedcfg.DBClientConfig `yaml:"db_client"`
 
 	Addr string `yaml:"addr"`
 	// TerminateOnObservabilityFailure controls whether observability server failures should terminate the processor.
@@ -106,26 +100,14 @@ type ProcessorConfig struct {
 	// Each recovery can involve DB lookups, S3 uploads, and status updates.
 	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
 
-	// RedisCfg holds Redis client settings (timeouts, retries, pool, TLS).
-	// URL, ServiceName, EnableTracing, and Certificates are set at runtime, not from YAML.
-	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
-
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
-	// OTel holds OpenTelemetry-related settings.
-	OTel struct {
-		RedisTracing      bool `yaml:"redis_tracing"`
-		PostgresqlTracing bool `yaml:"postgresql_tracing"`
-	} `yaml:"otel"`
+	// OTelCfg holds OpenTelemetry-related settings.
+	OTelCfg sharedcfg.OTelConfig `yaml:"otel"`
 
 	// FileClient holds configuration for the shared file storage client (fs or s3).
-	FileClientCfg struct {
-		Type     string          `yaml:"type"`
-		FSConfig fsclient.Config `yaml:"fs"`
-		S3Config s3client.Config `yaml:"s3"`
-		Retry    retry.Config    `yaml:"retry"`
-	} `yaml:"file_client"`
+	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
 }
 
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
@@ -208,13 +190,10 @@ func NewConfig() *ProcessorConfig {
 		TerminateOnObservabilityFailure: false,
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
-		DatabaseType:                    "redis",
-		FileClientCfg: struct {
-			Type     string          `yaml:"type"`
-			FSConfig fsclient.Config `yaml:"fs"`
-			S3Config s3client.Config `yaml:"s3"`
-			Retry    retry.Config    `yaml:"retry"`
-		}{
+		DBClientCfg: sharedcfg.DBClientConfig{
+			Type: "redis",
+		},
+		FileClientCfg: sharedcfg.FileClientConfig{
 			Type: "mock",
 			Retry: retry.Config{
 				MaxRetries:     3,

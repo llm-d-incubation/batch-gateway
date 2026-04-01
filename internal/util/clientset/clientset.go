@@ -143,6 +143,9 @@ func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfi
 // NewClientset creates all clients.
 // component identifies the caller (e.g. "processor", "apiserver") for metrics.
 // fileRetryCfg, if non-nil with MaxRetries > 0, wraps the file client with retry logic.
+//
+// TODO: refactor to accept sharedcfg.DBClientConfig and sharedcfg.FileClientConfig
+// instead of exploding them into individual parameters.
 func NewClientset(
 	ctx context.Context,
 	dbType string,

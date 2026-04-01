@@ -196,7 +196,7 @@ The processor calls models through the MaaS gateway using HTTPS. `passThroughHea
 ```bash
 $ helm install batch-gateway ./charts/batch-gateway -n batch-api \
     --set "global.secretName=batch-gateway-secrets" \
-    --set "global.databaseType=postgresql" \
+    --set "global.dbClient.type=postgresql" \
     --set "global.fileClient.type=fs" \
     --set "global.fileClient.fs.basePath=/tmp/batch-gateway" \
     --set "global.fileClient.fs.pvcName=batch-gateway-files" \

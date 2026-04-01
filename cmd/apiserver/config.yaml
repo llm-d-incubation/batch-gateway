@@ -54,13 +54,15 @@ file_client:
   #   prefix: "batch-gateway"  # Optional: prefix for S3 object keys
   #   use_path_style: false    # Optional: use path-style addressing
 
-# Database type: "mock", "redis", or "postgresql" (not yet implemented)
-# database_type: "redis"
-
-# Redis configuration (used when database_type is "redis")
-# In Kubernetes, url_secret_key references a key within the mounted secret (/etc/.secrets/).
-# redis:
-#   url_secret_key: "redis-url"  # key name within /etc/.secrets/ (mounted from existingSecret)
+# Database client configuration
+# db_client:
+#   # Type selects the database backend: "mock", "redis", or "postgresql"
+#   type: "redis"
+#
+#   # Redis configuration (used when type is "redis")
+#   # In Kubernetes, url_secret_key references a key within the mounted secret (/etc/.secrets/).
+#   redis:
+#     url_secret_key: "redis-url"  # key name within /etc/.secrets/ (mounted from existingSecret)
 
 # Batch API configuration
 batch_api:

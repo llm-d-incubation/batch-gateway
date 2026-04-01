@@ -14,7 +14,7 @@ tests:
           pattern: 'interval: "30m"'
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'database_type: "postgresql"'
+          pattern: 'db_client:\n\s+type: "postgresql"'
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'max_concurrency: 10'

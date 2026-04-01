@@ -112,7 +112,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 EOF
     kubectl rollout restart deploy/maas-api -n "${MAAS_NAMESPACE}"
-    kubectl rollout status deploy/maas-api -n "${MAAS_NAMESPACE}" --timeout=120s
+    kubectl rollout status deploy/maas-api -n "${MAAS_NAMESPACE}" --timeout=180s
 
     create_selfsigned_issuer
 
@@ -279,7 +279,7 @@ EOF
         # Controller can get stuck; bouncing may unstick it (known issue)
         warn "MaaSModelRef not ready after ${retries} retries, bouncing maas-controller..."
         kubectl rollout restart deployment/maas-controller -n "${MAAS_NAMESPACE}" 2>/dev/null || true
-        kubectl rollout status deployment/maas-controller -n "${MAAS_NAMESPACE}" --timeout=120s 2>/dev/null || true
+        kubectl rollout status deployment/maas-controller -n "${MAAS_NAMESPACE}" --timeout=180s 2>/dev/null || true
         for i in $(seq 1 30); do
             local phase
             phase=$(kubectl get maasmodelref "${isvc_name}" -n "${LLM_NAMESPACE}" \
@@ -642,9 +642,9 @@ cmd_uninstall() {
         bash "${cleanup_script}" --include-crds || warn "cleanup-odh.sh returned non-zero"
     else
         warn "MaaS cleanup script not found at ${cleanup_script}, cleaning up manually..."
-        kubectl delete datasciencecluster --all -A --timeout=120s 2>/dev/null || true
-        kubectl delete dscinitialization --all -A --timeout=120s 2>/dev/null || true
-        kubectl delete namespace "${MAAS_NAMESPACE}" --timeout=120s 2>/dev/null || true
+        kubectl delete datasciencecluster --all -A --timeout=180s 2>/dev/null || true
+        kubectl delete dscinitialization --all -A --timeout=180s 2>/dev/null || true
+        kubectl delete namespace "${MAAS_NAMESPACE}" --timeout=180s 2>/dev/null || true
         kubectl delete namespace "${MAAS_POLICY_NAMESPACE}" --timeout=60s 2>/dev/null || true
         kubectl delete namespace kuadrant-system --timeout=60s 2>/dev/null || true
         kubectl delete gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true

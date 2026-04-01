@@ -683,7 +683,7 @@ MODEL_URL=$(oc get llminferenceservice ${ISVC_NAME} -n ${LLM_NS} \
 helm install batch-gateway ./charts/batch-gateway \
     --namespace ${BATCH_NS} \
     --set "global.secretName=batch-gateway-secrets" \
-    --set "global.databaseType=postgresql" \
+    --set "global.dbClient.type=postgresql" \
     --set "global.fileClient.type=fs" \
     --set "global.fileClient.fs.basePath=/tmp/batch-gateway" \
     --set "global.fileClient.fs.pvcName=batch-gateway-files" \

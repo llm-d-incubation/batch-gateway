@@ -21,18 +21,19 @@ data:
     shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}
     work_dir: {{ .Values.processor.config.workDir | quote }}
 
-    database_type: {{ .Values.global.databaseType | quote }}
-    redis:
-      db: {{ .Values.global.redis.db }}
-      enable_tls: {{ .Values.global.redis.enableTLS }}
-      insecure: {{ .Values.global.redis.insecure }}
-      timeout: {{ .Values.global.redis.timeout | quote }}
-      max_retries: {{ .Values.global.redis.maxRetries }}
-      min_retry_backoff: {{ .Values.global.redis.minRetryBackoff | quote }}
-      max_retry_backoff: {{ .Values.global.redis.maxRetryBackoff | quote }}
-      pool_timeout: {{ .Values.global.redis.poolTimeout | quote }}
-      conn_max_idle_time: {{ .Values.global.redis.connMaxIdleTime | quote }}
-      conn_max_lifetime: {{ .Values.global.redis.connMaxLifetime | quote }}
+    db_client:
+      type: {{ .Values.global.dbClient.type | quote }}
+      redis:
+        db: {{ .Values.global.dbClient.redis.db }}
+        enable_tls: {{ .Values.global.dbClient.redis.enableTLS }}
+        insecure: {{ .Values.global.dbClient.redis.insecure }}
+        timeout: {{ .Values.global.dbClient.redis.timeout | quote }}
+        max_retries: {{ .Values.global.dbClient.redis.maxRetries }}
+        min_retry_backoff: {{ .Values.global.dbClient.redis.minRetryBackoff | quote }}
+        max_retry_backoff: {{ .Values.global.dbClient.redis.maxRetryBackoff | quote }}
+        pool_timeout: {{ .Values.global.dbClient.redis.poolTimeout | quote }}
+        conn_max_idle_time: {{ .Values.global.dbClient.redis.connMaxIdleTime | quote }}
+        conn_max_lifetime: {{ .Values.global.dbClient.redis.connMaxLifetime | quote }}
 
     {{- with .Values.processor.config.globalInferenceGateway }}
     global_inference_gateway:
