@@ -593,24 +593,23 @@ const sloTTFTMSHeader = "x-slo-ttft-ms"
 
 // mergeSLOTTFTIntoHeaders ensures headers is non-nil and sets sloTTFTMSHeader to the remaining
 // time until sloCtx's deadline in whole milliseconds, clamped to >= 0. If sloCtx has no
-// deadline, the header value is "0".
+// deadline or is cancelled, the headers map is returned unchanged.
 func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) map[string]string {
-	var ms string
 	if sloCtx.Err() == context.Canceled {
 		return headers
-	} else if dl, ok := sloCtx.Deadline(); ok {
-		sloMs := time.Until(dl).Milliseconds()
-		if sloMs < 0 {
-			sloMs = 0
-		}
-		ms = strconv.FormatInt(sloMs, 10)
-	} else {
-		ms = "0"
+	}
+	dl, ok := sloCtx.Deadline()
+	if !ok {
+		return headers
+	}
+	sloMs := time.Until(dl).Milliseconds()
+	if sloMs < 0 {
+		sloMs = 0
 	}
 	if headers == nil {
 		headers = make(map[string]string)
 	}
-	headers[sloTTFTMSHeader] = ms
+	headers[sloTTFTMSHeader] = strconv.FormatInt(sloMs, 10)
 	return headers
 }
 
