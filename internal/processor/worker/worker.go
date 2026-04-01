@@ -83,16 +83,17 @@ func NewProcessor(
 
 // Run starts processor orchestration and enters the polling loop.
 // If onReady is provided, it is called after pre-flight checks succeed and
-// right before the polling loop begins accepting work.
+// stale job recovery completes, right before the polling loop begins accepting work.
 func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err := p.prepare(ctx); err != nil {
 		return err
 	}
+
+	p.recoverStaleJobs(ctx)
+
 	if onReady != nil {
 		onReady()
 	}
-
-	p.recoverStaleJobs(ctx)
 
 	// Two context branches:
 	//   pollingCtx — controls the polling loop; cancelled by semaphore guard or SIGTERM.

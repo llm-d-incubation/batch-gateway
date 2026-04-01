@@ -39,6 +39,7 @@ func testBatches(t *testing.T) {
 	t.Run("MixedSuccessFailure", doTestBatchMixedSuccessFailure)
 	t.Run("SharedInputFile", doTestBatchSharedInputFile)
 	t.Run("PassThroughHeaders", doTestPassThroughHeaders)
+	t.Run("Expiration", doTestBatchExpiration)
 }
 
 func doTestBatchCancel(t *testing.T) {
@@ -94,6 +95,24 @@ func doTestBatchCancel(t *testing.T) {
 		finalBatch.OutputFileID,
 		finalBatch.ErrorFileID)
 
+	// 25 requests total (5 fast + 20 slow). Fast requests should complete before
+	// cancel; slow ones are cancelled in-flight or undispatched → failed.
+	if finalBatch.RequestCounts.Total != int64(len(lines)) {
+		t.Errorf("total = %d, want %d", finalBatch.RequestCounts.Total, len(lines))
+	}
+	if finalBatch.RequestCounts.Completed == 0 {
+		t.Error("expected at least one completed request (fast requests should finish before cancel)")
+	}
+	if finalBatch.RequestCounts.Failed == 0 {
+		t.Error("expected at least one failed request (slow requests should be cancelled)")
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Error("expected output_file_id to be set (fast requests completed)")
+	}
+	if finalBatch.ErrorFileID == "" {
+		t.Error("expected error_file_id to be set (slow requests cancelled)")
+	}
+
 	// Best-effort check: look for cancellation log in processor pods.
 	// This is informational only — log tail depth and rotation make it unreliable.
 	if testKubectlAvailable {
@@ -146,7 +165,15 @@ func doTestBatchCancelBeforeProcessing(t *testing.T) {
 	}
 
 	// Either way, the batch must reach "cancelled" eventually.
-	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
+	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
+
+	// Cancelled before processing: no requests should have completed.
+	if finalBatch.RequestCounts.Completed != 0 {
+		t.Errorf("completed = %d, want 0 (cancelled before processing)", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.OutputFileID != "" {
+		t.Errorf("expected empty output_file_id for batch cancelled before processing, got %q", finalBatch.OutputFileID)
+	}
 }
 
 // doTestBatchLifecycle creates a fresh batch, verifies list and retrieve operations,
@@ -194,7 +221,24 @@ func doTestBatchLifecycle(t *testing.T) {
 	}
 
 	// Poll until completion
-	_, _ = waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	// All 2 requests in testJSONL should succeed.
+	if finalBatch.RequestCounts.Total != 2 {
+		t.Errorf("total = %d, want 2", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Completed != 2 {
+		t.Errorf("completed = %d, want 2", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 0 {
+		t.Errorf("failed = %d, want 0", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Error("expected output_file_id to be set for completed batch")
+	}
+	if finalBatch.ErrorFileID != "" {
+		t.Errorf("expected empty error_file_id for fully-successful batch, got %q", finalBatch.ErrorFileID)
+	}
 }
 
 // doTestBatchSharedInputFile creates two batches from the same input file and
@@ -211,7 +255,27 @@ func doTestBatchSharedInputFile(t *testing.T) {
 	batch1, _ := waitForBatchStatus(t, batchID1, 5*time.Minute, openai.BatchStatusCompleted)
 	batch2, _ := waitForBatchStatus(t, batchID2, 5*time.Minute, openai.BatchStatusCompleted)
 
-	// Verify output files are distinct
+	// Both batches use the same 2-request input file and should fully succeed.
+	for i, b := range []*openai.Batch{batch1, batch2} {
+		label := fmt.Sprintf("batch%d", i+1)
+		if b.RequestCounts.Total != 2 {
+			t.Errorf("%s: total = %d, want 2", label, b.RequestCounts.Total)
+		}
+		if b.RequestCounts.Completed != 2 {
+			t.Errorf("%s: completed = %d, want 2", label, b.RequestCounts.Completed)
+		}
+		if b.RequestCounts.Failed != 0 {
+			t.Errorf("%s: failed = %d, want 0", label, b.RequestCounts.Failed)
+		}
+		if b.OutputFileID == "" {
+			t.Errorf("%s: expected output_file_id to be set", label)
+		}
+		if b.ErrorFileID != "" {
+			t.Errorf("%s: expected empty error_file_id, got %q", label, b.ErrorFileID)
+		}
+	}
+
+	// Verify output files are distinct.
 	if batch1.OutputFileID == batch2.OutputFileID {
 		t.Errorf("both batches produced the same output_file_id %q, expected distinct files", batch1.OutputFileID)
 	}
@@ -234,12 +298,21 @@ func doTestBatchMixedSuccessFailure(t *testing.T) {
 
 	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
 
-	// Verify request counts: 2 completed, 1 failed
+	// 3 requests: 2 valid (good-1, good-2) + 1 invalid model (bad-1).
+	if finalBatch.RequestCounts.Total != 3 {
+		t.Errorf("total = %d, want 3", finalBatch.RequestCounts.Total)
+	}
 	if finalBatch.RequestCounts.Completed != 2 {
 		t.Errorf("completed = %d, want 2", finalBatch.RequestCounts.Completed)
 	}
 	if finalBatch.RequestCounts.Failed != 1 {
 		t.Errorf("failed = %d, want 1", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Error("expected output_file_id to be set (2 requests succeeded)")
+	}
+	if finalBatch.ErrorFileID == "" {
+		t.Error("expected error_file_id to be set (1 request failed)")
 	}
 }
 
@@ -263,7 +336,24 @@ func doTestPassThroughHeaders(t *testing.T) {
 
 	batchID := mustCreateBatch(t, fileID, headerOpts...)
 
-	_, _ = waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	// All 2 requests in testJSONL should succeed.
+	if finalBatch.RequestCounts.Total != 2 {
+		t.Errorf("total = %d, want 2", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Completed != 2 {
+		t.Errorf("completed = %d, want 2", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 0 {
+		t.Errorf("failed = %d, want 0", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Error("expected output_file_id to be set")
+	}
+	if finalBatch.ErrorFileID != "" {
+		t.Errorf("expected empty error_file_id, got %q", finalBatch.ErrorFileID)
+	}
 
 	out, err := exec.Command("kubectl", "logs",
 		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
@@ -355,4 +445,99 @@ func doTestBatchPagination(t *testing.T) {
 	// Verify no overlap and full coverage.
 	allIDs := append(page1IDs, page2IDs...)
 	assertSliceEqual(t, createdIDs, allIDs)
+}
+
+// doTestBatchExpiration creates a batch with slow requests and a very short
+// completion_window so the SLO fires during processing. It verifies the batch
+// transitions to "expired" status with correct timestamps and partial results.
+//
+// With the simulator configured at TTFT=50ms + inter-token=100ms, each slow
+// request (max_tokens=200) takes ~20s. A 5s completion_window guarantees the
+// SLO fires while requests are in-flight or undispatched.
+func doTestBatchExpiration(t *testing.T) {
+	t.Helper()
+
+	client := newClient()
+	ctx := context.Background()
+
+	// Step 1: Create a "blocker" batch with many slow requests to saturate the
+	// processor's PerModelMaxConcurrency (default 10). This ensures the
+	// expiration batch cannot dispatch any requests before its SLO fires.
+	var blockerLines []string
+	for i := 1; i <= 50; i++ {
+		blockerLines = append(blockerLines, fmt.Sprintf(
+			`{"custom_id":"blocker-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Block %d"}]}}`, i, testModel, i))
+	}
+	blockerFileID := mustCreateFile(t, fmt.Sprintf("test-expiration-blocker-%s.jsonl", testRunID), strings.Join(blockerLines, "\n"))
+	blockerBatchID := mustCreateBatch(t, blockerFileID)
+
+	// Ensure the blocker batch is cancelled when the test ends (even on failure),
+	// so the processor is freed for subsequent tests.
+	t.Cleanup(func() {
+		_, err := client.Batches.Cancel(ctx, blockerBatchID)
+		if err != nil {
+			t.Logf("cleanup: cancel blocker batch %s failed (may already be done): %v", blockerBatchID, err)
+			return
+		}
+		waitForBatchStatus(t, blockerBatchID, 2*time.Minute, openai.BatchStatusCancelled)
+	})
+
+	// Wait for the blocker to reach in_progress so it holds all worker slots.
+	_, _ = waitForBatchStatus(t, blockerBatchID, 2*time.Minute, openai.BatchStatusInProgress)
+
+	// Step 2: Create the expiration batch with a short completion_window.
+	// Since the processor is saturated by the blocker, none of these requests
+	// can be dispatched before the 5s SLO fires.
+	const numRequests = 15
+	var lines []string
+	for i := 1; i <= numRequests; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"expire-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Expire %d"}]}}`, i, testModel, i))
+	}
+	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-expiration-%s.jsonl", testRunID), strings.Join(lines, "\n"))
+
+	// The openai-go SDK's BatchNewParamsCompletionWindow is a string type, so we
+	// can cast any valid Go duration string.
+	batch, err := client.Batches.New(ctx, openai.BatchNewParams{
+		InputFileID:      fileID,
+		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+		CompletionWindow: openai.BatchNewParamsCompletionWindow("5s"),
+		Metadata:         testBatchMetadata,
+	})
+	if err != nil {
+		t.Fatalf("create batch with short completion_window failed: %v", err)
+	}
+	batchID := batch.ID
+	t.Logf("created expiration batch %s with completion_window=5s (blocker=%s)", batchID, blockerBatchID)
+
+	// Wait for the batch to reach expired status.
+	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusExpired)
+
+	t.Logf("batch %s expired (completed=%d, failed=%d, total=%d, output_file_id=%s, error_file_id=%s)",
+		batchID,
+		finalBatch.RequestCounts.Completed,
+		finalBatch.RequestCounts.Failed,
+		finalBatch.RequestCounts.Total,
+		finalBatch.OutputFileID,
+		finalBatch.ErrorFileID)
+
+	// The processor was saturated by the blocker batch, so none of the
+	// expiration batch's requests could be dispatched before the SLO fired.
+	if finalBatch.RequestCounts.Total != numRequests {
+		t.Errorf("total = %d, want %d", finalBatch.RequestCounts.Total, numRequests)
+	}
+	if finalBatch.RequestCounts.Completed != 0 {
+		t.Errorf("completed = %d, want 0 (processor was saturated)", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != finalBatch.RequestCounts.Total {
+		t.Errorf("failed = %d, want %d (all requests should expire)", finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.OutputFileID != "" {
+		t.Errorf("expected empty output_file_id for fully-expired batch, got %q", finalBatch.OutputFileID)
+	}
+	if finalBatch.ErrorFileID == "" {
+		t.Error("expected error_file_id to be set for expired batch")
+	}
+
+	// Blocker batch cleanup is handled by t.Cleanup() registered above.
 }

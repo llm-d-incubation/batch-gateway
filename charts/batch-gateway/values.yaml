@@ -6,14 +6,13 @@ global:
   # All three components (apiserver, processor, gc) must run with the same UID/GID
   # when sharing files on a PVC. Per-component overrides are possible via
   # <component>.podSecurityContext, but use with caution to avoid permission issues.
-  # For OpenShift, set podSecurityContext: {} to use SCC-assigned UIDs.
+  #
+  # Only runAsNonRoot is set by default. The actual UID comes from the Dockerfile
+  # (USER 65532:65532) on vanilla Kubernetes, or from the namespace UID range on
+  # OpenShift (assigned by the restricted-v2 SCC). This avoids hardcoding UIDs that
+  # conflict with OpenShift's Security Context Constraints.
   podSecurityContext:
     runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    fsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
 
   # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.
@@ -45,11 +44,22 @@ global:
 
   # OpenTelemetry configuration
   otel:
-    # OTLP gRPC endpoint (e.g. "http://jaeger.default.svc.cluster.local:4317")
+    # OTLP gRPC endpoint for trace collection. Examples:
+    #   Dev (Jaeger all-in-one):     "http://jaeger.default.svc.cluster.local:4317"
+    #   OpenShift TempoStack:        "http://tempo-distributor.openshift-tempo-operator.svc:4317"
+    #   OpenShift OTEL Collector:    "http://otel-collector.openshift-distributed-tracing.svc:4317"
+    #   Grafana Alloy/Agent:         "http://alloy.monitoring.svc.cluster.local:4317"
     # Leave empty to disable tracing.
     endpoint: ""
     # Use insecure (plaintext) gRPC connection to the collector.
     insecure: true
+    # Sampling configuration (maps to standard OTel env vars).
+    # Options: "always_on", "always_off", "traceidratio", "parentbased_traceidratio"
+    # Default is "parentbased_traceidratio" (recommended for production).
+    sampler: "parentbased_traceidratio"
+    # Sampling ratio (0.0 to 1.0), used when sampler is "*traceidratio".
+    # 1.0 = 100% (dev), 0.1 = 10% (production).
+    samplerArg: "1.0"
     # Enable per-command Redis tracing spans. Can produce high span volume
     # for batch workloads — leave disabled unless actively debugging Redis.
     redisTracing: false
@@ -286,6 +296,8 @@ processor:
     numWorkers: 20
     globalConcurrency: 100
     perModelMaxConcurrency: 10
+    # Maximum number of concurrent job recoveries during startup
+    recoveryMaxConcurrency: 5
     queueTimeBucket:
       start: 0.1
       factor: 2
@@ -297,30 +309,37 @@ processor:
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
-    # modelGateways.default is required and acts as fallback for all models.
-    # Lookup order: modelGateways[model] -> modelGateways["default"].
-    # Each model name maps to exactly one gateway config (one entry per model).
-    # apiKeyName is a key name in the app secret (mounted at /etc/.secrets/).
-    # When omitted, the default inference-api-key is used.
-    # Per-model entries inherit HTTP fields (requestTimeout, maxRetries,
-    # initialBackoff, maxBackoff) from "default" when omitted — only url
-    # and fields that differ need to be specified.
-    modelGateways:
-      "default":
-        url: "http://localhost:8000"
-        requestTimeout: "5m"
-        maxRetries: 3
-        initialBackoff: "1s"
-        maxBackoff: "60s"
-        tlsInsecureSkipVerify: false
-      # Per-model entries (optional, only url + overrides needed):
-      # "llama-3":
-      #   url: "http://gateway-a:8000"
-      # "mistral":
-      #   url: "http://gateway-b:8000"
-      #   apiKeyName: "gateway-b-api-key"
-      #   requestTimeout: "2m"
-      #   maxRetries: 1
+    # REQUIRED: Configure exactly one of globalInferenceGateway or modelGateways.
+    # The processor will fail to start if neither is set.
+    #
+    # globalInferenceGateway routes ALL inference requests to a single endpoint,
+    # regardless of model name. Use this for MaaS / multi-model platforms or
+    # LoRA-only deployments where all adapters share a single vLLM instance.
+    # When set, modelGateways entries are ignored.
+    # globalInferenceGateway:
+    #   url: "http://inference-gateway:8000"
+    #   requestTimeout: "5m"
+    #   maxRetries: 3
+    #   initialBackoff: "1s"
+    #   maxBackoff: "60s"
+    #   tlsInsecureSkipVerify: false
+
+    # modelGateways maps specific model names to gateway configs.
+    # Only models listed here are routed; unlisted models get a request-level error.
+    # Either globalInferenceGateway or modelGateways must be configured.
+    # modelGateways:
+    #   "llama-3":
+    #     url: "http://gateway-a:8000"
+    #     requestTimeout: "5m"
+    #     maxRetries: 3
+    #     initialBackoff: "1s"
+    #     maxBackoff: "60s"
+    #     tlsInsecureSkipVerify: false
+    #   "mistral":
+    #     url: "http://gateway-b:8000"
+    #     apiKeyName: "gateway-b-api-key"
+    #     requestTimeout: "2m"
+    #     maxRetries: 1
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)

@@ -11,6 +11,7 @@ This guide demonstrates how to deploy batch-gateway on OpenShift with RHOAI (Red
 | `openshift-ingress` | Gateway data plane (Istio/Envoy proxy), managed by Ingress Operator |
 | `cert-manager-operator` | cert-manager operator subscription |
 | `cert-manager` | cert-manager controller, webhook, cainjector |
+| `openshift-lws-operator` | LeaderWorkerSet operator (required by LLMInferenceService) |
 | `kuadrant-system` | Kuadrant operator, Authorino, Limitador |
 | `redhat-ods-operator` | RHOAI operator |
 | `redhat-ods-applications` | RHOAI controllers (KServe, model controller) |
@@ -93,15 +94,131 @@ HTTPRoute authorization behavior:
 
 ## 2. Prerequisites
 - OpenShift cluster 4.19.9 or later.
-- Installed cert-manager. See the [cert-manager Operator for Red Hat OpenShift documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/security_and_compliance/cert-manager-operator-for-red-hat-openshift)
-- Installed LeaderWorkerSet. See the [Leader Worker Set Operator documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/ai_workloads/leader-worker-set-operator).
 - OpenShift Service Mesh v2 is not installed in the cluster.
 
 
 ## 3. Installation Steps
 
 
-### 3.1 Create OpenShift GatewayClass and Gateway
+### 3.1 Install cert-manager
+
+Install the OpenShift cert-manager operator (required by LeaderWorkerSet and batch-gateway TLS). See the [cert-manager Operator for Red Hat OpenShift documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/security_and_compliance/cert-manager-operator-for-red-hat-openshift).
+
+<details>
+<summary>Install cert-manager operator</summary>
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: cert-manager-operator
+  namespace: cert-manager-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: cert-manager-operator
+spec:
+  channel: stable-v1
+  installPlanApproval: Automatic
+  name: openshift-cert-manager-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+# Wait for cert-manager webhook to be ready (this implies the operator CSV succeeded)
+until oc get deployment cert-manager-webhook -n cert-manager &>/dev/null; do sleep 10; done
+oc rollout status deployment/cert-manager-webhook -n cert-manager --timeout=300s
+```
+
+</details>
+
+<details>
+<summary>Create a self-signed ClusterIssuer</summary>
+
+```bash
+# Wait for the cert-manager webhook TLS to be fully bootstrapped (~15s after rollout)
+sleep 15
+
+# Create a self-signed ClusterIssuer (used later by batch-gateway for TLS)
+oc apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+EOF
+```
+
+</details>
+
+### 3.2 Install LeaderWorkerSet operator
+
+LLMInferenceService requires the LeaderWorkerSet (LWS) CRD. Install the LWS operator. See the [Leader Worker Set Operator documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/ai_workloads/leader-worker-set-operator).
+
+<details>
+<summary>Install LWS operator</summary>
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-lws-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: leader-worker-set
+  namespace: openshift-lws-operator
+spec:
+  targetNamespaces:
+  - openshift-lws-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: leader-worker-set
+  namespace: openshift-lws-operator
+spec:
+  channel: stable-v1.0
+  installPlanApproval: Automatic
+  name: leader-worker-set
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+# Wait for the operator deployment to be ready
+until oc get deployment openshift-lws-operator -n openshift-lws-operator &>/dev/null; do sleep 10; done
+oc rollout status deployment/openshift-lws-operator -n openshift-lws-operator --timeout=300s
+
+# Create the LeaderWorkerSetOperator CR
+oc apply -f - <<'EOF'
+apiVersion: operator.openshift.io/v1
+kind: LeaderWorkerSetOperator
+metadata:
+  name: cluster
+  namespace: openshift-lws-operator
+spec:
+  managementState: Managed
+EOF
+
+# Wait for the LWS CRD to be available (may take ~30s for the controller to deploy)
+until oc get crd leaderworkersets.leaderworkerset.x-k8s.io &>/dev/null; do sleep 5; done
+oc wait crd/leaderworkersets.leaderworkerset.x-k8s.io --for=condition=Established --timeout=120s
+```
+
+</details>
+
+### 3.3 Create OpenShift GatewayClass and Gateway
 
 Create a GatewayClass and a Gateway named `openshift-ai-inference` in the `openshift-ingress` namespace as described in [Gateway API with OpenShift Container Platform Networking](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/ingress_and_load_balancing/configuring-ingress-cluster-traffic#ingress-gateway-api).
 
@@ -119,8 +236,9 @@ spec:
   controllerName: openshift.io/gateway-controller/v1
 EOF
 
-# Verify that the new Istiod deployment, istiod-openshift-gateway, is ready and available
-oc get deployment istiod-openshift-gateway -n openshift-ingress
+# Wait for the Istiod deployment to appear and become ready (~20s)
+until oc get deployment istiod-openshift-gateway -n openshift-ingress &>/dev/null; do sleep 5; done
+oc rollout status deployment/istiod-openshift-gateway -n openshift-ingress --timeout=120s
 ```
 </details>
 
@@ -161,15 +279,16 @@ spec:
         from: All
 EOF
 
-# Verify that the new Envoy proxy deployment, openshift-ai-inference-openshift-default, is ready and available
-oc get deployment openshift-ai-inference-openshift-default -n openshift-ingress
+# Wait for the Envoy proxy deployment to become ready
+until oc get deployment openshift-ai-inference-openshift-default -n openshift-ingress &>/dev/null; do sleep 5; done
+oc rollout status deployment/openshift-ai-inference-openshift-default -n openshift-ingress --timeout=120s
 ```
 
 > **Note**: The Gateway uses the OpenShift default router certificate (`router-certs-default`). The hostname must match the cluster's wildcard DNS for external access.
 
 </details>
 
-### 3.2 Install RHCL
+### 3.4 Install RHCL
 
 Follow [Red Hat Connectivity Link docs](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3) to install RHCL
 
@@ -211,7 +330,8 @@ EOF
 Wait for the operator to be ready, then create the Kuadrant CR:
 
 ```bash
-oc get csv -n "${KUADRANT_NS}" -w
+# Wait for RHCL operator to be ready
+until oc get csv -n "${KUADRANT_NS}" 2>/dev/null | grep rhcl-operator | grep -q Succeeded; do sleep 10; done
 
 oc apply -f - <<EOF
 apiVersion: kuadrant.io/v1beta1
@@ -222,9 +342,7 @@ metadata:
 spec: {}
 EOF
 
-# wait for kuadrant instance to be ready
-oc get kuadrant kuadrant -n "${KUADRANT_NS}"
-
+# Wait for Kuadrant instance to be ready
 oc wait kuadrant/kuadrant --for="condition=Ready=true" \
     -n "${KUADRANT_NS}" --timeout=300s
 ```
@@ -266,7 +384,7 @@ oc wait --for=condition=ready pod -l authorino-resource=authorino \
 
 </details>
 
-### 3.3 Install RHOAI
+### 3.5 Install RHOAI
 
 Follow [RHOAI Installation Guide](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html/installing_and_uninstalling_openshift_ai_self-managed/index) to install RHOAI
 
@@ -274,6 +392,8 @@ Follow [RHOAI Installation Guide](https://docs.redhat.com/en/documentation/red_h
 <summary>Install RHOAI operator</summary>
 
 ```bash
+oc create namespace redhat-ods-operator 2>/dev/null || true
+
 oc apply -f - <<'EOF'
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
@@ -301,7 +421,17 @@ EOF
 <details>
 <summary>Create DataScienceCluster instance</summary>
 
-Wait for the operator, then create DataScienceCluster:
+Wait for the RHOAI operator CSV to succeed, then create DataScienceCluster:
+
+```bash
+# Wait for the RHOAI operator CSV and DataScienceCluster CRD to be ready
+until oc get csv -n redhat-ods-operator 2>/dev/null | grep -q Succeeded; do sleep 10; done
+until oc get crd datascienceclusters.datasciencecluster.opendatahub.io &>/dev/null; do sleep 5; done
+
+# Wait for the RHOAI operator webhook to be ready
+until oc get deployment rhods-operator -n redhat-ods-operator &>/dev/null; do sleep 10; done
+oc rollout status deployment/rhods-operator -n redhat-ods-operator --timeout=120s
+```
 
 ```bash
 oc apply -f - <<'EOF'
@@ -339,7 +469,7 @@ oc wait datasciencecluster/default-dsc --for=jsonpath='{.status.phase}'=Ready --
 
 </details>
 
-### 3.4 Deploy model with llm-d
+### 3.6 Deploy model with llm-d
 
 Follow [deploy model doc](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html/deploying_models/deploying_models#deploying-models-using-distributed-inference_rhoai-user) to deploy model with LLM-D
 
@@ -417,7 +547,7 @@ EOF
 Wait for the LLMInferenceService to be ready:
 ```bash
 oc wait llminferenceservice/${ISVC_NAME} -n ${LLM_NS} \
-    --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True --timeout=600s
+    --for=condition=Ready --timeout=600s
 ```
 > **Key annotation**: `security.opendatahub.io/enable-auth: "true"` enables the Gateway-level AuthPolicy that uses SubjectAccessReview to check if the user has RBAC permission to `get` the specific `LLMInferenceService` resource.
 </details>
@@ -453,7 +583,7 @@ facebook-opt-125m-kserve-route               13m
 ```
 </details>
 
-### 3.5 Configure TokenRateLimitPolicy for LLMInferenceService
+### 3.7 Configure TokenRateLimitPolicy for LLMInferenceService
 
 > **Note**: The TokenRateLimitPolicy targets the Gateway (not HTTPRoute) because LLMInferenceService dynamically generates the inference HTTPRoute name.
 
@@ -491,7 +621,7 @@ oc wait tokenratelimitpolicy/inference-token-limit \
 </details>
 
 
-### 3.6 Install Batch Gateway
+### 3.8 Install Batch Gateway
 
 Deploy batch-gateway with the model gateway URL from the LLMInferenceService status:
 
@@ -542,19 +672,9 @@ EOF
 </details>
 
 <details>
-<summary>Create ClusterIssuer and install batch-gateway</summary>
+<summary>Install batch-gateway</summary>
 
 ```bash
-# Create a self-signed ClusterIssuer for batch gateway API server
-oc apply -f - <<EOF
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: selfsigned-issuer
-spec:
-  selfSigned: {}
-EOF
-
 # Get model URL from LLMInferenceService
 MODEL_URL=$(oc get llminferenceservice ${ISVC_NAME} -n ${LLM_NS} \
     -o jsonpath='{.status.url}')
@@ -568,6 +688,10 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "global.fileClient.fs.basePath=/tmp/batch-gateway" \
     --set "global.fileClient.fs.pvcName=batch-gateway-files" \
     --set "processor.config.modelGateways.facebook/opt-125m.url=${MODEL_URL}" \
+    --set "processor.config.modelGateways.facebook/opt-125m.requestTimeout=5m" \
+    --set "processor.config.modelGateways.facebook/opt-125m.maxRetries=3" \
+    --set "processor.config.modelGateways.facebook/opt-125m.initialBackoff=1s" \
+    --set "processor.config.modelGateways.facebook/opt-125m.maxBackoff=60s" \
     --set "processor.config.modelGateways.facebook/opt-125m.tlsInsecureSkipVerify=true" \
     --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
     --set apiserver.tls.enabled=true \
@@ -575,14 +699,12 @@ helm install batch-gateway ./charts/batch-gateway \
     --set apiserver.tls.certManager.issuerName=selfsigned-issuer \
     --set apiserver.tls.certManager.issuerKind=ClusterIssuer \
     --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}" \
-    --set apiserver.podSecurityContext=null \
-    --set processor.podSecurityContext=null
 ```
 
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It should point to the Gateway's model endpoint (from `llminferenceservice.status.url`), not directly to the model server, so that requests go through the Gateway's AuthPolicy and rate limiting.
 > - **`passThroughHeaders: {Authorization}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization on batch requests.
 >
-> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `issuerName` must match a ClusterIssuer (e.g. `selfsigned-issuer`). The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.7).
+> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `issuerName` must match a ClusterIssuer (e.g. `selfsigned-issuer`). The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.9).
 > - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
 >   ```
 >   --set "global.fileClient.type=s3"
@@ -597,7 +719,7 @@ helm install batch-gateway ./charts/batch-gateway \
 </details>
 
 
-### 3.7 Configure HTTPRoute and Policies for Batch Gateway
+### 3.9 Configure HTTPRoute and Policies for Batch Gateway
 
 Create the batch route, authentication policy, and rate limit:
 
@@ -828,10 +950,16 @@ curl -sk -o /dev/null -w "%{http_code}" \
 # Unauthorized user creates a batch — batch is accepted (batch route has no authz),
 # but the processor forwards requests to the LLM route with the unauthorized token,
 # and the LLM route's AuthPolicy rejects with 403.
+
+# Create input file
+cat > /tmp/batch-input.jsonl <<EOF
+{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"${MODEL_NAME}","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}
+EOF
+
 FILE_ID=$(curl -sk ${GW_URL}/v1/files \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" \
     -F purpose=batch \
-    -F "file=@<(echo '{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}')" \
+    -F "file=@/tmp/batch-input.jsonl" \
     | jq -r '.id')
 
 BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
@@ -840,7 +968,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Poll until completed/failed — expect failed requests with 403
+# Wait for processing, then check status — expect failed requests with 403
+sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" | jq '{status, request_counts}'
 ```
@@ -848,11 +977,11 @@ curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
 ### 4.7 Batch Lifecycle
 
 ```bash
-# Upload input file
+# Upload input file (reuse /tmp/batch-input.jsonl from 4.6, or create it)
 FILE_ID=$(curl -sk ${GW_URL}/v1/files \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -F purpose=batch \
-    -F "file=@<(echo '{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}')" \
+    -F "file=@/tmp/batch-input.jsonl" \
     | jq -r '.id')
 
 # Create batch
@@ -862,7 +991,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Poll status until completed
+# Wait for processing, then check status
+sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${AUTH_TOKEN}" | jq '.status'
 

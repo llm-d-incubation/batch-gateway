@@ -279,7 +279,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	cfg.RedisCfg.ServiceName = "batch-processor"
 	cfg.RedisCfg.EnableTracing = cfg.OTel.RedisTracing
 
-	modelGatewaysConfigs, err := config.ResolveModelGateways(cfg.ModelGateways)
+	resolved, err := config.ResolveModelGateways(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
@@ -294,7 +294,8 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		&cfg.FileClientCfg.FSConfig,
 		&cfg.FileClientCfg.S3Config,
 		&cfg.FileClientCfg.Retry,
-		modelGatewaysConfigs,
+		resolved.Global,
+		resolved.PerModel,
 		ucom.ComponentProcessor,
 	)
 	if err != nil {
@@ -302,10 +303,18 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		return nil, err
 	}
 
-	logger.V(logging.INFO).Info("Processor clients initialized",
-		"defaultInferenceURL", cfg.ModelGateways[config.DefaultModelGatewayKey].URL,
-		"numModelOverrides", len(cfg.ModelGateways)-1,
-		"fileClientType", cfg.FileClientCfg.Type)
+	// Validate() guarantees exactly one of resolved.Global or resolved.PerModel is set.
+	if resolved.Global != nil {
+		logger.V(logging.INFO).Info("Processor clients initialized",
+			"mode", "global",
+			"gatewayURL", resolved.Global.URL,
+			"fileClientType", cfg.FileClientCfg.Type)
+	} else {
+		logger.V(logging.INFO).Info("Processor clients initialized",
+			"mode", "per-model",
+			"numModelGateways", len(resolved.PerModel),
+			"fileClientType", cfg.FileClientCfg.Type)
+	}
 
 	return clients, nil
 }

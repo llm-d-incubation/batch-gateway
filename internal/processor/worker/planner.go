@@ -83,9 +83,10 @@ func newPlanAccumulator(jobRootDir string) *planAccumulator {
 
 // modelMapFile is a map of modelID to the file name of the plan file
 type modelMapFile struct {
-	ModelToSafe map[string]string `json:"model_to_safe"`
-	SafeToModel map[string]string `json:"safe_to_model"`
-	LineCount   int64             `json:"line_count"`
+	ModelToSafe   map[string]string `json:"model_to_safe"`
+	SafeToModel   map[string]string `json:"safe_to_model"`
+	LineCount     int64             `json:"line_count"`
+	RejectedCount int64             `json:"rejected_count"`
 }
 
 func writeModelMapFile(jobRootDir string, modelMapFile modelMapFile) error {

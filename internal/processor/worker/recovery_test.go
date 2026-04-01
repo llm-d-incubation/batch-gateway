@@ -795,6 +795,99 @@ func TestRecoverJob_Cancelling_UpdateFails_FallbackSucceeds_PreservesCounts(t *t
 	assertJobDirRemoved(t, p, jobID, tenantID)
 }
 
+// -- Concurrency tests --
+
+// slowBatchDBClient wraps a BatchDBClient and adds a per-DBGet delay
+// while tracking peak concurrency to verify parallel execution.
+type slowBatchDBClient struct {
+	db.BatchDBClient
+	delay     time.Duration
+	mu        sync.Mutex
+	active    int
+	maxActive int
+}
+
+func (s *slowBatchDBClient) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
+	s.mu.Lock()
+	s.active++
+	if s.active > s.maxActive {
+		s.maxActive = s.active
+	}
+	s.mu.Unlock()
+
+	time.Sleep(s.delay)
+
+	s.mu.Lock()
+	s.active--
+	s.mu.Unlock()
+
+	return s.BatchDBClient.DBGet(ctx, query, includeStatic, start, limit)
+}
+
+func (s *slowBatchDBClient) peakConcurrency() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxActive
+}
+
+func TestRecoverStaleJobs_RunsConcurrently(t *testing.T) {
+	workDir := t.TempDir()
+
+	innerDB := newMockBatchDBClient()
+	slowDB := &slowBatchDBClient{
+		BatchDBClient: innerDB,
+		delay:         50 * time.Millisecond,
+	}
+	pq := mockdb.NewMockBatchPriorityQueueClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	cfg.RecoveryMaxConcurrency = 5
+
+	p, err := NewProcessor(cfg, &clientset.Clientset{
+		BatchDB:   slowDB,
+		FileDB:    newMockFileDBClient(),
+		File:      mockfiles.NewMockBatchFilesClient(),
+		Queue:     pq,
+		Status:    statusClient,
+		Event:     mockdb.NewMockBatchEventChannelClient(),
+		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
+	p.poller = NewPoller(pq, slowDB)
+	p.updater = NewStatusUpdater(slowDB, statusClient, 86400)
+
+	// Create 5 stale job directories with terminal status (completed) so
+	// recovery just cleans them up after the DB lookup.
+	numJobs := 5
+	tenantID := "tenant-conc"
+	for i := 0; i < numJobs; i++ {
+		jobID := fmt.Sprintf("job-conc-%d", i)
+		seedDBJobWithStatus(t, innerDB, jobID, tenantID, openai.BatchStatusCompleted, nil)
+		createJobDir(t, p, jobID, tenantID)
+	}
+
+	ctx := testLoggerCtx(t)
+	p.recoverStaleJobs(ctx)
+
+	// With concurrency=5 and 5 jobs at 50ms delay each, parallel should
+	// complete in ~50ms. Sequential would take ~250ms.
+	// Assert peak concurrency to verify parallel execution deterministically.
+	if peak := slowDB.peakConcurrency(); peak < 2 {
+		t.Errorf("expected peak concurrency >= 2, got %d (recovery ran sequentially)", peak)
+	}
+	t.Logf("peak recovery concurrency: %d", slowDB.peakConcurrency())
+
+	// All directories should have been cleaned up.
+	for i := 0; i < numJobs; i++ {
+		jobID := fmt.Sprintf("job-conc-%d", i)
+		assertJobDirRemoved(t, p, jobID, tenantID)
+	}
+}
+
 func TestOutputFileHasContent(t *testing.T) {
 	workDir := t.TempDir()
 	p, _, _ := newRecoveryTestProcessor(t, workDir)

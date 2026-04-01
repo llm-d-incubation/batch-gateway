@@ -631,6 +631,10 @@ deploy_batch_gateway_rhoai() {
 
     local helm_args=(
         --set "processor.config.modelGateways.${model_key}.url=${model_url}"
+        --set "processor.config.modelGateways.${model_key}.requestTimeout=${GW_REQUEST_TIMEOUT}"
+        --set "processor.config.modelGateways.${model_key}.maxRetries=${GW_MAX_RETRIES}"
+        --set "processor.config.modelGateways.${model_key}.initialBackoff=${GW_INITIAL_BACKOFF}"
+        --set "processor.config.modelGateways.${model_key}.maxBackoff=${GW_MAX_BACKOFF}"
         --set "processor.config.modelGateways.${model_key}.tlsInsecureSkipVerify=true"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )

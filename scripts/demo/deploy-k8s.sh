@@ -356,6 +356,10 @@ deploy_batch_gateway_k8s() {
 
     local helm_args=(
         --set "processor.config.modelGateways.${MODEL_NAME}.url=${main_gw}/${MODEL_NAME}"
+        --set "processor.config.modelGateways.${MODEL_NAME}.requestTimeout=${GW_REQUEST_TIMEOUT}"
+        --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=${GW_MAX_RETRIES}"
+        --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=${GW_INITIAL_BACKOFF}"
+        --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=${GW_MAX_BACKOFF}"
         --set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )
