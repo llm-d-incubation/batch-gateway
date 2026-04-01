@@ -223,7 +223,7 @@ Prometheus automatically scrapes metrics from the components.
 
 1. Open <http://localhost:9091> in your browser
 2. Navigate to Graph tab
-3. Enter a metric name in the expression browser (e.g., `batch_gateway_processor_jobs_processed_total`)
+3. Enter a metric name in the expression browser (see [metrics guide](../../docs/guides/metrics.md) for available names)
 4. Click "Execute" to see current values or "Graph" for time-series visualization
 
 **Direct access to raw metrics** (useful for debugging):
@@ -231,13 +231,7 @@ Prometheus automatically scrapes metrics from the components.
 - API Server metrics endpoint: <http://localhost:8081/metrics>
 - Processor metrics endpoint: <http://localhost:9090/metrics>
 
-**Key metrics to monitor**:
-
-- `batch_gateway_api_http_requests_total`: Total API requests
-- `batch_gateway_api_batch_jobs_total`: Total batch jobs created
-- `batch_gateway_processor_jobs_processed_total`: Total jobs processed
-- `batch_gateway_processor_job_duration_seconds`: Job processing time
-- `batch_gateway_processor_inference_duration_seconds`: Inference request time
+**Key metrics**: See the [metrics guide](../../docs/guides/metrics.md) for the full list of available metric names.
 
 ### Health Endpoints
 
