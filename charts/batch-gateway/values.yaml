@@ -406,6 +406,12 @@ gc:
     pullPolicy: IfNotPresent
     tag: "latest"
 
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
+
   # GC application config (rendered into a ConfigMap and mounted as config.yaml)
   config:
     dryRun: false
