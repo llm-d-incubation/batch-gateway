@@ -26,23 +26,24 @@ global:
   # Create with: kubectl create secret generic <name> --from-literal=redis-url=redis://...
   secretName: "batch-gateway-secrets"
 
-  # Database backend type: "redis", or "postgresql"
-  databaseType: "postgresql"
-
-  # Redis client settings (shared by apiserver and processor).
-  # The connection URL is read from the app secret (redis-url key), not from here.
-  # 0 (or "0s") means go-redis library default.
-  redis:
-    db: 0
-    enableTLS: false
-    insecure: false
-    timeout: "0s"
-    maxRetries: 0
-    minRetryBackoff: "0s"
-    maxRetryBackoff: "0s"
-    poolTimeout: "0s"
-    connMaxIdleTime: "0s"
-    connMaxLifetime: "0s"
+  # Database client configuration (shared by apiserver, processor, and gc).
+  dbClient:
+    # Database backend type: "redis" or "postgresql"
+    type: "postgresql"
+    # Redis client settings.
+    # The connection URL is read from the app secret (redis-url key), not from here.
+    # 0 (or "0s") means go-redis library default.
+    redis:
+      db: 0
+      enableTLS: false
+      insecure: false
+      timeout: "0s"
+      maxRetries: 0
+      minRetryBackoff: "0s"
+      maxRetryBackoff: "0s"
+      poolTimeout: "0s"
+      connMaxIdleTime: "0s"
+      connMaxLifetime: "0s"
 
   # OpenTelemetry configuration
   otel:
