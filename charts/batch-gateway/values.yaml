@@ -13,6 +13,8 @@ global:
   # conflict with OpenShift's Security Context Constraints.
   podSecurityContext:
     runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
 
   # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.

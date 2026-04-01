@@ -271,6 +271,7 @@ The chart follows security best practices:
 - Uses read-only root filesystem
 - Drops all Linux capabilities
 - Prevents privilege escalation
+- Uses seccomp RuntimeDefault profile
 
 ### OpenShift Compatibility
 
