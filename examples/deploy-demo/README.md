@@ -38,9 +38,9 @@ One-click deployment scripts for batch-gateway on different platforms. Each scri
 ### Usage
 
 ```bash
-bash scripts/demo/deploy-k8s.sh install
-bash scripts/demo/deploy-k8s.sh test
-bash scripts/demo/deploy-k8s.sh uninstall
+bash examples/deploy-demo/deploy-k8s.sh install
+bash examples/deploy-demo/deploy-k8s.sh test
+bash examples/deploy-demo/deploy-k8s.sh uninstall
 ```
 
 
@@ -70,9 +70,9 @@ bash scripts/demo/deploy-k8s.sh uninstall
 ### Usage
 
 ```bash
-bash scripts/demo/deploy-rhoai.sh install
-bash scripts/demo/deploy-rhoai.sh test
-bash scripts/demo/deploy-rhoai.sh uninstall
+bash examples/deploy-demo/deploy-rhoai.sh install
+bash examples/deploy-demo/deploy-rhoai.sh test
+bash examples/deploy-demo/deploy-rhoai.sh uninstall
 ```
 
 
@@ -99,9 +99,9 @@ bash scripts/demo/deploy-rhoai.sh uninstall
 ### Usage
 
 ```bash
-bash scripts/demo/deploy-maas.sh install
-bash scripts/demo/deploy-maas.sh test
-bash scripts/demo/deploy-maas.sh uninstall
+bash examples/deploy-demo/deploy-maas.sh install
+bash examples/deploy-demo/deploy-maas.sh test
+bash examples/deploy-demo/deploy-maas.sh uninstall
 ```
 
 
@@ -112,7 +112,7 @@ bash scripts/demo/deploy-maas.sh uninstall
 | `BATCH_HELM_RELEASE` | `batch-gateway` | all | Helm release name |
 | `BATCH_DEV_VERSION` | `latest` | all | apiserver/processor image tag |
 | `BATCH_DB_TYPE` | `postgresql` | all | Database backend: `postgresql` or `redis` |
-| `BATCH_STORAGE_TYPE` | `fs` | all | File storage: `fs` or `s3` |
+| `BATCH_STORAGE_TYPE` | `s3` | all | File storage: `fs` or `s3` |
 | `BATCH_NAMESPACE` | `batch-api` | all | Namespace for batch-gateway |
 | `LLM_NAMESPACE` | `llm` | all | Namespace for model serving |
 | `LLMD_VERSION` | `main` | k8s | llm-d git ref to install |

@@ -192,6 +192,9 @@ spec:
 EOF
     fi
 
+    step "Waiting for Istio control plane (istiod) to be ready..."
+    wait_for_deployment "istiod-openshift-gateway" "openshift-ingress"
+
     log "OpenShift Gateway created."
 }
 
@@ -232,6 +235,15 @@ spec:
 EOF
 
         wait_for_subscription "${ns}" "rhcl-operator"
+
+        # RHCL operator installs sub-operators (authorino, limitador, dns).
+        # Wait for them before creating the Kuadrant CR.
+        step "Waiting for Connectivity Link sub-operators..."
+        for deploy in authorino-operator \
+                      limitador-operator-controller-manager \
+                      dns-operator-controller-manager; do
+            wait_for_deployment "$deploy" "${ns}" 120s
+        done
     fi
 
     # Create Kuadrant CR
@@ -876,7 +888,7 @@ usage() {
     echo "  SIM_IMAGE        Simulator image (default: ghcr.io/llm-d/llm-d-inference-sim:v0.7.1)"
     echo "  BATCH_DEV_VERSION      Batch gateway image tag (default: latest)"
     echo "  BATCH_DB_TYPE          Database: postgresql or redis (default: postgresql)"
-    echo "  BATCH_STORAGE_TYPE     File storage: fs or s3 (default: fs)"
+    echo "  BATCH_STORAGE_TYPE     File storage: fs or s3 (default: s3)"
     exit "${1:-0}"
 }
 

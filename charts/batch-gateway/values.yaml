@@ -83,7 +83,7 @@ global:
       accessKeyId: ""
       prefix: ""
       usePathStyle: false
-      autoCreateBucket: false
+      autoCreateBucket: true
     # Retry configuration for file storage operations (Store, Retrieve, Delete).
     # Set maxRetries to 0 to disable. Useful for S3 transient errors.
     retry:
