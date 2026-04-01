@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
@@ -2015,10 +2016,43 @@ func TestExecutionProgress_Flush(t *testing.T) {
 // Tests: jsonNumericToFloat64
 // =====================================================================
 
+// gatherCounterValue reads the current value of a counter with the given metric name
+// and label set from the default Prometheus registry. Returns 0 if not found.
+func gatherCounterValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+	outer:
+		for _, m := range mf.Metric {
+			for k, v := range labels {
+				var got string
+				for _, lp := range m.Label {
+					if lp.GetName() == k {
+						got = lp.GetValue()
+						break
+					}
+				}
+				if got != v {
+					continue outer
+				}
+			}
+			return m.GetCounter().GetValue()
+		}
+	}
+	return 0
+}
+
 func TestRecordTokenUsageFromBody(t *testing.T) {
 	logger := logr.Discard()
 
 	t.Run("usage present with both fields", func(t *testing.T) {
+		model := "token-test-both"
 		body := map[string]interface{}{
 			"choices": []interface{}{},
 			"usage": map[string]interface{}{
@@ -2027,55 +2061,101 @@ func TestRecordTokenUsageFromBody(t *testing.T) {
 				"total_tokens":      float64(170),
 			},
 		}
-		recordTokenUsageFromBody(body, "test-model", logger)
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 42 {
+			t.Fatalf("prompt_tokens=%v, want 42", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 128 {
+			t.Fatalf("generation_tokens=%v, want 128", v)
+		}
 	})
 
 	t.Run("usage missing", func(t *testing.T) {
+		model := "token-test-missing"
 		body := map[string]interface{}{
 			"choices": []interface{}{},
 		}
-		recordTokenUsageFromBody(body, "test-model", logger)
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (no usage object)", v)
+		}
 	})
 
 	t.Run("usage present but no numeric fields", func(t *testing.T) {
+		model := "token-test-non-numeric"
 		body := map[string]interface{}{
 			"usage": map[string]interface{}{
 				"prompt_tokens": "not-a-number",
 			},
 		}
-		recordTokenUsageFromBody(body, "test-model", logger)
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (non-numeric field)", v)
+		}
 	})
 
 	t.Run("usage with only prompt_tokens", func(t *testing.T) {
+		model := "token-test-prompt-only"
 		body := map[string]interface{}{
 			"usage": map[string]interface{}{
 				"prompt_tokens": float64(100),
 			},
 		}
-		recordTokenUsageFromBody(body, "test-model", logger)
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 100 {
+			t.Fatalf("prompt_tokens=%v, want 100", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("generation_tokens=%v, want 0 (only prompt provided)", v)
+		}
 	})
 
 	t.Run("usage with only completion_tokens", func(t *testing.T) {
+		model := "token-test-completion-only"
 		body := map[string]interface{}{
 			"usage": map[string]interface{}{
 				"completion_tokens": float64(50),
 			},
 		}
-		recordTokenUsageFromBody(body, "test-model", logger)
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (only completion provided)", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 50 {
+			t.Fatalf("generation_tokens=%v, want 50", v)
+		}
 	})
 
 	t.Run("nil body", func(t *testing.T) {
-		recordTokenUsageFromBody(nil, "test-model", logger)
+		model := "token-test-nil"
+		recordTokenUsageFromBody(nil, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (nil body)", v)
+		}
 	})
 
 	t.Run("negative token values skipped", func(t *testing.T) {
+		model := "token-test-negative"
 		body := map[string]interface{}{
 			"usage": map[string]interface{}{
 				"prompt_tokens":     float64(-10),
 				"completion_tokens": float64(50),
 			},
 		}
-		recordTokenUsageFromBody(body, "test-model", logger)
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (negative values should be skipped)", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("generation_tokens=%v, want 0 (negative values should be skipped)", v)
+		}
 	})
 }
 

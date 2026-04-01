@@ -199,7 +199,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			span.RecordError(execErr)
 			span.SetStatus(codes.Error, "execution failed")
 			p.handleJobError(ctx, params, execErr)
-			recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
+			if !errors.Is(execErr, context.Canceled) && !errors.Is(execErr, context.DeadlineExceeded) {
+				recordE2ELatency(params.jobInfo, metrics.E2EStatusFailed)
+			}
 		}
 		return
 	}
