@@ -63,7 +63,7 @@ install_cert_manager() {
         --set crds.enabled=true
 
     for deploy in cert-manager cert-manager-webhook cert-manager-cainjector; do
-        wait_for_deployment "$deploy" cert-manager 120s
+        wait_for_deployment "$deploy" cert-manager 180s
     done
 
     log "cert-manager installed successfully."
@@ -150,7 +150,7 @@ install_kuadrant() {
         for deploy in authorino-operator \
                       kuadrant-operator-controller-manager \
                       limitador-operator-controller-manager; do
-            wait_for_deployment "$deploy" "${KUADRANT_NAMESPACE}" 120s
+            wait_for_deployment "$deploy" "${KUADRANT_NAMESPACE}" 180s
         done
         log "Kuadrant operator installed successfully."
     fi
@@ -436,8 +436,8 @@ EOF
     step "Waiting for TokenRateLimitPolicy to be enforced..."
     kubectl wait tokenratelimitpolicy/inference-token-limit \
         --for="condition=Enforced=true" \
-        -n "${LLM_NAMESPACE}" --timeout=120s 2>/dev/null \
-        || die "TokenRateLimitPolicy not enforced after 120s."
+        -n "${LLM_NAMESPACE}" --timeout=180s 2>/dev/null \
+        || die "TokenRateLimitPolicy not enforced after 180s."
 
     log "TokenRateLimitPolicy applied."
 }

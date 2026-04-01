@@ -64,17 +64,18 @@ gen_id() {
 wait_for_deployment() {
     local deploy_name="$1"
     local namespace="$2"
-    local timeout="${3:-120s}"
+    local timeout="${3:-180s}"
 
     step "Waiting for deployment '${deploy_name}' to be ready..."
 
     local retries=0
+    local max_retries=30
     while ! kubectl get deploy "${deploy_name}" -n "${namespace}" &>/dev/null; do
         retries=$((retries + 1))
-        if [ "$retries" -ge 5 ]; then
-            die "Deployment '${deploy_name}' did not become ready"
+        if [ "$retries" -ge "$max_retries" ]; then
+            die "Deployment '${deploy_name}' did not become visible after $((max_retries * 2))s"
         fi
-        warn "Deployment not yet visible, retrying in 2s... ($retries/5)"
+        warn "Deployment not yet visible, retrying in 2s... ($retries/$max_retries)"
         sleep 2
     done
 
@@ -103,8 +104,8 @@ wait_for_subscription() {
             fi
         fi
         retries=$((retries + 1))
-        if [ "$retries" -ge 60 ]; then
-            die "Subscription '${sub_name}' did not become ready after 300s"
+        if [ "$retries" -ge 90 ]; then
+            die "Subscription '${sub_name}' did not become ready after 450s"
         fi
         sleep 5
     done
@@ -112,7 +113,7 @@ wait_for_subscription() {
 
 wait_for_crd() {
     local crd="$1"
-    local timeout="${2:-120}"
+    local timeout="${2:-180}"
 
     step "Waiting for CRD '${crd}'..."
     local elapsed=0
@@ -333,7 +334,7 @@ install_batch_redis() {
         --namespace "${BATCH_NAMESPACE}" --create-namespace \
         --set architecture=standalone \
         --set auth.enabled=false
-    kubectl rollout status statefulset/"${BATCH_REDIS_RELEASE}-master" -n "${BATCH_NAMESPACE}" --timeout=120s
+    kubectl rollout status statefulset/"${BATCH_REDIS_RELEASE}-master" -n "${BATCH_NAMESPACE}" --timeout=180s
     log "Redis installed (standalone, no auth)."
 }
 
@@ -349,7 +350,7 @@ install_batch_postgresql() {
         --set auth.database=batch
 
     step "Waiting for PostgreSQL to be ready..."
-    kubectl rollout status statefulset/"${BATCH_POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout=120s
+    kubectl rollout status statefulset/"${BATCH_POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout=180s
     log "PostgreSQL installed (database: batch)."
 }
 
@@ -425,7 +426,7 @@ spec:
   type: ClusterIP
 EOF
 
-    wait_for_deployment "${BATCH_MINIO_RELEASE}" "${BATCH_NAMESPACE}" 120s
+    wait_for_deployment "${BATCH_MINIO_RELEASE}" "${BATCH_NAMESPACE}" 180s
 
     step "Creating MinIO bucket '${MINIO_BUCKET}'..."
     local minio_pod
@@ -496,9 +497,9 @@ install_batch_gateway() {
         helm install "${BATCH_HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "$@"
     fi
 
-    wait_for_deployment "${BATCH_HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 120s
-    wait_for_deployment "${BATCH_HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 120s
-    wait_for_deployment "${BATCH_HELM_RELEASE}-gc" "${BATCH_NAMESPACE}" 120s
+    wait_for_deployment "${BATCH_HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 180s
+    wait_for_deployment "${BATCH_HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 180s
+    wait_for_deployment "${BATCH_HELM_RELEASE}-gc" "${BATCH_NAMESPACE}" 180s
 
     log "batch-gateway installed (apiserver + processor + gc)."
 }

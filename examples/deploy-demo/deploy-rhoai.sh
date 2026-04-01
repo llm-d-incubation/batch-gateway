@@ -78,7 +78,7 @@ EOF
     wait_for_subscription "cert-manager-operator" "openshift-cert-manager-operator"
 
     # Wait for webhook to be ready before creating ClusterIssuers
-    wait_for_deployment "cert-manager-webhook" "cert-manager" 120s
+    wait_for_deployment "cert-manager-webhook" "cert-manager" 180s
 }
 
 # ── 2. LeaderWorkerSet ───────────────────────────────────────────────────────
@@ -242,9 +242,13 @@ EOF
         for deploy in authorino-operator \
                       limitador-operator-controller-manager \
                       dns-operator-controller-manager; do
-            wait_for_deployment "$deploy" "${ns}" 120s
+            wait_for_deployment "$deploy" "${ns}" 180s
         done
     fi
+
+    # Wait for operator to detect sub-operators before creating CR
+    log "Waiting 15s for Kuadrant operator to register sub-operators..."
+    sleep 15
 
     # Create Kuadrant CR
     step "Creating Kuadrant CR..."
@@ -289,7 +293,7 @@ EOF
 
     step "Waiting for Authorino pods to be ready..."
     kubectl wait --for=condition=ready pod -l authorino-resource=authorino \
-        -n "${ns}" --timeout=150s
+        -n "${ns}" --timeout=180s
 
     # If RHOAI was already installed before Connectivity Link, restart controllers
     if kubectl get deployment odh-model-controller -n redhat-ods-applications &>/dev/null; then
@@ -561,8 +565,8 @@ EOF
     step "Waiting for TokenRateLimitPolicy to be enforced..."
     kubectl wait tokenratelimitpolicy/inference-token-limit \
         --for="condition=Enforced=true" \
-        -n "${GATEWAY_NAMESPACE}" --timeout=120s 2>/dev/null \
-        || die "TokenRateLimitPolicy not enforced after 120s."
+        -n "${GATEWAY_NAMESPACE}" --timeout=180s 2>/dev/null \
+        || die "TokenRateLimitPolicy not enforced after 180s."
 
     log "TokenRateLimitPolicy applied."
 }
@@ -801,12 +805,12 @@ cmd_uninstall() {
 
     # LLMInferenceService
     step "Removing LLMInferenceService..."
-    kubectl delete llminferenceservice --all -n "${LLM_NAMESPACE}" --timeout=120s 2>/dev/null || true
+    kubectl delete llminferenceservice --all -n "${LLM_NAMESPACE}" --timeout=180s 2>/dev/null || true
 
     # DSC + DSCI
     step "Removing DataScienceCluster and DSCInitialization..."
-    kubectl delete datasciencecluster --all --timeout=120s 2>/dev/null || true
-    kubectl delete dscinitializations --all --timeout=120s 2>/dev/null || true
+    kubectl delete datasciencecluster --all --timeout=180s 2>/dev/null || true
+    kubectl delete dscinitializations --all --timeout=180s 2>/dev/null || true
 
     # RHOAI/ODH operator
     local operator_name namespace
