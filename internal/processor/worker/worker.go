@@ -292,6 +292,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil); failErr != nil {
 					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
 				}
+				recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
