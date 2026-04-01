@@ -52,8 +52,8 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 	logger := logr.FromContextOrDiscard(ctx)
 
 	config.DBClientCfg.RedisCfg.ServiceName = "batch-apiserver"
-	config.DBClientCfg.RedisCfg.EnableTracing = config.OTel.RedisTracing
-	config.DBClientCfg.PostgreSQLCfg.EnableTracing = config.OTel.PostgresqlTracing
+	config.DBClientCfg.RedisCfg.EnableTracing = config.OTelCfg.RedisTracing
+	config.DBClientCfg.PostgreSQLCfg.EnableTracing = config.OTelCfg.PostgresqlTracing
 
 	clients, err := clientset.NewClientset(
 		ctx,

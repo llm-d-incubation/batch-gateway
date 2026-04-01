@@ -103,8 +103,8 @@ type ProcessorConfig struct {
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
-	// OTel holds OpenTelemetry-related settings.
-	OTel sharedcfg.OTelConfig `yaml:"otel"`
+	// OTelCfg holds OpenTelemetry-related settings.
+	OTelCfg sharedcfg.OTelConfig `yaml:"otel"`
 
 	// FileClient holds configuration for the shared file storage client (fs or s3).
 	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`

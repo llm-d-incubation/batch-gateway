@@ -277,13 +277,13 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	logger := logr.FromContextOrDiscard(ctx)
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-processor"
-	cfg.DBClientCfg.RedisCfg.EnableTracing = cfg.OTel.RedisTracing
+	cfg.DBClientCfg.RedisCfg.EnableTracing = cfg.OTelCfg.RedisTracing
 
 	resolved, err := config.ResolveModelGateways(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
-	cfg.DBClientCfg.PostgreSQLCfg.EnableTracing = cfg.OTel.PostgresqlTracing
+	cfg.DBClientCfg.PostgreSQLCfg.EnableTracing = cfg.OTelCfg.PostgresqlTracing
 
 	clients, err := clientset.NewClientset(
 		ctx,

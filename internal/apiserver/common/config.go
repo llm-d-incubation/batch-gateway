@@ -127,8 +127,8 @@ type ServerConfig struct {
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
-	// OTel holds OpenTelemetry-related settings.
-	OTel sharedcfg.OTelConfig `yaml:"otel"`
+	// OTelCfg holds OpenTelemetry-related settings.
+	OTelCfg sharedcfg.OTelConfig `yaml:"otel"`
 }
 
 func NewConfig() *ServerConfig {
