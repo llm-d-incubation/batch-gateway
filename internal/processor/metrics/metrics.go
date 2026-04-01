@@ -242,17 +242,14 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"model"},
 	)
 
-	// Full job lifecycle latency (submit to terminal state).
-	// Reuses QueueTimeBucket config because e2e includes queue wait as the dominant component.
-	// If the distribution diverges from queue-only latency, consider dedicated bucket config.
 	jobE2ELatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name: "batch_job_e2e_latency_seconds",
 			Help: "End-to-end job latency from submission to terminal state (completed, cancelled, expired, failed)",
 			Buckets: prometheus.ExponentialBuckets(
-				cfg.QueueTimeBucket.BucketStart,
-				cfg.QueueTimeBucket.BucketFactor,
-				cfg.QueueTimeBucket.BucketCount,
+				cfg.E2ELatencyBucket.BucketStart,
+				cfg.E2ELatencyBucket.BucketFactor,
+				cfg.E2ELatencyBucket.BucketCount,
 			),
 		}, []string{"status"},
 	)

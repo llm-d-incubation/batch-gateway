@@ -306,6 +306,10 @@ processor:
       start: 0.1
       factor: 2
       count: 15
+    e2eLatencyBucket:
+      start: 1
+      factor: 3
+      count: 12
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"

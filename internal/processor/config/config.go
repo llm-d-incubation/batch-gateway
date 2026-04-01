@@ -60,6 +60,10 @@ type ProcessorConfig struct {
 	// ProcessTimeBucket defines exponential bucket configs for process time metric
 	ProcessTimeBucket BucketConfig `yaml:"process_time_bucket"`
 
+	// E2ELatencyBucket defines exponential bucket configs for end-to-end job latency metric.
+	// Covers the full lifecycle from submission to terminal state, which can span hours for large jobs.
+	E2ELatencyBucket BucketConfig `yaml:"e2e_latency_bucket"`
+
 	// DatabaseType specifies the database backend: "mock", "redis", or "postgresql".
 	DatabaseType string `yaml:"database_type"`
 
@@ -190,6 +194,11 @@ func NewConfig() *ProcessorConfig {
 			BucketFactor: 2,
 			BucketCount:  10,
 		},
+		E2ELatencyBucket: BucketConfig{
+			BucketStart:  1,
+			BucketFactor: 3,
+			BucketCount:  12,
+		},
 
 		GlobalConcurrency:      100,
 		PerModelMaxConcurrency: 10,
@@ -256,6 +265,9 @@ func (c *ProcessorConfig) Validate() error {
 	}
 	if c.ProcessTimeBucket.BucketStart <= 0 || c.ProcessTimeBucket.BucketFactor <= 1 || c.ProcessTimeBucket.BucketCount <= 0 {
 		return fmt.Errorf("process_time_bucket must satisfy: start > 0, factor > 1, count > 0")
+	}
+	if c.E2ELatencyBucket.BucketStart <= 0 || c.E2ELatencyBucket.BucketFactor <= 1 || c.E2ELatencyBucket.BucketCount <= 0 {
+		return fmt.Errorf("e2e_latency_bucket must satisfy: start > 0, factor > 1, count > 0")
 	}
 
 	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
