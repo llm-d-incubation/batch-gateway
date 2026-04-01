@@ -684,8 +684,7 @@ func (p *Processor) executeOneRequest(
 		Headers:   headers,
 	}
 
-	switch sloCtx.Err() {
-	case context.DeadlineExceeded:
+	if sloCtx.Err() == context.DeadlineExceeded {
 		logger.V(logging.INFO).Info("SLO expired during execution, skipping request", "error", sloCtx.Err())
 		result := &outputLine{
 			ID:       newBatchRequestID(requestID),
@@ -693,18 +692,6 @@ func (p *Processor) executeOneRequest(
 			Error: &outputError{
 				Code:    batch_types.ErrCodeBatchExpired,
 				Message: "This request could not be executed before the completion window expired.",
-			},
-		}
-		metrics.RecordRequestError(modelID)
-		return result, nil
-	case context.Canceled:
-		logger.V(logging.INFO).Info("Execution context cancelled, skipping request", "error", sloCtx.Err())
-		result := &outputLine{
-			ID:       newBatchRequestID(requestID),
-			CustomID: req.CustomID,
-			Error: &outputError{
-				Code:    batch_types.ErrCodeBatchCancelled,
-				Message: "This request was not executed because the batch was cancelled.",
 			},
 		}
 		metrics.RecordRequestError(modelID)
