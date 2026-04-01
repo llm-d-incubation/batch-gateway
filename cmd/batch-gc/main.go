@@ -94,7 +94,7 @@ func run() error {
 	case "postgresql":
 		batchDB, fileDB, err = clientset.NewPostgreSQLDBClients(ctx, &cfg.DBClientCfg.PostgreSQLCfg)
 	default:
-		return fmt.Errorf("unsupported database_type: %s", cfg.DBClientCfg.Type)
+		return fmt.Errorf("unsupported db_client.type: %s", cfg.DBClientCfg.Type)
 	}
 
 	if err != nil {

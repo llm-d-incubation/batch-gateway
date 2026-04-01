@@ -72,9 +72,9 @@ func Load(path string) (*Config, error) {
 	case "redis", "postgresql":
 		// valid
 	case "":
-		return nil, fmt.Errorf("database_type is required (must be \"redis\" or \"postgresql\")")
+		return nil, fmt.Errorf("db_client.type is required (must be \"redis\" or \"postgresql\")")
 	default:
-		return nil, fmt.Errorf("database_type must be \"redis\" or \"postgresql\", got %q", cfg.DBClientCfg.Type)
+		return nil, fmt.Errorf("db_client.type must be \"redis\" or \"postgresql\", got %q", cfg.DBClientCfg.Type)
 	}
 
 	switch cfg.FileClientCfg.Type {

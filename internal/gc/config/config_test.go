@@ -115,7 +115,7 @@ file_client:
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.DBClientCfg.Type != "redis" {
-		t.Errorf("expected database_type redis, got %s", cfg.DBClientCfg.Type)
+		t.Errorf("expected db_client.type redis, got %s", cfg.DBClientCfg.Type)
 	}
 	if cfg.DBClientCfg.RedisCfg.DB != 2 {
 		t.Errorf("expected redis db 2, got %d", cfg.DBClientCfg.RedisCfg.DB)
@@ -139,7 +139,7 @@ file_client:
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.DBClientCfg.Type != "postgresql" {
-		t.Errorf("expected database_type postgresql, got %s", cfg.DBClientCfg.Type)
+		t.Errorf("expected db_client.type postgresql, got %s", cfg.DBClientCfg.Type)
 	}
 }
 
@@ -163,7 +163,7 @@ file_client:
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.DBClientCfg.Type != "postgresql" {
-		t.Errorf("expected database_type postgresql, got %s", cfg.DBClientCfg.Type)
+		t.Errorf("expected db_client.type postgresql, got %s", cfg.DBClientCfg.Type)
 	}
 	if cfg.DBClientCfg.RedisCfg.DB != 1 {
 		t.Errorf("expected redis db 1, got %d", cfg.DBClientCfg.RedisCfg.DB)
