@@ -477,6 +477,46 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 	}
 }
 
+func TestExecuteOneRequest_SLOExpiredDuringExecution(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	if err != nil {
+		t.Fatalf("executeOneRequest error: %v", err)
+	}
+	if result.Error == nil {
+		t.Fatalf("expected error for SLO expired during execution")
+	}
+	if result.Error.Code != string(httpclient.ErrCategoryServer) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
+	}
+	if result.Error.Message != sloCtx.Err().Error() {
+		t.Fatalf("error message = %q, want %q", result.Error.Message, sloCtx.Err().Error())
+	}
+}
+
 // =====================================================================
 // Tests: processModel
 // =====================================================================
@@ -2356,12 +2396,22 @@ func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("deadline in the past clamps to zero", func(t *testing.T) {
+	t.Run("deadline in the past leaves headers unchanged", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		h := mergeSLOTTFTIntoHeaders(nil, ctx)
-		if got := h[sloTTFTMSHeader]; got != "0" {
-			t.Fatalf("x-slo-ttft-ms = %q, want 0", got)
+		if got := mergeSLOTTFTIntoHeaders(nil, ctx); got != nil {
+			t.Fatalf("nil headers: got %v, want nil (expired deadline => no merge)", got)
+		}
+		in := map[string]string{"a": "b"}
+		got := mergeSLOTTFTIntoHeaders(in, ctx)
+		if len(got) != 1 {
+			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
+		}
+		if _, ok := got[sloTTFTMSHeader]; ok {
+			t.Fatalf("unexpected %s with expired deadline", sloTTFTMSHeader)
+		}
+		if got["a"] != "b" {
+			t.Fatal("lost existing header")
 		}
 	})
 
