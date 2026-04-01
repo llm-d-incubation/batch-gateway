@@ -690,7 +690,7 @@ func (p *Processor) executeOneRequest(
 			CustomID: req.CustomID,
 			Error: &outputError{
 				Code:    string(httpclient.ErrCategoryServer),
-				Message: sloCtx.Err().Error(),
+				Message: fmt.Sprintf("SLO deadline expired: %v", sloCtx.Err()),
 			},
 		}
 		metrics.RecordRequestError(modelID)
