@@ -194,7 +194,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			// Use a detached context because pollCtx may already be cancelled
 			// (e.g. guard fired or SIGTERM arrived during the DB call).
 			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-fetch-failure")
-			defer bgSpan.End()
 			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
@@ -202,6 +201,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
 				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue")
 			}
+			bgSpan.End()
 			continue
 		}
 
