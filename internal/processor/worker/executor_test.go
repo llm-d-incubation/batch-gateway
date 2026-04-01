@@ -509,8 +509,8 @@ func TestExecuteOneRequest_SLOExpiredDuringExecution(t *testing.T) {
 	if result.Error == nil {
 		t.Fatalf("expected error for SLO expired during execution")
 	}
-	if result.Error.Code != string(httpclient.ErrCategoryServer) {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, httpclient.ErrCategoryServer)
+	if result.Error.Code != string(batch_types.ErrCodeBatchExpired) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, batch_types.ErrCodeBatchExpired)
 	}
 	if result.Error.Message != "This request could not be executed before the completion window expired." {
 		t.Fatalf("error message = %q, want %q", result.Error.Message, "This request could not be executed before the completion window expired.")
