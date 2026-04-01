@@ -182,7 +182,7 @@ metadata:
   name: batch-gateway-files
   namespace: batch-api
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteMany]
   resources:
     requests:
       storage: 1Gi

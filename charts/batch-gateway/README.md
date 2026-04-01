@@ -3,6 +3,7 @@
 This Helm chart deploys the Batch Gateway on a Kubernetes cluster, which includes:
 - **API Server**: REST API server for file and batch management
 - **Processor**: Background processor for batch job execution
+- **Garbage Collector**: Periodic cleanup of expired jobs and files
 
 ## Prerequisites
 
@@ -16,6 +17,9 @@ The API server provides a REST API for managing files and batch jobs.
 
 ### Processor (batch-gateway-processor)
 The processor is a background worker component that polls for and processes batch jobs.
+
+### Garbage Collector (batch-gateway-gc)
+The garbage collector periodically cleans up expired jobs and files.
 
 ## Installing the Chart
 
@@ -37,7 +41,7 @@ To install the chart with the release name `my-release`:
 helm install my-release ./charts/batch-gateway
 ```
 
-This will deploy only the API server by default.
+This will deploy the API server, processor, and garbage collector by default.
 
 ## Uninstalling the Chart
 
@@ -116,6 +120,15 @@ processor:
       drop:
       - ALL
     readOnlyRootFilesystem: true
+
+gc:
+  podSecurityContext: {}  # Let OpenShift SCC assign UIDs
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
 EOF
 
 helm install batch-gateway ./charts/batch-gateway -f openshift-values.yaml
@@ -131,8 +144,9 @@ For ClusterIP service type (default):
 
 ```bash
 export POD_NAME=$(kubectl get pods -l "app.kubernetes.io/component=apiserver" -o jsonpath="{.items[0].metadata.name}")
-kubectl port-forward $POD_NAME 8080:8000
-curl http://localhost:8080/health
+kubectl port-forward $POD_NAME 8080:8000 8081:8081
+curl http://localhost:8080/v1/batches  # API port
+curl http://localhost:8081/health       # health check port
 ```
 
 ### Processor
@@ -197,12 +211,12 @@ spec:
 ## Health Checks
 
 ### API Server
-- **Liveness Probe**: `GET /health` on port 8000
-- **Readiness Probe**: `GET /readyz` on port 8000
+- **Liveness Probe**: `GET /health` on port 8081
+- **Readiness Probe**: `GET /ready` on port 8081
 
 ### Processor
 - **Liveness Probe**: `GET /health` on port 9090
-- **Readiness Probe**: `GET /health` on port 9090
+- **Readiness Probe**: `GET /ready` on port 9090
 
 ## Monitoring & Dashboards
 
@@ -262,11 +276,11 @@ If the [Grafana Operator](https://github.com/grafana/grafana-operator) is instal
 ## Security
 
 The chart follows security best practices:
-- Runs as non-root user (UID 65532 by default)
+- Runs as non-root user (UID 65532 from Dockerfile by default)
 - Uses read-only root filesystem
 - Drops all Linux capabilities
 - Prevents privilege escalation
-- Uses seccomp profile
+- Uses seccomp RuntimeDefault profile
 
 ### OpenShift Compatibility
 

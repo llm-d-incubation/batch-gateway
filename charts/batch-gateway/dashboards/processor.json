@@ -199,6 +199,70 @@
           "legendFormat": "{{status}} / {{action}}"
         }
       ]
+    },
+    {
+      "title": "Token Throughput (prompt)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 48, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_request_prompt_tokens_total{namespace=\"$namespace\"}[5m])) by (model)",
+          "legendFormat": "{{model}} prompt tok/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "title": "Token Throughput (generation)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 48, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_request_generation_tokens_total{namespace=\"$namespace\"}[5m])) by (model)",
+          "legendFormat": "{{model}} gen tok/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "title": "Cancellation Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 56, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_cancellation_total{namespace=\"$namespace\"}[5m])) by (phase)",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Job E2E Latency (p50 / p95 / p99 by status)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 56, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(batch_job_e2e_latency_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, status))",
+          "legendFormat": "{{status}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(batch_job_e2e_latency_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, status))",
+          "legendFormat": "{{status}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(batch_job_e2e_latency_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, status))",
+          "legendFormat": "{{status}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
     }
   ]
 }

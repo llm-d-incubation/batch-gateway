@@ -75,6 +75,15 @@ func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionPar
 
 	setRequestCountAttrs(ctx, params.requestCounts)
 
+	recordE2ELatency(params.jobInfo, metrics.E2EStatusCancelled)
+
+	// requestCounts is non-nil only after executeJob populates it, so it
+	// reliably distinguishes execution-phase cancellation from queue-phase.
+	if params.requestCounts != nil {
+		metrics.RecordCancellation(metrics.CancelPhaseInProgress)
+	} else {
+		metrics.RecordCancellation(metrics.CancelPhaseQueued)
+	}
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job cancelled handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil

@@ -214,6 +214,17 @@ app.kubernetes.io/component: gc
 {{- end }}
 
 {{/*
+GC service account name
+*/}}
+{{- define "batch-gateway.gc.serviceAccountName" -}}
+{{- if .Values.gc.serviceAccount.create }}
+{{- default (include "batch-gateway.gc.fullname" .) .Values.gc.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.gc.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 GC image string
 */}}
 {{- define "batch-gateway.gc.image" -}}

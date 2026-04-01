@@ -161,24 +161,37 @@ Authorization: Bearer {{apiKey}}
 ### View Prometheus UI
 # Open in browser: http://localhost:9091
 # Prometheus scrapes metrics from both API Server and Processor
-# Try queries like: batch_gateway_processor_jobs_processed_total
+# See docs/guides/metrics.md for available metric names
+
+### View Grafana Dashboards
+# Open in browser: http://localhost:3000
+# Anonymous admin access — no login required.
+# Pre-loaded batch gateway dashboards.
+
+### List Grafana Dashboards
+GET http://localhost:3000/api/search
+Accept: application/json
+
+# Look for batch-gateway dashboards in the response.
+# Copy a dashboard UID to use in the next request.
+
+@grafanaDashboardUid =
+
+### Get Grafana Dashboard by UID
+GET http://localhost:3000/api/dashboards/uid/{{grafanaDashboardUid}}
+Accept: application/json
+
+### Query Prometheus via Grafana (datasource proxy)
+GET http://localhost:3000/api/datasources/proxy/1/api/v1/query?query=jobs_processed_total
+Accept: application/json
 
 ### Check API Server Metrics (Direct)
 GET http://localhost:8081/metrics
 Accept: text/plain
 
-# Look for:
-# - batch_gateway_api_http_requests_total
-# - batch_gateway_api_batch_jobs_total
-
 ### Check Processor Metrics (Direct)
 GET http://localhost:9090/metrics
 Accept: text/plain
-
-# Look for:
-# - batch_gateway_processor_jobs_processed_total
-# - batch_gateway_processor_job_duration_seconds
-# - batch_gateway_processor_inference_duration_seconds
 
 ### View API Server Health
 GET http://localhost:8081/health
