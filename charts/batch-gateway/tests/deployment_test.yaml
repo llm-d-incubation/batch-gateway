@@ -125,6 +125,61 @@ tests:
           path: spec.template.spec.securityContext.runAsUser
         template: templates/gc-deployment.yaml
 
+  # --- ServiceAccount ---
+
+  - it: should set default serviceAccountName on all Deployments
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-batch-gateway-apiserver
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-batch-gateway-processor
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-batch-gateway-gc
+        template: templates/gc-deployment.yaml
+
+  - it: should use custom serviceAccountName when specified
+    set:
+      apiserver.serviceAccount.name: "custom-apiserver-sa"
+      processor.serviceAccount.name: "custom-processor-sa"
+      gc.serviceAccount.name: "custom-gc-sa"
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-apiserver-sa
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-processor-sa
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-gc-sa
+        template: templates/gc-deployment.yaml
+
+  - it: should use default SA when serviceAccount.create is false
+    set:
+      apiserver.serviceAccount.create: false
+      processor.serviceAccount.create: false
+      gc.serviceAccount.create: false
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: default
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: default
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: default
+        template: templates/gc-deployment.yaml
+
   # --- OTel env vars ---
 
   - it: should not inject OTel env vars when endpoint is empty
