@@ -170,6 +170,9 @@ func (s *spyPQ) PQEnqueue(ctx context.Context, jobPriority *db.BatchJobPriority)
 	if injectedErr != nil {
 		return injectedErr
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return s.inner.PQEnqueue(ctx, jobPriority)
 }
 func (s *spyPQ) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) ([]*db.BatchJobPriority, error) {
