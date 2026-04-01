@@ -120,6 +120,15 @@ processor:
       drop:
       - ALL
     readOnlyRootFilesystem: true
+
+gc:
+  podSecurityContext: {}  # Let OpenShift SCC assign UIDs
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
 EOF
 
 helm install batch-gateway ./charts/batch-gateway -f openshift-values.yaml
