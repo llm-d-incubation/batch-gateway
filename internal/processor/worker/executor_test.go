@@ -12,10 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
@@ -1539,12 +1544,24 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
+	ji := &batch_types.JobInfo{
+		JobID:    "job-cancel",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
+		jobInfo: ji,
 	}, ErrCancelled)
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency cancelled: delta=%d, want 1", delta)
+	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-cancel"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1567,13 +1584,25 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 
 	dbJob := seedDBJob(t, env.dbClient, "job-ctx")
 	task := &db.BatchJobPriority{ID: "job-ctx"}
+	ji := &batch_types.JobInfo{
+		JobID:    "job-ctx",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	beforeFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 		task:    task,
+		jobInfo: ji,
 	}, context.Canceled)
+
+	afterFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+	if delta := afterFailed - beforeFailed; delta != 0 {
+		t.Fatalf("E2E latency failed: delta=%d, want 0 (re-enqueue succeeded, not terminal)", delta)
+	}
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1644,12 +1673,24 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
+	ji := &batch_types.JobInfo{
+		JobID:    "job-fail",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
+		jobInfo: ji,
 	}, errors.New("some error"))
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency failed: delta=%d, want 1", delta)
+	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1687,8 +1728,14 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 
 	createPartialOutputFiles(t, env.p, jobID, tenantID)
 
-	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	jobInfo := &batch_types.JobInfo{
+		JobID:    jobID,
+		TenantID: tenantID,
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
+
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 
 	ctx := testLoggerCtx(t)
 	if err := env.p.handleCancelled(ctx, &jobExecutionParams{
@@ -1698,6 +1745,11 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 		requestCounts: counts,
 	}); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
+	}
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency cancelled: delta=%d, want 1", delta)
 	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -1778,12 +1830,23 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 
 	jobID := "job-fail-finalization"
 	dbJob := seedDBJob(t, env.dbClient, jobID)
+	ji := &batch_types.JobInfo{
+		JobID:    jobID,
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
 
 	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}
 
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+
 	ctx := testLoggerCtx(t)
-	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts); err != nil {
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts, ji); err != nil {
 		t.Fatalf("handleFailed: %v", err)
+	}
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency failed: delta=%d, want 1", delta)
 	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -2005,5 +2068,225 @@ func TestExecutionProgress_Flush(t *testing.T) {
 	afterFlush := statusClient.count.Load()
 	if afterFlush <= beforeFlush {
 		t.Fatalf("expected flush to push at least 1 update, before=%d after=%d", beforeFlush, afterFlush)
+	}
+}
+
+// =====================================================================
+// Tests: jsonNumericToFloat64
+// =====================================================================
+
+// findMetric finds a metric by name and label set from the default Prometheus registry.
+// Returns nil if not found.
+func findMetric(t *testing.T, name string, labels map[string]string) *dto.Metric {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+	outer:
+		for _, m := range mf.Metric {
+			for k, v := range labels {
+				var got string
+				for _, lp := range m.Label {
+					if lp.GetName() == k {
+						got = lp.GetValue()
+						break
+					}
+				}
+				if got != v {
+					continue outer
+				}
+			}
+			return m
+		}
+	}
+	return nil
+}
+
+func gatherCounterValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	m := findMetric(t, name, labels)
+	if m == nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func gatherHistogramSampleCount(t *testing.T, name string, labels map[string]string) uint64 {
+	t.Helper()
+	m := findMetric(t, name, labels)
+	if m == nil {
+		return 0
+	}
+	return m.GetHistogram().GetSampleCount()
+}
+
+func TestRecordTokenUsageFromBody(t *testing.T) {
+	logger := logr.Discard()
+
+	t.Run("usage present with both fields", func(t *testing.T) {
+		model := "token-test-both"
+		body := map[string]interface{}{
+			"choices": []interface{}{},
+			"usage": map[string]interface{}{
+				"prompt_tokens":     float64(42),
+				"completion_tokens": float64(128),
+				"total_tokens":      float64(170),
+			},
+		}
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 42 {
+			t.Fatalf("prompt_tokens=%v, want 42", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 128 {
+			t.Fatalf("generation_tokens=%v, want 128", v)
+		}
+	})
+
+	t.Run("usage missing", func(t *testing.T) {
+		model := "token-test-missing"
+		body := map[string]interface{}{
+			"choices": []interface{}{},
+		}
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (no usage object)", v)
+		}
+	})
+
+	t.Run("usage present but no numeric fields", func(t *testing.T) {
+		model := "token-test-non-numeric"
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"prompt_tokens": "not-a-number",
+			},
+		}
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (non-numeric field)", v)
+		}
+	})
+
+	t.Run("usage with only prompt_tokens", func(t *testing.T) {
+		model := "token-test-prompt-only"
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"prompt_tokens": float64(100),
+			},
+		}
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 100 {
+			t.Fatalf("prompt_tokens=%v, want 100", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("generation_tokens=%v, want 0 (only prompt provided)", v)
+		}
+	})
+
+	t.Run("usage with only completion_tokens", func(t *testing.T) {
+		model := "token-test-completion-only"
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"completion_tokens": float64(50),
+			},
+		}
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (only completion provided)", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 50 {
+			t.Fatalf("generation_tokens=%v, want 50", v)
+		}
+	})
+
+	t.Run("nil body", func(t *testing.T) {
+		model := "token-test-nil"
+		recordTokenUsageFromBody(nil, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (nil body)", v)
+		}
+	})
+
+	t.Run("negative token values skipped", func(t *testing.T) {
+		model := "token-test-negative"
+		body := map[string]interface{}{
+			"usage": map[string]interface{}{
+				"prompt_tokens":     float64(-10),
+				"completion_tokens": float64(50),
+			},
+		}
+		recordTokenUsageFromBody(body, model, logger)
+
+		if v := gatherCounterValue(t, "batch_request_prompt_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("prompt_tokens=%v, want 0 (negative values should be skipped)", v)
+		}
+		if v := gatherCounterValue(t, "batch_request_generation_tokens_total", map[string]string{"model": model}); v != 0 {
+			t.Fatalf("generation_tokens=%v, want 0 (negative values should be skipped)", v)
+		}
+	})
+}
+
+func TestRecordE2ELatency(t *testing.T) {
+	t.Run("nil jobInfo", func(t *testing.T) {
+		recordE2ELatency(nil, metrics.E2EStatusCompleted)
+	})
+
+	t.Run("nil BatchJob", func(t *testing.T) {
+		ji := &batch_types.JobInfo{JobID: "j1"}
+		recordE2ELatency(ji, metrics.E2EStatusCompleted)
+	})
+
+	t.Run("zero CreatedAt", func(t *testing.T) {
+		ji := &batch_types.JobInfo{
+			JobID:    "j1",
+			BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: 0}},
+		}
+		recordE2ELatency(ji, metrics.E2EStatusCompleted)
+	})
+
+	t.Run("valid CreatedAt", func(t *testing.T) {
+		ji := &batch_types.JobInfo{
+			JobID:    "j1",
+			BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-30 * time.Second).Unix()}},
+		}
+		recordE2ELatency(ji, metrics.E2EStatusCompleted)
+	})
+}
+
+func TestJsonNumericToFloat64(t *testing.T) {
+	cases := []struct {
+		name string
+		in   interface{}
+		want float64
+		ok   bool
+	}{
+		{"float64", float64(42.5), 42.5, true},
+		{"int", int(10), 10, true},
+		{"int64", int64(999), 999, true},
+		{"json.Number", json.Number("128"), 128, true},
+		{"string", "nope", 0, false},
+		{"nil", nil, 0, false},
+		{"bool", true, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := jsonNumericToFloat64(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("jsonNumericToFloat64(%v) ok=%v, want %v", tc.in, ok, tc.ok)
+			}
+			if ok && got != tc.want {
+				t.Fatalf("jsonNumericToFloat64(%v)=%v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

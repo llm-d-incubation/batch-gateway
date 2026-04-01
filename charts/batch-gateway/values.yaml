@@ -13,6 +13,8 @@ global:
   # conflict with OpenShift's Security Context Constraints.
   podSecurityContext:
     runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
 
   # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.
@@ -306,6 +308,10 @@ processor:
       start: 0.1
       factor: 2
       count: 15
+    e2eLatencyBucket:
+      start: 1
+      factor: 3
+      count: 12
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
     workDir: "/var/lib/batch-gateway/processor"
@@ -401,6 +407,12 @@ gc:
     repository: ghcr.io/llm-d-incubation/batch-gateway-gc
     pullPolicy: IfNotPresent
     tag: "latest"
+
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
 
   # GC application config (rendered into a ConfigMap and mounted as config.yaml)
   config:

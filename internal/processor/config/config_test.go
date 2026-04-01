@@ -142,6 +142,10 @@ process_time_bucket:
   start: 0.1
   factor: 2
   count: 15
+e2e_latency_bucket:
+  start: 1
+  factor: 3
+  count: 12
 model_gateways:
   "llama-3":
     url: "http://llama-gw:8000"

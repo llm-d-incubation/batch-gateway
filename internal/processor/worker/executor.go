@@ -735,6 +735,7 @@ func (p *Processor) executeOneRequest(
 				RequestID:  inferResp.RequestID,
 				Body:       body,
 			}
+			recordTokenUsageFromBody(body, modelID, logger)
 		}
 	}
 
@@ -742,6 +743,48 @@ func (p *Processor) executeOneRequest(
 		metrics.RecordRequestError(modelID)
 	}
 	return result, nil
+}
+
+// recordTokenUsageFromBody extracts prompt and completion token counts from the
+// inference response body and records them as metrics. Skips if the usage object
+// is absent, if neither prompt_tokens nor completion_tokens is a valid numeric value,
+// or if either one is negative.
+func recordTokenUsageFromBody(body map[string]interface{}, model string, logger logr.Logger) {
+	usage, ok := body["usage"].(map[string]interface{})
+	if !ok {
+		logger.V(logging.DEBUG).Info("Inference response missing usage data, skipping token metrics")
+		return
+	}
+	prompt, promptOK := jsonNumericToFloat64(usage["prompt_tokens"])
+	completion, completionOK := jsonNumericToFloat64(usage["completion_tokens"])
+	if !promptOK && !completionOK {
+		logger.V(logging.DEBUG).Info("Inference response usage has no numeric token fields, skipping token metrics")
+		return
+	}
+	// Prometheus Counter.Add() panics on negative values. Guard against non-conforming
+	// inference backends that might return negative token counts.
+	if prompt < 0 || completion < 0 {
+		logger.V(logging.DEBUG).Info("Inference response usage has negative token values, skipping token metrics",
+			"prompt_tokens", prompt, "completion_tokens", completion)
+		return
+	}
+	metrics.RecordTokenUsage(prompt, completion, model)
+}
+
+func jsonNumericToFloat64(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // newBatchRequestID formats requestID into the "batch_req_<uuid>" form required by the

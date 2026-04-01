@@ -118,7 +118,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			defer bgSpan.End()
 			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
 				logger.Error(enqErr, "Failed to re-enqueue the job to the queue")
-				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
+				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil, params.jobInfo); failErr != nil {
 					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
@@ -153,7 +153,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		logger.Error(err, "Failed to update status to in_progress")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "status transition failed")
-		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
+		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil, params.jobInfo); failErr != nil {
 			logger.Error(failErr, "Failed to handle failed event")
 		}
 		return
@@ -199,6 +199,8 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 			// Treat as successful cancellation (same as handleCancelled).
 			p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
+			recordE2ELatency(params.jobInfo, metrics.E2EStatusCancelled)
+			metrics.RecordCancellation(metrics.CancelPhaseFinalizing)
 			metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 			logger.V(logging.INFO).Info("Job cancelled during finalization")
 			return
@@ -206,7 +208,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		logger.Error(err, "Failed to finalize job")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "finalize failed")
-		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, requestCounts); failErr != nil {
+		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, requestCounts, params.jobInfo); failErr != nil {
 			logger.Error(failErr, "Failed to handle failed event")
 		}
 		return
@@ -215,6 +217,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// cleanup local artifacts (best-effort)
 	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
 	metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
+	recordE2ELatency(params.jobInfo, metrics.E2EStatusCompleted)
 	metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 	logger.V(logging.INFO).Info("Job completed successfully")
 }
@@ -257,7 +260,7 @@ func (p *Processor) handlePanicRecovery(
 			return
 		}
 	}
-	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts); err != nil {
+	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts, nil); err != nil {
 		logger.Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
 			"jobID", params.jobItem.ID, "tenantID", params.jobItem.TenantID)
 	}
@@ -270,10 +273,9 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 
 	switch {
 	case errors.Is(err, ErrCancelled):
-		// Ingestion cancel: no output files exist yet, so clear these fields
-		// to tell handleCancelled to skip partial-output upload.
+		// Ingestion cancel: clear requestCounts so handleCancelled skips partial-output
+		// upload, but keep jobInfo so it can record E2E latency internally.
 		// Safe to mutate params — callers return immediately after handleJobError.
-		params.jobInfo = nil
 		params.requestCounts = nil
 		if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
 			logger.Error(cancelErr, "Failed to handle cancelled event")
@@ -289,7 +291,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 			defer bgSpan.End()
 			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
 				logger.Error(enqErr, "Failed to re-enqueue the job to the queue")
-				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil); failErr != nil {
+				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil, params.jobInfo); failErr != nil {
 					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
@@ -304,7 +306,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 				logger.Error(failErr, "Failed to handle failed event with partial output")
 			}
 		} else {
-			if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil); failErr != nil {
+			if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil, params.jobInfo); failErr != nil {
 				logger.Error(failErr, "Failed to handle failed event")
 			}
 		}
@@ -378,6 +380,7 @@ func (p *Processor) handleExpired(
 
 	setRequestCountAttrs(ctx, requestCounts)
 
+	recordE2ELatency(jobInfo, metrics.E2EStatusExpired)
 	metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredExecution)
 	logger.V(logging.INFO).Info("Job expired handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
@@ -386,6 +389,7 @@ func (p *Processor) handleExpired(
 // handleFailedWithPartial finalizes an execution failure by uploading partial results before
 // transitioning to failed status. Completed requests are preserved in the output file,
 // and unexecuted requests were already drained to the error file as "batch_failed".
+// Records E2E latency as failed.
 func (p *Processor) handleFailedWithPartial(
 	ctx context.Context,
 	updater *StatusUpdater,
@@ -407,6 +411,7 @@ func (p *Processor) handleFailedWithPartial(
 
 	setRequestCountAttrs(ctx, requestCounts)
 
+	recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 	logger.V(logging.INFO).Info("Job failed handled with partial output", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
@@ -415,11 +420,13 @@ func (p *Processor) handleFailedWithPartial(
 // handleFailed finalizes a failed job without partial output upload.
 // Used for ingestion failures (no output files), finalization failures (upload retries exhausted),
 // and re-enqueue failures (infrastructure-level issue). requestCounts is recorded in DB when non-nil.
+// Records E2E latency as failed when jobInfo is available (nil-safe).
 func (p *Processor) handleFailed(
 	ctx context.Context,
 	updater *StatusUpdater,
 	jobItem *db.BatchItem,
 	requestCounts *openai.BatchRequestCounts,
+	jobInfo *batch_types.JobInfo,
 ) error {
 	logger := logr.FromContextOrDiscard(ctx)
 
@@ -432,9 +439,20 @@ func (p *Processor) handleFailed(
 
 	setRequestCountAttrs(ctx, requestCounts)
 
+	recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 	logger.V(logging.INFO).Info("Job failed handled")
 	return nil
+}
+
+// recordE2ELatency records the full lifecycle duration from batch submission to terminal state.
+// No-op if jobInfo, BatchJob, or CreatedAt is missing (e.g. DB conversion failure).
+func recordE2ELatency(jobInfo *batch_types.JobInfo, status string) {
+	if jobInfo == nil || jobInfo.BatchJob == nil || jobInfo.BatchJob.CreatedAt == 0 {
+		return
+	}
+	createdAt := time.Unix(jobInfo.BatchJob.CreatedAt, 0)
+	metrics.RecordJobE2ELatency(time.Since(createdAt), status)
 }
 
 func setRequestCountAttrs(ctx context.Context, counts *openai.BatchRequestCounts) {
