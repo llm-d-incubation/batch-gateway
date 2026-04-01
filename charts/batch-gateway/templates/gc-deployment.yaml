@@ -17,6 +17,7 @@ spec:
       labels:
         {{- include "batch-gateway.gc.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "batch-gateway.gc.serviceAccountName" . }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

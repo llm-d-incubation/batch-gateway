@@ -263,7 +263,7 @@ func TestHandleFailed_DBUpdateError_ReturnsError(t *testing.T) {
 		BaseContents: db.BaseContents{
 			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
 		},
-	}, nil)
+	}, nil, nil)
 	if !errors.Is(err, updateErr) {
 		t.Fatalf("expected update error, got %v", err)
 	}

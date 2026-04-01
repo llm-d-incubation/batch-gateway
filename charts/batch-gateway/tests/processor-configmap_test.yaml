@@ -221,6 +221,9 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'process_time_bucket:\n\s+start: 0\.1\n\s+factor: 2\n\s+count: 15'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'e2e_latency_bucket:\n\s+start: 1\n\s+factor: 3\n\s+count: 12'
 
   - it: should render file_client retry config
     asserts:

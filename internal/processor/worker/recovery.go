@@ -123,7 +123,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 	jobInfo, err := batch_utils.FromDBItemToJobInfoObject(dbItem)
 	if err != nil {
 		logger.Error(err, "Startup recovery: failed to convert DB item")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, nil)
 	}
 
 	status := jobInfo.BatchJob.Status
@@ -151,7 +151,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 			return nil
 		}
 		logger.Info("Startup recovery: unexpected status, marking as failed", "status", statusStr)
-		return p.recoverWithFailed(ctx, dbItem, nil, nil)
+		return p.recoverWithFailed(ctx, dbItem, nil, nil, jobInfo)
 	}
 }
 
@@ -169,10 +169,11 @@ func (p *Processor) recoverFinalizing(ctx context.Context, dbItem *db.BatchItem,
 		logger.Error(err, "Startup recovery: finalization failed, marking as failed")
 		return p.recoverWithFailed(ctx, dbItem, err, &recoveryFallback{
 			counts: counts, outputFileID: outputFileID, errorFileID: errorFileID,
-		})
+		}, jobInfo)
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
+	recordE2ELatency(jobInfo, metrics.E2EStatusCompleted)
 	metrics.RecordStartupRecovery("finalizing", recoveryActionFinalized)
 	logger.V(logging.INFO).Info("Startup recovery: finalized successfully")
 	return nil
@@ -189,10 +190,16 @@ func (p *Processor) recoverCancelling(ctx context.Context, dbItem *db.BatchItem,
 		logger.Error(err, "Startup recovery: failed to update cancelled status, marking as failed")
 		return p.recoverWithFailed(ctx, dbItem, err, &recoveryFallback{
 			counts: counts, outputFileID: outputFileID, errorFileID: errorFileID,
-		})
+		}, jobInfo)
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
+	recordE2ELatency(jobInfo, metrics.E2EStatusCancelled)
+	if counts != nil {
+		metrics.RecordCancellation(metrics.CancelPhaseInProgress)
+	} else {
+		metrics.RecordCancellation(metrics.CancelPhaseQueued)
+	}
 	metrics.RecordStartupRecovery("cancelling", recoveryActionCancelled)
 	logger.V(logging.INFO).Info("Startup recovery: cancelled successfully")
 	return nil
@@ -226,10 +233,11 @@ func (p *Processor) recoverInProgressWithPartial(ctx context.Context, dbItem *db
 		logger.Error(err, "Startup recovery: failed to update failed status")
 		return p.recoverWithFailed(ctx, dbItem, err, &recoveryFallback{
 			counts: counts, outputFileID: outputFileID, errorFileID: errorFileID,
-		})
+		}, jobInfo)
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
+	recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 	metrics.RecordStartupRecovery("in_progress", recoveryActionFailed)
 	logger.V(logging.INFO).Info("Startup recovery: marked as failed with partial output")
 	return nil
@@ -241,25 +249,31 @@ func (p *Processor) recoverInProgressReEnqueue(ctx context.Context, dbItem *db.B
 	slo, err := p.extractRecoverySLO(dbItem, jobInfo)
 	if err != nil {
 		logger.Error(err, "Startup recovery: failed to recover SLO for re-enqueue")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 	if time.Now().After(*slo) {
-		return p.recoverExpired(ctx, dbItem, "in_progress")
+		expired, err := p.recoverExpired(ctx, dbItem, "in_progress")
+		if expired {
+			recordE2ELatency(jobInfo, metrics.E2EStatusExpired)
+		} else {
+			recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
+		}
+		return err
 	}
 
 	if err := p.updater.UpdatePersistentStatus(ctx, dbItem, openai.BatchStatusValidating, nil, slo); err != nil {
 		logger.Error(err, "Startup recovery: failed to reset status to validating")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 
 	task, err := p.buildRecoveryTask(dbItem, slo)
 	if err != nil {
 		logger.Error(err, "Startup recovery: failed to build recovery task")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 	if err := p.poller.enqueueOne(ctx, task); err != nil {
 		logger.Error(err, "Startup recovery: failed to re-enqueue job")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
@@ -275,21 +289,27 @@ func (p *Processor) recoverValidating(ctx context.Context, dbItem *db.BatchItem,
 	slo, err := p.extractRecoverySLO(dbItem, jobInfo)
 	if err != nil {
 		logger.Error(err, "Startup recovery: failed to recover SLO for re-enqueue")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 	if time.Now().After(*slo) {
-		return p.recoverExpired(ctx, dbItem, "validating")
+		expired, err := p.recoverExpired(ctx, dbItem, "validating")
+		if expired {
+			recordE2ELatency(jobInfo, metrics.E2EStatusExpired)
+		} else {
+			recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
+		}
+		return err
 	}
 
 	task, err := p.buildRecoveryTask(dbItem, slo)
 	if err != nil {
 		logger.Error(err, "Startup recovery: failed to build recovery task")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 
 	if err := p.poller.enqueueOne(ctx, task); err != nil {
 		logger.Error(err, "Startup recovery: failed to re-enqueue validating job")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return p.recoverWithFailed(ctx, dbItem, err, nil, jobInfo)
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
@@ -310,7 +330,8 @@ type recoveryFallback struct {
 // recoverWithFailed is the fallback: mark the job as failed so it doesn't stay stuck.
 // Used when the primary recovery action fails and DB is reachable.
 // If fb is non-nil, its counts and file IDs are preserved in the failed status.
-func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem, cause error, fb *recoveryFallback) error {
+// Records E2E latency as failed when jobInfo is available (nil-safe).
+func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem, cause error, fb *recoveryFallback, jobInfo *batch_types.JobInfo) error {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	var counts *openai.BatchRequestCounts
@@ -327,23 +348,27 @@ func (p *Processor) recoverWithFailed(ctx context.Context, dbItem *db.BatchItem,
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
+	recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 	metrics.RecordStartupRecovery(string(p.getJobStatus(dbItem)), recoveryActionFailed)
 	logger.Info("Startup recovery: marked as failed (recovery action failed)", "cause", cause)
 	return nil
 }
 
-func (p *Processor) recoverExpired(ctx context.Context, dbItem *db.BatchItem, previousStatus string) error {
+// recoverExpired transitions a job to expired status. Returns (true, nil) on success,
+// (false, nil) if the expired update failed but recoverWithFailed succeeded (job is now failed),
+// or (false, err) if both expired and failed updates failed.
+func (p *Processor) recoverExpired(ctx context.Context, dbItem *db.BatchItem, previousStatus string) (expired bool, err error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	if err := p.updater.UpdatePersistentStatus(ctx, dbItem, openai.BatchStatusExpired, nil, nil); err != nil {
 		logger.Error(err, "Startup recovery: failed to update expired status")
-		return p.recoverWithFailed(ctx, dbItem, err, nil)
+		return false, p.recoverWithFailed(ctx, dbItem, err, nil, nil)
 	}
 
 	p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)
 	metrics.RecordStartupRecovery(previousStatus, recoveryActionExpired)
 	logger.V(logging.INFO).Info("Startup recovery: marked job as expired because SLO already passed")
-	return nil
+	return true, nil
 }
 
 // outputFileHasContent checks whether the output.jsonl file exists and has content.

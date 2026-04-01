@@ -117,7 +117,8 @@ For detailed architecture information see the [design directory](docs/design/).
 batch-gateway/
 ├── cmd/                          # Application entry points
 │   ├── apiserver/                # API server binary
-│   └── batch-processor/          # Batch processor binary
+│   ├── batch-processor/          # Batch processor binary
+│   └── batch-gc/                 # Garbage collector binary
 ├── internal/                     # Private application code
 │   ├── apiserver/                # API server implementation
 │   │   ├── batch/                # Batch job handlers
@@ -134,12 +135,13 @@ batch-gateway/
 │   │   └── metrics/              # Prometheus metrics
 │   ├── database/                 # Database clients
 │   │   ├── api/                  # Database interfaces
+│   │   ├── mock/                 # Mock implementation (testing)
 │   │   ├── redis/                # Redis implementation
 │   │   └── postgresql/           # PostgreSQL implementation
 │   ├── files_store/              # File storage clients (S3, FS)
-│   ├── inference/                # Inference gateway HTTP client
 │   ├── shared/                   # Shared types and utilities
 │   └── util/                     # Common utilities (logging, TLS, etc.)
+├── pkg/                          # Public library code
 ├── charts/                       # Helm charts
 │   └── batch-gateway/            # Kubernetes deployment manifests
 ├── docs/                         # Documentation
@@ -148,8 +150,6 @@ batch-gateway/
 ├── test/                         # Test suites
 │   └── e2e/                      # End-to-end tests
 ├── docker/                       # Dockerfiles
-│   ├── Dockerfile.apiserver      # API server container image
-│   └── Dockerfile.processor      # Processor container image
 ├── scripts/                      # Development and deployment scripts
 ├── Makefile                      # Build and development targets
 └── go.mod                        # Go module dependencies
@@ -159,6 +159,7 @@ batch-gateway/
 
 - **`cmd/`**: Contains `main.go` entry points for the components' binaries.
 - **`internal/`**: All private application code, organized by component.
+- **`pkg/`**: Public library code.
 - **`charts/`**: Helm chart for deploying the components in Kubernetes.
 - **`docs/`**: Contains architecture documents and development / usage guides.
 - **`test/`**: Integration and E2E test suites for validating the full system.
@@ -248,12 +249,11 @@ For detailed instructions, see [Development Guide](docs/guides/development.md).
 #### Production Deployment
 
 ```bash
-# Install API server only (default)
+# Install all components (apiserver, processor, gc) with defaults
 helm install batch-gateway ./charts/batch-gateway
 
-# Install with processor enabled
+# Scale processor replicas
 helm install batch-gateway ./charts/batch-gateway \
-  --set processor.enabled=true \
   --set processor.replicaCount=3
 ```
 
@@ -347,8 +347,8 @@ For a complete list of available metrics, see [docs/guides/metrics.md](docs/guid
 
 **API Server:**
 
-- Health: `GET /health` (port 8000).
-- Readiness: `GET /ready` (port 8000).
+- Health: `GET /health` (port 8081).
+- Readiness: `GET /ready` (port 8081).
 
 **Processor:**
 

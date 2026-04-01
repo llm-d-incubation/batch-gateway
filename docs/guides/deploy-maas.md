@@ -367,7 +367,7 @@ metadata:
   name: batch-gateway-files
   namespace: ${BATCH_NS}
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteMany]
   resources:
     requests:
       storage: 1Gi
@@ -417,6 +417,7 @@ helm install batch-gateway ./charts/batch-gateway \
 >   --set "global.fileClient.s3.accessKeyId=<access-key>"
 >   --set "global.fileClient.s3.prefix=<bucket-name>"
 >   --set "global.fileClient.s3.usePathStyle=true"
+>   --set "global.fileClient.s3.autoCreateBucket=true"
 >   ```
 >   and add `--from-literal=s3-secret-access-key=<secret-key>` to the application secret.
 

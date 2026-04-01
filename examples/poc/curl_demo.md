@@ -142,6 +142,9 @@ open http://localhost:16686
 
 # View metrics in Prometheus
 open http://localhost:9091
+
+# View dashboards in Grafana
+open http://localhost:3000
 ```
 
 ## Useful Monitoring Commands
@@ -153,13 +156,24 @@ watch -n 2 "curl -k -s https://localhost:8000/v1/batches/$BATCH_ID \
   -H 'Authorization: Bearer unused' | jq '{id:.id,status:.status,request_counts:.request_counts}'"
 
 # Monitor API server metrics (direct)
-watch -n 5 "curl -s http://localhost:8081/metrics | grep -E '(batch_gateway_api_http_requests_total|batch_gateway_api_batch_jobs_total)'"
+watch -n 5 "curl -s http://localhost:8081/metrics"
 
 # Monitor processor metrics (direct)
-watch -n 5 "curl -s http://localhost:9090/metrics | grep -E '(batch_gateway_processor_jobs_processed_total|batch_gateway_processor_job_duration_seconds)'"
+watch -n 5 "curl -s http://localhost:9090/metrics"
 
-# Query Prometheus for metrics (requires PromQL)
-curl -s 'http://localhost:9091/api/v1/query?query=batch_gateway_processor_jobs_processed_total' | jq '.data.result'
+# Query Prometheus for metrics (requires PromQL — see docs/guides/metrics.md for available metric names)
+curl -s 'http://localhost:9091/api/v1/query?query=jobs_processed_total' | jq '.data.result'
+
+# ── Grafana API ──
+
+# List available dashboards
+curl -s http://localhost:3000/api/search | jq '.[].title'
+
+# Get a dashboard by UID (replace DASHBOARD_UID with an actual UID from the search above)
+curl -s http://localhost:3000/api/dashboards/uid/DASHBOARD_UID | jq '.dashboard.title'
+
+# Query Prometheus via Grafana's datasource proxy (same PromQL, routed through Grafana)
+curl -s 'http://localhost:3000/api/datasources/proxy/1/api/v1/query?query=jobs_processed_total' | jq '.data.result'
 
 # View processor logs
 kubectl logs -l app.kubernetes.io/component=processor -n default -f

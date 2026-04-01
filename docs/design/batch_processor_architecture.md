@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 5
--   **Last Updated**: 2026-03-11
+-   **Revision**: 6
+-   **Last Updated**: 2026-03-30
 
 -------------------------------------------------------------------
 
@@ -707,6 +707,24 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   `component` is `processor`/`apiserver`/`garbage-collector`, and `status` is
   `success` (operation completed), `retry` (retry attempt), or `exhausted`
   (all retries failed). Emitted by the `retryclient` decorator.
+
+**Token Metrics**
+
+- `batch_request_prompt_tokens_total{model}` (counter)
+  Total prompt tokens consumed by batch inference requests. Only counted when the inference response includes usage data. Streaming is rejected at ingestion, so non-streaming responses from OpenAI-compatible backends typically include this.
+
+- `batch_request_generation_tokens_total{model}` (counter)
+  Total generation (completion) tokens produced by batch inference requests. Same availability caveat as prompt tokens.
+
+**Job Lifecycle Metrics**
+
+- `batch_job_e2e_latency_seconds{status}` (histogram)
+  End-to-end job latency from submission (`created_at`) to terminal state. `status` values: `completed`, `cancelled`, `expired`, `failed`. Includes queue wait time — for processor-only duration, use `job_processing_duration_seconds`.
+
+**Cancellation Metrics**
+
+- `batch_cancellation_total{phase}` (counter)
+  Total batch job cancellations by phase. `phase` values: `queued` (cancelled before execution started), `in_progress` (cancelled during execution), `finalizing` (cancelled during file upload/finalization).
 
 **Startup Recovery Metrics**
 

@@ -908,6 +908,61 @@ func TestRunPollingLoop_SIGTERMAfterDequeue_ReEnqueuesViaDetachedCtx(t *testing.
 	}
 }
 
+func TestRunPollingLoop_FetchFailsWithCancelledCtx_ReEnqueuesViaDetachedCtx(t *testing.T) {
+	ctx := testLoggerCtx(t)
+
+	cfg := config.NewConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.NumWorkers = 1
+
+	pollingCtx, pollingCancel := context.WithCancel(ctx)
+	defer pollingCancel()
+
+	pq := &spyPQ{
+		inner: mockdb.NewMockBatchPriorityQueueClient(),
+		afterDequeueFn: func() {
+			pollingCancel()
+		},
+	}
+
+	innerDB := mockdb.NewMockDBClient(
+		func(b *db.BatchItem) string { return b.ID },
+		func(q *db.BatchQuery) *db.BaseQuery { return &q.BaseQuery },
+	)
+	dbClient := &dbGetErrWrapper{
+		inner: innerDB,
+		err:   context.Canceled,
+	}
+	statusClient := mockdb.NewMockBatchStatusClient()
+	jobID := "job-fetch-cancel-requeue-1"
+
+	if err := pq.PQEnqueue(ctx, &db.BatchJobPriority{
+		ID:  jobID,
+		SLO: time.Now().Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PQEnqueue task: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		Queue:   pq,
+		Status:  statusClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	if err := p.runPollingLoop(pollingCtx, ctx); err != nil {
+		t.Fatalf("runPollingLoop: %v", err)
+	}
+
+	tasks, err := pq.PQDequeue(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("PQDequeue: %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("expected task to be back in queue after re-enqueue via detached context")
+	}
+}
+
 func TestRunPollingLoop_GuardReEnqueueFails_FallsBackToHandleFailed(t *testing.T) {
 	ctx := testLoggerCtx(t)
 

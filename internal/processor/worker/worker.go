@@ -191,13 +191,17 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			pollLogger.Error(err, "Failed to fetch job item from DB")
 			p.releaseForNextPoll()
 			pollLogger.V(logging.DEBUG).Info("Re-enqueue the job to the queue")
-			reEnqueueErr := p.poller.enqueueOne(pollCtx, task)
-			if reEnqueueErr != nil {
+			// Use a detached context because pollCtx may already be cancelled
+			// (e.g. guard fired or SIGTERM arrived during the DB call).
+			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-fetch-failure")
+			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
+				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue")
 			}
+			bgSpan.End()
 			continue
 		}
 
@@ -225,7 +229,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 		if err != nil {
 			pollLogger.Error(err, "Failed to convert job object in DB to job info object")
 			p.releaseForNextPoll()
-			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil); failErr != nil {
+			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil, nil); failErr != nil {
 				pollLogger.Error(failErr, "Failed to mark malformed job as failed")
 			}
 			continue
@@ -241,9 +245,14 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 			if err := p.updater.UpdatePersistentStatus(pollCtx, jobItem, openai.BatchStatusExpired, nil, nil); err != nil {
 				pollLogger.Error(err, "Failed to update job status in DB", "newStatus", openai.BatchStatusExpired, "slo", task.SLO)
+				recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
+				p.releaseForNextPoll()
+				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+				continue
 			}
 
 			p.releaseForNextPoll()
+			recordE2ELatency(jobInfo, metrics.E2EStatusExpired)
 			metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredDequeue)
 			continue
 		}
@@ -254,8 +263,14 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				pollLogger.V(logging.INFO).Info("Job is in cancelling state after dequeue, transitioning to cancelled")
 				if err := p.updater.UpdateCancelledStatus(pollCtx, jobItem, nil, "", ""); err != nil {
 					pollLogger.Error(err, "Failed to update job status to cancelled")
+					recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
+					p.releaseForNextPoll()
+					metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
+					continue
 				}
 				p.releaseForNextPoll()
+				recordE2ELatency(jobInfo, metrics.E2EStatusCancelled)
+				metrics.RecordCancellation(metrics.CancelPhaseQueued)
 				metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
 				continue
 			}
@@ -278,12 +293,13 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			defer bgSpan.End()
 			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue job during graceful shutdown, marking as failed")
-				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil); failErr != nil {
+				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil, jobInfo); failErr != nil {
 					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
 				}
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
+				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue during graceful shutdown")
 			}
 			return nil
 		}
