@@ -2032,10 +2032,20 @@ func TestExecutionProgress_Flush(t *testing.T) {
 // =====================================================================
 
 func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
-	t.Run("no deadline", func(t *testing.T) {
-		h := mergeSLOTTFTIntoHeaders(nil, context.Background())
-		if got := h[sloTTFTMSHeader]; got != "0" {
-			t.Fatalf("x-slo-ttft-ms = %q, want 0", got)
+	t.Run("no deadline leaves headers unchanged", func(t *testing.T) {
+		if got := mergeSLOTTFTIntoHeaders(nil, context.Background()); got != nil {
+			t.Fatalf("nil headers: got %v, want nil (no deadline => no merge)", got)
+		}
+		in := map[string]string{"a": "b"}
+		got := mergeSLOTTFTIntoHeaders(in, context.Background())
+		if len(got) != 1 {
+			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
+		}
+		if _, ok := got[sloTTFTMSHeader]; ok {
+			t.Fatalf("unexpected %s without deadline", sloTTFTMSHeader)
+		}
+		if got["a"] != "b" {
+			t.Fatal("lost existing header")
 		}
 	})
 
