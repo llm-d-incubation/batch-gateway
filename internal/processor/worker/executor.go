@@ -689,8 +689,8 @@ func (p *Processor) executeOneRequest(
 			ID:       newBatchRequestID(requestID),
 			CustomID: req.CustomID,
 			Error: &outputError{
-				Code:    string(httpclient.ErrCategoryServer),
-				Message: fmt.Sprintf("SLO deadline expired: %v", sloCtx.Err()),
+				Code:    batch_types.ErrCodeBatchExpired,
+				Message: "This request could not be executed before the completion window expired.",
 			},
 		}
 		metrics.RecordRequestError(modelID)
