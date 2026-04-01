@@ -524,7 +524,7 @@ do_deploy_batch_gateway() {
         --set "apiserver.image.tag=${BATCH_DEV_VERSION}"
         --set "processor.image.tag=${BATCH_DEV_VERSION}"
         --set "global.secretName=${BATCH_APP_SECRET_NAME}"
-        --set "global.databaseType=${BATCH_DB_TYPE}"
+        --set "global.dbClient.type=${BATCH_DB_TYPE}"
         --set "global.fileClient.type=${BATCH_STORAGE_TYPE}"
         --set "apiserver.tls.enabled=true"
         --set "apiserver.tls.certManager.enabled=true"

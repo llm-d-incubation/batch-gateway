@@ -245,7 +245,7 @@ file_client:
 	}
 }
 
-func TestLoad_ErrorNoDatabaseType(t *testing.T) {
+func TestLoad_ErrorNoDBClientType(t *testing.T) {
 	path := writeTempConfig(t, `
 file_client:
   type: "fs"
@@ -254,11 +254,11 @@ file_client:
 `)
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected error when database_type is missing")
+		t.Fatal("expected error when db_client.type is missing")
 	}
 }
 
-func TestLoad_ErrorInvalidDatabaseType(t *testing.T) {
+func TestLoad_ErrorInvalidDBClientType(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:
   type: "mysql"
@@ -269,7 +269,7 @@ file_client:
 `)
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected error for invalid database_type")
+		t.Fatal("expected error for invalid db_client.type")
 	}
 }
 
