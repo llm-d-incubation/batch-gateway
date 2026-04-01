@@ -40,6 +40,12 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 
 	mock := &mockInferenceClient{
 		generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			if req.Headers == nil {
+				t.Fatal("expected headers to be set")
+			}
+			if _, ok := req.Headers[sloTTFTMSHeader]; !ok {
+				t.Fatalf("expected %s header to be set", sloTTFTMSHeader)
+			}
 			return &inference.GenerateResponse{
 				RequestID: "srv-123",
 				Response:  []byte(`{"result":"ok"}`),
