@@ -604,8 +604,9 @@ func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) 
 	}
 	sloMs := time.Until(dl).Milliseconds()
 	if sloMs < 0 {
-		// this should never happen as we check for context deadline exceeded in sloCtx.Err() above
-		// the check is maintained to avoid sending a negative value to the inference gateway
+		// this check is needed in case the context deadline was exceeded between the sloCtx.Err() check
+		// and the time.Until call above. We return the headers unchanged to avoid sending a negative value
+		// to the inference gateway.
 		return headers
 	}
 	if headers == nil {
@@ -683,14 +684,27 @@ func (p *Processor) executeOneRequest(
 		Headers:   headers,
 	}
 
-	if sloCtx.Err() != nil {
-		logger.V(logging.INFO).Info("SLO expired during execution or execution context cancelled, skipping request", "error", sloCtx.Err())
+	switch sloCtx.Err() {
+	case context.DeadlineExceeded:
+		logger.V(logging.INFO).Info("SLO expired during execution, skipping request", "error", sloCtx.Err())
 		result := &outputLine{
 			ID:       newBatchRequestID(requestID),
 			CustomID: req.CustomID,
 			Error: &outputError{
 				Code:    batch_types.ErrCodeBatchExpired,
 				Message: "This request could not be executed before the completion window expired.",
+			},
+		}
+		metrics.RecordRequestError(modelID)
+		return result, nil
+	case context.Canceled:
+		logger.V(logging.INFO).Info("Execution context cancelled, skipping request", "error", sloCtx.Err())
+		result := &outputLine{
+			ID:       newBatchRequestID(requestID),
+			CustomID: req.CustomID,
+			Error: &outputError{
+				Code:    batch_types.ErrCodeBatchCancelled,
+				Message: "This request was not executed because the batch was cancelled.",
 			},
 		}
 		metrics.RecordRequestError(modelID)
