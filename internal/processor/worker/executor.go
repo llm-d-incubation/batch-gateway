@@ -591,8 +591,8 @@ func (p *Processor) drainUnprocessedRequests(
 
 const sloTTFTMSHeader = "x-slo-ttft-ms"
 
-// mergeSLOTTFTIntoHeaders ensures headers is non-nil and sets sloTTFTMSHeader to the remaining
-// time until sloCtx's deadline in whole milliseconds, clamped to >= 0. If sloCtx has no
+// mergeSLOTTFTIntoHeaders sets sloTTFTMSHeader to the remaining time until
+// sloCtx's deadline in whole milliseconds, clamped to >= 0. If sloCtx has no
 // deadline or is cancelled, the headers map is returned unchanged.
 func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) map[string]string {
 	if sloCtx.Err() == context.Canceled {
