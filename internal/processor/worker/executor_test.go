@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
@@ -1543,12 +1544,24 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
 	dbJob := seedDBJob(t, env.dbClient, "job-cancel")
+	ji := &batch_types.JobInfo{
+		JobID:    "job-cancel",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
+		jobInfo: ji,
 	}, ErrCancelled)
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency cancelled: delta=%d, want 1", delta)
+	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-cancel"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1571,13 +1584,25 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 
 	dbJob := seedDBJob(t, env.dbClient, "job-ctx")
 	task := &db.BatchJobPriority{ID: "job-ctx"}
+	ji := &batch_types.JobInfo{
+		JobID:    "job-ctx",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	beforeFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
 		task:    task,
+		jobInfo: ji,
 	}, context.Canceled)
+
+	afterFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+	if delta := afterFailed - beforeFailed; delta != 0 {
+		t.Fatalf("E2E latency failed: delta=%d, want 0 (re-enqueue succeeded, not terminal)", delta)
+	}
 
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
@@ -1648,12 +1673,24 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
 
 	dbJob := seedDBJob(t, env.dbClient, "job-fail")
+	ji := &batch_types.JobInfo{
+		JobID:    "job-fail",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
+		jobInfo: ji,
 	}, errors.New("some error"))
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency failed: delta=%d, want 1", delta)
+	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1691,8 +1728,14 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 
 	createPartialOutputFiles(t, env.p, jobID, tenantID)
 
-	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	jobInfo := &batch_types.JobInfo{
+		JobID:    jobID,
+		TenantID: tenantID,
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
+
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 
 	ctx := testLoggerCtx(t)
 	if err := env.p.handleCancelled(ctx, &jobExecutionParams{
@@ -1702,6 +1745,11 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 		requestCounts: counts,
 	}); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
+	}
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency cancelled: delta=%d, want 1", delta)
 	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -1782,12 +1830,23 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 
 	jobID := "job-fail-finalization"
 	dbJob := seedDBJob(t, env.dbClient, jobID)
+	ji := &batch_types.JobInfo{
+		JobID:    jobID,
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
 
 	counts := &openai.BatchRequestCounts{Total: 8, Completed: 8, Failed: 0}
 
+	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+
 	ctx := testLoggerCtx(t)
-	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts, nil); err != nil {
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts, ji); err != nil {
 		t.Fatalf("handleFailed: %v", err)
+	}
+
+	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("E2E latency failed: delta=%d, want 1", delta)
 	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -2016,9 +2075,9 @@ func TestExecutionProgress_Flush(t *testing.T) {
 // Tests: jsonNumericToFloat64
 // =====================================================================
 
-// gatherCounterValue reads the current value of a counter with the given metric name
-// and label set from the default Prometheus registry. Returns 0 if not found.
-func gatherCounterValue(t *testing.T, name string, labels map[string]string) float64 {
+// findMetric finds a metric by name and label set from the default Prometheus registry.
+// Returns nil if not found.
+func findMetric(t *testing.T, name string, labels map[string]string) *dto.Metric {
 	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -2042,10 +2101,28 @@ func gatherCounterValue(t *testing.T, name string, labels map[string]string) flo
 					continue outer
 				}
 			}
-			return m.GetCounter().GetValue()
+			return m
 		}
 	}
-	return 0
+	return nil
+}
+
+func gatherCounterValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	m := findMetric(t, name, labels)
+	if m == nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func gatherHistogramSampleCount(t *testing.T, name string, labels map[string]string) uint64 {
+	t.Helper()
+	m := findMetric(t, name, labels)
+	if m == nil {
+		return 0
+	}
+	return m.GetHistogram().GetSampleCount()
 }
 
 func TestRecordTokenUsageFromBody(t *testing.T) {
