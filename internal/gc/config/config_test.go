@@ -196,7 +196,8 @@ file_client:
 
 func TestLoad_CustomMaxConcurrency(t *testing.T) {
 	path := writeTempConfig(t, `
-database_type: "postgresql"
+db_client:
+  type: "postgresql"
 max_concurrency: 20
 file_client:
   type: "fs"
@@ -214,7 +215,8 @@ file_client:
 
 func TestLoad_ErrorZeroMaxConcurrency(t *testing.T) {
 	path := writeTempConfig(t, `
-database_type: "postgresql"
+db_client:
+  type: "postgresql"
 max_concurrency: 0
 file_client:
   type: "fs"
@@ -229,7 +231,8 @@ file_client:
 
 func TestLoad_ErrorNegativeMaxConcurrency(t *testing.T) {
 	path := writeTempConfig(t, `
-database_type: "postgresql"
+db_client:
+  type: "postgresql"
 max_concurrency: -5
 file_client:
   type: "fs"
