@@ -231,6 +231,20 @@ tests:
           path: data["config.yaml"]
           pattern: 'retry:\n\s+max_retries: 3\n\s+initial_backoff: "1s"\n\s+max_backoff: "10s"'
 
+  - it: should not render inference_objective when empty (default)
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'inference_objective:'
+
+  - it: should render inference_objective when configured
+    set:
+      processor.config.inferenceObjective: "batch-low-priority"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'inference_objective: "batch-low-priority"'
+
   - it: should not render ConfigMap when processor is disabled
     set:
       processor.enabled: false

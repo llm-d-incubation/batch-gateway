@@ -349,6 +349,11 @@ processor:
     #     maxRetries: 1
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
+    # Name of a GIE InferenceObjective CRD to reference in the
+    # x-gateway-inference-objective header on inference requests.
+    # Used by GIE flow control to assign batch requests to a priority band.
+    # Empty (default) means the header is not sent.
+    inferenceObjective: ""
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
     enablePprof: false
 

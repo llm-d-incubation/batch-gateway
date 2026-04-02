@@ -88,6 +88,10 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- if .Values.processor.config.inferenceObjective }}
+    inference_objective: {{ .Values.processor.config.inferenceObjective | quote }}
+    {{- end }}
+
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
     progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
 

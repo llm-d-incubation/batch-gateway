@@ -90,18 +90,41 @@ spec:
 
 ### How Requests Get Assigned to Bands
 
-Flow control assigns requests to priority bands based on the `FlowKey.Priority` value in the `FlowControlRequest`. This mapping must be configured at the GIE routing layer so that:
+Flow control assigns requests to priority bands based on the `InferenceObjective` Kubernetes CRD referenced by each request. The request carries the CRD name in the `x-gateway-inference-objective` header, and GIE looks up the corresponding `InferenceObjective` resource to determine the priority band.
 
-- Requests arriving through the online inference path are assigned `Priority: 100`.
-- Requests arriving from Batch Gateway are assigned `Priority: 0`.
+**Setup:**
 
-This can be achieved by configuring separate `InferenceModel` resources or by using request header-based classification at the gateway level. The exact mechanism depends on your GIE deployment topology -- see the [GIE documentation](https://github.com/kubernetes-sigs/gateway-api-inference-extension) for details on request classification.
+1. Create `InferenceObjective` CRDs for each workload class:
+
+```yaml
+apiVersion: inference.gateway.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: online-default
+spec:
+  priority: 100
+
+---
+apiVersion: inference.gateway.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: batch-low-priority
+spec:
+  priority: 0
+```
+
+2. Configure Batch Gateway to reference the batch objective (see [Batch Gateway Configuration](#batch-gateway-configuration) below).
+
+3. Online workloads can reference `online-default` via their own `x-gateway-inference-objective` header, or rely on GIE's default priority (0) if no header is sent.
 
 ## Batch Gateway Configuration
 
-### Headers Already Sent
+### Headers Sent
 
-Batch Gateway already sets the `x-slo-ttft-ms` header on each inference request (see `executor.go:mergeSLOTTFTIntoHeaders`). This header contains the remaining milliseconds until the batch job's SLO deadline. GIE's `slo-deadline-ordering-policy` reads this header to order batch requests by urgency within the batch priority band.
+Batch Gateway sets the following flow-control headers on each inference request (see `executor.go:mergeFlowControlHeaders`):
+
+- **`x-slo-ttft-ms`**: Remaining milliseconds until the batch job's SLO deadline. GIE's `slo-deadline-ordering-policy` reads this header to order batch requests by urgency within the batch priority band.
+- **`x-gateway-inference-objective`**: Name of the `InferenceObjective` CRD that determines the priority band. Only sent when `inference_objective` is configured (see below).
 
 ### Recommended Processor Settings
 
@@ -132,6 +155,9 @@ processor:
   config:
     globalConcurrency: 100
     perModelMaxConcurrency: 20
+    # Name of the InferenceObjective CRD for batch requests.
+    # Must match a deployed InferenceObjective resource in the cluster.
+    inferenceObjective: "batch-low-priority"
     globalInferenceGateway:
       url: "http://inference-gateway:8000"
       requestTimeout: "5m"
@@ -176,15 +202,13 @@ processor:
 
 ## Proposed Batch Gateway Code Changes
 
-### 1. Send a Priority Header
+### 1. Send InferenceObjective Header (Implemented)
 
-**Why:** Currently, GIE needs an external mechanism to classify requests into priority bands. If Batch Gateway explicitly identifies its requests as low-priority via a header, GIE can use this for band assignment without requiring separate `InferenceModel` resources or routing rules.
+Batch Gateway sends `x-gateway-inference-objective` on inference requests when the `inference_objective` config field is set. GIE uses this header to look up the named `InferenceObjective` CRD and assign the request to the corresponding priority band.
 
-**Proposed header:** `x-priority: 0` (or a configurable value)
+**Where:** `executor.go:mergeFlowControlHeaders` -- sends the header alongside the existing `x-slo-ttft-ms` header.
 
-**Where:** `executor.go:mergeSLOTTFTIntoHeaders` -- add a priority header alongside the existing `x-slo-ttft-ms` header.
-
-**Impact:** Minimal code change. The priority value should be configurable in the processor config so operators can adjust the relative priority of batch workloads.
+**Config:** `inference_objective` in the processor config (Helm: `processor.config.inferenceObjective`). Empty by default (header not sent).
 
 ### 2. Handle Queue Eviction Responses
 
