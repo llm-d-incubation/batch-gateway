@@ -543,7 +543,15 @@ cmd_install() {
     apply_batch_auth_policy
     apply_batch_request_rate_limit
 
-    log "Deployment complete! Run '$0 test' to verify."
+    log "Deployment complete!"
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        log "  Batch Gateway version: ${BATCH_RELEASE_VERSION} (OCI chart)"
+    elif [ "${BATCH_DEV_VERSION}" != "local" ]; then
+        log "  Batch Gateway image tag: ${BATCH_DEV_VERSION} (commit chart)"
+    else
+        log "  Batch Gateway image tag: latest (local chart)"
+    fi
+    log "Run '$0 test' to verify."
 }
 
 # ── Test ─────────────────────────────────────────────────────────────────────
@@ -706,7 +714,8 @@ usage() {
     echo "  LLMD_RELEASE_POSTFIX   Release name postfix (default: llmd)"
     echo "  BATCH_HELM_RELEASE     Helm release name (default: batch-gateway)"
     echo "  GATEWAY_LOCAL_PORT     Port-forward fallback port (default: 8080)"
-    echo "  BATCH_DEV_VERSION      Image tag (default: latest)"
+    echo "  BATCH_DEV_VERSION      Batch gateway image tag / commit SHA (default: local)"
+    echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"
     echo ""
     echo "Examples:"
     echo "  $0 install"

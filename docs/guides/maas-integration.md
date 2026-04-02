@@ -170,9 +170,10 @@ $ helm install postgresql bitnami/postgresql -n batch-api \
 
 ```bash
 # App secret with database connection URLs
+# Replace <your-password> with your actual PostgreSQL password
 $ kubectl create secret generic batch-gateway-secrets -n batch-api \
     --from-literal=redis-url=redis://redis-master.batch-api.svc.cluster.local:6379/0 \
-    --from-literal=postgresql-url=postgresql://postgres:postgres@postgresql.batch-api.svc.cluster.local:5432/postgres
+    --from-literal=postgresql-url=postgresql://postgres:<your-password>@postgresql.batch-api.svc.cluster.local:5432/postgres
 
 # PVC for file storage
 $ kubectl apply -f - <<EOF

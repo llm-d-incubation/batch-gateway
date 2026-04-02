@@ -354,10 +354,11 @@ helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
 oc rollout status statefulset/postgresql -n ${BATCH_NS} --timeout=120s
 
 # Create application secret
+# Replace <your-password> with your actual PostgreSQL password
 kubectl create secret generic batch-gateway-secrets \
     --namespace ${BATCH_NS} \
     --from-literal=redis-url="redis://redis-master.${BATCH_NS}.svc.cluster.local:6379/0" \
-    --from-literal=postgresql-url="postgresql://postgres:postgres@postgresql.${BATCH_NS}.svc.cluster.local:5432/batch?sslmode=disable"
+    --from-literal=postgresql-url="postgresql://postgres:<your-password>@postgresql.${BATCH_NS}.svc.cluster.local:5432/batch?sslmode=disable"
 
 # Create PVC for batch file storage (alternatively, S3-compatible storage can be used — see Helm chart values for s3 configuration)
 oc apply -f - <<EOF

@@ -562,6 +562,13 @@ cmd_install() {
     log "  MaaS Gateway: ${host}"
     log "  Batch API:    ${host}/v1/batches"
     log "  Test user:    ${MAAS_TEST_USER} / ${MAAS_TEST_PASS} (group: ${MAAS_TEST_GROUP})"
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        log "  Batch Gateway version: ${BATCH_RELEASE_VERSION} (OCI chart)"
+    elif [ "${BATCH_DEV_VERSION}" != "local" ]; then
+        log "  Batch Gateway image tag: ${BATCH_DEV_VERSION} (commit chart)"
+    else
+        log "  Batch Gateway image tag: latest (local chart)"
+    fi
     log ""
     log "Run '$0 test' to verify."
 }

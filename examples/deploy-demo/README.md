@@ -105,12 +105,34 @@ bash examples/deploy-demo/deploy-maas.sh uninstall
 ```
 
 
+## Installation Modes
+
+**Local chart (default):**
+```bash
+bash examples/deploy-demo/deploy-rhoai.sh install
+```
+
+**Install from a specific commit (chart + image):**
+```bash
+BATCH_DEV_VERSION=1f925ff \
+  bash examples/deploy-demo/deploy-rhoai.sh install
+```
+
+**Install from released OCI Helm chart:**
+```bash
+BATCH_RELEASE_VERSION=v1.0.0 \
+  bash examples/deploy-demo/deploy-rhoai.sh install
+```
+
+> `BATCH_RELEASE_VERSION` and `BATCH_DEV_VERSION` cannot be used together.
+
 ## Environment Variables
 
 | Variable | Default | Scope | Description |
 |----------|---------|-------|-------------|
 | `BATCH_HELM_RELEASE` | `batch-gateway` | all | Helm release name |
-| `BATCH_DEV_VERSION` | `latest` | all | apiserver/processor image tag |
+| `BATCH_RELEASE_VERSION` | — | all | Install from released OCI chart (e.g. `v1.0.0`). Cannot be used with `BATCH_DEV_VERSION` |
+| `BATCH_DEV_VERSION` | `local` | all | Image tag / commit SHA. `local` uses local chart + `latest` image. Cannot be used with `BATCH_RELEASE_VERSION` |
 | `BATCH_DB_TYPE` | `postgresql` | all | Database backend: `postgresql` or `redis` |
 | `BATCH_STORAGE_TYPE` | `s3` | all | File storage: `fs` or `s3` |
 | `BATCH_NAMESPACE` | `batch-api` | all | Namespace for batch-gateway |

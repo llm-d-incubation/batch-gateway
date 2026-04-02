@@ -28,7 +28,24 @@ TLS_ISSUER_NAME="${TLS_ISSUER_NAME:-selfsigned-issuer}"
 # Batch Gateway configuration
 BATCH_NAMESPACE="${BATCH_NAMESPACE:-batch-api}"
 BATCH_HELM_RELEASE="${BATCH_HELM_RELEASE:-batch-gateway}"
-BATCH_DEV_VERSION="${BATCH_DEV_VERSION:-latest}"
+BATCH_RELEASE_VERSION="${BATCH_RELEASE_VERSION:-}"
+BATCH_DEV_VERSION="${BATCH_DEV_VERSION:-}"
+if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+    if [[ "${BATCH_RELEASE_VERSION}" != v* ]]; then
+        echo "[ERROR] BATCH_RELEASE_VERSION must start with 'v' (e.g. 'v1.0.0')" >&2
+        exit 1
+    fi
+    if [ -n "${BATCH_DEV_VERSION}" ]; then
+        echo "[ERROR] BATCH_RELEASE_VERSION and BATCH_DEV_VERSION cannot both be set" >&2
+        exit 1
+    fi
+else
+    BATCH_DEV_VERSION="${BATCH_DEV_VERSION:-local}"
+    # Truncate full commit SHA (40 hex chars) to 7-char short SHA to match CI image tags
+    if [[ "${BATCH_DEV_VERSION}" =~ ^[0-9a-f]{40}$ ]]; then
+        BATCH_DEV_VERSION="${BATCH_DEV_VERSION:0:7}"
+    fi
+fi
 BATCH_INFERENCE_SERVICE="${BATCH_INFERENCE_SERVICE:-${BATCH_HELM_RELEASE}-apiserver}"
 BATCH_INFERENCE_PORT="${BATCH_INFERENCE_PORT:-8000}"
 BATCH_APP_SECRET_NAME="${BATCH_APP_SECRET_NAME:-${BATCH_HELM_RELEASE}-secrets}"
@@ -50,6 +67,12 @@ MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
 MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
 
+# Temp directory cleanup (used by install_batch_gateway)
+_BATCH_TMP_DIR=""
+_cleanup() {
+    [ -n "${_BATCH_TMP_DIR}" ] && rm -rf "${_BATCH_TMP_DIR}" && _BATCH_TMP_DIR=""
+}
+trap _cleanup EXIT
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
 
@@ -487,21 +510,71 @@ EOF
 install_batch_gateway() {
     step "Installing batch-gateway via Helm..."
 
-    local repo_root
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    local chart version_args=()
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        chart="oci://ghcr.io/llm-d-incubation/charts/batch-gateway"
+        version_args=(--version "${BATCH_RELEASE_VERSION#v}")
+    elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
+        local repo_root
+        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+        chart="${repo_root}/charts/batch-gateway"
+    else
+        # Download chart from GitHub at the specific commit
+        _BATCH_TMP_DIR=$(mktemp -d)
+        local tarball_url="https://github.com/llm-d-incubation/batch-gateway/archive/${BATCH_DEV_VERSION}.tar.gz"
+        step "Downloading chart from commit ${BATCH_DEV_VERSION}..."
+        local http_code
+        http_code=$(curl -sL -o "${_BATCH_TMP_DIR}/archive.tar.gz" -w '%{http_code}' "${tarball_url}")
+        if [ "${http_code}" != "200" ]; then
+            die "Failed to download chart (HTTP ${http_code}). Is '${BATCH_DEV_VERSION}' a valid commit?"
+        fi
+        tar xz -C "${_BATCH_TMP_DIR}" --strip-components=1 -f "${_BATCH_TMP_DIR}/archive.tar.gz"
+        chart="${_BATCH_TMP_DIR}/charts/batch-gateway"
+        if [ ! -f "${chart}/Chart.yaml" ]; then
+            die "Chart not found at commit ${BATCH_DEV_VERSION}"
+        fi
+    fi
 
     if helm status "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
         log "Release '${BATCH_HELM_RELEASE}' already exists. Upgrading..."
-        helm upgrade "${BATCH_HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "$@"
+        helm upgrade "${BATCH_HELM_RELEASE}" "${chart}" --reset-values "${version_args[@]+"${version_args[@]}"}" "$@"
     else
-        helm install "${BATCH_HELM_RELEASE}" "${repo_root}/charts/batch-gateway" "$@"
+        helm install "${BATCH_HELM_RELEASE}" "${chart}" "${version_args[@]+"${version_args[@]}"}" "$@"
     fi
 
     wait_for_deployment "${BATCH_HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 180s
     wait_for_deployment "${BATCH_HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 180s
     wait_for_deployment "${BATCH_HELM_RELEASE}-gc" "${BATCH_NAMESPACE}" 180s
 
-    log "batch-gateway installed (apiserver + processor + gc)."
+    # Print installed versions and verify image tags
+    local expected_tag
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        expected_tag="${BATCH_RELEASE_VERSION}"
+    else
+        if [ "${BATCH_DEV_VERSION}" = "local" ]; then
+            expected_tag="latest"
+        else
+            expected_tag="${BATCH_DEV_VERSION}"
+        fi
+    fi
+    step "Installed batch-gateway components:"
+    local mismatch=false
+    for component in apiserver processor gc; do
+        local actual_image
+        actual_image=$(kubectl get deploy "${BATCH_HELM_RELEASE}-${component}" -n "${BATCH_NAMESPACE}" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+        local actual_tag="${actual_image##*:}"
+        log "  ${component}: ${actual_image}"
+        if [ "${actual_tag}" != "${expected_tag}" ]; then
+            warn "  ${component} tag '${actual_tag}' does not match expected '${expected_tag}'"
+            mismatch=true
+        fi
+    done
+    if [ "${mismatch}" = "true" ]; then
+        warn "Image tags do not match expected version."
+    fi
+
+    log "batch-gateway installed."
 }
 
 # do_deploy_batch_gateway [extra_helm_args...]
@@ -522,9 +595,22 @@ do_deploy_batch_gateway() {
 
     local helm_args=(
         --namespace "${BATCH_NAMESPACE}"
-        --set "apiserver.image.tag=${BATCH_DEV_VERSION}"
-        --set "processor.image.tag=${BATCH_DEV_VERSION}"
         --set "global.secretName=${BATCH_APP_SECRET_NAME}"
+    )
+
+    # Only override image tags for non-release installs.
+    # Released OCI charts already have correct image tags baked in.
+    if [ -z "${BATCH_RELEASE_VERSION}" ]; then
+        local image_tag="latest"
+        [ "${BATCH_DEV_VERSION}" != "local" ] && image_tag="${BATCH_DEV_VERSION}"
+        helm_args+=(
+            --set "apiserver.image.tag=${image_tag}"
+            --set "processor.image.tag=${image_tag}"
+            --set "gc.image.tag=${image_tag}"
+        )
+    fi
+
+    helm_args+=(
         --set "global.dbClient.type=${BATCH_DB_TYPE}"
         --set "global.fileClient.type=${BATCH_STORAGE_TYPE}"
         --set "apiserver.tls.enabled=true"
