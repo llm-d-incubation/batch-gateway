@@ -100,6 +100,11 @@ type ProcessorConfig struct {
 	// Each recovery can involve DB lookups, S3 uploads, and status updates.
 	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
 
+	// InferencePriority is the priority value sent in the x-priority header on inference requests.
+	// Used by GIE's flow control to assign batch requests to a priority band.
+	// -1 (default) means the header is not sent.
+	InferencePriority int `yaml:"inference_priority"`
+
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
@@ -201,6 +206,7 @@ func NewConfig() *ProcessorConfig {
 				MaxBackoff:     10 * time.Second,
 			},
 		},
+		InferencePriority:              -1,                 // disabled by default
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 		RecoveryMaxConcurrency:         5,

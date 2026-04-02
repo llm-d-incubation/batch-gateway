@@ -2397,21 +2397,18 @@ func TestJsonNumericToFloat64(t *testing.T) {
 }
 
 // =====================================================================
-// Tests: mergeSLOTTFTIntoHeaders
+// Tests: mergeFlowControlHeaders
 // =====================================================================
 
-func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
-	t.Run("no deadline leaves headers unchanged", func(t *testing.T) {
-		if got := mergeSLOTTFTIntoHeaders(nil, context.Background()); got != nil {
-			t.Fatalf("nil headers: got %v, want nil (no deadline => no merge)", got)
+func TestMergeFlowControlHeaders(t *testing.T) {
+	t.Run("no deadline and priority disabled leaves headers unchanged", func(t *testing.T) {
+		if got := mergeFlowControlHeaders(nil, context.Background(), priorityDisabled); got != nil {
+			t.Fatalf("nil headers: got %v, want nil", got)
 		}
 		in := map[string]string{"a": "b"}
-		got := mergeSLOTTFTIntoHeaders(in, context.Background())
+		got := mergeFlowControlHeaders(in, context.Background(), priorityDisabled)
 		if len(got) != 1 {
 			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
-		}
-		if _, ok := got[sloTTFTMSHeader]; ok {
-			t.Fatalf("unexpected %s without deadline", sloTTFTMSHeader)
 		}
 		if got["a"] != "b" {
 			t.Fatal("lost existing header")
@@ -2422,12 +2419,11 @@ func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
 		want := 5*time.Second + 123*time.Millisecond
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
 		defer cancel()
-		h := mergeSLOTTFTIntoHeaders(nil, ctx)
+		h := mergeFlowControlHeaders(nil, ctx, priorityDisabled)
 		got, err := strconv.ParseInt(h[sloTTFTMSHeader], 10, 64)
 		if err != nil {
 			t.Fatalf("parse header: %v", err)
 		}
-		// Allow slack between deadline creation and time.Until inside merge.
 		const slackMs int64 = 150
 		hi := want.Milliseconds()
 		lo := hi - slackMs
@@ -2439,26 +2435,23 @@ func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
 	t.Run("deadline in the past leaves headers unchanged", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		if got := mergeSLOTTFTIntoHeaders(nil, ctx); got != nil {
+		if got := mergeFlowControlHeaders(nil, ctx, priorityDisabled); got != nil {
 			t.Fatalf("nil headers: got %v, want nil (expired deadline => no merge)", got)
 		}
 		in := map[string]string{"a": "b"}
-		got := mergeSLOTTFTIntoHeaders(in, ctx)
+		got := mergeFlowControlHeaders(in, ctx, priorityDisabled)
 		if len(got) != 1 {
 			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
 		}
 		if _, ok := got[sloTTFTMSHeader]; ok {
 			t.Fatalf("unexpected %s with expired deadline", sloTTFTMSHeader)
 		}
-		if got["a"] != "b" {
-			t.Fatal("lost existing header")
-		}
 	})
 
 	t.Run("preserves existing headers", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
 		defer cancel()
-		h := mergeSLOTTFTIntoHeaders(map[string]string{"a": "b"}, ctx)
+		h := mergeFlowControlHeaders(map[string]string{"a": "b"}, ctx, priorityDisabled)
 		if h["a"] != "b" {
 			t.Fatal("lost existing header")
 		}
@@ -2473,7 +2466,7 @@ func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
 		defer cancel()
 		in := map[string]string{}
-		h := mergeSLOTTFTIntoHeaders(in, ctx)
+		h := mergeFlowControlHeaders(in, ctx, priorityDisabled)
 		got, err := strconv.ParseInt(in[sloTTFTMSHeader], 10, 64)
 		if err != nil {
 			t.Fatalf("parse: %v", err)
@@ -2486,6 +2479,54 @@ func TestMergeSLOTTFTIntoHeaders(t *testing.T) {
 		}
 		if h[sloTTFTMSHeader] != in[sloTTFTMSHeader] {
 			t.Fatalf("returned map header %q != in-place %q", h[sloTTFTMSHeader], in[sloTTFTMSHeader])
+		}
+	})
+
+	t.Run("priority header sent when enabled", func(t *testing.T) {
+		h := mergeFlowControlHeaders(nil, context.Background(), 0)
+		if h[priorityHeader] != "0" {
+			t.Fatalf("x-priority = %q, want %q", h[priorityHeader], "0")
+		}
+		if _, ok := h[sloTTFTMSHeader]; ok {
+			t.Fatalf("unexpected %s without deadline", sloTTFTMSHeader)
+		}
+	})
+
+	t.Run("priority header with custom value", func(t *testing.T) {
+		h := mergeFlowControlHeaders(nil, context.Background(), 50)
+		if h[priorityHeader] != "50" {
+			t.Fatalf("x-priority = %q, want %q", h[priorityHeader], "50")
+		}
+	})
+
+	t.Run("priority header not sent when disabled", func(t *testing.T) {
+		h := mergeFlowControlHeaders(nil, context.Background(), priorityDisabled)
+		if h != nil {
+			t.Fatalf("expected nil headers when priority disabled and no deadline, got %v", h)
+		}
+	})
+
+	t.Run("both SLO and priority headers", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
+		defer cancel()
+		h := mergeFlowControlHeaders(nil, ctx, 0)
+		if _, ok := h[sloTTFTMSHeader]; !ok {
+			t.Fatal("missing x-slo-ttft-ms header")
+		}
+		if h[priorityHeader] != "0" {
+			t.Fatalf("x-priority = %q, want %q", h[priorityHeader], "0")
+		}
+	})
+
+	t.Run("priority only with expired deadline", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		h := mergeFlowControlHeaders(nil, ctx, 10)
+		if h[priorityHeader] != "10" {
+			t.Fatalf("x-priority = %q, want %q", h[priorityHeader], "10")
+		}
+		if _, ok := h[sloTTFTMSHeader]; ok {
+			t.Fatalf("unexpected %s with expired deadline", sloTTFTMSHeader)
 		}
 	})
 }

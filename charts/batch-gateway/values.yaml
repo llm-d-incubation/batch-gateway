@@ -349,6 +349,10 @@ processor:
     #     maxRetries: 1
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
+    # Priority value sent in the x-priority header on inference requests.
+    # Used by GIE's flow control to assign batch requests to a priority band.
+    # -1 (default) means the header is not sent.
+    inferencePriority: -1
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
     enablePprof: false
 

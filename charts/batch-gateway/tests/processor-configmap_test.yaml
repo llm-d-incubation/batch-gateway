@@ -231,6 +231,20 @@ tests:
           path: data["config.yaml"]
           pattern: 'retry:\n\s+max_retries: 3\n\s+initial_backoff: "1s"\n\s+max_backoff: "10s"'
 
+  - it: should render default inferencePriority as -1
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'inference_priority: -1'
+
+  - it: should render custom inferencePriority
+    set:
+      processor.config.inferencePriority: 0
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'inference_priority: 0'
+
   - it: should not render ConfigMap when processor is disabled
     set:
       processor.enabled: false

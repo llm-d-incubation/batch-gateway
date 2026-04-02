@@ -88,6 +88,8 @@ data:
       {{- end }}
     {{- end }}
 
+    inference_priority: {{ .Values.processor.config.inferencePriority }}
+
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
     progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
 

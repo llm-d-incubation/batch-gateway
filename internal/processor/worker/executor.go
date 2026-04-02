@@ -589,30 +589,46 @@ func (p *Processor) drainUnprocessedRequests(
 	}
 }
 
-const sloTTFTMSHeader = "x-slo-ttft-ms"
+const (
+	sloTTFTMSHeader  = "x-slo-ttft-ms"
+	priorityHeader   = "x-priority"
+	priorityDisabled = -1
+)
 
-// mergeSLOTTFTIntoHeaders sets sloTTFTMSHeader to the remaining time until sloCtx's deadline
-// in whole milliseconds, clamped to >= 0. If sloCtx has no deadline, is cancelled, or has an
-// expired deadline, the headers map is returned unchanged.
-func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) map[string]string {
-	if sloCtx.Err() != nil {
+// mergeFlowControlHeaders sets flow-control-related headers on inference requests:
+//   - x-slo-ttft-ms: remaining time until sloCtx's deadline in whole milliseconds (>= 0).
+//     Omitted if sloCtx has no deadline, is cancelled, or has an expired deadline.
+//   - x-priority: the configured inference priority value for GIE flow control band assignment.
+//     Omitted if inference_priority is -1 (disabled).
+func mergeFlowControlHeaders(headers map[string]string, sloCtx context.Context, inferencePriority int) map[string]string {
+	hasSLO := false
+	var sloMs int64
+
+	if sloCtx.Err() == nil {
+		if dl, ok := sloCtx.Deadline(); ok {
+			ms := time.Until(dl).Milliseconds()
+			if ms >= 0 {
+				hasSLO = true
+				sloMs = ms
+			}
+		}
+	}
+
+	hasPriority := inferencePriority != priorityDisabled
+
+	if !hasSLO && !hasPriority {
 		return headers
 	}
-	dl, ok := sloCtx.Deadline()
-	if !ok {
-		return headers
-	}
-	sloMs := time.Until(dl).Milliseconds()
-	if sloMs < 0 {
-		// this check is needed in case the context deadline was exceeded between the sloCtx.Err() check
-		// and the time.Until call above. We return the headers unchanged to avoid sending a negative value
-		// to the inference gateway.
-		return headers
-	}
+
 	if headers == nil {
 		headers = make(map[string]string)
 	}
-	headers[sloTTFTMSHeader] = strconv.FormatInt(sloMs, 10)
+	if hasSLO {
+		headers[sloTTFTMSHeader] = strconv.FormatInt(sloMs, 10)
+	}
+	if hasPriority {
+		headers[priorityHeader] = strconv.Itoa(inferencePriority)
+	}
 	return headers
 }
 
@@ -675,7 +691,7 @@ func (p *Processor) executeOneRequest(
 	}
 
 	headers := maps.Clone(passThroughHeaders)
-	headers = mergeSLOTTFTIntoHeaders(headers, sloCtx)
+	headers = mergeFlowControlHeaders(headers, sloCtx, p.cfg.InferencePriority)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
