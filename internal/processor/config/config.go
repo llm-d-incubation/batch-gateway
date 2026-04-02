@@ -206,7 +206,7 @@ func NewConfig() *ProcessorConfig {
 				MaxBackoff:     10 * time.Second,
 			},
 		},
-		InferencePriority:              -1,                 // disabled by default
+		InferencePriority:              -1,                // disabled by default
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 		RecoveryMaxConcurrency:         5,
