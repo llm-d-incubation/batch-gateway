@@ -224,6 +224,33 @@ func TestStoreOutputFileRecord_Success(t *testing.T) {
 	}
 }
 
+func TestStoreFileRecord_NoExpiration_NilExpiresAt(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.DefaultOutputExpirationSeconds = 0
+	fileDB := newMockFileDBClient()
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
+		FileDB: fileDB,
+	})
+
+	ctx := testLoggerCtx(t)
+	err := p.storeFileRecord(ctx, "file_no_exp", "output.jsonl", "tenant-1", 1024, nil)
+	if err != nil {
+		t.Fatalf("storeFileRecord: %v", err)
+	}
+
+	items, _, _, err := fileDB.DBGet(ctx, &db.FileQuery{BaseQuery: db.BaseQuery{IDs: []string{"file_no_exp"}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	fileObj, err := converter.DBItemToFile(items[0])
+	if err != nil {
+		t.Fatalf("DBItemToFile: %v", err)
+	}
+	if fileObj.ExpiresAt != nil {
+		t.Fatalf("ExpiresAt = %v, want nil when resolveOutputExpiration returns 0", fileObj.ExpiresAt)
+	}
+}
+
 func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	cfg := config.NewConfig()
