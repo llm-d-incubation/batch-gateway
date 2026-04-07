@@ -33,59 +33,52 @@ A **saturation detector** monitors backend load and applies head-of-line blockin
 ### EndpointPickerConfig
 
 ```yaml
-apiVersion: config.gateway-api-inference-extension.sigs.k8s.io/v1alpha1
+apiVersion: inference.networking.x-k8s.io/v1alpha1
 kind: EndpointPickerConfig
-metadata:
-  name: batch-and-online-flow-control
-spec:
-  featureGates:
-    - flowControl
+featureGates:
+  - "flowControl"
 
-  plugins:
-    - name: slo-deadline-ordering
-      type: slo-deadline-ordering-policy
-    - name: round-robin-fairness
-      type: round-robin-fairness-policy
-    - name: global-strict-fairness
-      type: global-strict-fairness-policy
-    - name: utilization-detector
-      type: utilization-detector
+plugins:
+  - type: slo-deadline-ordering-policy
+  - type: round-robin-fairness-policy
+  - type: global-strict-fairness-policy
+  - type: utilization-detector
 
-  flowControl:
-    # Global queue capacity across all bands and shards.
-    # Size according to expected peak concurrent requests.
-    maxBytes: "4Gi"
+flowControl:
+  # Global queue capacity across all bands and shards.
+  # Size according to expected peak concurrent requests.
+  maxBytes: 4Gi
 
-    # Fallback TTL for requests that don't specify x-slo-ttft-ms.
-    # Online requests without SLO headers expire after 30 seconds.
-    defaultRequestTTL: 30s
+  # Fallback TTL for requests that don't specify x-slo-ttft-ms.
+  # Online requests without SLO headers expire after 30 seconds.
+  defaultRequestTTL: 30s
 
-    priorityBands:
-      # --- Online band: high priority, fair, SLO-aware ---
-      - priority: 100
-        maxBytes: "1Gi"
-        fairnessPolicyRef: round-robin-fairness
-        orderingPolicyRef: slo-deadline-ordering
+  priorityBands:
+    # --- Online band: high priority, fair, SLO-aware ---
+    - priority: 100
+      maxBytes: 1Gi
+      fairnessPolicyRef: round-robin-fairness-policy
+      orderingPolicyRef: slo-deadline-ordering-policy
 
-      # --- Batch band: low priority, throughput-optimized, SLO-aware ---
-      - priority: 0
-        maxBytes: "3Gi"
-        fairnessPolicyRef: global-strict-fairness
-        orderingPolicyRef: slo-deadline-ordering
+    # --- Batch band: low priority, throughput-optimized, SLO-aware ---
+    - priority: 0
+      maxBytes: 3Gi
+      fairnessPolicyRef: global-strict-fairness-policy
+      orderingPolicyRef: slo-deadline-ordering-policy
 
-    # Template for any priority values not explicitly listed above.
-    defaultPriorityBand:
-      maxBytes: "512Mi"
-      fairnessPolicyRef: global-strict-fairness
-      orderingPolicyRef: slo-deadline-ordering
+  # Template for any priority values not explicitly listed above.
+  defaultPriorityBand:
+    maxBytes: 512Mi
+    fairnessPolicyRef: global-strict-fairness-policy
+    orderingPolicyRef: slo-deadline-ordering-policy
 
-  saturationDetector:
-    # Utilization-based: reads queue depth and KV-cache metrics from
-    # vLLM endpoints. Provides proportional backpressure that scales
-    # with overload depth. Preferred for mixed workloads because it
-    # reacts to actual backend state rather than counting in-flight
-    # requests.
-    pluginRef: utilization-detector
+saturationDetector:
+  # Utilization-based: reads queue depth and KV-cache metrics from
+  # vLLM endpoints. Provides proportional backpressure that scales
+  # with overload depth. Preferred for mixed workloads because it
+  # reacts to actual backend state rather than counting in-flight
+  # requests.
+  pluginRef: utilization-detector
 ```
 
 ### How Requests Get Assigned to Bands
