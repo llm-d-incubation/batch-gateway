@@ -360,11 +360,15 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Construct the FileObject domain object
+	var expiresAtPtr *int64
+	if expiresAt > 0 {
+		expiresAtPtr = &expiresAt
+	}
 	fileObj := openai.FileObject{
 		ID:        fileID,
 		Bytes:     fileMeta.Size,
 		CreatedAt: createdAt,
-		ExpiresAt: &expiresAt,
+		ExpiresAt: expiresAtPtr,
 		Filename:  origName,
 		Object:    "file",
 		Purpose:   purpose,
