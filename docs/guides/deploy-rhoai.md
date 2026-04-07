@@ -102,7 +102,8 @@ For security and operations readers: **admission on the batch API is not the sam
 Configure **`passThroughHeaders: {Authorization}`** so the processor forwards the end user’s bearer token on inference calls. Without that, the gateway cannot attribute inference traffic to the original caller and model-level checks cannot run as intended.
 
 ## 2. Prerequisites
-- OpenShift cluster 4.19.9 or later.
+- OpenShift cluster 4.20 or later (required for Distributed Inference with llm-d).
+- Red Hat OpenShift AI 3.4 or later.
 - OpenShift Service Mesh v2 is not installed in the cluster.
 
 
@@ -395,7 +396,7 @@ oc wait --for=condition=ready pod -l authorino-resource=authorino \
 
 ### 3.5 Install RHOAI
 
-Follow [RHOAI Installation Guide](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html/installing_and_uninstalling_openshift_ai_self-managed/index) to install RHOAI
+Follow [RHOAI Installation Guide](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/installing_and_uninstalling_openshift_ai_self-managed/index) to install RHOAI
 
 <details>
 <summary>Install RHOAI operator</summary>
@@ -480,9 +481,9 @@ oc wait datasciencecluster/default-dsc --for=jsonpath='{.status.phase}'=Ready --
 
 ### 3.6 Deploy model with llm-d
 
-Follow [deploy model doc](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html/deploying_models/deploying_models#deploying-models-using-distributed-inference_rhoai-user) to deploy model with LLM-D
+Follow [deploy model doc](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploying_models/deploying_models#deploying-models-using-distributed-inference_rhoai-user) to deploy model with LLM-D
 
-For more examples: [kserve samples repo](https://github.com/red-hat-data-services/kserve/tree/rhoai-3.3/docs/samples/llmisvc)
+For more examples: [kserve samples repo](https://github.com/red-hat-data-services/kserve/tree/rhoai-3.4/docs/samples/llmisvc)
 
 The following example deploys a simulated model with `LLMInferenceService`.
 

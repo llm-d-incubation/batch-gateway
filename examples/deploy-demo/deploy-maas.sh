@@ -178,9 +178,12 @@ deploy_batch_gateway_maas() {
         --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.maxRetries=${GW_MAX_RETRIES}"
         --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.initialBackoff=${GW_INITIAL_BACKOFF}"
         --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.maxBackoff=${GW_MAX_BACKOFF}"
-        --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.tlsInsecureSkipVerify=true"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization,X-MaaS-Subscription}"
     )
+    if [[ "${DEMO_TLS_INSECURE_SKIP_VERIFY}" == "1" ]]; then
+        helm_args+=(--set "processor.config.modelGateways.${MAAS_MODEL_NAME}.tlsInsecureSkipVerify=true")
+        warn "DEMO_TLS_INSECURE_SKIP_VERIFY=1: processor TLS verify disabled for model gateway (demo/lab only)."
+    fi
 
     do_deploy_batch_gateway "${helm_args[@]}"
 }
@@ -631,10 +634,9 @@ cmd_uninstall() {
     kubectl delete namespace "${BATCH_NAMESPACE}" --timeout=60s 2>/dev/null || true
     log "Batch gateway uninstalled."
 
-    # RBAC patch and ClusterIssuer
+    # RBAC patch created by this demo (safe to remove; does not delete MaaS core).
     kubectl delete clusterrolebinding maas-api-extra 2>/dev/null || true
     kubectl delete clusterrole maas-api-extra 2>/dev/null || true
-    kubectl delete clusterissuer "${TLS_ISSUER_NAME}" 2>/dev/null || true
 
     # Test user
     step "Removing test users..."
@@ -645,42 +647,49 @@ cmd_uninstall() {
     oc delete user "${MAAS_UNAUTH_USER}" 2>/dev/null || true
     oc delete identity "htpasswd:${MAAS_UNAUTH_USER}" 2>/dev/null || true
 
-    # MaaS platform (reuse cleanup-odh.sh from MaaS repo)
-    step "Removing MaaS platform..."
-    local cleanup_script="${MAAS_DIR}/.github/hack/cleanup-odh.sh"
-    if [ -f "${cleanup_script}" ]; then
-        log "Using MaaS cleanup script: ${cleanup_script}"
-        bash "${cleanup_script}" --include-crds || warn "cleanup-odh.sh returned non-zero"
+    if is_demo_uninstall_all; then
+        kubectl delete clusterissuer "${TLS_ISSUER_NAME}" 2>/dev/null || true
+
+        # MaaS platform (reuse cleanup-odh.sh from MaaS repo)
+        step "Removing MaaS platform..."
+        local cleanup_script="${MAAS_DIR}/.github/hack/cleanup-odh.sh"
+        if [ -f "${cleanup_script}" ]; then
+            log "Using MaaS cleanup script: ${cleanup_script}"
+            bash "${cleanup_script}" --include-crds || warn "cleanup-odh.sh returned non-zero"
+        else
+            warn "MaaS cleanup script not found at ${cleanup_script}, cleaning up manually..."
+            kubectl delete datasciencecluster --all -A --timeout=180s 2>/dev/null || true
+            kubectl delete dscinitialization --all -A --timeout=180s 2>/dev/null || true
+            kubectl delete namespace "${MAAS_NAMESPACE}" --timeout=180s 2>/dev/null || true
+            kubectl delete namespace "${MAAS_POLICY_NAMESPACE}" --timeout=60s 2>/dev/null || true
+            kubectl delete namespace kuadrant-system --timeout=60s 2>/dev/null || true
+            kubectl delete gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
+        fi
+
+        # Operators not covered by cleanup-odh.sh
+        step "Removing cert-manager and LWS operators..."
+        local cm_csv
+        cm_csv=$(kubectl get csv -n cert-manager-operator -o name 2>/dev/null | grep cert-manager || true)
+        if [ -n "${cm_csv}" ]; then
+            kubectl delete subscription openshift-cert-manager-operator -n cert-manager-operator 2>/dev/null || true
+            kubectl delete "${cm_csv}" -n cert-manager-operator 2>/dev/null || true
+        fi
+        kubectl delete namespace cert-manager-operator --timeout=60s 2>/dev/null || true
+
+        local lws_csv
+        lws_csv=$(kubectl get csv -n openshift-lws-operator -o name 2>/dev/null | grep leader-worker || true)
+        if [ -n "${lws_csv}" ]; then
+            kubectl delete subscription leader-worker-set -n openshift-lws-operator 2>/dev/null || true
+            kubectl delete "${lws_csv}" -n openshift-lws-operator 2>/dev/null || true
+        fi
+        kubectl delete namespace openshift-lws-operator --timeout=60s 2>/dev/null || true
     else
-        warn "MaaS cleanup script not found at ${cleanup_script}, cleaning up manually..."
-        kubectl delete datasciencecluster --all -A --timeout=180s 2>/dev/null || true
-        kubectl delete dscinitialization --all -A --timeout=180s 2>/dev/null || true
-        kubectl delete namespace "${MAAS_NAMESPACE}" --timeout=180s 2>/dev/null || true
-        kubectl delete namespace "${MAAS_POLICY_NAMESPACE}" --timeout=60s 2>/dev/null || true
-        kubectl delete namespace kuadrant-system --timeout=60s 2>/dev/null || true
-        kubectl delete gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
+        warn "Skipping ClusterIssuer, MaaS/ODH cleanup, Kuadrant namespaces, and cert-manager/LWS operators (shared-cluster safety)."
+        warn "For full teardown on an ephemeral cluster only: UNINSTALL_ALL=1 $0 uninstall"
     fi
-
-    # Operators not covered by cleanup-odh.sh
-    step "Removing cert-manager and LWS operators..."
-    local cm_csv
-    cm_csv=$(kubectl get csv -n cert-manager-operator -o name 2>/dev/null | grep cert-manager || true)
-    if [ -n "${cm_csv}" ]; then
-        kubectl delete subscription openshift-cert-manager-operator -n cert-manager-operator 2>/dev/null || true
-        kubectl delete "${cm_csv}" -n cert-manager-operator 2>/dev/null || true
-    fi
-    kubectl delete namespace cert-manager-operator --timeout=60s 2>/dev/null || true
-
-    local lws_csv
-    lws_csv=$(kubectl get csv -n openshift-lws-operator -o name 2>/dev/null | grep leader-worker || true)
-    if [ -n "${lws_csv}" ]; then
-        kubectl delete subscription leader-worker-set -n openshift-lws-operator 2>/dev/null || true
-        kubectl delete "${lws_csv}" -n openshift-lws-operator 2>/dev/null || true
-    fi
-    kubectl delete namespace openshift-lws-operator --timeout=60s 2>/dev/null || true
 
     echo ""
-    log "Uninstallation complete (batch-gateway + MaaS)."
+    log "Uninstallation complete (batch-gateway + optional MaaS teardown)."
 
     set -e
 }
@@ -693,13 +702,14 @@ usage() {
     echo "Commands:"
     echo "  install    Install MaaS platform + sample model + batch-gateway"
     echo "  test       Run integration tests (MaaS auth + batch lifecycle)"
-    echo "  uninstall  Remove everything (batch-gateway + MaaS + operators)"
+    echo "  uninstall  Remove batch-gateway + demo RBAC/users (use UNINSTALL_ALL=1 for MaaS/operators)"
     echo "  help       Show this help message"
     echo ""
     echo "Environment Variables:"
     echo "  MAAS_REF              MaaS git ref (default: main)"
     echo "  MAAS_TEST_USER        Test username (default: testuser)"
     echo "  MAAS_TEST_GROUP       Test user group (default: tier-free-users)"
+    echo "  UNINSTALL_ALL            Set to 1 to run MaaS cleanup script / remove operators (ephemeral clusters only)"
     exit "${1:-0}"
 }
 

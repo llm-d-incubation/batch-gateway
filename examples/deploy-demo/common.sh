@@ -25,6 +25,16 @@ banner() {
 
 TLS_ISSUER_NAME="${TLS_ISSUER_NAME:-selfsigned-issuer}"
 
+# Demo uninstall safety: default uninstall removes batch-gateway-scoped
+# resources and the named Gateway only. Set UNINSTALL_ALL=1 to also tear down Kuadrant,
+# Istio, cert-manager, operators, cluster CRDs, and other shared platform pieces.
+is_demo_uninstall_all() {
+    case "${UNINSTALL_ALL:-0}" in
+        1|true|yes|TRUE|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Batch Gateway configuration
 BATCH_NAMESPACE="${BATCH_NAMESPACE:-batch-api}"
 BATCH_HELM_RELEASE="${BATCH_HELM_RELEASE:-batch-gateway}"
@@ -62,6 +72,10 @@ BATCH_POSTGRESQL_RELEASE="${BATCH_POSTGRESQL_RELEASE:-postgresql}"
 # WARNING: Default passwords are for demo only. For production, override via env vars or use K8s secrets.
 BATCH_POSTGRESQL_PASSWORD="${BATCH_POSTGRESQL_PASSWORD:-postgres}"
 BATCH_STORAGE_TYPE="${BATCH_STORAGE_TYPE:-s3}"
+# When 1, disables TLS certificate verification for (a) processor -> model gateway HTTPS and
+# (b) Istio Gateway -> batch apiserver (DestinationRule). Demo/lab only (CWE-295).
+# Default 1 for demo scripts using self-signed certs. Set to 0 if you have trusted CA certs.
+DEMO_TLS_INSECURE_SKIP_VERIFY="${DEMO_TLS_INSECURE_SKIP_VERIFY:-1}"
 BATCH_MINIO_RELEASE="${BATCH_MINIO_RELEASE:-minio}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
@@ -70,7 +84,10 @@ MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
 # Temp directory cleanup (used by install_batch_gateway)
 _BATCH_TMP_DIR=""
 _cleanup() {
-    [ -n "${_BATCH_TMP_DIR}" ] && rm -rf "${_BATCH_TMP_DIR}" && _BATCH_TMP_DIR=""
+    if [ -n "${_BATCH_TMP_DIR}" ]; then
+        rm -rf "${_BATCH_TMP_DIR}"
+        _BATCH_TMP_DIR=""
+    fi
 }
 trap _cleanup EXIT
 
@@ -326,6 +343,12 @@ EOF
 # Without this, the Gateway would send plaintext to the HTTPS apiserver port.
 create_batch_destinationrule() {
     step "Creating DestinationRule for backend TLS (Gateway -> apiserver)..."
+    local skip="${DEMO_TLS_INSECURE_SKIP_VERIFY}"
+    local istio_skip="false"
+    if [[ "${skip}" == "1" ]]; then
+        istio_skip="true"
+        warn "DEMO_TLS_INSECURE_SKIP_VERIFY=1: Istio insecureSkipVerify enabled (demo/lab only; do not use in production)."
+    fi
     kubectl apply -f - <<EOF
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
@@ -340,9 +363,9 @@ spec:
         number: ${BATCH_INFERENCE_PORT}
       tls:
         mode: SIMPLE
-        insecureSkipVerify: true
+        insecureSkipVerify: ${istio_skip}
 EOF
-    log "DestinationRule created (Gateway -> apiserver: TLS re-encrypt)."
+    log "DestinationRule created (Gateway -> apiserver: TLS re-encrypt, insecureSkipVerify=${istio_skip})."
 }
 
 # ── Database / Storage Functions ──────────────────────────────────────────────

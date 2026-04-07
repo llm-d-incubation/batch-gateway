@@ -2,6 +2,22 @@
 
 One-click deployment scripts for batch-gateway on different platforms. Each script supports `install`, `test`, and `uninstall` commands.
 
+## Safety: shared clusters and `uninstall`
+
+**Default `uninstall` (no env var) is OK on many shared clusters** if you only want to drop this demo’s batch-gateway footprint: it removes Helm releases and CRs in the batch namespace, named routes/policies, the **single** Gateway named `GATEWAY_NAME`, demo RBAC patches, and demo test users (MaaS/OpenShift). It does **not** remove MaaS/ODH, Kuadrant, Istio, cert-manager, operators, or cluster-wide CRDs—so other teams’ platform pieces stay. Still skim the list below before you run it in production.
+
+**Do not use `UNINSTALL_ALL=1` on shared production or multi-team clusters** — that mode tears down operators and platform components others may depend on.
+
+**Full teardown** (throwaway / dedicated demo cluster only) — prefix the command with `UNINSTALL_ALL=1`:
+
+```bash
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-k8s.sh uninstall
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-rhoai.sh uninstall
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-maas.sh uninstall
+```
+
+Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](https://github.com/opendatahub-io/batch-gateway/issues/309) for background.
+
 ## 1) Overview
 
 | Script | Cluster | Description |
@@ -41,6 +57,7 @@ One-click deployment scripts for batch-gateway on different platforms. Each scri
 bash examples/deploy-demo/deploy-k8s.sh install
 bash examples/deploy-demo/deploy-k8s.sh test
 bash examples/deploy-demo/deploy-k8s.sh uninstall
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-k8s.sh uninstall   # optional: remove Kuadrant/Istio/cert-manager too
 ```
 
 
@@ -73,6 +90,7 @@ bash examples/deploy-demo/deploy-k8s.sh uninstall
 bash examples/deploy-demo/deploy-rhoai.sh install
 bash examples/deploy-demo/deploy-rhoai.sh test
 bash examples/deploy-demo/deploy-rhoai.sh uninstall
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-rhoai.sh uninstall   # optional: remove RHOAI operators, Kuadrant, cert-manager, etc.
 ```
 
 
@@ -102,6 +120,9 @@ bash examples/deploy-demo/deploy-rhoai.sh uninstall
 bash examples/deploy-demo/deploy-maas.sh install
 bash examples/deploy-demo/deploy-maas.sh test
 bash examples/deploy-demo/deploy-maas.sh uninstall
+
+# Optional — ephemeral/demo clusters only: MaaS cleanup + cert-manager/LWS (legacy full teardown).
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-maas.sh uninstall
 ```
 
 If you change MaaS test user/password env vars and run `install` again on the **same** cluster, delete the OAuth htpasswd secret first so it is recreated: `oc delete secret htpass-secret -n openshift-config`.
@@ -136,6 +157,7 @@ BATCH_RELEASE_VERSION=v1.0.0 \
 | `BATCH_DEV_VERSION` | `local` | all | Image tag / commit SHA. `local` uses local chart + `latest` image. Cannot be used with `BATCH_RELEASE_VERSION` |
 | `BATCH_DB_TYPE` | `postgresql` | all | Database backend: `postgresql` or `redis` |
 | `BATCH_STORAGE_TYPE` | `s3` | all | File storage: `fs` or `s3` |
+| `DEMO_TLS_INSECURE_SKIP_VERIFY` | `1` | all | Disables TLS certificate verification for processor → model gateway and Istio Gateway → batch apiserver (**demo/lab only**, [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Default `1` since demo scripts use self-signed certs. Set to `0` if you have trusted CA certs. |
 | `BATCH_NAMESPACE` | `batch-api` | all | Namespace for batch-gateway |
 | `LLM_NAMESPACE` | `llm` | all | Namespace for model serving |
 | `LLMD_VERSION` | `main` | k8s | llm-d git ref to install |

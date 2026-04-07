@@ -932,7 +932,7 @@ curl -X POST ${GATEWAY_URL}/v1/batches \
 
 ### 4.3 Option 3: User Token Based (OpenShift Only)
 
-Uses OpenShift [user tokens](https://docs.openshift.com/container-platform/4.18/authentication/understanding-authentication.html) for authentication and [SubjectAccessReview](https://docs.kuadrant.io/latest/authorino/docs/user-guides/kubernetes-subjectaccessreview/) for model authorization. Requires OpenShift.
+Uses OpenShift [user tokens](https://docs.openshift.com/container-platform/4.20/authentication/understanding-authentication.html) for authentication and [SubjectAccessReview](https://docs.kuadrant.io/latest/authorino/docs/user-guides/kubernetes-subjectaccessreview/) for model authorization. Requires OpenShift.
 
 #### 4.3.1 Prerequisites
 
@@ -1222,5 +1222,5 @@ Authorino supports additional authentication methods not covered in this doc:
 - [Istio Gateway API Support](https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/)
 
 ### OpenShift (Option 3 only)
-- [OpenShift Authentication](https://docs.openshift.com/container-platform/4.18/authentication/understanding-authentication.html)
-- [Configuring htpasswd Identity Provider](https://docs.openshift.com/container-platform/4.18/authentication/identity_providers/configuring-htpasswd-identity-provider.html)
+- [OpenShift Authentication](https://docs.openshift.com/container-platform/4.20/authentication/understanding-authentication.html)
+- [Configuring htpasswd Identity Provider](https://docs.openshift.com/container-platform/4.20/authentication/identity_providers/configuring-htpasswd-identity-provider.html)
