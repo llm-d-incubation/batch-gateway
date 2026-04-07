@@ -445,6 +445,10 @@ EOF
 }
 
 # ── Create MaaS Test User ───────────────────────────────────────────────────
+#
+# Demo-only: if you change MAAS_* user/password env vars and re-run install on the
+# same cluster, delete htpass-secret first or OAuth may keep stale credentials:
+#   oc delete secret htpass-secret -n openshift-config
 
 create_maas_test_user() {
     step "Creating MaaS test users..."

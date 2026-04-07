@@ -104,6 +104,7 @@ bash examples/deploy-demo/deploy-maas.sh test
 bash examples/deploy-demo/deploy-maas.sh uninstall
 ```
 
+If you change MaaS test user/password env vars and run `install` again on the **same** cluster, delete the OAuth htpasswd secret first so it is recreated: `oc delete secret htpass-secret -n openshift-config`.
 
 ## Installation Modes
 
