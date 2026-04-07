@@ -278,6 +278,10 @@ EOF
 
 ## 5. Create Policies
 
+### Security boundary: batch-route vs LLM (model) route
+
+**Admission on the batch HTTPRoute is not authorization for model inference.** The batch-route policies below validate the MaaS API key and rate-limit batch API usage (**401** / **429** as configured). The auto-generated **llm-route** policies (from MaaSModelRef / MaaSAuthPolicy) perform **model access** checks; a valid batch submission can still yield inference **403** or failed batch lines when the user lacks group access — by design. Use **`passThroughHeaders`** on batch-gateway so the processor forwards **`Authorization`** (and **`X-MaaS-Subscription`** if required) on processor-initiated inference calls; otherwise the gateway cannot enforce the same boundary as for direct model clients.
+
 ### 5.1 Batch AuthPolicy
 
 The MaaS gateway has a default-deny AuthPolicy. Create a per-route AuthPolicy for the batch-route that validates MaaS API keys via the same HTTP callback that MaaS uses for model routes:

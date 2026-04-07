@@ -94,6 +94,15 @@ HTTPRoute authorization behavior:
 - **LLM route**: SubjectAccessReview checks if user can `get inferencepools/<model-name>` (extracted from URL path) — unauthorized requests are rejected with **403**
 - **Batch route**: No authorization check — authorization is enforced by the LLM route when the processor forwards inference requests with the user's original token
 
+### 1.5 Security boundary: batch-route vs llm-route
+
+For security and operations readers: **admission on the batch API is not the same as authorization for inference.**
+
+- **batch-route** proves the caller has a valid Kubernetes token and applies batch-side **RateLimitPolicy**. Invalid or missing credentials are rejected with **401**; excess batch API traffic is rejected with **429**. It does **not** evaluate whether the caller may use a specific model.
+- **llm-route** runs **authentication and authorization** (SubjectAccessReview on `inferencepools` as above) on each inference request the processor sends through the gateway. A user can create a batch job and still see **per-request failures** (often surfaced as failed lines or job errors) when the llm-route returns **403** — this is **by design**, not a bypass of model access control.
+
+Configure **`passThroughHeaders: {Authorization}`** so the processor forwards the end user’s bearer token on inference calls. Without that, the gateway cannot attribute inference traffic to the original caller and model-level checks cannot run as intended.
+
 ## 2. Prerequisites
 
 - Kubernetes cluster (or OpenShift 4.x)
