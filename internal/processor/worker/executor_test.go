@@ -2400,7 +2400,7 @@ func TestJsonNumericToFloat64(t *testing.T) {
 // Tests: mergeInferenceHeaders
 // =====================================================================
 
-func TestMergeFlowControlHeaders(t *testing.T) {
+func TestMergeInferenceHeaders(t *testing.T) {
 	t.Run("no deadline no objective leaves headers unchanged", func(t *testing.T) {
 		if got := mergeInferenceHeaders(nil, context.Background(), ""); got != nil {
 			t.Fatalf("nil headers: got %v, want nil", got)

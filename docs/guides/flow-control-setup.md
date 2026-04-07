@@ -117,7 +117,7 @@ spec:
 
 ### Headers Sent
 
-Batch Gateway sets the following flow-control headers on each inference request (see `executor.go:mergeFlowControlHeaders`):
+Batch Gateway sets the following flow-control headers on each inference request (see `executor.go:mergeInferenceHeaders`):
 
 - **`x-slo-ttft-ms`**: Remaining milliseconds until the batch job's SLO deadline. GIE's `slo-deadline-ordering-policy` reads this header to order batch requests by urgency within the batch priority band.
 - **`x-gateway-inference-objective`**: Name of the `InferenceObjective` CRD that determines the priority band. Only sent when `inference_objective` is configured (see below).
@@ -204,7 +204,7 @@ processor:
 
 Batch Gateway sends `x-gateway-inference-objective` on inference requests when the `inference_objective` config field is set. GIE uses this header to look up the named `InferenceObjective` CRD and assign the request to the corresponding priority band.
 
-**Where:** `executor.go:mergeFlowControlHeaders` -- sends the header alongside the existing `x-slo-ttft-ms` header.
+**Where:** `executor.go:mergeInferenceHeaders` -- sends the header alongside the existing `x-slo-ttft-ms` header.
 
 **Config:** `inference_objective` in the processor config (Helm: `processor.config.inferenceObjective`). Empty by default (header not sent).
 
