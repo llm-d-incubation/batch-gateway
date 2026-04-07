@@ -25,6 +25,16 @@ banner() {
 
 TLS_ISSUER_NAME="${TLS_ISSUER_NAME:-selfsigned-issuer}"
 
+# Demo uninstall safety: default uninstall removes batch-gateway-scoped
+# resources and the named Gateway only. Set UNINSTALL_ALL=1 to also tear down Kuadrant,
+# Istio, cert-manager, operators, cluster CRDs, and other shared platform pieces.
+is_demo_uninstall_all() {
+    case "${UNINSTALL_ALL:-0}" in
+        1|true|yes|TRUE|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Batch Gateway configuration
 BATCH_NAMESPACE="${BATCH_NAMESPACE:-batch-api}"
 BATCH_HELM_RELEASE="${BATCH_HELM_RELEASE:-batch-gateway}"

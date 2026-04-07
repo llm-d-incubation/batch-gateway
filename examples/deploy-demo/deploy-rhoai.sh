@@ -825,68 +825,75 @@ cmd_uninstall() {
     step "Removing TokenRateLimitPolicy..."
     kubectl delete tokenratelimitpolicy inference-token-limit -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
 
-    # LLMInferenceService
-    step "Removing LLMInferenceService..."
-    kubectl delete llminferenceservice --all -n "${LLM_NAMESPACE}" --timeout=180s 2>/dev/null || true
+    # Named Gateway only (never delete all Gateways in a shared ingress namespace).
+    step "Removing Gateway ${GATEWAY_NAME}..."
+    kubectl delete gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
 
-    # DSC + DSCI
-    step "Removing DataScienceCluster and DSCInitialization..."
-    kubectl delete datasciencecluster --all --timeout=180s 2>/dev/null || true
-    kubectl delete dscinitializations --all --timeout=180s 2>/dev/null || true
+    if is_demo_uninstall_all; then
+        # LLMInferenceService
+        step "Removing LLMInferenceService..."
+        kubectl delete llminferenceservice --all -n "${LLM_NAMESPACE}" --timeout=180s 2>/dev/null || true
 
-    # RHOAI/ODH operator
-    local operator_name namespace
-    case "${OPERATOR_TYPE}" in
-        rhoai) operator_name="rhods-operator"; namespace="redhat-ods-operator" ;;
-        odh)   operator_name="opendatahub-operator"; namespace="opendatahub" ;;
-    esac
-    step "Removing ${OPERATOR_TYPE} operator..."
-    kubectl delete subscription.operators.coreos.com "${operator_name}" -n "${namespace}" 2>/dev/null || true
-    local csv
-    csv=$(kubectl get csv -n "${namespace}" --no-headers 2>/dev/null | grep "${operator_name}" | awk '{print $1}')
-    [ -n "${csv}" ] && kubectl delete csv "${csv}" -n "${namespace}" 2>/dev/null || true
+        # DSC + DSCI
+        step "Removing DataScienceCluster and DSCInitialization..."
+        kubectl delete datasciencecluster --all --timeout=180s 2>/dev/null || true
+        kubectl delete dscinitializations --all --timeout=180s 2>/dev/null || true
 
-    # Red Hat Connectivity Link (Kuadrant)
-    step "Removing Connectivity Link..."
-    kubectl delete kuadrant kuadrant -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
-    kubectl delete subscription.operators.coreos.com rhcl-operator -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
-    csv=$(kubectl get csv -n "${KUADRANT_NAMESPACE}" --no-headers 2>/dev/null | grep "rhcl-operator" | awk '{print $1}')
-    [ -n "${csv}" ] && kubectl delete csv "${csv}" -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
-    kubectl delete namespace "${KUADRANT_NAMESPACE}" --timeout=60s 2>/dev/null || true
-    kubectl get crd -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador' | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get clusterrole -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador|^clusterrole.*/dns-operator-' | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get clusterrolebinding -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador|^clusterrolebinding.*/dns-operator-' | xargs -r kubectl delete 2>/dev/null || true
+        # RHOAI/ODH operator
+        local operator_name namespace
+        case "${OPERATOR_TYPE}" in
+            rhoai) operator_name="rhods-operator"; namespace="redhat-ods-operator" ;;
+            odh)   operator_name="opendatahub-operator"; namespace="opendatahub" ;;
+        esac
+        step "Removing ${OPERATOR_TYPE} operator..."
+        kubectl delete subscription.operators.coreos.com "${operator_name}" -n "${namespace}" 2>/dev/null || true
+        local csv
+        csv=$(kubectl get csv -n "${namespace}" --no-headers 2>/dev/null | grep "${operator_name}" | awk '{print $1}')
+        [ -n "${csv}" ] && kubectl delete csv "${csv}" -n "${namespace}" 2>/dev/null || true
 
-    # Gateway
-    step "Removing Gateway..."
-    kubectl delete gateway ${GATEWAY_NAME} -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
-    kubectl delete gatewayclass openshift-default 2>/dev/null || true
+        # Red Hat Connectivity Link (Kuadrant)
+        step "Removing Connectivity Link..."
+        kubectl delete kuadrant kuadrant -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
+        kubectl delete subscription.operators.coreos.com rhcl-operator -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
+        csv=$(kubectl get csv -n "${KUADRANT_NAMESPACE}" --no-headers 2>/dev/null | grep "rhcl-operator" | awk '{print $1}')
+        [ -n "${csv}" ] && kubectl delete csv "${csv}" -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
+        kubectl delete namespace "${KUADRANT_NAMESPACE}" --timeout=60s 2>/dev/null || true
+        kubectl get crd -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador' | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get clusterrole -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador|^clusterrole.*/dns-operator-' | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get clusterrolebinding -o name 2>/dev/null | grep -E 'kuadrant|authorino|limitador|^clusterrolebinding.*/dns-operator-' | xargs -r kubectl delete 2>/dev/null || true
 
-    # LWS
-    step "Removing LWS operator..."
-    kubectl delete leaderworkersetoperator cluster -n openshift-lws-operator 2>/dev/null || true
-    kubectl delete subscription.operators.coreos.com leader-worker-set -n openshift-lws-operator 2>/dev/null || true
-    csv=$(kubectl get csv -n openshift-lws-operator --no-headers 2>/dev/null | grep "leader-worker" | awk '{print $1}')
-    [ -n "${csv}" ] && kubectl delete csv "${csv}" -n openshift-lws-operator 2>/dev/null || true
-    kubectl delete namespace openshift-lws-operator --timeout=60s 2>/dev/null || true
+        step "Removing GatewayClass openshift-default..."
+        kubectl delete gatewayclass openshift-default 2>/dev/null || true
 
-    # cert-manager (OLM operator lives in cert-manager-operator, workloads in cert-manager)
-    step "Removing cert-manager operator..."
-    kubectl delete subscription.operators.coreos.com openshift-cert-manager-operator -n cert-manager-operator 2>/dev/null || true
-    csv=$(kubectl get csv -n cert-manager-operator --no-headers 2>/dev/null | grep "cert-manager" | awk '{print $1}')
-    [ -n "${csv}" ] && kubectl delete csv "${csv}" -n cert-manager-operator 2>/dev/null || true
-    kubectl delete namespace cert-manager-operator --timeout=60s 2>/dev/null || true
-    kubectl delete namespace cert-manager --timeout=60s 2>/dev/null || true
-    kubectl get crd -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get clusterrole -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get clusterrolebinding -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get validatingwebhookconfiguration -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get mutatingwebhookconfiguration -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
-    kubectl get role -n kube-system -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete -n kube-system 2>/dev/null || true
-    kubectl get rolebinding -n kube-system -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete -n kube-system 2>/dev/null || true
+        # LWS
+        step "Removing LWS operator..."
+        kubectl delete leaderworkersetoperator cluster -n openshift-lws-operator 2>/dev/null || true
+        kubectl delete subscription.operators.coreos.com leader-worker-set -n openshift-lws-operator 2>/dev/null || true
+        csv=$(kubectl get csv -n openshift-lws-operator --no-headers 2>/dev/null | grep "leader-worker" | awk '{print $1}')
+        [ -n "${csv}" ] && kubectl delete csv "${csv}" -n openshift-lws-operator 2>/dev/null || true
+        kubectl delete namespace openshift-lws-operator --timeout=60s 2>/dev/null || true
 
-    # LLM namespace
-    force_delete_namespace "${LLM_NAMESPACE}"
+        # cert-manager (OLM operator lives in cert-manager-operator, workloads in cert-manager)
+        step "Removing cert-manager operator..."
+        kubectl delete subscription.operators.coreos.com openshift-cert-manager-operator -n cert-manager-operator 2>/dev/null || true
+        csv=$(kubectl get csv -n cert-manager-operator --no-headers 2>/dev/null | grep "cert-manager" | awk '{print $1}')
+        [ -n "${csv}" ] && kubectl delete csv "${csv}" -n cert-manager-operator 2>/dev/null || true
+        kubectl delete namespace cert-manager-operator --timeout=60s 2>/dev/null || true
+        kubectl delete namespace cert-manager --timeout=60s 2>/dev/null || true
+        kubectl get crd -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get clusterrole -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get clusterrolebinding -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get validatingwebhookconfiguration -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get mutatingwebhookconfiguration -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete 2>/dev/null || true
+        kubectl get role -n kube-system -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete -n kube-system 2>/dev/null || true
+        kubectl get rolebinding -n kube-system -o name 2>/dev/null | grep cert-manager | xargs -r kubectl delete -n kube-system 2>/dev/null || true
+
+        # LLM namespace
+        force_delete_namespace "${LLM_NAMESPACE}"
+    else
+        warn "Skipping LLMInferenceService, OpenShift AI operators, Kuadrant, GatewayClass, LWS, cert-manager, and '${LLM_NAMESPACE}' namespace delete (shared-cluster safety)."
+        warn "For full teardown on an ephemeral cluster only: UNINSTALL_ALL=1 $0 uninstall"
+    fi
 
     echo ""
     log "RHOAI platform + batch gateway uninstalled."
@@ -904,7 +911,7 @@ usage() {
     echo "Commands:"
     echo "  install    Install RHOAI platform, LLMInferenceService, and batch-gateway"
     echo "  test       Run inference + batch lifecycle tests"
-    echo "  uninstall  Remove all components"
+    echo "  uninstall  Remove demo resources (use UNINSTALL_ALL=1 for full platform teardown)"
     echo "  help       Show this help"
     echo ""
     echo "Environment Variables:"
@@ -916,6 +923,7 @@ usage() {
     echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"
     echo "  BATCH_DB_TYPE          Database: postgresql or redis (default: postgresql)"
     echo "  BATCH_STORAGE_TYPE     File storage: fs or s3 (default: s3)"
+    echo "  UNINSTALL_ALL            Set to 1 to remove RHOAI operators, Kuadrant, cert-manager, etc. (ephemeral clusters only)"
     exit "${1:-0}"
 }
 
