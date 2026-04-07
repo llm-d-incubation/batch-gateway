@@ -170,6 +170,24 @@ func TestPoller_DequeueOne_ReturnsFirstTask(t *testing.T) {
 	}
 }
 
+func TestPoller_EnqueueOne_NilTask_ReturnsErrorWithoutCallingPQ(t *testing.T) {
+	ctx := context.Background()
+	pq := &pqSpy{inner: mockdb.NewMockBatchPriorityQueueClient()}
+	dbClient := mockdb.NewMockDBClient(
+		func(b *db.BatchItem) string { return b.ID },
+		func(q *db.BatchQuery) *db.BaseQuery { return &q.BaseQuery },
+	)
+	p := NewPoller(pq, dbClient)
+
+	err := p.enqueueOne(ctx, nil)
+	if err == nil {
+		t.Fatal("enqueueOne(nil) err=nil, want error")
+	}
+	if pq.enqueueCalled != 0 {
+		t.Fatalf("PQEnqueue called=%d, want 0", pq.enqueueCalled)
+	}
+}
+
 func TestPoller_FetchJobItem_DBError_ReturnsErrorWithoutEnqueue(t *testing.T) {
 	ctx := context.Background()
 

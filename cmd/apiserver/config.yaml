@@ -14,7 +14,7 @@ port: "8000"
 
 # Input headers for special processing (key: logical name, value: HTTP header name)
 input_headers:
-  tenant: "X-MaaS-User"
+  tenant: "X-MaaS-Username"
 
 # HTTP server timeout configurations (in seconds)
 # These values should accommodate large file uploads and batch operations
