@@ -246,13 +246,16 @@ EOF
         done
     fi
 
-    # Wait for operator to detect sub-operators before creating CR
-    log "Waiting 15s for Kuadrant operator to register sub-operators..."
-    sleep 15
+    # Create Kuadrant CR with retry.
+    # The operator may not detect sub-operators immediately after they become ready,
+    # so we retry by restarting the operator pod if the CR fails to become Ready.
+    local kuadrant_ready=false
+    for attempt in 1 2 3; do
+        log "Waiting 15s for Kuadrant operator to register sub-operators..."
+        sleep 15
 
-    # Create Kuadrant CR
-    step "Creating Kuadrant CR..."
-    kubectl apply -f - <<EOF
+        step "Creating Kuadrant CR (attempt ${attempt}/3)..."
+        kubectl apply -f - <<EOF
 apiVersion: kuadrant.io/v1beta1
 kind: Kuadrant
 metadata:
@@ -261,9 +264,21 @@ metadata:
 spec: {}
 EOF
 
-    step "Waiting for Kuadrant CR to be ready..."
-    kubectl wait kuadrant/kuadrant --for="condition=Ready=true" \
-        -n "${ns}" --timeout=300s
+        if kubectl wait kuadrant/kuadrant --for="condition=Ready=true" \
+            -n "${ns}" --timeout=180s 2>/dev/null; then
+            kuadrant_ready=true
+            break
+        fi
+
+        warn "Kuadrant CR not ready, restarting operator pod..."
+        kubectl delete kuadrant/kuadrant -n "${ns}" --ignore-not-found 2>/dev/null || true
+        kubectl rollout restart deploy/kuadrant-operator-controller-manager -n "${ns}"
+        kubectl rollout status deploy/kuadrant-operator-controller-manager -n "${ns}" --timeout=60s
+    done
+
+    if [ "${kuadrant_ready}" != "true" ]; then
+        die "Kuadrant CR did not become ready after 3 attempts"
+    fi
 
     # Configure Authorino for authentication (SSL with OpenShift serving certs)
     step "Configuring Authorino SSL..."
@@ -694,6 +709,13 @@ cmd_install() {
     log "  Operator: ${OPERATOR_TYPE}"
     log "  Model: ${MODEL_NAME} (simulator, ${MODEL_REPLICAS} replicas, no GPU)"
     log "  Batch Gateway: ${BATCH_HELM_RELEASE} (${BATCH_NAMESPACE})"
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        log "  Batch Gateway version: ${BATCH_RELEASE_VERSION} (OCI chart)"
+    elif [ "${BATCH_DEV_VERSION}" != "local" ]; then
+        log "  Batch Gateway image tag: ${BATCH_DEV_VERSION} (commit chart)"
+    else
+        log "  Batch Gateway image tag: latest (local chart)"
+    fi
     log ""
     log "Run '$0 test' to verify."
 }
@@ -890,7 +912,8 @@ usage() {
     echo "  MODEL_NAME       Model name for simulator (default: facebook/opt-125m)"
     echo "  MODEL_REPLICAS   Number of replicas (default: 2)"
     echo "  SIM_IMAGE        Simulator image (default: ghcr.io/llm-d/llm-d-inference-sim:v0.7.1)"
-    echo "  BATCH_DEV_VERSION      Batch gateway image tag (default: latest)"
+    echo "  BATCH_DEV_VERSION      Batch gateway image tag / commit SHA (default: local)"
+    echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"
     echo "  BATCH_DB_TYPE          Database: postgresql or redis (default: postgresql)"
     echo "  BATCH_STORAGE_TYPE     File storage: fs or s3 (default: s3)"
     exit "${1:-0}"
