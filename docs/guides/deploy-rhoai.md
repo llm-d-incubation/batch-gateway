@@ -693,7 +693,6 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "processor.config.modelGateways.facebook/opt-125m.maxRetries=3" \
     --set "processor.config.modelGateways.facebook/opt-125m.initialBackoff=1s" \
     --set "processor.config.modelGateways.facebook/opt-125m.maxBackoff=60s" \
-    --set "processor.config.modelGateways.facebook/opt-125m.tlsInsecureSkipVerify=true" \
     --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
     --set apiserver.tls.enabled=true \
     --set apiserver.tls.certManager.enabled=true \
@@ -705,7 +704,7 @@ helm install batch-gateway ./charts/batch-gateway \
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It should point to the Gateway's model endpoint (from `llminferenceservice.status.url`), not directly to the model server, so that requests go through the Gateway's AuthPolicy and rate limiting.
 > - **`passThroughHeaders: {Authorization}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization on batch requests.
 >
-> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `issuerName` must match a ClusterIssuer (e.g. `selfsigned-issuer`). The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.9).
+> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `issuerName` must match a ClusterIssuer (e.g. `selfsigned-issuer`). The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.9). The Helm chart defaults `processor` `tls_insecure_skip_verify` to **`false`** when omitted.
 > - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
 >   ```
 >   --set "global.fileClient.type=s3"
@@ -720,6 +719,7 @@ helm install batch-gateway ./charts/batch-gateway \
 
 </details>
 
+> **TLS verification (lab vs production)**: The install snippet omits `tlsInsecureSkipVerify` and the DestinationRule in 3.9 uses **`insecureSkipVerify: false`**. For self-signed or mismatched SANs in a lab, you may **temporarily** add `--set "processor.config.modelGateways.<model>.tlsInsecureSkipVerify=true"` and `insecureSkipVerify: true` in the DestinationRule — **demo/lab only** (see [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Demo scripts: `DEMO_TLS_INSECURE_SKIP_VERIFY=1` (see `examples/deploy-demo/README.md`).
 
 ### 3.9 Configure HTTPRoute and Policies for Batch Gateway
 
@@ -768,7 +768,7 @@ spec:
         number: 8000
       tls:
         mode: SIMPLE
-        insecureSkipVerify: true
+        insecureSkipVerify: false
 EOF
 ```
 

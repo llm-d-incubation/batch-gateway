@@ -656,7 +656,6 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=3" \
     --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=1s" \
     --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=60s" \
-    --set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true" \
     --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
     --set apiserver.tls.enabled=true \
     --set apiserver.tls.certManager.enabled=true \
@@ -667,7 +666,7 @@ helm install batch-gateway ./charts/batch-gateway \
 
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It points to the Gateway's model endpoint (via in-cluster Service DNS), not directly to the model server, so that requests go through the Gateway's AuthPolicy and rate limiting.
 > - **`passThroughHeaders: {Authorization}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization on batch requests.
-> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.8).
+> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.8). The Helm chart defaults `processor` `tls_insecure_skip_verify` to **`false`** when omitted.
 > - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
 >   ```
 >   --set "global.fileClient.type=s3"
@@ -681,6 +680,8 @@ helm install batch-gateway ./charts/batch-gateway \
 >   and add `--from-literal=s3-secret-access-key=<secret-key>` to the application secret.
 
 </details>
+
+> **TLS verification (lab vs production)**: The install snippet omits `tlsInsecureSkipVerify` (processor verifies the model-gateway certificate) and the DestinationRule below uses **`insecureSkipVerify: false`** so Istio verifies the batch apiserver certificate. If a quick lab setup fails with x509 errors (self-signed or mismatched SANs), you may **temporarily** add `--set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true"` and set `insecureSkipVerify: true` in the DestinationRule — **demo/lab only**; do not copy that into production without addressing trust (see [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Demo scripts use the same idea via `DEMO_TLS_INSECURE_SKIP_VERIFY=1` (see `examples/deploy-demo/README.md`).
 
 ### 3.8 Configure HTTPRoute and Policies for Batch Gateway
 
@@ -727,7 +728,7 @@ spec:
         number: 8000
       tls:
         mode: SIMPLE
-        insecureSkipVerify: true
+        insecureSkipVerify: false
 EOF
 ```
 

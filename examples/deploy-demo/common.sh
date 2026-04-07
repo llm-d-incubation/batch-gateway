@@ -62,6 +62,9 @@ BATCH_POSTGRESQL_RELEASE="${BATCH_POSTGRESQL_RELEASE:-postgresql}"
 # WARNING: Default passwords are for demo only. For production, override via env vars or use K8s secrets.
 BATCH_POSTGRESQL_PASSWORD="${BATCH_POSTGRESQL_PASSWORD:-postgres}"
 BATCH_STORAGE_TYPE="${BATCH_STORAGE_TYPE:-s3}"
+# When 1, disables TLS certificate verification for (a) processor -> model gateway HTTPS and
+# (b) Istio Gateway -> batch apiserver (DestinationRule). Demo/lab only (CWE-295); default 0 verifies certs.
+DEMO_TLS_INSECURE_SKIP_VERIFY="${DEMO_TLS_INSECURE_SKIP_VERIFY:-0}"
 BATCH_MINIO_RELEASE="${BATCH_MINIO_RELEASE:-minio}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
@@ -326,6 +329,12 @@ EOF
 # Without this, the Gateway would send plaintext to the HTTPS apiserver port.
 create_batch_destinationrule() {
     step "Creating DestinationRule for backend TLS (Gateway -> apiserver)..."
+    local skip="${DEMO_TLS_INSECURE_SKIP_VERIFY:-0}"
+    local istio_skip="false"
+    if [[ "${skip}" == "1" ]]; then
+        istio_skip="true"
+        warn "DEMO_TLS_INSECURE_SKIP_VERIFY=1: Istio insecureSkipVerify enabled (demo/lab only; do not use in production)."
+    fi
     kubectl apply -f - <<EOF
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
@@ -340,9 +349,9 @@ spec:
         number: ${BATCH_INFERENCE_PORT}
       tls:
         mode: SIMPLE
-        insecureSkipVerify: true
+        insecureSkipVerify: ${istio_skip}
 EOF
-    log "DestinationRule created (Gateway -> apiserver: TLS re-encrypt)."
+    log "DestinationRule created (Gateway -> apiserver: TLS re-encrypt, insecureSkipVerify=${istio_skip})."
 }
 
 # ── Database / Storage Functions ──────────────────────────────────────────────

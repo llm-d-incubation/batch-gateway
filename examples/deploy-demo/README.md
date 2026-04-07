@@ -136,6 +136,7 @@ BATCH_RELEASE_VERSION=v1.0.0 \
 | `BATCH_DEV_VERSION` | `local` | all | Image tag / commit SHA. `local` uses local chart + `latest` image. Cannot be used with `BATCH_RELEASE_VERSION` |
 | `BATCH_DB_TYPE` | `postgresql` | all | Database backend: `postgresql` or `redis` |
 | `BATCH_STORAGE_TYPE` | `s3` | all | File storage: `fs` or `s3` |
+| `DEMO_TLS_INSECURE_SKIP_VERIFY` | `0` | all | Set to `1` to disable TLS certificate verification for processor → model gateway and for Istio Gateway → batch apiserver (**demo/lab only**, [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Default `0` verifies certificates. Use if you hit x509 errors with self-signed or untrusted CAs. |
 | `BATCH_NAMESPACE` | `batch-api` | all | Namespace for batch-gateway |
 | `LLM_NAMESPACE` | `llm` | all | Namespace for model serving |
 | `LLMD_VERSION` | `main` | k8s | llm-d git ref to install |

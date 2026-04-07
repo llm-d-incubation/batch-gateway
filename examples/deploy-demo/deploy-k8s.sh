@@ -360,9 +360,12 @@ deploy_batch_gateway_k8s() {
         --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=${GW_MAX_RETRIES}"
         --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=${GW_INITIAL_BACKOFF}"
         --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=${GW_MAX_BACKOFF}"
-        --set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )
+    if [[ "${DEMO_TLS_INSECURE_SKIP_VERIFY:-0}" == "1" ]]; then
+        helm_args+=(--set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true")
+        warn "DEMO_TLS_INSECURE_SKIP_VERIFY=1: processor TLS verify disabled for model gateway (demo/lab only)."
+    fi
 
     do_deploy_batch_gateway "${helm_args[@]}"
 }

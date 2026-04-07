@@ -399,7 +399,6 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.maxRetries=3" \
     --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.initialBackoff=1s" \
     --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.maxBackoff=60s" \
-    --set "processor.config.modelGateways.${MAAS_MODEL_NAME}.tlsInsecureSkipVerify=true" \
     --set "apiserver.config.batchAPI.passThroughHeaders={Authorization,X-MaaS-Subscription}" \
     --set apiserver.tls.enabled=true \
     --set apiserver.tls.certManager.enabled=true \
@@ -408,7 +407,7 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}"
 ```
 
-> - **`modelGateways.<model>.url`**: The processor uses the MaaS Gateway's **external hostname** (`https://maas.<domain>/...`) because the Gateway listener requires SNI matching. Internal Service FQDN causes TLS handshake failure.
+> - **`modelGateways.<model>.url`**: The processor uses the MaaS Gateway's **external hostname** (`https://maas.<domain>/...`) because the Gateway listener requires SNI matching. Internal Service FQDN causes TLS handshake failure. The Helm chart defaults `tls_insecure_skip_verify` to **`false`** when omitted; use strict verification when your cluster trusts the ingress/Gateway CA.
 > - **`passThroughHeaders: {Authorization, X-MaaS-Subscription}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization and the correct subscription is used for token rate limiting.
 > - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
 >   ```
@@ -423,6 +422,8 @@ helm install batch-gateway ./charts/batch-gateway \
 >   and add `--from-literal=s3-secret-access-key=<secret-key>` to the application secret.
 
 </details>
+
+> **TLS verification (lab vs production)**: Copy-paste blocks omit `tlsInsecureSkipVerify` and use **`insecureSkipVerify: false`** on the DestinationRule. If the processor or Gateway cannot validate certificates in your environment (common with corporate ingress or quick self-signed labs), **temporarily** add `--set "processor.config.modelGateways.<model>.tlsInsecureSkipVerify=true"` and `insecureSkipVerify: true` — **demo/lab only** ([CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Demo scripts: `DEMO_TLS_INSECURE_SKIP_VERIFY=1` (see `examples/deploy-demo/README.md`).
 
 ### 3.5 Configure HTTPRoute and Policies for Batch Gateway
 
@@ -472,7 +473,7 @@ spec:
         number: 8000
       tls:
         mode: SIMPLE
-        insecureSkipVerify: true
+        insecureSkipVerify: false
 EOF
 ```
 

@@ -194,6 +194,8 @@ EOF
 
 The processor calls models through the MaaS gateway using HTTPS. `passThroughHeaders={Authorization,X-MaaS-Subscription}` ensures the API key and subscription header are forwarded to the model for authentication and rate limiting.
 
+By default, omit `tlsInsecureSkipVerify` so the processor verifies the gateway certificate (Helm renders `tls_insecure_skip_verify: false`). If your lab uses a cert the processor cannot validate, see the note after §4.4.
+
 ```bash
 $ helm install batch-gateway ./charts/batch-gateway -n batch-api \
     --set "global.secretName=batch-gateway-secrets" \
@@ -202,7 +204,6 @@ $ helm install batch-gateway ./charts/batch-gateway -n batch-api \
     --set "global.fileClient.fs.basePath=/tmp/batch-gateway" \
     --set "global.fileClient.fs.pvcName=batch-gateway-files" \
     --set 'processor.config.modelGateways.facebook/opt-125m.url=https://maas-default-gateway-istio.openshift-ingress.svc.cluster.local/llm/facebook-opt-125m-simulated' \
-    --set 'processor.config.modelGateways.facebook/opt-125m.tlsInsecureSkipVerify=true' \
     --set 'processor.config.modelGateways.facebook/opt-125m.requestTimeout=5m' \
     --set 'processor.config.modelGateways.facebook/opt-125m.maxRetries=3' \
     --set 'processor.config.modelGateways.facebook/opt-125m.initialBackoff=1s' \
@@ -243,9 +244,11 @@ spec:
         number: 8000
       tls:
         mode: SIMPLE
-        insecureSkipVerify: true
+        insecureSkipVerify: false
 EOF
 ```
+
+> **Lab-only TLS skip**: If you see x509 verification errors from the processor or from Istio re-encrypt to the apiserver, you may **temporarily** add `--set 'processor.config.modelGateways.facebook/opt-125m.tlsInsecureSkipVerify=true'` and set `insecureSkipVerify: true` in the DestinationRule above — **not for production** without proper CA trust ([CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Demo scripts: `DEMO_TLS_INSECURE_SKIP_VERIFY=1`.
 
 ### 4.5 Create HTTPRoute
 
