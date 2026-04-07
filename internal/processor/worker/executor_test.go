@@ -2397,16 +2397,16 @@ func TestJsonNumericToFloat64(t *testing.T) {
 }
 
 // =====================================================================
-// Tests: mergeFlowControlHeaders
+// Tests: mergeInferenceHeaders
 // =====================================================================
 
 func TestMergeFlowControlHeaders(t *testing.T) {
 	t.Run("no deadline no objective leaves headers unchanged", func(t *testing.T) {
-		if got := mergeFlowControlHeaders(nil, context.Background(), ""); got != nil {
+		if got := mergeInferenceHeaders(nil, context.Background(), ""); got != nil {
 			t.Fatalf("nil headers: got %v, want nil", got)
 		}
 		in := map[string]string{"a": "b"}
-		got := mergeFlowControlHeaders(in, context.Background(), "")
+		got := mergeInferenceHeaders(in, context.Background(), "")
 		if len(got) != 1 {
 			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
 		}
@@ -2422,7 +2422,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 		want := 5*time.Second + 123*time.Millisecond
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
 		defer cancel()
-		h := mergeFlowControlHeaders(nil, ctx, "")
+		h := mergeInferenceHeaders(nil, ctx, "")
 		got, err := strconv.ParseInt(h[sloTTFTMSHeader], 10, 64)
 		if err != nil {
 			t.Fatalf("parse header: %v", err)
@@ -2438,11 +2438,11 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 	t.Run("deadline in the past leaves headers unchanged", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		if got := mergeFlowControlHeaders(nil, ctx, ""); got != nil {
+		if got := mergeInferenceHeaders(nil, ctx, ""); got != nil {
 			t.Fatalf("nil headers: got %v, want nil (expired deadline => no merge)", got)
 		}
 		in := map[string]string{"a": "b"}
-		got := mergeFlowControlHeaders(in, ctx, "")
+		got := mergeInferenceHeaders(in, ctx, "")
 		if len(got) != 1 {
 			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
 		}
@@ -2457,7 +2457,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 	t.Run("preserves existing headers", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
 		defer cancel()
-		h := mergeFlowControlHeaders(map[string]string{"a": "b"}, ctx, "")
+		h := mergeInferenceHeaders(map[string]string{"a": "b"}, ctx, "")
 		if h["a"] != "b" {
 			t.Fatal("lost existing header")
 		}
@@ -2472,7 +2472,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
 		defer cancel()
 		in := map[string]string{}
-		h := mergeFlowControlHeaders(in, ctx, "")
+		h := mergeInferenceHeaders(in, ctx, "")
 		got, err := strconv.ParseInt(in[sloTTFTMSHeader], 10, 64)
 		if err != nil {
 			t.Fatalf("parse: %v", err)
@@ -2489,7 +2489,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 	})
 
 	t.Run("objective header sent when configured", func(t *testing.T) {
-		h := mergeFlowControlHeaders(nil, context.Background(), "batch-low-priority")
+		h := mergeInferenceHeaders(nil, context.Background(), "batch-low-priority")
 		if h[inferenceObjectiveHeader] != "batch-low-priority" {
 			t.Fatalf("got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
 		}
@@ -2499,7 +2499,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 	})
 
 	t.Run("objective header not sent when empty", func(t *testing.T) {
-		h := mergeFlowControlHeaders(map[string]string{"a": "b"}, context.Background(), "")
+		h := mergeInferenceHeaders(map[string]string{"a": "b"}, context.Background(), "")
 		if _, ok := h[inferenceObjectiveHeader]; ok {
 			t.Fatal("objective header should not be set when empty")
 		}
@@ -2508,7 +2508,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 	t.Run("both SLO and objective headers", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
 		defer cancel()
-		h := mergeFlowControlHeaders(nil, ctx, "batch-low-priority")
+		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority")
 		if _, ok := h[sloTTFTMSHeader]; !ok {
 			t.Fatal("SLO header missing")
 		}
@@ -2520,7 +2520,7 @@ func TestMergeFlowControlHeaders(t *testing.T) {
 	t.Run("objective only with expired deadline", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		h := mergeFlowControlHeaders(nil, ctx, "batch-low-priority")
+		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority")
 		if _, ok := h[sloTTFTMSHeader]; ok {
 			t.Fatal("SLO header should not be set with expired deadline")
 		}

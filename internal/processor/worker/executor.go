@@ -594,7 +594,7 @@ const (
 	inferenceObjectiveHeader = "x-gateway-inference-objective"
 )
 
-// mergeFlowControlHeaders sets GIE flow-control headers on the outgoing request:
+// mergeInferenceHeaders adds processor-managed headers to the outgoing inference request:
 //   - x-slo-ttft-ms: remaining milliseconds until the SLO deadline (>= 0).
 //   - x-gateway-inference-objective: name of the InferenceObjective CRD that
 //     determines the priority band for this request.
@@ -602,7 +602,7 @@ const (
 // Headers are only added when the relevant value is available/configured.
 // If sloCtx has no deadline, is cancelled, or has an expired deadline, the SLO
 // header is not set. If inferenceObjective is empty, the objective header is not set.
-func mergeFlowControlHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective string) map[string]string {
+func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective string) map[string]string {
 	hasSLO := false
 	var sloMs int64
 	if sloCtx.Err() == nil {
@@ -690,7 +690,7 @@ func (p *Processor) executeOneRequest(
 	}
 
 	headers := maps.Clone(passThroughHeaders)
-	headers = mergeFlowControlHeaders(headers, sloCtx, p.cfg.InferenceObjective)
+	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjective)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
