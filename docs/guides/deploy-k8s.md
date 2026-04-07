@@ -27,7 +27,7 @@ This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or Op
     - Authenticated request is forwarded to **batch-gateway apiserver**, which stores the batch job
 3. **Processor** dequeues the batch job and sends inference requests back through the same Istio Gateway (`istio-gateway`) with the user's original token
 4. The Gateway matches `/{ns}/{model}/v1/*` → **llm-route** (HTTPRoute, manually created with URL rewrite rules)
-    - **AuthPolicy** on the llm-route performs authentication and authorization (SubjectAccessReview — checks if the original user can `get inferencepools/<pool-name>`) — if the user lacks permission, the request is rejected with 403
+    - **AuthPolicy** on the llm-route performs authentication and authorization (SubjectAccessReview — checks if the original user can `get inferencepools/<model-name>`, where `<model-name>` is extracted from the URL path, not the backend InferencePool object name) — if the user lacks permission, the request is rejected with 403
     - **TokenRateLimitPolicy** on the llm-route enforces per-user token rate limiting, keyed by Kubernetes username from TokenReview
 5. Request is routed to **InferencePool** → **EPP** (endpoint picker) → **vLLM** model server, and the response is returned to the Processor, which adds the response to the batch job's output file
 
@@ -46,7 +46,11 @@ HTTPRoute authentication behavior:
 
 ### 1.4 Authorization Model
 
-Users need RBAC `get` permission on the `inferencepools` resource whose name matches the **model name in the URL path** (not the InferencePool object name). This is because the AuthPolicy extracts the resource name from the URL via `request.path.split("/")[2]`. To grant access, create a Role and RoleBinding:
+Users need RBAC `get` permission on the `inferencepools` resource whose name matches the **model name in the URL path**. The AuthPolicy extracts the resource name from the URL via `request.path.split("/")[2]`.
+
+> **Important**: The SAR resource name (derived from the URL path segment) is **independent** of the HTTPRoute backend `InferencePool` metadata name. Which `InferencePool` a given path segment routes to is determined by **routing** (the HTTPRoute / route map), not by SAR. SAR controls *who* can access a model endpoint; the HTTPRoute controls *where* that endpoint's traffic is sent. For example, a URL path segment `random` may route to an `InferencePool` named `gaie-llmd` — the RBAC `resourceNames` should use the URL path segment (`random`), not the `InferencePool` object name.
+
+To grant access, create a Role and RoleBinding:
 
 > **Note**: Unlike RHOAI (which checks `llminferenceservices`), the k8s deployment checks `inferencepools` because the llm-route directly references InferencePool backends.
 
@@ -545,7 +549,7 @@ spec:
 EOF
 ```
 
-> **Note**: The authorization uses `inferencepools` (not `llminferenceservices` as in RHOAI). The `request.path.split("/")[2]` extracts the model name from the URL path `/{namespace}/{model}/...` to match the InferencePool resource name.
+> **Note**: The authorization uses `inferencepools` (not `llminferenceservices` as in RHOAI). The `request.path.split("/")[2]` extracts the **model name** from the URL path `/{namespace}/{model}/...` for the SAR check. This is the user-facing model name, not the backend `InferencePool` object name — the HTTPRoute determines which `InferencePool` actually receives traffic for each path prefix (see [Section 1.4](#14-authorization-model)).
 
 </details>
 
