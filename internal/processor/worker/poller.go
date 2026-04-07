@@ -68,6 +68,9 @@ func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 }
 
 func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) error {
+	if task == nil {
+		return fmt.Errorf("cannot enqueue nil batch job task")
+	}
 	logger := logr.FromContextOrDiscard(ctx)
 	err := p.pq.PQEnqueue(ctx, task)
 	if err != nil {
