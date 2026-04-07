@@ -300,7 +300,7 @@ EOF
     # Wait for TokenRateLimitPolicy to be generated from MaaSSubscription
     step "Waiting for TokenRateLimitPolicy..."
     for i in $(seq 1 30); do
-        if kubectl get tokenratelimitpolicy -n llm 2>/dev/null | grep -q "${isvc_name}"; then
+        if kubectl get tokenratelimitpolicy -n "${LLM_NAMESPACE}" 2>/dev/null | grep -q "${isvc_name}"; then
             log "TokenRateLimitPolicy generated for model."
             return
         fi
