@@ -25,10 +25,12 @@ A **saturation detector** monitors backend load and applies head-of-line blockin
 
 | Band | Priority | Workload | Fairness | Ordering | Rationale |
 |------|----------|----------|----------|----------|-----------|
-| Online | 100 | Interactive requests | round-robin | slo-deadline | Low latency, fair across tenants, respects SLO deadlines |
-| Batch | 0 | Batch Gateway requests | global-strict | slo-deadline | Maximizes throughput, respects batch job SLO deadlines |
+| Online | 100 | Interactive requests | round-robin | fcfs | Low latency, fair across tenants |
+| Batch | 0 | Batch Gateway requests | global-strict | fcfs | Maximizes throughput, dispatches in arrival order |
 
-**Why this works:** The priority band hierarchy ensures online requests (priority 100) are always dispatched before batch requests (priority 0). When no online requests are queued, batch requests flow freely. When online traffic arrives, batch dispatch pauses until the online queue drains. The SLO-deadline ordering within the batch band ensures that batch jobs closer to their completion deadline are dispatched first.
+**Why this works:** The priority band hierarchy ensures online requests (priority 100) are always dispatched before batch requests (priority 0). When no online requests are queued, batch requests flow freely. When online traffic arrives, batch dispatch pauses until the online queue drains.
+
+**Future improvement:** When `slo-deadline-ordering-policy` becomes available in a released GIE version, replace `fcfs-ordering-policy` with it in the batch band. This will order batch requests by their SLO deadline (`x-slo-ttft-ms`), ensuring jobs closer to their completion deadline are dispatched first.
 
 ### EndpointPickerConfig
 
@@ -39,46 +41,47 @@ featureGates:
   - "flowControl"
 
 plugins:
-  - type: slo-deadline-ordering-policy
   - type: round-robin-fairness-policy
   - type: global-strict-fairness-policy
-  - type: utilization-detector
 
 flowControl:
   # Global queue capacity across all bands and shards.
   # Size according to expected peak concurrent requests.
-  maxBytes: 4Gi
+  maxBytes: 4294967296  # 4Gi
 
   # Fallback TTL for requests that don't specify x-slo-ttft-ms.
   # Online requests without SLO headers expire after 30 seconds.
   defaultRequestTTL: 30s
 
   priorityBands:
-    # --- Online band: high priority, fair, SLO-aware ---
+    # --- Online band: high priority, fair ---
     - priority: 100
-      maxBytes: 1Gi
+      maxBytes: 1073741824  # 1Gi
       fairnessPolicyRef: round-robin-fairness-policy
-      orderingPolicyRef: slo-deadline-ordering-policy
+      orderingPolicyRef: fcfs-ordering-policy
 
-    # --- Batch band: low priority, throughput-optimized, SLO-aware ---
+    # --- Batch band: low priority, throughput-optimized ---
+    # Future: replace fcfs-ordering-policy with slo-deadline-ordering-policy
+    # (once available in a released GIE version) to order batch requests by
+    # their SLO deadline (x-slo-ttft-ms), dispatching the most urgent first.
     - priority: 0
-      maxBytes: 3Gi
+      maxBytes: 3221225472  # 3Gi
       fairnessPolicyRef: global-strict-fairness-policy
-      orderingPolicyRef: slo-deadline-ordering-policy
+      orderingPolicyRef: fcfs-ordering-policy
 
   # Template for any priority values not explicitly listed above.
   defaultPriorityBand:
-    maxBytes: 512Mi
+    maxBytes: 536870912  # 512Mi
     fairnessPolicyRef: global-strict-fairness-policy
-    orderingPolicyRef: slo-deadline-ordering-policy
+    orderingPolicyRef: fcfs-ordering-policy
 
 saturationDetector:
-  # Utilization-based: reads queue depth and KV-cache metrics from
-  # vLLM endpoints. Provides proportional backpressure that scales
-  # with overload depth. Preferred for mixed workloads because it
-  # reacts to actual backend state rather than counting in-flight
-  # requests.
-  pluginRef: utilization-detector
+  # Utilization-based: considers a model saturated when queue depth
+  # exceeds the threshold OR KV-cache utilization exceeds the threshold.
+  # This triggers head-of-line blocking that pauses dispatch for lower
+  # priority bands first.
+  queueDepthThreshold: 2
+  kvCacheUtilThreshold: 0.85
 ```
 
 ### How Requests Get Assigned to Bands
