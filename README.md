@@ -393,8 +393,8 @@ All pprof endpoints are served on the observability port (not the API port), so 
 ### Code Quality
 
 ```bash
-# Run all pre-commit checks (formatting, linting, tests, security)
-make pre-commit
+# Run all CI checks
+make ci
 
 # Or run individual checks:
 make fmt   # Format code only
@@ -428,7 +428,7 @@ This installs:
 Contributions are welcome! Please ensure:
 
 1. New features include tests and documentation.
-2. Pre-commit checks pass: `make pre-commit`.
+2. CI checks pass: `make ci`.
 3. E2E tests pass: `make test-e2e`.
 4. Commits are signed off (`git commit -s`) and follow conventional commit format.
 5. Code follows project [contributing guidelines](CONTRIBUTING.md).
