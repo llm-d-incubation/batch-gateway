@@ -13,21 +13,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check DCO sign-off on all commits
-        run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          head="${{ github.event.pull_request.head.sha }}"
-          failed=0
-          for sha in $(git rev-list "$base".."$head"); do
-            if ! git log -1 --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+>'; then
-              echo "::error::Commit $sha is missing Signed-off-by. Use 'git commit -s' or see PR_SIGNOFF.md."
-              failed=1
-            fi
-          done
-          if [ "$failed" -eq 1 ]; then
-            echo ""
-            echo "One or more commits are missing the DCO sign-off trailer."
-            echo "Add it with: git commit -s --amend (for the last commit)"
-            echo "Or for multiple commits: git rebase HEAD~N --signoff"
-            echo "See PR_SIGNOFF.md for details."
-            exit 1
-          fi
+        run: make check-dco
+        env:
+          DCO_BASE: ${{ github.event.pull_request.base.sha }}
+          DCO_HEAD: ${{ github.event.pull_request.head.sha }}
