@@ -154,10 +154,10 @@ This is not a separate TLS method — it is a **variant of [Custom CA](#custom-c
 
 Install the cert-manager controller if you do not already have it (for example the steps in [deploy-k8s.md § 3.1](deploy-k8s.md#31-install-cert-manager)).
 
-**Trust anchor (gateway private CA)**  
+**Trust anchor (gateway private CA)**
 Use whatever your cluster provides: a Secret that holds the CA bundle PEM cert-manager or your platform keeps up to date, an exported CA from your `Issuer` / `ClusterIssuer`, or a dedicated bundle Secret. Mount it and set `tlsCaCertFile` to the in-container path of the CA PEM.
 
-**Client certificate (mTLS)**  
+**Client certificate (mTLS)**
 Create a cert-manager `Certificate` that requests credentials your inference gateway accepts (subject, `dnsNames`, `uris`, etc. are **gateway-specific**). The resulting TLS Secret typically contains:
 
 - `tls.crt` — client certificate chain (map to `tlsClientCertFile`)
@@ -201,8 +201,8 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
   --set-json 'processor.volumeMounts=[{"name":"inference-mtls","mountPath":"/etc/inference-mtls","readOnly":true}]'
 ```
 
-**Renewal**  
-TLS material is loaded when the processor builds its HTTP clients (effectively **at process startup**). When cert-manager rotates the Secret in place, **roll or restart processor pods** so new PEMs are read, unless you introduce a separate reload mechanism later.
+**Renewal**
+TLS material is loaded when the processor builds its HTTP clients (effectively **at process startup**). When cert-manager rotates the Secret in place, **roll or restart processor pods** so new PEMs are read.
 
 ### Per-model layout patterns
 
