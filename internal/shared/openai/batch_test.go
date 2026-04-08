@@ -83,3 +83,24 @@ func TestValidate_MetadataAtLimits(t *testing.T) {
 		t.Errorf("expected no error at exact limits, got: %v", err)
 	}
 }
+
+func TestBatchStatus_IsCancellable(t *testing.T) {
+	cases := []struct {
+		status BatchStatus
+		want   bool
+	}{
+		{BatchStatusValidating, true},
+		{BatchStatusInProgress, true},
+		{BatchStatusCancelling, true},
+		{BatchStatusCompleted, false},
+		{BatchStatusFailed, false},
+		{BatchStatusCancelled, false},
+		{BatchStatusExpired, false},
+		{BatchStatusFinalizing, false},
+	}
+	for _, tc := range cases {
+		if got := tc.status.IsCancellable(); got != tc.want {
+			t.Errorf("IsCancellable(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}

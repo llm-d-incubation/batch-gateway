@@ -63,7 +63,7 @@ func (s BatchStatus) IsFinal() bool {
 }
 
 func (s BatchStatus) IsCancellable() bool {
-	return s == BatchStatusValidating || s == BatchStatusInProgress
+	return s == BatchStatusValidating || s == BatchStatusInProgress || s == BatchStatusCancelling
 }
 
 type BatchSpec struct {
