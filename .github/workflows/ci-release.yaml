@@ -11,6 +11,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  IMAGE_REGISTRY: ghcr.io/llm-d-incubation
 
 jobs:
   docker:
@@ -35,7 +36,8 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # GHCR_TOKEN: PAT with write:packages to ghcr.io/llm-d-incubation (required when CI runs outside that org, e.g. opendatahub-io). If unset, GITHUB_TOKEN is enough for same-org upstream pushes.
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -73,7 +75,8 @@ jobs:
           targets: default
           push: true
         env:
-          REGISTRY: ghcr.io/llm-d-incubation
+          REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          SOURCE_REPO: ${{ github.server_url }}/${{ github.repository }}
           COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
           BUILD_DATE: ${{ steps.meta.outputs.build_date }}
           VERSION: ${{ steps.meta.outputs.version }}
@@ -82,9 +85,11 @@ jobs:
       - name: Output image tags
         run: |
           echo "Images pushed:"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.commit_sha }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.tag }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.tag }}"
+          echo "  - ${IMAGE_REGISTRY}/batch-gateway-apiserver:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ${IMAGE_REGISTRY}/batch-gateway-apiserver:${{ steps.meta.outputs.tag }}"
+          echo "  - ${IMAGE_REGISTRY}/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ${IMAGE_REGISTRY}/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
+          echo "  - ${IMAGE_REGISTRY}/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ${IMAGE_REGISTRY}/batch-gateway-gc:${{ steps.meta.outputs.tag }}"
+        env:
+          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
