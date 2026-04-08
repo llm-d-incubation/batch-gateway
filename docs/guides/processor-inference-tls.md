@@ -24,7 +24,24 @@ Certificate paths in config must exist **inside the processor container**. The H
 
 The processor image uses a **read-only root filesystem**; additional mounts are the supported way to bring PEM files into the pod.
 
-## Custom CA (private CA)
+## Scenario guides
+
+Step-by-step TLS wiring for common cases. See [Behavior summary](#behavior-summary) for a quick comparison.
+
+Think in two layers: **where** config lives (`globalInferenceGateway` vs `modelGateways`), then **what** TLS you need (custom CA, optional mTLS client cert). The sections below follow that order.
+
+### Routing: `globalInferenceGateway` vs `modelGateways`
+
+These two are **mutually exclusive** — if both are set, processor config validation fails.
+
+| Use | When |
+|-----|------|
+| **`processor.config.globalInferenceGateway`** | Every model uses the **same** gateway URL and the **same** TLS settings (same CA / mTLS material). Mount volumes once; set `tlsCaCertFile`, `tlsClientCertFile`, etc. on that single block. |
+| **`processor.config.modelGateways`** | Models need **different** gateway URLs and/or **different** TLS material. Each model key has a full gateway config; there is **no inheritance** between entries (see [Per-model layout patterns](#per-model-layout-patterns)). |
+
+TLS field names are the same in either mode: `tlsInsecureSkipVerify`, `tlsCaCertFile`, `tlsClientCertFile`, `tlsClientKeyFile`.
+
+### Custom CA (private CA)
 
 1. Create a Secret in the processor namespace with your CA bundle (PEM). Example (names are placeholders — use your namespace and Secret name, and the same name in `secretName` below):
 
@@ -46,7 +63,7 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
   --set-json 'processor.volumeMounts=[{"name":"inference-tls","mountPath":"/etc/inference-tls","readOnly":true}]'
 ```
 
-Adjust other required processor settings (database, file storage, `modelGateways` keys for your real model names, etc.) — the snippet above only shows TLS-related fragments.
+Adjust other required processor settings (database, file storage, `modelGateways` keys for your real model names, etc.) — the snippet above only shows TLS-related fragments. If you use **`globalInferenceGateway`** instead, put the same `url`, `tlsInsecureSkipVerify`, `tlsCaCertFile`, and retry fields on that single object (see [Routing](#routing-globalinferencegateway-vs-modelgateways)).
 
 **Values file (often clearer than long `--set` lines):**
 
@@ -74,48 +91,31 @@ processor:
 
 If the Secret uses different filenames, either rename keys when creating the Secret (`--from-file=ca.crt=./your-ca.pem`) or use `secret.items` under the volume to map keys to paths.
 
-## mTLS (client certificate)
+### mTLS (client certificate)
 
-Use a Secret (or Secrets) that hold the client certificate and private key PEM files, mount them, and set both client fields:
+Add a **client certificate and private key** so the processor presents an identity to the gateway. This stacks on top of normal TLS trust: you still need either system CAs, `tlsCaCertFile` (typical for a private CA), or `tlsInsecureSkipVerify` (non-production only).
+
+1. Put cert and key PEMs in a Secret, mount them (same `processor.volumes` / `volumeMounts` pattern as [Custom CA](#custom-ca-private-ca)).
+2. Set **both** `tlsClientCertFile` and `tlsClientKeyFile` on the gateway block you use (`modelGateways.<model>` or `globalInferenceGateway`). The processor rejects config where only one of the two is set.
+
+Example — only the TLS-related keys (reuse your existing `url`, `requestTimeout`, retries, and volume mounts):
 
 ```yaml
-processor:
-  volumes:
-    - name: inference-mtls
-      secret:
-        secretName: myinference-client
-  volumeMounts:
-    - name: inference-mtls
-      mountPath: /etc/inference-mtls
-      readOnly: true
-  config:
-    modelGateways:
-      mymodel:
-        url: "https://gateway.batch-api.svc.cluster.local:8443"
-        tlsInsecureSkipVerify: false
-        tlsCaCertFile: /etc/inference-mtls/ca.crt        # optional but typical for private CA
-        tlsClientCertFile: /etc/inference-mtls/tls.crt  # or client.pem per your Secret keys
-        tlsClientKeyFile: /etc/inference-mtls/tls.key
-        requestTimeout: "5m"
-        maxRetries: 3
-        initialBackoff: "1s"
-        maxBackoff: "60s"
+# Under modelGateways.mymodel OR under globalInferenceGateway:
+tlsInsecureSkipVerify: false
+tlsCaCertFile: /etc/inference-mtls/ca.crt   # optional; typical with a private CA
+tlsClientCertFile: /etc/inference-mtls/tls.crt  # Secret key names may differ
+tlsClientKeyFile: /etc/inference-mtls/tls.key
 ```
 
-The processor validates at startup that `tls_client_cert_file` and `tls_client_key_file` are both set or both omitted.
+### Per-model layout patterns
 
-## `globalInferenceGateway`
+Use this when you chose **`modelGateways`** and need more than one model entry or different TLS material per backend. Each entry is **independent** — there is no inheritance between models.
 
-When **all** models share one gateway URL and the same TLS material, set TLS on `processor.config.globalInferenceGateway` instead of per-model entries. The same fields apply: `tlsInsecureSkipVerify`, `tlsCaCertFile`, `tlsClientCertFile`, `tlsClientKeyFile`. Mount volumes once; point paths at the mounted files.
-
-> **Note:** If `globalInferenceGateway` is set, `modelGateways` is ignored for routing. Use per-model mode when models need different URLs or TLS settings.
-
-## Per-model TLS (different gateways or different certs)
-
-Each `modelGateways` entry is **independent** — there is no inheritance between models. Typical patterns:
+Typical patterns:
 
 - **Different CAs or mTLS identities**: separate Secrets, separate volume names, and distinct `mountPath` values (e.g. `/etc/inference-tls/model-a`, `/etc/inference-tls/model-b`), with each entry’s `tlsCaCertFile` / client paths pointing at the right directory.
-- **Same CA, same client cert for all backends**: one mounted directory; duplicate the same `tlsCaCertFile` / client paths in each entry that uses that gateway.
+- **Same CA and client cert for several models, but different gateway URLs**: one mounted directory; repeat the same `tlsCaCertFile` / client paths in each `modelGateways` entry. If URL and TLS are **identical for every model**, use [`globalInferenceGateway`](#routing-globalinferencegateway-vs-modelgateways) instead of duplicating.
 
 Model keys that contain `/` (for example `org/model`) must be **quoted** in YAML:
 
