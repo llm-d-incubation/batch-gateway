@@ -329,7 +329,10 @@ processor:
     #   maxRetries: 3
     #   initialBackoff: "1s"
     #   maxBackoff: "60s"
-    #   tlsInsecureSkipVerify: false
+    #   tlsInsecureSkipVerify: false   # testing only; prefer tlsCaCertFile for private CAs
+    #   tlsCaCertFile: ""             # in-container path; mount PEM via processor.volumes / volumeMounts
+    #   tlsClientCertFile: ""         # mTLS client cert PEM path (set with tlsClientKeyFile)
+    #   tlsClientKeyFile: ""          # mTLS client key PEM path
 
     # modelGateways maps specific model names to gateway configs.
     # Only models listed here are routed; unlisted models get a request-level error.
@@ -342,6 +345,9 @@ processor:
     #     initialBackoff: "1s"
     #     maxBackoff: "60s"
     #     tlsInsecureSkipVerify: false
+    #     tlsCaCertFile: ""
+    #     tlsClientCertFile: ""
+    #     tlsClientKeyFile: ""
     #   "mistral":
     #     url: "http://gateway-b:8000"
     #     apiKeyName: "gateway-b-api-key"

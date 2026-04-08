@@ -674,6 +674,7 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}"
 ```
 
+> - **Processor → inference TLS**: This demo uses `tlsInsecureSkipVerify=true` for a typical self-signed in-cluster gateway. For private CAs, mTLS, or mounting certificate Secrets, see [Processor inference TLS](processor-inference-tls.md).
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It points to the Gateway's model endpoint (via in-cluster Service DNS), not directly to the model server, so that requests go through the Gateway's AuthPolicy and rate limiting.
 > - **`passThroughHeaders: {Authorization}`**: Ensures the processor sends inference requests on behalf of the original user, so the LLM route's AuthPolicy can enforce model-level authorization on batch requests.
 > - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.8).

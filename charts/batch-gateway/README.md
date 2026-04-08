@@ -18,6 +18,8 @@ The API server provides a REST API for managing files and batch jobs.
 ### Processor (batch-gateway-processor)
 The processor is a background worker component that polls for and processes batch jobs.
 
+For TLS to HTTPS inference backends (custom CA, mTLS, mounting certificate Secrets), see the [Processor inference TLS guide](../../docs/guides/processor-inference-tls.md).
+
 ### Garbage Collector (batch-gateway-gc)
 The garbage collector periodically cleans up expired jobs and files.
 

@@ -539,7 +539,7 @@ model_gateways:
     max_backoff: "30s"
 ```
 
-Each per-model entry must be fully specified — there is no inheritance between entries. The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`), and `api_key_file` reads from an arbitrary path. TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional.
+Each per-model entry must be fully specified — there is no inheritance between entries. The optional `api_key_name` identifies a key within the mounted app secret (`/etc/.secrets/`), and `api_key_file` reads from an arbitrary path. TLS fields (`tls_insecure_skip_verify`, `tls_ca_cert_file`, `tls_client_cert_file`, `tls_client_key_file`) are also optional. For mounting CA and client certificates in Kubernetes and setting Helm values end-to-end, see [Processor inference TLS](../guides/processor-inference-tls.md).
 
 `GatewayResolver` (in `pkg/clients/inference/inference_client_resolver.go`) manages the client pool. `NewGlobalResolver` creates a single client for all models; `NewPerModelResolver` creates per-model clients, sharing instances when settings are identical to reuse connection pools.
 
