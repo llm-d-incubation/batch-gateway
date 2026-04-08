@@ -322,7 +322,7 @@ processor:
     # globalInferenceGateway routes ALL inference requests to a single endpoint,
     # regardless of model name. Use this for MaaS / multi-model platforms or
     # LoRA-only deployments where all adapters share a single vLLM instance.
-    # When set, modelGateways entries are ignored.
+    # Mutually exclusive with modelGateways — the processor rejects config with both set.
     # globalInferenceGateway:
     #   url: "http://inference-gateway:8000"
     #   requestTimeout: "5m"
