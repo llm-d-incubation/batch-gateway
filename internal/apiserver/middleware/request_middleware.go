@@ -94,7 +94,7 @@ func NewRequestMiddleware(config *common.ServerConfig) common.RouteMiddleware {
 			ctx = context.WithValue(ctx, common.TenantIDKey, tenantID)
 
 			// Log incoming request
-			logger.V(logging.TRACE).Info("incoming request",
+			logger.V(logging.DEBUG).Info("incoming request",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"remoteAddr", r.RemoteAddr,

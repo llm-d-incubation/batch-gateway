@@ -229,12 +229,16 @@ func (p *Processor) storeFileRecord(
 	now := time.Now().Unix()
 
 	expiresAt := p.resolveOutputExpiration(now, batchTags)
+	var expiresAtPtr *int64
+	if expiresAt > 0 {
+		expiresAtPtr = &expiresAt
+	}
 
 	fileObj := &openai.FileObject{
 		ID:        fileID,
 		Bytes:     size,
 		CreatedAt: now,
-		ExpiresAt: &expiresAt,
+		ExpiresAt: expiresAtPtr,
 		Filename:  fileName,
 		Object:    "file",
 		Purpose:   openai.FileObjectPurposeBatchOutput,

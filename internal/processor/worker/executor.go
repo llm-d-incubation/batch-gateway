@@ -589,30 +589,45 @@ func (p *Processor) drainUnprocessedRequests(
 	}
 }
 
-const sloTTFTMSHeader = "x-slo-ttft-ms"
+const (
+	sloTTFTMSHeader          = "x-slo-ttft-ms"
+	inferenceObjectiveHeader = "x-gateway-inference-objective"
+)
 
-// mergeSLOTTFTIntoHeaders sets sloTTFTMSHeader to the remaining time until sloCtx's deadline
-// in whole milliseconds, clamped to >= 0. If sloCtx has no deadline, is cancelled, or has an
-// expired deadline, the headers map is returned unchanged.
-func mergeSLOTTFTIntoHeaders(headers map[string]string, sloCtx context.Context) map[string]string {
-	if sloCtx.Err() != nil {
-		return headers
+// mergeInferenceHeaders adds processor-managed headers to the outgoing inference request:
+//   - x-slo-ttft-ms: remaining milliseconds until the SLO deadline (>= 0).
+//   - x-gateway-inference-objective: name of the InferenceObjective CRD that
+//     determines the priority band for this request.
+//
+// Headers are only added when the relevant value is available/configured.
+// If sloCtx has no deadline, is cancelled, or has an expired deadline, the SLO
+// header is not set. If inferenceObjective is empty, the objective header is not set.
+func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective string) map[string]string {
+	hasSLO := false
+	var sloMs int64
+	if sloCtx.Err() == nil {
+		if dl, ok := sloCtx.Deadline(); ok {
+			ms := time.Until(dl).Milliseconds()
+			if ms >= 0 {
+				hasSLO = true
+				sloMs = ms
+			}
+		}
 	}
-	dl, ok := sloCtx.Deadline()
-	if !ok {
-		return headers
-	}
-	sloMs := time.Until(dl).Milliseconds()
-	if sloMs < 0 {
-		// this check is needed in case the context deadline was exceeded between the sloCtx.Err() check
-		// and the time.Until call above. We return the headers unchanged to avoid sending a negative value
-		// to the inference gateway.
+	hasObjective := inferenceObjective != ""
+
+	if !hasSLO && !hasObjective {
 		return headers
 	}
 	if headers == nil {
 		headers = make(map[string]string)
 	}
-	headers[sloTTFTMSHeader] = strconv.FormatInt(sloMs, 10)
+	if hasSLO {
+		headers[sloTTFTMSHeader] = strconv.FormatInt(sloMs, 10)
+	}
+	if hasObjective {
+		headers[inferenceObjectiveHeader] = inferenceObjective
+	}
 	return headers
 }
 
@@ -675,7 +690,7 @@ func (p *Processor) executeOneRequest(
 	}
 
 	headers := maps.Clone(passThroughHeaders)
-	headers = mergeSLOTTFTIntoHeaders(headers, sloCtx)
+	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjective)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),

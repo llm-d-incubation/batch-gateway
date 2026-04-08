@@ -42,7 +42,7 @@ data:
       max_retries: {{ .maxRetries }}
       initial_backoff: {{ .initialBackoff | quote }}
       max_backoff: {{ .maxBackoff | quote }}
-      tls_insecure_skip_verify: {{ .tlsInsecureSkipVerify }}
+      tls_insecure_skip_verify: {{ .tlsInsecureSkipVerify | default false }}
       {{- if .apiKeyName }}
       api_key_name: {{ .apiKeyName | quote }}
       {{- end }}
@@ -69,7 +69,7 @@ data:
         max_retries: {{ $cfg.maxRetries }}
         initial_backoff: {{ $cfg.initialBackoff | quote }}
         max_backoff: {{ $cfg.maxBackoff | quote }}
-        tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify }}
+        tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify | default false }}
         {{- if $cfg.apiKeyName }}
         api_key_name: {{ $cfg.apiKeyName | quote }}
         {{- end }}
@@ -86,6 +86,10 @@ data:
         tls_client_key_file: {{ $cfg.tlsClientKeyFile | quote }}
         {{- end }}
       {{- end }}
+    {{- end }}
+
+    {{- if .Values.processor.config.inferenceObjective }}
+    inference_objective: {{ .Values.processor.config.inferenceObjective | quote }}
     {{- end }}
 
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}

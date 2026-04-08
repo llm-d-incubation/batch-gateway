@@ -84,6 +84,15 @@ HTTPRoute authorization behavior:
 - **LLM route**: Group-based authorization via MaaSAuthPolicy (maas-controller auto-generates Kuadrant AuthPolicy) — users not in an authorized group are rejected with **403**
 - **Batch route**: No authorization check — authorization is enforced by the LLM route when the processor forwards inference requests with the user's original API key
 
+### 1.5 Security boundary: batch-route vs llm-route
+
+For security and operations readers: **admission on the batch API is not the same as authorization for inference.**
+
+- **batch-route** validates the MaaS API key (same HTTP callback as other MaaS routes) and applies batch-side **RateLimitPolicy**. Invalid or missing keys are rejected with **401**; excess batch API traffic is rejected with **429**. It does **not** prove the caller is in a group allowed to use a given model (**MaaSAuthPolicy**).
+- **llm-route** validates the key **and** enforces group-based model access (auto-generated policies from MaaS). A user can create a batch job and still see **per-request failures** (often surfaced as failed lines or job errors) when the llm-route returns **403** — this is **by design**, not a bypass of model access control.
+
+Configure **`passThroughHeaders: {Authorization, X-MaaS-Subscription}`** (or the subset your deployment needs) so the processor forwards the end user’s credentials on inference calls. Without that, the gateway cannot apply the same model-route checks to batch-driven inference that direct clients receive.
+
 ## 2. Prerequisites
 
 - OpenShift cluster (self-managed, not ROSA/HyperShift)

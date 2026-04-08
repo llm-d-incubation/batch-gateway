@@ -20,7 +20,11 @@ This doc demonstrates how to integrate batch inference with Kuadrant, GAIE, and 
    - Forwards to `EPP` service
 5. EPP picks the best vLLM pod, vLLM processes inference and returns response
 
-### 1.2 Component Versions
+### 1.2 Security boundary: batch-route vs llm-route
+
+**Batch API admission is not model inference authorization.** The **batch-route** proves identity (API key or token, depending on your AuthPolicy) and applies request-count limits; it does not run the model-level checks described for **llm-route** in this document (OPA Rego or SubjectAccessReview). Expect **401** for failed authentication, **429** for batch-route rate limits, and **403** when llm-route authorization denies access to a model. A caller can submit a batch and still see failed inference lines or job errors when llm-route rejects requests — **by design**. Configure the batch processor to **forward the same credentials** the end user used (for example via `passThroughHeaders` on batch-gateway) so the gateway can enforce the llm-route boundary on processor-initiated traffic.
+
+### 1.3 Component Versions
 
 | Component | Version | Description |
 |-----------|---------|-------------|
@@ -30,7 +34,7 @@ This doc demonstrates how to integrate batch inference with Kuadrant, GAIE, and 
 | GAIE | v1.3.1 | Gateway API Inference Extension (InferencePool + EPP) |
 | cert-manager | v1.15.3 | TLS certificate management (required by Kuadrant) |
 
-### 1.3 Namespace Layout
+### 1.4 Namespace Layout
 
 | Namespace | Purpose |
 |-----------|---------|
@@ -928,7 +932,7 @@ curl -X POST ${GATEWAY_URL}/v1/batches \
 
 ### 4.3 Option 3: User Token Based (OpenShift Only)
 
-Uses OpenShift [user tokens](https://docs.openshift.com/container-platform/4.18/authentication/understanding-authentication.html) for authentication and [SubjectAccessReview](https://docs.kuadrant.io/latest/authorino/docs/user-guides/kubernetes-subjectaccessreview/) for model authorization. Requires OpenShift.
+Uses OpenShift [user tokens](https://docs.openshift.com/container-platform/4.20/authentication/understanding-authentication.html) for authentication and [SubjectAccessReview](https://docs.kuadrant.io/latest/authorino/docs/user-guides/kubernetes-subjectaccessreview/) for model authorization. Requires OpenShift.
 
 #### 4.3.1 Prerequisites
 
@@ -1218,5 +1222,5 @@ Authorino supports additional authentication methods not covered in this doc:
 - [Istio Gateway API Support](https://istio.io/latest/docs/tasks/traffic-management/ingress/gateway-api/)
 
 ### OpenShift (Option 3 only)
-- [OpenShift Authentication](https://docs.openshift.com/container-platform/4.18/authentication/understanding-authentication.html)
-- [Configuring htpasswd Identity Provider](https://docs.openshift.com/container-platform/4.18/authentication/identity_providers/configuring-htpasswd-identity-provider.html)
+- [OpenShift Authentication](https://docs.openshift.com/container-platform/4.20/authentication/understanding-authentication.html)
+- [Configuring htpasswd Identity Provider](https://docs.openshift.com/container-platform/4.20/authentication/identity_providers/configuring-htpasswd-identity-provider.html)

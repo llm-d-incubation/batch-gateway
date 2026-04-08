@@ -100,6 +100,12 @@ type ProcessorConfig struct {
 	// Each recovery can involve DB lookups, S3 uploads, and status updates.
 	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
 
+	// InferenceObjective is the name of a GIE InferenceObjective CRD to reference
+	// in the x-gateway-inference-objective header on inference requests.
+	// Used by GIE's flow control to assign batch requests to a priority band.
+	// Empty (default) means the header is not sent.
+	InferenceObjective string `yaml:"inference_objective"`
+
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 

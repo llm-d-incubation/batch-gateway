@@ -13,6 +13,34 @@ tests:
           path: data["config.yaml"]
           pattern: 'model_gateways:'
 
+  - it: should default tls_insecure_skip_verify to false when omitted from global_inference_gateway
+    set:
+      processor.config.globalInferenceGateway:
+        url: "http://global-gw:8000"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"
+      processor.config.modelGateways: null
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'global_inference_gateway:[\s\S]*tls_insecure_skip_verify: false'
+
+  - it: should default tls_insecure_skip_verify to false when omitted from model gateway
+    set:
+      processor.config.modelGateways:
+        "llama-3":
+          url: "http://gw:8000"
+          requestTimeout: "5m"
+          maxRetries: 3
+          initialBackoff: "1s"
+          maxBackoff: "60s"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '"llama-3":[\s\S]*tls_insecure_skip_verify: false'
+
   - it: should render global_inference_gateway when set
     set:
       processor.config.globalInferenceGateway:
@@ -230,6 +258,20 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'retry:\n\s+max_retries: 3\n\s+initial_backoff: "1s"\n\s+max_backoff: "10s"'
+
+  - it: should not render inference_objective when empty (default)
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'inference_objective:'
+
+  - it: should render inference_objective when configured
+    set:
+      processor.config.inferenceObjective: "batch-low-priority"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'inference_objective: "batch-low-priority"'
 
   - it: should not render ConfigMap when processor is disabled
     set:

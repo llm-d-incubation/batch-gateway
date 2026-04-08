@@ -44,7 +44,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
 - **Kubernetes Native**: Helm charts with OpenShift compatibility.
 - **Observability**: Prometheus metrics and Open Telemetry integration.
 - **Health Checks**: Liveness and readiness probes for the system components.
-- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem.
+- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-llm-route), [RHOAI](docs/guides/deploy-rhoai.md#15-security-boundary-batch-route-vs-llm-route), and [MaaS](docs/guides/deploy-maas.md#15-security-boundary-batch-route-vs-llm-route) deployment guides.
 
 ## Architecture
 

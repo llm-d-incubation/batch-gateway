@@ -161,7 +161,10 @@ func (s *Server) Start(ctx context.Context) error {
 	defer func() { _ = ln.Close() }()
 
 	httpserver := &http.Server{
-		Handler:           s.apiHandler,
+		Handler: s.apiHandler,
+		BaseContext: func(_ net.Listener) context.Context {
+			return logr.NewContext(context.Background(), logr.FromContextOrDiscard(ctx))
+		},
 		ReadHeaderTimeout: time.Duration(s.config.GetReadHeaderTimeoutSeconds()) * time.Second,
 		ReadTimeout:       time.Duration(s.config.GetReadTimeoutSeconds()) * time.Second,
 		WriteTimeout:      time.Duration(s.config.GetWriteTimeoutSeconds()) * time.Second,

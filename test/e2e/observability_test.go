@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func testObservability(t *testing.T) {
 	t.Run("Processor", func(t *testing.T) { doTestObservabilityEndpoints(t, testProcessorObsURL) })
 	t.Run("Pprof", testPprof)
 	t.Run("OtelTraces", doTestOtelTraces)
+	t.Run("RequestLogging", doTestRequestLogging)
 }
 
 // doTestOtelTraces verifies that traces are exported to Jaeger after a batch
@@ -117,6 +119,53 @@ func testPprof(t *testing.T) {
 				t.Errorf("expected 200 from /debug/pprof/heap, got %d", heapResp.StatusCode)
 			}
 		})
+	}
+}
+
+// doTestRequestLogging verifies that the apiserver emits request-level logs
+// with the correct requestID. This guards against regressions like the one
+// introduced in PR #238, where switching from klog.FromContext to
+// logr.FromContextOrDiscard silently dropped all request logs.
+func doTestRequestLogging(t *testing.T) {
+	t.Helper()
+
+	if !testKubectlAvailable {
+		t.Skip("kubectl not available, skipping request logging test")
+	}
+
+	// Send a request with a unique X-Request-Id and tenant header
+	requestID := fmt.Sprintf("e2e-log-test-%s", testRunID)
+	tenantID := fmt.Sprintf("e2e-tenant-%s", testRunID)
+	req, err := http.NewRequest(http.MethodGet, testApiserverURL+"/v1/batches", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("X-Request-Id", requestID)
+	req.Header.Set(testTenantHeader, tenantID)
+
+	resp, err := testHTTPClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Give the log a moment to flush
+	time.Sleep(2 * time.Second)
+
+	// Check apiserver logs for the request ID and tenant ID
+	out, err := exec.Command("kubectl", "logs",
+		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=apiserver", testHelmRelease),
+		"-n", testNamespace,
+		"--tail=500",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl logs failed: %v\n%s", err, out)
+	}
+
+	// Verify that a single log line contains the expected structured fields.
+	expect := fmt.Sprintf(`"incoming request" requestID=%q tenantID=%q`, requestID, tenantID)
+	if !strings.Contains(string(out), expect) {
+		t.Errorf("expected apiserver logs to contain %s; not found in last 500 lines", expect)
 	}
 }
 

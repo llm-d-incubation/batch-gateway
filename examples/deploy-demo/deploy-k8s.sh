@@ -360,9 +360,12 @@ deploy_batch_gateway_k8s() {
         --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=${GW_MAX_RETRIES}"
         --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=${GW_INITIAL_BACKOFF}"
         --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=${GW_MAX_BACKOFF}"
-        --set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )
+    if [[ "${DEMO_TLS_INSECURE_SKIP_VERIFY}" == "1" ]]; then
+        helm_args+=(--set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true")
+        warn "DEMO_TLS_INSECURE_SKIP_VERIFY=1: processor TLS verify disabled for model gateway (demo/lab only)."
+    fi
 
     do_deploy_batch_gateway "${helm_args[@]}"
 }
@@ -647,47 +650,54 @@ cmd_uninstall() {
     kubectl delete pvc "${BATCH_FILES_PVC_NAME}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
 
     step "Removing batch Gateway (${GATEWAY_NAMESPACE})..."
-    timeout_delete 30s gateway --all -n "${GATEWAY_NAMESPACE}" || true
+    timeout_delete 30s gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" || true
     kubectl delete destinationrule "${BATCH_HELM_RELEASE}-backend-tls" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
 
-    step "Removing Kuadrant..."
-    timeout_delete 30s kuadrant kuadrant -n "${KUADRANT_NAMESPACE}" || true
-    helm uninstall "${KUADRANT_RELEASE}" -n "${KUADRANT_NAMESPACE}" --timeout 60s 2>/dev/null || true
-    force_delete_crds 'kuadrant|authorino|limitador'
-    force_delete_namespace "${KUADRANT_NAMESPACE}"
+    if is_demo_uninstall_all; then
+        step "Removing Kuadrant..."
+        timeout_delete 30s kuadrant kuadrant -n "${KUADRANT_NAMESPACE}" || true
+        helm uninstall "${KUADRANT_RELEASE}" -n "${KUADRANT_NAMESPACE}" --timeout 60s 2>/dev/null || true
+        force_delete_crds 'kuadrant|authorino|limitador'
+        force_delete_namespace "${KUADRANT_NAMESPACE}"
 
-    step "Removing llm-d stack (${LLM_NAMESPACE})..."
-    uninstall_llmd
+        step "Removing llm-d stack (${LLM_NAMESPACE})..."
+        uninstall_llmd
 
-    step "Uninstalling Istio..."
-    local istio_helmfile="${LLMD_GIT_DIR}/guides/prereq/gateway-provider/istio.helmfile.yaml"
-    if [ -f "${istio_helmfile}" ]; then
-        helmfile destroy -f "${istio_helmfile}" 2>/dev/null \
-            || warn "helmfile destroy failed"
+        step "Uninstalling Istio..."
+        local istio_helmfile="${LLMD_GIT_DIR}/guides/prereq/gateway-provider/istio.helmfile.yaml"
+        if [ -f "${istio_helmfile}" ]; then
+            helmfile destroy -f "${istio_helmfile}" 2>/dev/null \
+                || warn "helmfile destroy failed"
+        fi
+        helm uninstall istiod -n istio-system --timeout 60s 2>/dev/null || true
+        helm uninstall istio-base -n istio-system --timeout 60s 2>/dev/null || true
+        force_delete_crds 'istio\.io|sail'
+        force_delete_namespace "istio-system"
+
+        step "Removing CRDs..."
+        local crd_script="${LLMD_GIT_DIR}/guides/prereq/gateway-provider/install-gateway-provider-dependencies.sh"
+        [ -f "${crd_script}" ] && bash "${crd_script}" delete 2>/dev/null || true
+
+        step "Cleaning up cache..."
+        rm -rf "${LLMD_GIT_DIR}"
+
+        step "Removing TLS resources..."
+        kubectl delete clusterissuer "${TLS_ISSUER_NAME}" 2>/dev/null || true
+
+        step "Uninstalling cert-manager..."
+        helm uninstall cert-manager -n cert-manager --timeout 60s 2>/dev/null || true
+        force_delete_crds 'cert-manager'
+        force_delete_namespace "cert-manager"
+
+        for ns in "${BATCH_NAMESPACE}" "${LLM_NAMESPACE}" "${GATEWAY_NAMESPACE}"; do
+            [ "${ns}" != "default" ] && force_delete_namespace "${ns}"
+        done
+    else
+        warn "Skipping Kuadrant, llm-d, Istio, cert-manager, CRD teardown, and deletes for '${LLM_NAMESPACE}' / '${GATEWAY_NAMESPACE}' (shared-cluster safety)."
+        warn "For full teardown on an ephemeral demo cluster only: UNINSTALL_ALL=1 $0 uninstall"
+        step "Removing batch namespace (${BATCH_NAMESPACE})..."
+        force_delete_namespace "${BATCH_NAMESPACE}"
     fi
-    helm uninstall istiod -n istio-system --timeout 60s 2>/dev/null || true
-    helm uninstall istio-base -n istio-system --timeout 60s 2>/dev/null || true
-    force_delete_crds 'istio\.io|sail'
-    force_delete_namespace "istio-system"
-
-    step "Removing CRDs..."
-    local crd_script="${LLMD_GIT_DIR}/guides/prereq/gateway-provider/install-gateway-provider-dependencies.sh"
-    [ -f "${crd_script}" ] && bash "${crd_script}" delete 2>/dev/null || true
-
-    step "Cleaning up cache..."
-    rm -rf "${LLMD_GIT_DIR}"
-
-    step "Removing TLS resources..."
-    kubectl delete clusterissuer "${TLS_ISSUER_NAME}" 2>/dev/null || true
-
-    step "Uninstalling cert-manager..."
-    helm uninstall cert-manager -n cert-manager --timeout 60s 2>/dev/null || true
-    force_delete_crds 'cert-manager'
-    force_delete_namespace "cert-manager"
-
-    for ns in "${BATCH_NAMESPACE}" "${LLM_NAMESPACE}" "${GATEWAY_NAMESPACE}"; do
-        [ "${ns}" != "default" ] && force_delete_namespace "${ns}"
-    done
 
     echo ""
     log "Uninstallation complete!"
@@ -705,7 +715,7 @@ usage() {
     echo "Commands:"
     echo "  install    Deploy llm-d stack + Kuadrant + batch-gateway"
     echo "  test       Run auth, batch lifecycle, and rate limit tests"
-    echo "  uninstall  Remove all components"
+    echo "  uninstall  Remove demo resources (use UNINSTALL_ALL=1 for full stack teardown)"
     echo "  help       Show this help"
     echo ""
     echo "Environment Variables:"
@@ -716,6 +726,7 @@ usage() {
     echo "  GATEWAY_LOCAL_PORT     Port-forward fallback port (default: 8080)"
     echo "  BATCH_DEV_VERSION      Batch gateway image tag / commit SHA (default: local)"
     echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"
+    echo "  UNINSTALL_ALL          Set to 1 to also remove Kuadrant/Istio/cert-manager and CRDs (ephemeral clusters only)"
     echo ""
     echo "Examples:"
     echo "  $0 install"
