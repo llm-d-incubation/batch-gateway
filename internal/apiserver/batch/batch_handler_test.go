@@ -1028,6 +1028,114 @@ func TestBatchHandler(t *testing.T) {
 				t.Errorf("expected status %d, got %d: %s", http.StatusInternalServerError, rr.Code, rr.Body.String())
 			}
 		})
+
+		t.Run("CancelCancellingBatch_ResendsEvent", func(t *testing.T) {
+			handler := setupTestHandler()
+
+			batchID := "batch-test-cancel-retry"
+			cancellingAt := int64(1700000000)
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
+				},
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status:       openai.BatchStatusCancelling,
+					CancellingAt: &cancellingAt,
+				},
+			}
+			slo := time.Now().UTC().Add(24 * time.Hour)
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
+				batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+			})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to database item: %v", err)
+			}
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+			}
+
+			var respBatch openai.Batch
+			if err := json.NewDecoder(rr.Body).Decode(&respBatch); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+			if respBatch.Status != openai.BatchStatusCancelling {
+				t.Errorf("Expected status %s, got %s", openai.BatchStatusCancelling, respBatch.Status)
+			}
+			if respBatch.CancellingAt == nil || *respBatch.CancellingAt != cancellingAt {
+				t.Errorf("Expected cancelling_at unchanged (%d), got %v", cancellingAt, respBatch.CancellingAt)
+			}
+		})
+
+		t.Run("CancelCancellingBatch_EventSendFailure", func(t *testing.T) {
+			failingEvent := &failingEventClient{
+				MockBatchEventChannelClient: mockapi.NewMockBatchEventChannelClient(),
+				sendErr:                     fmt.Errorf("event broker unavailable"),
+			}
+			clients := &clientset.Clientset{
+				BatchDB: mockapi.NewMockDBClient[dbapi.BatchItem, dbapi.BatchQuery](
+					func(b *dbapi.BatchItem) string { return b.ID },
+					func(q *dbapi.BatchQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+				),
+				FileDB: mockapi.NewMockDBClient[dbapi.FileItem, dbapi.FileQuery](
+					func(f *dbapi.FileItem) string { return f.ID },
+					func(q *dbapi.FileQuery) *dbapi.BaseQuery { return &q.BaseQuery },
+				),
+				Queue:  mockapi.NewMockBatchPriorityQueueClient(),
+				Event:  failingEvent,
+				Status: mockapi.NewMockBatchStatusClient(),
+			}
+			handler := NewBatchAPIHandler(&common.ServerConfig{}, clients)
+
+			batchID := "batch-test-cancel-retry-event-fail"
+			cancellingAt := int64(1700000001)
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
+				},
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status:       openai.BatchStatusCancelling,
+					CancellingAt: &cancellingAt,
+				},
+			}
+			slo := time.Now().UTC().Add(24 * time.Hour)
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{
+				batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
+			})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to database item: %v", err)
+			}
+			if err := clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
+
+			if rr.Code != http.StatusInternalServerError {
+				t.Errorf("expected status %d, got %d: %s", http.StatusInternalServerError, rr.Code, rr.Body.String())
+			}
+		})
 	})
 
 	t.Run("MergeProgressCounts", func(t *testing.T) {

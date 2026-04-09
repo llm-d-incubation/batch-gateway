@@ -1,0 +1,19 @@
+name: DCO Sign-off Check
+on: pull_request
+
+jobs:
+  dco:
+    name: Check Signed-off-by (DCO)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO sign-off on all commits
+        run: make check-dco
+        env:
+          DCO_BASE: ${{ github.event.pull_request.base.sha }}
+          DCO_HEAD: ${{ github.event.pull_request.head.sha }}

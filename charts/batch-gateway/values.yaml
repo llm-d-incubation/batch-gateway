@@ -322,14 +322,17 @@ processor:
     # globalInferenceGateway routes ALL inference requests to a single endpoint,
     # regardless of model name. Use this for MaaS / multi-model platforms or
     # LoRA-only deployments where all adapters share a single vLLM instance.
-    # When set, modelGateways entries are ignored.
+    # Mutually exclusive with modelGateways — the processor rejects config with both set.
     # globalInferenceGateway:
     #   url: "http://inference-gateway:8000"
     #   requestTimeout: "5m"
     #   maxRetries: 3
     #   initialBackoff: "1s"
     #   maxBackoff: "60s"
-    #   tlsInsecureSkipVerify: false
+    #   tlsInsecureSkipVerify: false   # testing only; prefer tlsCaCertFile for private CAs
+    #   tlsCaCertFile: ""             # in-container path; mount PEM via processor.volumes / volumeMounts
+    #   tlsClientCertFile: ""         # mTLS client cert PEM path (set with tlsClientKeyFile)
+    #   tlsClientKeyFile: ""          # mTLS client key PEM path
 
     # modelGateways maps specific model names to gateway configs.
     # Only models listed here are routed; unlisted models get a request-level error.
@@ -342,6 +345,9 @@ processor:
     #     initialBackoff: "1s"
     #     maxBackoff: "60s"
     #     tlsInsecureSkipVerify: false
+    #     tlsCaCertFile: ""
+    #     tlsClientCertFile: ""
+    #     tlsClientKeyFile: ""
     #   "mistral":
     #     url: "http://gateway-b:8000"
     #     apiKeyName: "gateway-b-api-key"

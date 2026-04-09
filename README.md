@@ -44,7 +44,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
 - **Kubernetes Native**: Helm charts with OpenShift compatibility.
 - **Observability**: Prometheus metrics and Open Telemetry integration.
 - **Health Checks**: Liveness and readiness probes for the system components.
-- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-llm-route), [RHOAI](docs/guides/deploy-rhoai.md#15-security-boundary-batch-route-vs-llm-route), and [MaaS](docs/guides/deploy-maas.md#15-security-boundary-batch-route-vs-llm-route) deployment guides.
+- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Processor connections to HTTPS inference gateways can use custom CAs and mTLS; see [Processor inference TLS](docs/guides/processor-inference-tls.md). Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-llm-route), [RHOAI](docs/guides/deploy-rhoai.md#15-security-boundary-batch-route-vs-llm-route), and [MaaS](docs/guides/deploy-maas.md#15-security-boundary-batch-route-vs-llm-route) deployment guides.
 
 ## Architecture
 
@@ -393,8 +393,8 @@ All pprof endpoints are served on the observability port (not the API port), so 
 ### Code Quality
 
 ```bash
-# Run all pre-commit checks (formatting, linting, tests, security)
-make pre-commit
+# Run all CI checks
+make ci
 
 # Or run individual checks:
 make fmt   # Format code only
@@ -428,7 +428,7 @@ This installs:
 Contributions are welcome! Please ensure:
 
 1. New features include tests and documentation.
-2. Pre-commit checks pass: `make pre-commit`.
+2. CI checks pass: `make ci`.
 3. E2E tests pass: `make test-e2e`.
 4. Commits are signed off (`git commit -s`) and follow conventional commit format.
 5. Code follows project [contributing guidelines](CONTRIBUTING.md).

@@ -505,6 +505,25 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idempotent cancel retry: DB already shows cancelling (e.g. first attempt updated DB
+	// but ECProducerSendEvents failed). Re-send the event only — skip queue removal and DB write.
+	if batch.Status == openai.BatchStatusCancelling {
+		event := []api.BatchEvent{
+			{
+				ID:   batch.ID,
+				Type: api.BatchEventCancel,
+				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
+			},
+		}
+		if _, err := c.clients.Event.ECProducerSendEvents(ctx, event); err != nil {
+			logger.Error(err, "failed to send cancel event")
+			common.WriteInternalServerError(w, r)
+			return
+		}
+		common.WriteJSONResponse(w, r, http.StatusOK, batch)
+		return
+	}
+
 	// Try to remove from the priority queue first.
 	// Reconstruct the exact SLO score from the stored tag.
 	removedFromQueue := false

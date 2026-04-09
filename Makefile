@@ -251,8 +251,12 @@ test-helm:
 ## check: Run fmt, vet, and test
 check: fmt vet test
 
-## ci: Run all CI checks (fmt, vet, lint, test)
-ci: fmt vet lint test
+## check-dco: Check that all commits since main have a DCO Signed-off-by trailer
+check-dco:
+	@scripts/check-dco.sh
+
+## ci: Run all CI checks
+ci: pre-commit check-dco
 	@echo "All CI checks passed!"
 
 check-container-tool:

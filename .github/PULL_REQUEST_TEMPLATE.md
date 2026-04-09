@@ -17,8 +17,7 @@
 
 - [ ] Commits are signed off (`git commit -s`) per [DCO](PR_SIGNOFF.md)
 - [ ] Code follows project [contributing guidelines](CONTRIBUTING.md)
-- [ ] Pre-commit checks pass (`make pre-commit`)
-- [ ] Unit tests pass (`make test`)
+- [ ] CI checks pass (`make ci`)
 - [ ] E2E tests pass (`make test-e2e`)
 
 ## Related Issues
