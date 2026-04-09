@@ -80,6 +80,20 @@ BATCH_MINIO_RELEASE="${BATCH_MINIO_RELEASE:-minio}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
 MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
+# Image overrides. When set, these take precedence over defaults derived from
+# BATCH_RELEASE_VERSION / BATCH_DEV_VERSION. Leave unset to use chart defaults.
+# Example (upstream):
+#   BATCH_IMAGE_TAG=v0.1.0 BATCH_APISERVER_REPO=ghcr.io/llm-d-incubation/batch-gateway-apiserver \
+#   BATCH_PROCESSOR_REPO=ghcr.io/llm-d-incubation/batch-gateway-processor \
+#   BATCH_GC_REPO=ghcr.io/llm-d-incubation/batch-gateway-gc ./deploy-rhoai.sh
+# Example (midstream):
+#   BATCH_IMAGE_TAG=v0.1.0 BATCH_APISERVER_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-apiserver \
+#   BATCH_PROCESSOR_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-processor \
+#   BATCH_GC_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-gc ./deploy-rhoai.sh
+BATCH_IMAGE_TAG="${BATCH_IMAGE_TAG:-}"
+BATCH_APISERVER_REPO="${BATCH_APISERVER_REPO:-}"
+BATCH_PROCESSOR_REPO="${BATCH_PROCESSOR_REPO:-}"
+BATCH_GC_REPO="${BATCH_GC_REPO:-}"
 
 # Temp directory cleanup (used by install_batch_gateway)
 _BATCH_TMP_DIR=""
@@ -571,14 +585,14 @@ install_batch_gateway() {
 
     # Print installed versions and verify image tags
     local expected_tag
-    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+    if [ -n "${BATCH_IMAGE_TAG}" ]; then
+        expected_tag="${BATCH_IMAGE_TAG}"
+    elif [ -n "${BATCH_RELEASE_VERSION}" ]; then
         expected_tag="${BATCH_RELEASE_VERSION}"
+    elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
+        expected_tag="latest"
     else
-        if [ "${BATCH_DEV_VERSION}" = "local" ]; then
-            expected_tag="latest"
-        else
-            expected_tag="${BATCH_DEV_VERSION}"
-        fi
+        expected_tag="${BATCH_DEV_VERSION}"
     fi
     step "Installed batch-gateway components:"
     local mismatch=false
@@ -621,9 +635,20 @@ do_deploy_batch_gateway() {
         --set "global.secretName=${BATCH_APP_SECRET_NAME}"
     )
 
-    # Only override image tags for non-release installs.
-    # Released OCI charts already have correct image tags baked in.
-    if [ -z "${BATCH_RELEASE_VERSION}" ]; then
+    # Image repository overrides (when set via env vars)
+    [ -n "${BATCH_APISERVER_REPO}" ]  && helm_args+=(--set "apiserver.image.repository=${BATCH_APISERVER_REPO}")
+    [ -n "${BATCH_PROCESSOR_REPO}" ]  && helm_args+=(--set "processor.image.repository=${BATCH_PROCESSOR_REPO}")
+    [ -n "${BATCH_GC_REPO}" ]         && helm_args+=(--set "gc.image.repository=${BATCH_GC_REPO}")
+
+    # Image tag: explicit BATCH_IMAGE_TAG takes precedence; otherwise derive from
+    # BATCH_DEV_VERSION for non-release installs (release charts have tags baked in).
+    if [ -n "${BATCH_IMAGE_TAG}" ]; then
+        helm_args+=(
+            --set "apiserver.image.tag=${BATCH_IMAGE_TAG}"
+            --set "processor.image.tag=${BATCH_IMAGE_TAG}"
+            --set "gc.image.tag=${BATCH_IMAGE_TAG}"
+        )
+    elif [ -z "${BATCH_RELEASE_VERSION}" ]; then
         local image_tag="latest"
         [ "${BATCH_DEV_VERSION}" != "local" ] && image_tag="${BATCH_DEV_VERSION}"
         helm_args+=(
@@ -686,7 +711,7 @@ do_deploy_batch_gateway() {
 #   4. sleep 60
 #   5. Batch Authentication   (unauthenticated -> 401, authenticated -> 200)
 #   6. Batch Authorization    (unauthorized batch -> LLM route rejects)
-#   7. Batch Lifecycle        (upload + create + poll -> completed)
+#   7. Batch Lifecycle        (upload + create + poll -> completed + download output)
 #   8. Batch Request Rate Limit (rapid requests -> 429)
 #
 # llm_url:            inference endpoint (e.g. .../v1/chat/completions)
@@ -756,6 +781,7 @@ run_tests() {
         local input_file="/tmp/batch-$$-${RANDOM}.jsonl"
         cat > "${input_file}" <<JSONL
 {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"${model}","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}}
+{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"${model}","messages":[{"role":"user","content":"Tell me a joke"}],"max_tokens":50}}
 JSONL
         response=$(curl -sk -w "\n%{http_code}" -X POST "${url}/v1/files" \
             -H "${header}" -F "purpose=batch" -F "file=@${input_file}")
@@ -895,6 +921,26 @@ JSONL
         _poll_batch "${batch_url}" "${_BATCH_ID}" "${authorized_header}"
         if [ "$_BATCH_STATUS" = "completed" ]; then
             pass_test "Batch completed successfully"
+
+            next_test "Download output file"
+            local output_file_id
+            output_file_id=$(curl -sk "${batch_url}/v1/batches/${_BATCH_ID}" \
+                -H "${authorized_header}" | jq -r '.output_file_id // empty')
+            if [ -n "$output_file_id" ]; then
+                local output_content
+                output_content=$(curl -sk "${batch_url}/v1/files/${output_file_id}/content" \
+                    -H "${authorized_header}")
+                if [ -n "$output_content" ]; then
+                    pass_test "Output file downloaded (file: ${output_file_id})"
+                    echo "  --- output content ---"
+                    echo "$output_content"
+                    echo "  --- end ---"
+                else
+                    fail_test "Output file is empty (file: ${output_file_id})"
+                fi
+            else
+                fail_test "No output_file_id in completed batch"
+            fi
         else
             fail_test "Batch ended with status=${_BATCH_STATUS} (expected completed)"
         fi
