@@ -25,29 +25,36 @@ import (
 	"github.com/openai/openai-go/v3"
 )
 
-// testProcessorGracefulShutdown covers the processor shutting down under Kubernetes
-// SIGTERM (pod delete or rollout restart), re-enqueuing the in-flight job, and a
-// replacement pod finishing the batch. Not recoverStaleJobs (workdir scan on startup).
+// testProcessorGracefulShutdown covers the processor's SIGTERM -> context.Canceled
+// -> re-enqueue path using two different Kubernetes triggers:
+//   - PodDeleteMidJob: kubectl delete pod (standard termination grace period)
+//   - RollingRestartReEnqueue: kubectl rollout restart
+//
+// Both deliver SIGTERM and wait terminationGracePeriodSeconds (60s) before
+// SIGKILL, giving the processor ample time to re-enqueue in-flight jobs.
+// Neither test covers recoverStaleJobs (workdir scan on startup) or true
+// hard-crash (SIGKILL-only) scenarios.
 func testProcessorGracefulShutdown(t *testing.T) {
-	t.Run("PodDeletedMidJob", doTestPodDeletedMidJob)
+	t.Run("PodDeleteMidJob", doTestPodDeleteMidJob)
 	t.Run("RollingRestartReEnqueue", doTestRollingRestartReEnqueue)
 }
 
-// doTestPodDeletedMidJob submits a batch with long-running requests (max_tokens=200
-// on testModel; dev-deploy's default sim-model uses ~50ms TTFT and ~100ms
-// inter-token latency), deletes the processor pod mid-execution, and verifies the
-// batch reaches a terminal state after a replacement pod comes up.
+// doTestPodDeleteMidJob submits a batch with long-running requests
+// (max_tokens=200 on testModel; dev-deploy's default sim-model uses ~50ms TTFT
+// and ~100ms inter-token latency), deletes the processor pod mid-execution, and
+// verifies the batch completes after a replacement pod comes up.
 //
-// Pod deletion usually delivers SIGTERM first; the processor then cancels work and
-// re-enqueues the job (see Processor.handleJobError in job_runner.go for the
-// context.Canceled path). A new pod dequeues and reprocesses the job from scratch
-// (no checkpoint/resume). This is not the same as recoverStaleJobs (workdir scan):
-// that path needs leftover on-disk job state inside the same pod volume.
-func doTestPodDeletedMidJob(t *testing.T) {
+// kubectl delete pod sends SIGTERM and respects the pod's
+// terminationGracePeriodSeconds (60s). The processor catches SIGTERM via
+// interrupt.ContextWithSignal, cancels the polling context, and in-flight
+// workers re-enqueue the job via a detached context (see Processor.handleJobError
+// in job_runner.go). A new pod dequeues and reprocesses the job from scratch
+// (no checkpoint/resume).
+func doTestPodDeleteMidJob(t *testing.T) {
 	t.Helper()
 
 	if !testKubectlAvailable {
-		t.Skip("kubectl not available, skipping processor pod-delete graceful-shutdown test")
+		t.Skip("kubectl not available, skipping processor pod-delete test")
 	}
 
 	var lines []string
@@ -55,22 +62,19 @@ func doTestPodDeletedMidJob(t *testing.T) {
 		lines = append(lines, fmt.Sprintf(
 			`{"custom_id":"pod-del-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
 	}
-	fileID := mustCreateFile(t, fmt.Sprintf("test-pod-delete-graceful-%s.jsonl", testRunID), strings.Join(lines, "\n"))
+	fileID := mustCreateFile(t, fmt.Sprintf("test-pod-delete-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)
 
 	// Wait for in_progress so the processor has picked up the job.
 	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
 	time.Sleep(2 * time.Second)
 
-	// Delete the processor pod. The API typically SIGTERMs the container first (even
-	// with --grace-period=0 / --force the window may be short), which triggers the
-	// processor's shutdown path and often re-enqueues the in-flight job — unlike an
-	// immediate SIGKILL-only "hard crash".
+	// Delete the processor pod. Kubelet delivers SIGTERM and waits
+	// terminationGracePeriodSeconds (60s) before SIGKILL.
 	t.Log("deleting processor pod...")
 	out, err := exec.Command("kubectl", "delete", "pod",
 		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
 		"-n", testNamespace,
-		"--grace-period=0", "--force",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("kubectl delete pod failed: %v\n%s", err, out)
@@ -81,24 +85,27 @@ func doTestPodDeletedMidJob(t *testing.T) {
 	waitForReady(t, testProcessorObsURL, 2*time.Minute)
 	t.Log("new processor pod is ready")
 
-	// Expect a terminal status after pod replacement. completed is the usual outcome
-	// when SIGTERM allows re-enqueue and the new pod finishes the job. failed is still
-	// allowed (e.g. re-enqueue failed, SIGKILL raced shutdown, or later processing error).
-	// The key assertion is that the job does NOT stay stuck in in_progress.
+	// The re-enqueue path should succeed reliably with the full grace period.
+	// failed is accepted in waitForBatchStatus to avoid a fatal on unlikely
+	// edge cases (e.g. transient Redis error), but we expect completed.
 	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute,
 		openai.BatchStatusCompleted, openai.BatchStatusFailed)
 
-	t.Logf("pod delete (graceful shutdown path): batch %s reached %s (completed=%d, failed=%d, total=%d)",
+	t.Logf("pod delete: batch %s reached %s (completed=%d, failed=%d, total=%d)",
 		batchID, finalBatch.Status,
 		finalBatch.RequestCounts.Completed,
 		finalBatch.RequestCounts.Failed,
 		finalBatch.RequestCounts.Total)
+
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Errorf("expected batch to complete after pod delete, got %s", finalBatch.Status)
+	}
 }
 
-// doTestRollingRestartReEnqueue submits a batch with the same slow-request pattern
-// as doTestPodDeletedMidJob, triggers a rolling restart of the processor deployment,
-// and verifies the batch eventually completes. Exercises the SIGTERM ->
-// context.Canceled -> re-enqueue path.
+// doTestRollingRestartReEnqueue submits a batch with the same slow-request
+// pattern as doTestPodDeleteMidJob, triggers a rolling restart of the processor
+// deployment, and verifies the batch eventually completes. Same SIGTERM ->
+// re-enqueue path, different trigger.
 func doTestRollingRestartReEnqueue(t *testing.T) {
 	t.Helper()
 
@@ -136,11 +143,9 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	waitForReady(t, testProcessorObsURL, 2*time.Minute)
 	t.Log("processor rollout complete and ready")
 
-	// Graceful shutdown (SIGTERM) triggers context.Canceled in handleJobError,
-	// which re-enqueues the job via detached context. The new pod picks it up
-	// from the queue and completes it. Stricter than PodDeletedMidJob: we expect completed.
-	// failed is accepted in waitForBatchStatus to avoid a fatal on edge cases
-	// (e.g. re-enqueue itself failed), but we assert completed below.
+	// Same re-enqueue path as PodDeleteMidJob. completed is expected; failed
+	// is accepted in waitForBatchStatus to avoid a fatal on unlikely edge
+	// cases, but we assert completed below.
 	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute,
 		openai.BatchStatusCompleted, openai.BatchStatusFailed)
 
