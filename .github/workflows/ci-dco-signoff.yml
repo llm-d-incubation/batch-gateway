@@ -3,6 +3,7 @@ on: pull_request
 
 jobs:
   dco:
+    if: github.actor != 'dependabot[bot]'
     name: Check Signed-off-by (DCO)
     runs-on: ubuntu-latest
     permissions:
