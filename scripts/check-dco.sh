@@ -13,6 +13,10 @@ head="${2:-${DCO_HEAD:-HEAD}}"
 
 failed=0
 for sha in $(git rev-list "$base".."$head"); do
+  # Skip merge commits (structural, not contributions).
+  if [ "$(git rev-list --parents -1 "$sha" | wc -w)" -gt 2 ]; then
+    continue
+  fi
   if ! git log -1 --format='%B' "$sha" | grep -qE '^Signed-off-by: .+ <.+>'; then
     echo "ERROR: Commit $sha is missing Signed-off-by. Use 'git commit -s' or see PR_SIGNOFF.md."
     failed=1
