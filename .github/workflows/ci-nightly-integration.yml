@@ -1,11 +1,15 @@
-name: Nightly Integration Tests
+name: Integration Tests
 
 on:
   push:
-    branches: [ci/nightly-integration-tests] # temporary — remove before merge
+    branches: [main]
   schedule:
     - cron: '0 3 * * *' # Every day at 3:00 AM UTC
   workflow_dispatch: # Allow manual trigger
+
+concurrency:
+  group: integration-tests
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -49,7 +53,7 @@ jobs:
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Nightly integration tests failed on ${new Date().toISOString().split('T')[0]}`,
+              title: `Integration tests failed on ${new Date().toISOString().split('T')[0]}`,
               body: `[Run logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
               labels: ['bug', 'ci'],
               assignees: owners
