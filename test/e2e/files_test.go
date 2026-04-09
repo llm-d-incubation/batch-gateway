@@ -40,7 +40,7 @@ func testFiles(t *testing.T) {
 
 // doTestDuplicateFileUpload verifies that uploading two files with the same
 // filename under the same tenant succeeds. Each upload should get a unique
-// fileID and storage path. Reproduces https://github.com/llm-d-incubation/batch-gateway/issues/214
+// fileID. Reproduces https://github.com/llm-d-incubation/batch-gateway/issues/214
 func doTestDuplicateFileUpload(t *testing.T) {
 	t.Helper()
 

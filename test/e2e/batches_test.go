@@ -16,7 +16,11 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"strings"
 	"testing"
@@ -35,11 +39,25 @@ func testBatches(t *testing.T) {
 	t.Run("Cancel", func(t *testing.T) {
 		t.Run("BeforeProcessing", doTestBatchCancelBeforeProcessing)
 		t.Run("InProgress", doTestBatchCancel)
+		t.Run("IdempotentRetry", doTestCancelIdempotentRetry)
+		t.Run("TerminalBatchRejected", doTestCancelTerminalBatchRejected)
 	})
 	t.Run("MixedSuccessFailure", doTestBatchMixedSuccessFailure)
 	t.Run("SharedInputFile", doTestBatchSharedInputFile)
 	t.Run("PassThroughHeaders", doTestPassThroughHeaders)
 	t.Run("Expiration", doTestBatchExpiration)
+	t.Run("MultiModel", doTestMultiModelBatch)
+	t.Run("ProgressPolling", doTestProgressPolling)
+	t.Run("Ingestion", func(t *testing.T) {
+		t.Run("DuplicateCustomID", doTestDuplicateCustomID)
+		t.Run("StreamingRejected", doTestStreamingRejected)
+		t.Run("AllModelsUnregistered", doTestAllModelsUnregistered)
+	})
+	t.Run("Validation", func(t *testing.T) {
+		t.Run("MissingInputFileID", doTestCreateBatchMissingInputFileID)
+		t.Run("InvalidEndpoint", doTestCreateBatchInvalidEndpoint)
+		t.Run("NonexistentFile", doTestCreateBatchNonexistentFile)
+	})
 }
 
 func doTestBatchCancel(t *testing.T) {
@@ -47,8 +65,9 @@ func doTestBatchCancel(t *testing.T) {
 
 	// Mix fast and slow requests to guarantee both output and error files exist after cancel:
 	//   - Fast requests (max_tokens=1): complete in ~150ms, ensuring output file has entries.
-	//   - Slow requests (max_tokens=200): take ~20s each at 100ms inter-token-latency,
-	//     ensuring cancel arrives while they are still in-flight or undispatched.
+	//   - Slow requests (max_tokens=200): take ~20s each with dev-deploy sim-model
+	//     defaults (~50ms TTFT + ~100ms inter-token), ensuring cancel arrives while
+	//     they are still in-flight or undispatched.
 	//   - 20 slow requests exceed PerModelMaxConcurrency (default 10), guaranteeing some
 	//     remain undispatched and get drained to the error file as batch_cancelled.
 	var lines []string
@@ -96,7 +115,8 @@ func doTestBatchCancel(t *testing.T) {
 		finalBatch.ErrorFileID)
 
 	// 25 requests total (5 fast + 20 slow). Fast requests should complete before
-	// cancel; slow ones are cancelled in-flight or undispatched → failed.
+	// cancel; undispatched slow requests are drained as batch_cancelled, and
+	// in-flight slow requests are aborted via abortCtx — both count as failed.
 	if finalBatch.RequestCounts.Total != int64(len(lines)) {
 		t.Errorf("total = %d, want %d", finalBatch.RequestCounts.Total, len(lines))
 	}
@@ -448,12 +468,15 @@ func doTestBatchPagination(t *testing.T) {
 }
 
 // doTestBatchExpiration creates a batch with slow requests and a very short
-// completion_window so the SLO fires during processing. It verifies the batch
-// transitions to "expired" status with correct timestamps and partial results.
+// completion_window so the SLO fires before any requests are dispatched. A
+// blocker batch saturates the processor first, so the expiration batch's
+// requests all remain undispatched and are drained as batch_expired.
+// Verifies: expired status, correct timestamps, completed==0, no output file,
+// and an error file with the expired entries.
 //
-// With the simulator configured at TTFT=50ms + inter-token=100ms, each slow
-// request (max_tokens=200) takes ~20s. A 5s completion_window guarantees the
-// SLO fires while requests are in-flight or undispatched.
+// With dev-deploy sim-model defaults (~50ms TTFT + ~100ms inter-token), each
+// slow request (max_tokens=200) takes ~20s. A 5s completion_window guarantees
+// the SLO fires while the blocker still holds all dispatch slots.
 func doTestBatchExpiration(t *testing.T) {
 	t.Helper()
 
@@ -496,8 +519,8 @@ func doTestBatchExpiration(t *testing.T) {
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-expiration-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 
-	// The openai-go SDK's BatchNewParamsCompletionWindow is a string type, so we
-	// can cast any valid Go duration string.
+	// BatchNewParamsCompletionWindow is a string type; the batch-gateway API
+	// accepts Go duration strings like "5s" in addition to the standard "24h".
 	batch, err := client.Batches.New(ctx, openai.BatchNewParams{
 		InputFileID:      fileID,
 		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
@@ -540,4 +563,346 @@ func doTestBatchExpiration(t *testing.T) {
 	}
 
 	// Blocker batch cleanup is handled by t.Cleanup() registered above.
+}
+
+// doTestCancelIdempotentRetry cancels an in-progress batch twice in a row.
+// Both calls should succeed (200) and the batch should reach cancelled.
+// Guards the idempotent cancel-retry path added.
+func doTestCancelIdempotentRetry(t *testing.T) {
+	t.Helper()
+
+	var lines []string
+	for i := 1; i <= 20; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"retry-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+	}
+	fileID := mustCreateFile(t, fmt.Sprintf("test-cancel-retry-%s.jsonl", testRunID), strings.Join(lines, "\n"))
+	batchID := mustCreateBatch(t, fileID)
+
+	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
+	time.Sleep(1 * time.Second)
+
+	client := newClient()
+	ctx := context.Background()
+
+	batch1, err := client.Batches.Cancel(ctx, batchID)
+	if err != nil {
+		t.Fatalf("first cancel failed: %v", err)
+	}
+	t.Logf("first cancel: status=%s", batch1.Status)
+
+	batch2, err := client.Batches.Cancel(ctx, batchID)
+	if err != nil {
+		t.Fatalf("second cancel (idempotent retry) failed: %v", err)
+	}
+	t.Logf("second cancel: status=%s", batch2.Status)
+
+	if batch2.Status != openai.BatchStatusCancelling && batch2.Status != openai.BatchStatusCancelled {
+		t.Errorf("expected cancelling or cancelled after retry, got %s", batch2.Status)
+	}
+
+	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCancelled)
+	if finalBatch.Status != openai.BatchStatusCancelled {
+		t.Errorf("expected final status cancelled, got %s", finalBatch.Status)
+	}
+}
+
+// doTestCancelTerminalBatchRejected completes a batch, then attempts to cancel it.
+// The API should return 400.
+func doTestCancelTerminalBatchRejected(t *testing.T) {
+	t.Helper()
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-cancel-terminal-%s.jsonl", testRunID), testJSONL)
+	batchID := mustCreateBatch(t, fileID)
+
+	_, _ = waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	_, err := newClient().Batches.Cancel(context.Background(), batchID)
+	if err == nil {
+		t.Fatal("expected error when cancelling a completed batch, got nil")
+	}
+
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", apiErr.StatusCode)
+	}
+	t.Logf("cancel of completed batch correctly rejected: %d", apiErr.StatusCode)
+}
+
+// doTestMultiModelBatch creates a batch with requests targeting two different
+// models (testModel and testModelB) and verifies both models appear in the output.
+func doTestMultiModelBatch(t *testing.T) {
+	t.Helper()
+
+	jsonl := strings.Join([]string{
+		fmt.Sprintf(`{"custom_id":"model-a-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello A"}]}}`, testModel),
+		fmt.Sprintf(`{"custom_id":"model-a-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"World A"}]}}`, testModel),
+		fmt.Sprintf(`{"custom_id":"model-b-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello B"}]}}`, testModelB),
+		fmt.Sprintf(`{"custom_id":"model-b-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"World B"}]}}`, testModelB),
+	}, "\n")
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-multi-model-%s.jsonl", testRunID), jsonl)
+	batchID := mustCreateBatch(t, fileID)
+
+	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	if finalBatch.RequestCounts.Total != 4 {
+		t.Errorf("total = %d, want 4", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Completed != 4 {
+		t.Errorf("completed = %d, want 4", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 0 {
+		t.Errorf("failed = %d, want 0", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Fatal("expected output_file_id to be set")
+	}
+
+	resp, err := newClient().Files.Content(context.Background(), finalBatch.OutputFileID)
+	if err != nil {
+		t.Fatalf("download output file failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	modelsFound := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var result struct {
+			Response *struct {
+				Body struct {
+					Model string `json:"model"`
+				} `json:"body"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(line), &result); err != nil {
+			t.Errorf("invalid output line: %v", err)
+			continue
+		}
+		if result.Response != nil {
+			modelsFound[result.Response.Body.Model]++
+		}
+	}
+
+	if modelsFound[testModel] != 2 {
+		t.Errorf("expected 2 responses from %s, got %d", testModel, modelsFound[testModel])
+	}
+	if modelsFound[testModelB] != 2 {
+		t.Errorf("expected 2 responses from %s, got %d", testModelB, modelsFound[testModelB])
+	}
+	t.Logf("multi-model output: %v", modelsFound)
+}
+
+// doTestProgressPolling submits a batch with a mix of fast and slow requests
+// and verifies that request_counts.completed is non-zero while the batch is
+// still in_progress. The fast requests finish quickly, guaranteeing a non-zero
+// completed count well before the slow requests finish — this avoids flakiness
+// from tight timing windows.
+func doTestProgressPolling(t *testing.T) {
+	t.Helper()
+
+	// 5 fast requests (max_tokens=1, ~150ms each) complete almost immediately.
+	// 15 slow requests (max_tokens=200, ~20s each) keep the batch in_progress
+	// long enough for polling to observe completed > 0.
+	var lines []string
+	for i := 1; i <= 5; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"fast %d"}]}}`, i, testModel, i))
+	}
+	for i := 1; i <= 15; i++ {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+	}
+	fileID := mustCreateFile(t, fmt.Sprintf("test-progress-%s.jsonl", testRunID), strings.Join(lines, "\n"))
+	batchID := mustCreateBatch(t, fileID)
+
+	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
+
+	// Wait a few seconds for fast requests to complete and progress to flush.
+	time.Sleep(5 * time.Second)
+
+	client := newClient()
+	ctx := context.Background()
+	var sawNonZeroCompleted bool
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(ctx, batchID)
+		if err != nil {
+			t.Fatalf("get batch failed: %v", err)
+		}
+		t.Logf("progress: status=%s completed=%d failed=%d total=%d",
+			b.Status, b.RequestCounts.Completed, b.RequestCounts.Failed, b.RequestCounts.Total)
+
+		if b.RequestCounts.Completed > 0 && b.Status == openai.BatchStatusInProgress {
+			sawNonZeroCompleted = true
+			break
+		}
+		if terminalBatchStatuses[b.Status] {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	if !sawNonZeroCompleted {
+		t.Error("never saw non-zero completed count while batch was in_progress")
+	}
+
+	finalBatch, _ := waitForBatchStatus(t, batchID, 3*time.Minute, openai.BatchStatusCompleted)
+	if finalBatch.RequestCounts.Completed != 20 {
+		t.Errorf("completed = %d, want 20", finalBatch.RequestCounts.Completed)
+	}
+}
+
+// doTestDuplicateCustomID submits a JSONL with duplicate custom_ids.
+// The batch should fail during ingestion.
+func doTestDuplicateCustomID(t *testing.T) {
+	t.Helper()
+
+	jsonl := strings.Join([]string{
+		fmt.Sprintf(`{"custom_id":"dup-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello"}]}}`, testModel),
+		fmt.Sprintf(`{"custom_id":"dup-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"World"}]}}`, testModel),
+	}, "\n")
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-dup-customid-%s.jsonl", testRunID), jsonl)
+	batchID := mustCreateBatch(t, fileID)
+
+	finalBatch := waitForIngestionFailure(t, batchID, 2*time.Minute)
+	t.Logf("duplicate custom_id batch reached %s", finalBatch.Status)
+}
+
+// doTestStreamingRejected submits a JSONL with stream:true in the body.
+// The batch should fail during ingestion.
+func doTestStreamingRejected(t *testing.T) {
+	t.Helper()
+
+	jsonl := fmt.Sprintf(`{"custom_id":"stream-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"stream":true,"messages":[{"role":"user","content":"Hello"}]}}`, testModel)
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-streaming-%s.jsonl", testRunID), jsonl)
+	batchID := mustCreateBatch(t, fileID)
+
+	finalBatch := waitForIngestionFailure(t, batchID, 2*time.Minute)
+	t.Logf("streaming batch reached %s", finalBatch.Status)
+}
+
+// doTestAllModelsUnregistered submits a JSONL where every request targets a
+// nonexistent model. In per-model mode the preprocessor rejects each line with
+// model_not_found (written to error.jsonl) during ingestion — the same rejection
+// mechanism as MixedSuccessFailure, but here every line is invalid so
+// completed stays 0. The batch still reaches "completed" (not "failed") because
+// the job finishes normally; only individual requests fail.
+// The batch should complete with failed == total.
+func doTestAllModelsUnregistered(t *testing.T) {
+	t.Helper()
+
+	jsonl := strings.Join([]string{
+		`{"custom_id":"bad-1","method":"POST","url":"/v1/chat/completions","body":{"model":"nonexistent-model-xyz","max_tokens":5,"messages":[{"role":"user","content":"Hello"}]}}`,
+		`{"custom_id":"bad-2","method":"POST","url":"/v1/chat/completions","body":{"model":"nonexistent-model-xyz","max_tokens":5,"messages":[{"role":"user","content":"World"}]}}`,
+	}, "\n")
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-all-unregistered-%s.jsonl", testRunID), jsonl)
+	batchID := mustCreateBatch(t, fileID)
+
+	finalBatch, _ := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCompleted)
+
+	if finalBatch.RequestCounts.Total != 2 {
+		t.Errorf("total = %d, want 2", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Failed != 2 {
+		t.Errorf("failed = %d, want 2", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.RequestCounts.Completed != 0 {
+		t.Errorf("completed = %d, want 0", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.ErrorFileID == "" {
+		t.Fatal("expected error_file_id to be set")
+	}
+
+	resp, err := newClient().Files.Content(context.Background(), finalBatch.ErrorFileID)
+	if err != nil {
+		t.Fatalf("download error file failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if !strings.Contains(string(body), "model_not_found") {
+		t.Error("expected error file to contain 'model_not_found'")
+	}
+	t.Logf("all-unregistered error file contains model_not_found")
+}
+
+// doTestCreateBatchMissingInputFileID attempts to create a batch without
+// input_file_id. The API should return 400.
+func doTestCreateBatchMissingInputFileID(t *testing.T) {
+	t.Helper()
+
+	_, err := createBatchRaw(newClient(), openai.BatchNewParams{
+		InputFileID:      "",
+		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing input_file_id, got nil")
+	}
+
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", apiErr.StatusCode)
+	}
+	t.Logf("missing input_file_id correctly rejected: %d", apiErr.StatusCode)
+}
+
+// doTestCreateBatchInvalidEndpoint attempts to create a batch with an
+// unsupported endpoint. The API should return 400.
+func doTestCreateBatchInvalidEndpoint(t *testing.T) {
+	t.Helper()
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-invalid-endpoint-%s.jsonl", testRunID), testJSONL)
+
+	_, err := createBatchRaw(newClient(), openai.BatchNewParams{
+		InputFileID:      fileID,
+		Endpoint:         openai.BatchNewParamsEndpoint("/v1/invalid"),
+		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid endpoint, got nil")
+	}
+
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", apiErr.StatusCode)
+	}
+	t.Logf("invalid endpoint correctly rejected: %d", apiErr.StatusCode)
+}
+
+// doTestCreateBatchNonexistentFile attempts to create a batch with a
+// file_id that does not exist. The API should return 400.
+func doTestCreateBatchNonexistentFile(t *testing.T) {
+	t.Helper()
+
+	_, err := createBatchRaw(newClient(), openai.BatchNewParams{
+		InputFileID:      "file-does-not-exist-12345",
+		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
+		CompletionWindow: openai.BatchNewParamsCompletionWindow24h,
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent file, got nil")
+	}
+
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected openai.Error, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", apiErr.StatusCode)
+	}
+	t.Logf("nonexistent file correctly rejected: %d", apiErr.StatusCode)
 }

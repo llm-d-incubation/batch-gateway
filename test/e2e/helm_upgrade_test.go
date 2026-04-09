@@ -236,7 +236,7 @@ func parseModelGatewayMaxRetries(t *testing.T, configYAML, model string) int {
 // used so the upgrade test asserts a real change rather than a hard-coded sentinel.
 func alternateIntForHelmTest(baseline int) int {
 	if baseline == 0 {
-		return 3 // typical chart default for model gateway maxRetries
+		return 3 // dev-deploy sets maxRetries=3 for model gateways
 	}
 	return 0
 }

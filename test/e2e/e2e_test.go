@@ -40,10 +40,12 @@ var (
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
 	// testModel is the model name used in batch input; configurable via TEST_MODEL env var.
-	testModel = getEnvOrDefault("TEST_MODEL", "sim-model")
+	testModel  = getEnvOrDefault("TEST_MODEL", "sim-model")
+	testModelB = getEnvOrDefault("TEST_MODEL_B", "sim-model-b")
 
 	// testJSONL is a valid batch input file with two requests.
-	// max_tokens is kept small to finish quickly with the simulator's 500ms inter-token-latency.
+	// max_tokens is kept small so batches finish quickly. Default TEST_MODEL (sim-model)
+	// on dev-deploy uses ~100ms inter-token latency (sim-model-b uses ~500ms).
 	testJSONL = strings.Join([]string{
 		fmt.Sprintf(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello"}]}}`, testModel),
 		fmt.Sprintf(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"World"}]}}`, testModel),
@@ -61,8 +63,9 @@ var (
 	// verifications that require kubectl (e.g. log grepping) are skipped.
 	testKubectlAvailable bool
 
-	// testPassThroughHeaders lists the headers configured in the apiserver's
-	// pass_through_headers setting (set via dev-deploy.sh).
+	// testPassThroughHeaders maps header names (matching apiserver pass_through_headers
+	// configured by dev-deploy.sh) to the values the e2e client sends when asserting
+	// pass-through behavior.
 	testPassThroughHeaders = map[string]string{
 		"X-E2E-Pass-Through-1": "test-value-1",
 		"X-E2E-Pass-Through-2": "test-value-2",
@@ -91,5 +94,6 @@ func TestE2E(t *testing.T) {
 	t.Run("MultiTenant", testMultiTenant)
 	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
+	t.Run("ProcessorGracefulShutdown", testProcessorGracefulShutdown)
 	t.Run("HelmUpgrade", testHelmUpgrade)
 }

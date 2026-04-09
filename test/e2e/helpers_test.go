@@ -129,6 +129,12 @@ func mustCreateBatch(t *testing.T, fileID string, opts ...option.RequestOption) 
 	return batch.ID
 }
 
+// createBatchRaw calls the batch creation API and returns the response or error
+// without fataling. Used by validation tests that expect errors.
+func createBatchRaw(client *openai.Client, params openai.BatchNewParams) (*openai.Batch, error) {
+	return client.Batches.New(context.Background(), params)
+}
+
 // terminalBatchStatuses are statuses that a batch cannot transition out of.
 var terminalBatchStatuses = map[openai.BatchStatus]bool{
 	openai.BatchStatusCompleted: true,
@@ -187,6 +193,38 @@ func waitForBatchStatus(t *testing.T, batchID string, timeout time.Duration, tar
 	t.Fatalf("batch %s did not reach status %v within %v (last status: %q)",
 		batchID, targets, timeout, lastBatch.Status)
 	return nil, nil // unreachable
+}
+
+// waitForIngestionFailure polls a batch until it reaches "failed" status.
+// Unlike waitForBatchStatus, it skips validateBatchResults (which rejects
+// Total==0 for non-cancelled batches) and result-file fetching, since
+// ingestion failures legitimately have Total==0 and no output files.
+func waitForIngestionFailure(t *testing.T, batchID string, timeout time.Duration) *openai.Batch {
+	t.Helper()
+
+	client := newClient()
+	deadline := time.Now().Add(timeout)
+	if d, ok := t.Deadline(); ok && d.Before(deadline) {
+		deadline = d.Add(-5 * time.Second)
+	}
+
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(context.Background(), batchID)
+		if err != nil {
+			t.Fatalf("retrieve batch failed: %v", err)
+		}
+		t.Logf("batch %s status: %s", batchID, b.Status)
+
+		if b.Status == openai.BatchStatusFailed {
+			return b
+		}
+		if terminalBatchStatuses[b.Status] {
+			t.Fatalf("batch %s reached terminal status %q instead of failed", batchID, b.Status)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("batch %s did not reach failed within %v", batchID, timeout)
+	return nil
 }
 
 // ── Batch validation ─────────────────────────────────────────────────────
@@ -254,7 +292,7 @@ func validateTerminalBatch(t *testing.T, b *openai.Batch) {
 	}
 }
 
-// batchResults holds the line counts from output and error files.
+// batchResults holds downloaded output/error file bodies and derived line counts.
 type batchResults struct {
 	OutputLines int
 	ErrorLines  int
@@ -327,7 +365,7 @@ func fetchBatchResults(t *testing.T, batch *openai.Batch) batchResults {
 
 // validateBatchResults checks all universal invariants on the batch results:
 //   - input lines == Total, output lines == Completed, error lines == Failed
-//   - every input custom_id appears in either the output or error file
+//   - every non-empty input custom_id appears in either the output or error file
 //   - output lines have valid response structure (status_code=200, choices, model)
 //   - error lines have valid error structure (non-empty code and message)
 //   - no duplicate custom_ids within output or error files
