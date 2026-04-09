@@ -650,11 +650,24 @@ EOF
 <summary>Install batch-gateway</summary>
 
 ```bash
+IMAGE_TAG=v0.1.0
+APISERVER_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-apiserver
+PROCESSOR_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-processor
+GC_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-gc
+```
+
+```bash
 # Model gateway URL: route through the main istio-gateway (which has AuthPolicy)
 MODEL_GW_URL="https://${GATEWAY_NAME}-istio.${GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NS}/${MODEL_NAME}"
 
 helm install batch-gateway ./charts/batch-gateway \
     --namespace ${BATCH_NS} \
+    --set "apiserver.image.repository=${APISERVER_REPO}" \
+    --set "apiserver.image.tag=${IMAGE_TAG}" \
+    --set "processor.image.repository=${PROCESSOR_REPO}" \
+    --set "processor.image.tag=${IMAGE_TAG}" \
+    --set "gc.image.repository=${GC_REPO}" \
+    --set "gc.image.tag=${IMAGE_TAG}" \
     --set "global.secretName=batch-gateway-secrets" \
     --set "global.dbClient.type=postgresql" \
     --set "global.fileClient.type=fs" \
