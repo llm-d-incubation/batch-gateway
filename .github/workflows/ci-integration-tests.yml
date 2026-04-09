@@ -2,13 +2,15 @@ name: Integration Tests
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'release-*'
   schedule:
     - cron: '0 3 * * *' # Every day at 3:00 AM UTC
   workflow_dispatch: # Allow manual trigger
 
 concurrency:
-  group: integration-tests
+  group: integration-tests-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
