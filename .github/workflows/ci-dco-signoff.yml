@@ -1,6 +1,10 @@
 name: DCO Sign-off Check
 on: pull_request
 
+concurrency:
+  group: dco-signoff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   dco:
     if: github.event.pull_request.user.login != 'dependabot[bot]'
