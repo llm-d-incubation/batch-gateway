@@ -1,9 +1,9 @@
 #!/bin/bash
-# Generates a release by creating and pushing a version tag from main or a release-* branch.
+# Generates a release by creating and pushing a version tag from main or a release-v*.*.* branch.
 # This triggers the create-release and ci-release workflows.
 #
 # Usage: ./scripts/generate-release.sh <version> [branch]
-#   branch defaults to main; must be main or release-* (e.g. release-v0.1.0 for hotfixes).
+#   branch defaults to main; must be main or release-vX.Y.Z (same form as a version tag, e.g. release-v0.1.0).
 #
 # Example: ./scripts/generate-release.sh 1.0.0
 #          ./scripts/generate-release.sh 0.1.1 release-v0.1.0
@@ -19,7 +19,7 @@ usage() {
     echo "Usage: $0 <version> [branch]"
     echo ""
     echo "Creates and pushes a release tag from the given branch (default: main)."
-    echo "Branch must be main or release-*. Triggers create-release and ci-release workflows."
+    echo "Branch must be main or release-vX.Y.Z (same form as a tag, e.g. release-v0.1.0). Triggers create-release and ci-release workflows."
     echo ""
     echo "Examples:"
     echo "  $0 1.0.0                    # tags v1.0.0 from main"
@@ -39,8 +39,11 @@ fi
 VERSION="$1"
 BRANCH="${2:-main}"
 
-if [[ "$BRANCH" != "main" && ! "$BRANCH" =~ ^release- ]]; then
-    echo "Error: branch must be 'main' or match 'release-*' (got: ${BRANCH})" >&2
+# Semver-like tag body: vX.Y.Z or vX.Y.Z-suffix (release branches are release-<same>, e.g. release-v0.1.0)
+_SEMVER_V='v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?'
+
+if [[ "$BRANCH" != "main" && ! "$BRANCH" =~ ^release-${_SEMVER_V}$ ]]; then
+    echo "Error: branch must be 'main' or 'release-vX.Y.Z' matching the tag pattern (e.g. release-v0.1.0) (got: ${BRANCH})" >&2
     exit 1
 fi
 # Add 'v' prefix if not present
@@ -49,7 +52,7 @@ if [[ ! "$VERSION" =~ ^v ]]; then
 fi
 
 # Validate semver-like format (v*.*.* or v*.*.*-suffix for test tags)
-if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+if [[ ! "$VERSION" =~ ^${_SEMVER_V}$ ]]; then
     echo "Error: version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test)" >&2
     exit 1
 fi

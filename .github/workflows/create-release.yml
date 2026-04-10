@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   verify-tag-on-allowed-branch:
-    name: Verify tag is on main or a release branch
+    name: Verify tag is on main or a release-vX.Y.Z branch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Ensure tagged commit is reachable from main or release-*
+      - name: Ensure tagged commit is reachable from main or release-v*.*.*
         run: |
           git fetch origin
           TAG_SHA="${GITHUB_SHA}"
@@ -39,9 +39,9 @@ jobs:
               ok=1
               break
             fi
-          done < <(git branch -r | sed 's/^[ *]*//' | grep -E '^origin/release-' || true)
+          done < <(git branch -r | sed 's/^[ *]*//' | grep -E '^origin/release-v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || true)
           if [ "$ok" -ne 1 ]; then
-            echo "::error::Release tags must point to a commit on main or on an origin/release-* branch."
+            echo "::error::Release tags must point to a commit on main or on an origin/release-vX.Y.Z branch (same naming as a version tag)."
             exit 1
           fi
 
