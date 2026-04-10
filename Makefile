@@ -108,12 +108,16 @@ publish-helm-chart:
 	export GITHUB_ACTOR="$(GITHUB_ACTOR)"; \
 	./scripts/publish-helm-chart.sh
 
-## generate-release: Create and push a release tag from main (requires REL_VERSION, e.g. make generate-release REL_VERSION=0.0.1)
+## generate-release: Create and push a release tag (requires REL_VERSION; optional REL_BRANCH=main|release-* , default main)
 generate-release:
 	@if [ -z "$(REL_VERSION)" ]; then \
 	  echo "Error: REL_VERSION is required. Example: make generate-release REL_VERSION=0.0.1"; exit 1; \
 	fi
-	@./scripts/generate-release.sh $(REL_VERSION)
+	@if [ -n "$(REL_BRANCH)" ]; then \
+	  ./scripts/generate-release.sh $(REL_VERSION) $(REL_BRANCH); \
+	else \
+	  ./scripts/generate-release.sh $(REL_VERSION); \
+	fi
 
 ## run-apiserver: Run the apiserver
 run-apiserver: build-apiserver

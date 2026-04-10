@@ -4,36 +4,46 @@ This guide describes how to create a new release of Batch Gateway and manage rel
 
 ## Overview
 
-- **Release workflow** (`.github/workflows/create-release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main`**, then builds Linux binaries (amd64, arm64), packages them as `**.tar.gz**` (so execute permission survives browser download), writes `**SHA256SUMS**`, pins image tags in the Helm chart `values.yaml` to the release version, packages and publishes the Helm chart to the OCI registry (GHCR), creates a GitHub Release with notes generated automatically, uploads those assets, and marks the release as **Latest**.
+- **Release workflow** (`.github/workflows/create-release.yml`): Runs when you push a tag matching `v*.*.*` (e.g. `v1.0.0`). It **only proceeds if that tag points at a commit on `main` or on a `release-*` branch** (reachable from `origin/main` or `origin/release-*`), then builds Linux binaries (amd64, arm64), packages them as `**.tar.gz**` (so execute permission survives browser download), writes `**SHA256SUMS**`, pins image tags in the Helm chart `values.yaml` to the release version, packages and publishes the Helm chart to the OCI registry (GHCR), creates a GitHub Release with notes generated automatically, uploads those assets, and marks the release as **Latest**.
 - **Docker workflow** (`.github/workflows/ci-release.yaml`): Builds and pushes container images to GHCR. It runs on the following triggers:
   - **Push to `main`**: Images are tagged `latest` and with the commit SHA.
   - **Push of version tag** (`v*.*.*`): Images are tagged with the version (e.g. `v1.0.0`) and with the commit SHA.
 - **Release notes config** (`.github/release.yml`): Defines how PRs are grouped in release notes generated automatically (e.g. Features, Bug fixes, Documentation).
 - **Release template** (`.github/RELEASE_TEMPLATE.md`): Optional template you can copy into a release description (e.g. Docker image names, upgrade notes).
 
-## Tagging policy (main only)
+## Tagging policy (main or release branches)
 
-**The tagged commit must already be on `main`** (merged via PR). The workflow checks that the tag's commit is an ancestor of `origin/main`.
+**The tagged commit must be reachable from `origin/main` or from an `origin/release-*` branch.** The workflow enforces this so release tags are not cut from arbitrary feature branches.
 
-- **Do:** merge to `main`, then tag that release line (e.g. `git checkout main && git pull && git tag v1.0.0 && git push origin v1.0.0`).
-- **Don't:** push a release tag that points at a commit that only exists on a feature branch.
+- **Normal releases:** merge to `main`, then tag from `main` (default), e.g. `./scripts/generate-release.sh 1.0.0` or `make generate-release REL_VERSION=1.0.0`.
+- **Hotfixes on a release line:** use the corresponding `release-*` branch (e.g. `release-v0.1.0`), merge or cherry-pick the fix there, then tag from that branch: `./scripts/generate-release.sh 0.1.1 release-v0.1.0` or `make generate-release REL_VERSION=0.1.1 REL_BRANCH=release-v0.1.0`.
+- **Don't:** push a release tag that points only at a commit that is not on `main` and not on any `release-*` branch the workflow can see.
 
-Pushing `v*.*.`* **always** triggers the workflow if the check passes; there is no way to "tag only on main" from GitHub's side without this check - so follow the process above.
+Pushing `v*.*.*` **always** triggers the workflow if the check passes.
 
 ## Creating a release
 
-1. **Ensure `main` is in a good state**
-  CI and tests should be passing on `main` before tagging.
-2. **Create and push a version tag** from `main` (semantic version with `v` prefix):
+1. **Ensure the target branch is in a good state**
+  For tags from `main`, CI and tests should be passing on `main`. For hotfixes, validate the relevant `release-*` branch.
+2. **Create and push a version tag** (semantic version with optional `v` prefix; script normalizes to `v*.*.*`):
+
+   From **main** (default):
 
    ```bash
    ./scripts/generate-release.sh 1.0.0
+   ```
+
+   From a **release branch** (e.g. patch after `v0.1.0`):
+
+   ```bash
+   ./scripts/generate-release.sh 0.1.1 release-v0.1.0
    ```
 
    Or using the Makefile (for admins):
 
   ```bash
   make generate-release REL_VERSION=1.0.0
+  make generate-release REL_VERSION=0.1.1 REL_BRANCH=release-v0.1.0
   ```
 
 3. **Let automation run**
@@ -76,10 +86,15 @@ The workflow does **not** automatically inject this file into the release body; 
 
 To verify the release workflow without affecting a real version, use the same `generate-release` script with a test tag (e.g. `v0.0.0-test`):
 
-1. **Create a test tag** on `main` (the requirement that the tag is on main still applies):
+1. **Create a test tag** on `main` or a `release-*` branch (the same reachability rules as a real release apply):
   ```bash
    ./scripts/generate-release.sh v0.0.0-test
+   # or from a release branch:
+   ./scripts/generate-release.sh v0.0.0-test release-v0.0.1
   ```
+
+   Equivalent with Make: `make generate-release REL_VERSION=v0.0.0-test REL_BRANCH=release-v0.0.1`
+
 2. **Check that workflows run** in the **Actions** tab: **Release** and **CI Release** should run for that tag. When they finish, a new release and new image tags will exist.
 3. **Important:** Running a failed workflow again uses the workflow file from the original trigger commit. To run with updated workflow code (e.g. after fixing ci-release.yaml), push the fix and then push the tag again from the new commit so a fresh run is triggered.
 4. **Clean up when done** — see [Manually deleting a release](#manually-deleting-a-release).

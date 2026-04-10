@@ -14,8 +14,8 @@ permissions:
   packages: write
 
 jobs:
-  verify-tag-on-main:
-    name: Verify tag is on main
+  verify-tag-on-allowed-branch:
+    name: Verify tag is on main or a release branch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,18 +23,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Ensure tagged commit is reachable from main
+      - name: Ensure tagged commit is reachable from main or release-*
         run: |
-          git fetch origin main
+          git fetch origin
           TAG_SHA="${GITHUB_SHA}"
-          if ! git merge-base --is-ancestor "$TAG_SHA" "origin/main"; then
-            echo "::error::Release tags must point to a commit on main (merged into origin/main before tagging)."
+          if git merge-base --is-ancestor "$TAG_SHA" "origin/main" 2>/dev/null; then
+            echo "Tag is reachable from origin/main."
+            exit 0
+          fi
+          ok=0
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            if git merge-base --is-ancestor "$TAG_SHA" "$ref" 2>/dev/null; then
+              echo "Tag is reachable from ${ref}."
+              ok=1
+              break
+            fi
+          done < <(git branch -r | sed 's/^[ *]*//' | grep -E '^origin/release-' || true)
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Release tags must point to a commit on main or on an origin/release-* branch."
             exit 1
           fi
 
   build:
     name: Build binaries
-    needs: verify-tag-on-main
+    needs: verify-tag-on-allowed-branch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
