@@ -61,7 +61,7 @@ jobs:
               path: '.github/CODEOWNERS'
             });
             const text = Buffer.from(content.data.content, 'base64').toString();
-            const owners = [...new Set(text.match(/@[\w-]+/g).map(h => h.slice(1)))];
+            const owners = [...new Set((text.match(/@[\w-]+/g) || []).map(h => h.slice(1)))];
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
