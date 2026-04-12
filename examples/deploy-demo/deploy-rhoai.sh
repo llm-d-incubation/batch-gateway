@@ -357,6 +357,17 @@ install_rhoai_operator() {
         -n "${namespace}" &>/dev/null 2>&1; then
         log "${OPERATOR_TYPE} operator already installed. Skipping."
     else
+        # Validate channel exists in catalog
+        local available_channels
+        available_channels=$(kubectl get packagemanifest "${operator_name}" \
+            -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+        if [ -z "${available_channels}" ]; then
+            die "PackageManifest '${operator_name}' not found in catalog. Is the catalog source available?"
+        fi
+        if ! echo " ${available_channels} " | grep -q " ${channel} "; then
+            die "Channel '${channel}' not found for '${operator_name}'. Available: ${available_channels}"
+        fi
+
         kubectl create namespace "${namespace}" 2>/dev/null || true
 
         kubectl apply -f - <<EOF

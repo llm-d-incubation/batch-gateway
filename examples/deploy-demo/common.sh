@@ -881,8 +881,9 @@ JSONL
 
     # ── 4. Batch Authn ──────────────────────────────────
     test_group_header "Batch Authn"
-    assert_http 401 "Unauthenticated batch request -> 401" "${batch_url}/v1/batches"
+    assert_http 401 "No credentials batch request -> 401" "${batch_url}/v1/batches"
     assert_http 200 "Authenticated batch request -> 200" -H "${authorized_header}" "${batch_url}/v1/batches"
+    assert_http 200 "Unauthorized but authenticated batch request -> 200 (no authz on batch-route)" -H "${unauthorized_header}" "${batch_url}/v1/batches"
 
     # ── 5. Batch Authz (LLM route enforces) ──────────────
     test_group_header "Batch Authz (LLM route enforces)"
