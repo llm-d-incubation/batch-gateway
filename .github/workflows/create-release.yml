@@ -111,6 +111,6 @@ jobs:
           generate_release_notes: true
           files: release/*
           draft: false
-          make_latest: true
+          make_latest: legacy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
