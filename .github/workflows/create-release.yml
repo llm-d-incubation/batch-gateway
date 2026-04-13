@@ -23,27 +23,41 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Ensure tagged commit is reachable from main or release-v*.*.*
+      - name: Ensure tagged commit is reachable from main or release-vX.Y.Z
         run: |
           git fetch origin
+          TAG="${{ github.ref_name }}"
           TAG_SHA="${GITHUB_SHA}"
           if git merge-base --is-ancestor "$TAG_SHA" "origin/main" 2>/dev/null; then
             echo "Tag is reachable from origin/main."
             exit 0
           fi
-          ok=0
+          matched_branch=""
           while IFS= read -r ref; do
             [ -z "$ref" ] && continue
             if git merge-base --is-ancestor "$TAG_SHA" "$ref" 2>/dev/null; then
               echo "Tag is reachable from ${ref}."
-              ok=1
+              matched_branch="$ref"
               break
             fi
           done < <(git branch -r | sed 's/^[ *]*//' | grep -E '^origin/release-v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || true)
-          if [ "$ok" -ne 1 ]; then
+          if [ -z "$matched_branch" ]; then
             echo "::error::Release tags must point to a commit on main or on an origin/release-vX.Y.Z branch (same naming as a version tag)."
             exit 1
           fi
+
+          # Validate that the tag version matches the release branch's major.minor.
+          branch_name="${matched_branch#origin/}"
+          branch_ver="${branch_name#release-}"
+          branch_major=$(echo "$branch_ver" | cut -d. -f1 | sed 's/^v//')
+          branch_minor=$(echo "$branch_ver" | cut -d. -f2)
+          tag_major=$(echo "$TAG" | cut -d. -f1 | sed 's/^v//')
+          tag_minor=$(echo "$TAG" | cut -d. -f2)
+          if [ "$tag_major" != "$branch_major" ] || [ "$tag_minor" != "$branch_minor" ]; then
+            echo "::error::Tag ${TAG} has major.minor v${tag_major}.${tag_minor} but branch ${branch_name} expects v${branch_major}.${branch_minor}.*"
+            exit 1
+          fi
+          echo "Tag ${TAG} matches release line v${branch_major}.${branch_minor}.*"
 
   build:
     name: Build binaries

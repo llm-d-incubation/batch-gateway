@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generates a release by creating and pushing a version tag from main or a release-v*.*.* branch.
+# Generates a release by creating and pushing a version tag from main or a release-vX.Y.Z branch.
 # This triggers the create-release and ci-release workflows.
 #
 # Usage: ./scripts/generate-release.sh <version> [branch]
