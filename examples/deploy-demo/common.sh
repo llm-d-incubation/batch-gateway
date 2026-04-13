@@ -28,8 +28,9 @@ TLS_ISSUER_NAME="${TLS_ISSUER_NAME:-selfsigned-issuer}"
 # Demo uninstall safety: default uninstall removes batch-gateway-scoped
 # resources and the named Gateway only. Set UNINSTALL_ALL=1 to also tear down Kuadrant,
 # Istio, cert-manager, operators, cluster CRDs, and other shared platform pieces.
+UNINSTALL_ALL="${UNINSTALL_ALL:-0}"
 is_demo_uninstall_all() {
-    case "${UNINSTALL_ALL:-0}" in
+    case "${UNINSTALL_ALL}" in
         1|true|yes|TRUE|YES) return 0 ;;
         *) return 1 ;;
     esac
