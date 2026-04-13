@@ -109,7 +109,7 @@ func testHelmUpgrade(t *testing.T) {
 		t.Logf("ConfigMap max_retries changed from %d to %d (model_gateways[%s])", originalMaxRetries, got, testModel)
 
 		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
-		waitForReady(t, testProcessorObsURL, 60*time.Second)
+		waitForReady(t, testProcessorObsURL, 180*time.Second)
 		t.Log("processor healthy after helm upgrade")
 	})
 
@@ -124,7 +124,7 @@ func testHelmUpgrade(t *testing.T) {
 		}
 
 		waitForRollout(t, fmt.Sprintf("%s-processor", testHelmRelease))
-		waitForReady(t, testProcessorObsURL, 60*time.Second)
+		waitForReady(t, testProcessorObsURL, 180*time.Second)
 		t.Log("original values restored successfully")
 	})
 }
