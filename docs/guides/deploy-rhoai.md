@@ -275,7 +275,10 @@ spec:
     protocol: HTTP
     allowedRoutes:
       namespaces:
-        from: All
+        from: Selector
+        selector:
+          matchLabels:
+            batch-gateway.llm-d.ai/apiserver-route: "true"
   - name: https
     hostname: "${HOSTNAME}"
     port: 443
@@ -286,7 +289,10 @@ spec:
       - name: router-certs-default
     allowedRoutes:
       namespaces:
-        from: All
+        from: Selector
+        selector:
+          matchLabels:
+            batch-gateway.llm-d.ai/apiserver-route: "true"
 EOF
 
 # Wait for the Envoy proxy deployment to become ready
@@ -295,6 +301,8 @@ oc rollout status deployment/openshift-ai-inference-openshift-default -n openshi
 ```
 
 > **Note**: The Gateway uses the OpenShift default router certificate (`router-certs-default`). The hostname must match the cluster's wildcard DNS for external access.
+
+> **Security**: The Gateway uses `allowedRoutes.namespaces.from: Selector` to restrict HTTPRoute attachment. Only the namespace where the batch-gateway apiserver is deployed needs the label `batch-gateway.llm-d.ai/apiserver-route: "true"` This is applied automatically in the batch-gateway installation step below.
 
 </details>
 
@@ -641,6 +649,7 @@ Deploy batch-gateway with the model gateway URL from the LLMInferenceService sta
 ```bash
 BATCH_NS=batch-api
 oc create namespace "${BATCH_NS}" 2>/dev/null || true
+oc label namespace "${BATCH_NS}" batch-gateway.llm-d.ai/apiserver-route=true
 
 # Install Redis
 helm install redis oci://registry-1.docker.io/bitnamicharts/redis \

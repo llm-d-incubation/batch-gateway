@@ -178,7 +178,10 @@ spec:
     protocol: HTTP
     allowedRoutes:
       namespaces:
-        from: All
+        from: Selector
+        selector:
+          matchLabels:
+            batch-gateway.llm-d.ai/apiserver-route: "true"
   - name: https
     hostname: "${hostname}"
     port: 443
@@ -189,7 +192,10 @@ spec:
       - name: router-certs-default
     allowedRoutes:
       namespaces:
-        from: All
+        from: Selector
+        selector:
+          matchLabels:
+            batch-gateway.llm-d.ai/apiserver-route: "true"
 EOF
     fi
 

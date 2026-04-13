@@ -108,7 +108,10 @@ spec:
     port: 80
     allowedRoutes:
       namespaces:
-        from: All
+        from: Selector
+        selector:
+          matchLabels:
+            batch-gateway.llm-d.ai/apiserver-route: "true"
   - name: https
     protocol: HTTPS
     port: 443
@@ -118,7 +121,10 @@ spec:
       - name: ${GATEWAY_NAME}-tls
     allowedRoutes:
       namespaces:
-        from: All
+        from: Selector
+        selector:
+          matchLabels:
+            batch-gateway.llm-d.ai/apiserver-route: "true"
 EOF
 
     wait_for_deployment "${GATEWAY_NAME}-istio" "${GATEWAY_NAMESPACE}" 300s
