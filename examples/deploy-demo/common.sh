@@ -620,7 +620,7 @@ install_batch_gateway() {
 # (e.g. modelGateways, passThroughHeaders).
 do_deploy_batch_gateway() {
     kubectl get namespace "${BATCH_NAMESPACE}" &>/dev/null || kubectl create namespace "${BATCH_NAMESPACE}"
-    kubectl label namespace "${BATCH_NAMESPACE}" batch-gateway.llm-d.ai/apiserver-route=true --overwrite
+    kubectl label namespace "${BATCH_NAMESPACE}" llm-d.ai/gateway-route=true --overwrite
 
     install_batch_redis
     install_batch_postgresql

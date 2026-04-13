@@ -111,7 +111,7 @@ spec:
         from: Selector
         selector:
           matchLabels:
-            batch-gateway.llm-d.ai/apiserver-route: "true"
+            llm-d.ai/gateway-route: "true"
   - name: https
     protocol: HTTPS
     port: 443
@@ -124,7 +124,7 @@ spec:
         from: Selector
         selector:
           matchLabels:
-            batch-gateway.llm-d.ai/apiserver-route: "true"
+            llm-d.ai/gateway-route: "true"
 EOF
 
     wait_for_deployment "${GATEWAY_NAME}-istio" "${GATEWAY_NAMESPACE}" 300s
@@ -534,6 +534,10 @@ cmd_install() {
             kubectl create namespace "${ns}"
             log "Created namespace '${ns}'."
         fi
+    done
+
+    for ns in "${BATCH_NAMESPACE}" "${LLM_NAMESPACE}"; do
+        kubectl label namespace "${ns}" llm-d.ai/gateway-route=true --overwrite
     done
 
     install_cert_manager

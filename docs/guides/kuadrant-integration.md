@@ -115,11 +115,11 @@ spec:
         from: Selector
         selector:
           matchLabels:
-            batch-gateway.llm-d.ai/apiserver-route: "true"
+            llm-d.ai/gateway-route: "true"
 EOF
 ```
 
-> **Security**: The Gateway uses `allowedRoutes.namespaces.from: Selector` to restrict HTTPRoute attachment. Only the namespace where the batch-gateway apiserver is deployed needs the label `batch-gateway.llm-d.ai/apiserver-route: "true"` — this is applied in the batch HTTPRoute step below.
+> **Security**: The Gateway uses `allowedRoutes.namespaces.from: Selector` to restrict HTTPRoute attachment. Only namespaces labeled with `llm-d.ai/gateway-route: "true"` can attach HTTPRoutes. This must be applied to the batch and LLM namespaces before creating their HTTPRoutes.
 
 ### 2.6 Install Model Servers (vLLM)
 
@@ -251,6 +251,12 @@ helm install gold-model \
 
 ### 2.8 Create LLM HTTPRoute
 
+Label the LLM namespace so the Gateway's namespace selector allows HTTPRoute attachment:
+
+```bash
+kubectl label namespace llm llm-d.ai/gateway-route=true
+```
+
 Create HTTPRoute to route LLM inference requests to InferencePools.
 
 ```bash
@@ -363,8 +369,10 @@ Follow the [guide](../../README.md) to install Batch Inference Service
 
 ### 2.10 Create Batch HTTPRoute
 
+Label the batch namespace so the Gateway's namespace selector allows HTTPRoute attachment:
+
 ```bash
-kubectl label namespace batch-api batch-gateway.llm-d.ai/apiserver-route=true
+kubectl label namespace batch-api llm-d.ai/gateway-route=true
 ```
 
 Create HTTPRoute to route batch requests to batch inference service.

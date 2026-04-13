@@ -278,7 +278,7 @@ spec:
         from: Selector
         selector:
           matchLabels:
-            batch-gateway.llm-d.ai/apiserver-route: "true"
+            llm-d.ai/gateway-route: "true"
   - name: https
     hostname: "${HOSTNAME}"
     port: 443
@@ -292,7 +292,7 @@ spec:
         from: Selector
         selector:
           matchLabels:
-            batch-gateway.llm-d.ai/apiserver-route: "true"
+            llm-d.ai/gateway-route: "true"
 EOF
 
 # Wait for the Envoy proxy deployment to become ready
@@ -302,7 +302,7 @@ oc rollout status deployment/openshift-ai-inference-openshift-default -n openshi
 
 > **Note**: The Gateway uses the OpenShift default router certificate (`router-certs-default`). The hostname must match the cluster's wildcard DNS for external access.
 
-> **Security**: The Gateway uses `allowedRoutes.namespaces.from: Selector` to restrict HTTPRoute attachment. Only the namespace where the batch-gateway apiserver is deployed needs the label `batch-gateway.llm-d.ai/apiserver-route: "true"` This is applied automatically in the batch-gateway installation step below.
+> **Security**: The Gateway uses `allowedRoutes.namespaces.from: Selector` to restrict HTTPRoute attachment. Only namespaces labeled with `llm-d.ai/gateway-route: "true"` can attach HTTPRoutes. This must be applied to the batch and LLM namespaces before creating their HTTPRoutes.
 
 </details>
 
@@ -504,6 +504,8 @@ MODEL_NAME="facebook/opt-125m"
 ISVC_NAME=$(echo "${MODEL_NAME}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
 
 oc create namespace "${LLM_NS}" 2>/dev/null || true
+# Label namespace for gateway access (required by Gateway namespace selector)
+oc label namespace "${LLM_NS}" llm-d.ai/gateway-route=true
 
 oc apply -f - <<EOF
 apiVersion: serving.kserve.io/v1alpha1
@@ -649,7 +651,7 @@ Deploy batch-gateway with the model gateway URL from the LLMInferenceService sta
 ```bash
 BATCH_NS=batch-api
 oc create namespace "${BATCH_NS}" 2>/dev/null || true
-oc label namespace "${BATCH_NS}" batch-gateway.llm-d.ai/apiserver-route=true
+oc label namespace "${BATCH_NS}" llm-d.ai/gateway-route=true
 
 # Install Redis
 helm install redis oci://registry-1.docker.io/bitnamicharts/redis \
