@@ -17,6 +17,7 @@ This guide describes how to create a new release of Batch Gateway and manage rel
 
 - **Normal releases:** merge to `main`, then tag from `main` (default), e.g. `./scripts/generate-release.sh 1.0.0` or `make generate-release REL_VERSION=1.0.0`.
 - **Hotfixes on a release line:** use the corresponding `release-vX.Y.Z` branch (e.g. `release-v0.1.0`), merge or cherry-pick the fix there, then tag from that branch: `./scripts/generate-release.sh 0.1.1 release-v0.1.0` or `make generate-release REL_VERSION=0.1.1 REL_BRANCH=release-v0.1.0`.
+- **Version must match the release line:** when tagging from a `release-vX.Y.Z` branch, the version tag must share the same major and minor (`vX.Y.*`). For example, `release-v0.1.0` only accepts tags like `v0.1.1` or `v0.1.2-rc1`; a tag like `v0.3.0` will be rejected by the script.
 - **Don't:** push a release tag that points only at a commit that is not on `main` and not on any allowed `release-v*.*.*` branch the workflow can see.
 
 Pushing `v*.*.*` **always** triggers the workflow if the check passes.

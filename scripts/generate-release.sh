@@ -12,6 +12,7 @@
 #          ./scripts/generate-release.sh v0.0.0-test release-v0.0.1   # test tag from a release branch
 #
 # The version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test). The 'v' prefix is added if omitted.
+# When tagging from release-vX.Y.Z, the version must be vX.Y.*.
 
 set -euo pipefail
 
@@ -55,6 +56,20 @@ fi
 if [[ ! "$VERSION" =~ ^${_SEMVER_V}$ ]]; then
     echo "Error: version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test)" >&2
     exit 1
+fi
+
+# If tagging from release-vX.Y.Z, ensure the tag stays on that release line (vX.Y.*).
+if [[ "$BRANCH" =~ ^release-v([0-9]+)\.([0-9]+)\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+    BRANCH_MAJOR="${BASH_REMATCH[1]}"
+    BRANCH_MINOR="${BASH_REMATCH[2]}"
+    if [[ "$VERSION" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+        VERSION_MAJOR="${BASH_REMATCH[1]}"
+        VERSION_MINOR="${BASH_REMATCH[2]}"
+        if [[ "$VERSION_MAJOR" != "$BRANCH_MAJOR" || "$VERSION_MINOR" != "$BRANCH_MINOR" ]]; then
+            echo "Error: version ${VERSION} is not valid for branch ${BRANCH}. Expected v${BRANCH_MAJOR}.${BRANCH_MINOR}.* for this release branch." >&2
+            exit 1
+        fi
+    fi
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
