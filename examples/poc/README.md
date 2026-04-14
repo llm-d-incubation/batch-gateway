@@ -10,7 +10,9 @@ This directory contains demo files for testing the Batch Gateway system.
 
 ## Prerequisites
 
-1. **Deploy the Batch Gateway**:
+1. **Install required tools**: see [Development guide prerequisites](../../docs/guides/development.md#prerequisites).
+
+2. **Deploy the Batch Gateway**:
 
    ```bash
    make dev-deploy
@@ -26,7 +28,7 @@ This directory contains demo files for testing the Batch Gateway system.
    - MinIO (S3-compatible storage) at <http://localhost:9002>
    - Metrics endpoints at <http://localhost:8081/metrics> (API) and <http://localhost:9090/metrics> (Processor)
 
-2. **Choose Your Demo Tool**:
+3. **Choose Your Demo Tool**:
    - **Using demo.http**: Install the REST Client for Visual Studio Code extension (Ctrl+Shift+X / Cmd+Shift+X)
    - **Using curl_demo.md**: Ensure `curl` and `jq` are available on your system
 

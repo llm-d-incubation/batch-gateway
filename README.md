@@ -133,6 +133,7 @@ batch-gateway/
 │   │   ├── worker/               # Worker pool, planning, and execution
 │   │   ├── config/               # Processor configuration
 │   │   └── metrics/              # Prometheus metrics
+│   ├── gc/                       # Garbage collector implementation
 │   ├── database/                 # Database clients
 │   │   ├── api/                  # Database interfaces
 │   │   ├── mock/                 # Mock implementation (testing)
@@ -232,10 +233,7 @@ make run-gc-dev
 
 #### Quick Start with Kind
 
-**Prerequisites:**
-
-- Docker or Podman
-- [kind](https://kind.sigs.k8s.io/) v0.20+ (Kubernetes in Docker)
+**Prerequisites:** see [Development Guide prerequisites](docs/guides/development.md#prerequisites).
 
 Deploy to a local Kind cluster for development:
 
@@ -435,17 +433,17 @@ Contributions are welcome! Please ensure:
 
 ## Security
 
-This project follows security best practices:
+Batch-gateway implements defense-in-depth security across multiple layers:
 
-- Non-root container execution (UID 65532).
-- Read-only root filesystem.
-- All Linux capabilities dropped.
-- No privilege escalation.
-- Seccomp profile enabled.
-- TLS support for all network communication.
-- OpenShift SCC compatibility.
+- **Authentication & authorization**: delegated to the gateway layer (Kuadrant/Authorino); supports API key, ServiceAccount token, and OpenShift user token modes.
+- **Multi-tenancy isolation**: all data access scoped to the authenticated tenant; cross-tenant requests return 404.
+- **TLS/mTLS**: optional TLS on the API server (TLS 1.2+); processor supports custom CAs and mTLS for outbound inference connections.
+- **Input validation**: strict JSON decoding, file size and line count limits.
+- **Pod hardening**: non-root execution (UID 65532), read-only root filesystem, all Linux capabilities dropped, no privilege escalation, seccomp enabled, OpenShift SCC compatible.
+- **Secret management**: Kubernetes secrets mounted read-only; read via `os.OpenInRoot()` to prevent path traversal.
+- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection` on every response.
 
-To report security vulnerabilities, please contact the maintainers privately.
+For the full overview, see the [Security Guide](docs/guides/security.md). To report vulnerabilities, see [SECURITY.md](SECURITY.md).
 
 ## License
 
