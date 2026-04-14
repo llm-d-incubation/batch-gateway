@@ -1,0 +1,10 @@
+{"custom_id":"req-001","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is machine learning?"}]}}
+{"custom_id":"req-002","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain neural networks"}]}}
+{"custom_id":"req-003","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is deep learning?"}]}}
+{"custom_id":"req-004","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe supervised learning"}]}}
+{"custom_id":"req-005","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is unsupervised learning?"}]}}
+{"custom_id":"req-006","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain reinforcement learning"}]}}
+{"custom_id":"req-007","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is a convolutional neural network?"}]}}
+{"custom_id":"req-008","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe recurrent neural networks"}]}}
+{"custom_id":"req-009","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is a transformer model?"}]}}
+{"custom_id":"req-010","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain gradient descent"}]}}
