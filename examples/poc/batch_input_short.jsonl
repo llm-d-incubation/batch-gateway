@@ -8,3 +8,13 @@
 {"custom_id":"req-008","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe recurrent neural networks"}]}}
 {"custom_id":"req-009","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is a transformer model?"}]}}
 {"custom_id":"req-010","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain gradient descent"}]}}
+{"custom_id":"req-011","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is backpropagation?"}]}}
+{"custom_id":"req-012","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe overfitting"}]}}
+{"custom_id":"req-013","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is regularization?"}]}}
+{"custom_id":"req-014","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain dropout in neural networks"}]}}
+{"custom_id":"req-015","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is batch normalization?"}]}}
+{"custom_id":"req-016","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe activation functions"}]}}
+{"custom_id":"req-017","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is the ReLU function?"}]}}
+{"custom_id":"req-018","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain the sigmoid function"}]}}
+{"custom_id":"req-019","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is the softmax function?"}]}}
+{"custom_id":"req-020","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe cross-entropy loss"}]}}
