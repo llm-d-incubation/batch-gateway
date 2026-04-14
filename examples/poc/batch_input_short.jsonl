@@ -8,5 +8,3 @@
 {"custom_id":"req-008","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe recurrent neural networks"}]}}
 {"custom_id":"req-009","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is a transformer model?"}]}}
 {"custom_id":"req-010","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Explain gradient descent"}]}}
-{"custom_id":"req-011","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":100,"messages":[{"role":"user","content":"What is backpropagation?"}]}}
-{"custom_id":"req-012","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model-b","max_tokens":100,"messages":[{"role":"user","content":"Describe overfitting"}]}}
