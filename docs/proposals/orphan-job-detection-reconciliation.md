@@ -2,34 +2,25 @@
 
 ## Summary
 
-This work is **not** a replacement for **startup recovery** (`recoverStaleJobs`), which already repairs many failures using **local workdir** state when a processor restarts. The goal here is a separate line of defense: **cluster-level** detection and reconciliation for batch jobs that **fall off the normal track** for **other reasons**—cases where startup recovery never gets a chance to run, or queue and DB drift apart in ways the local path cannot see. These situations are **severe edge cases** (pod loss with destroyed ephemeral disk, partial failures across Redis and PostgreSQL, races between replicas, and similar “should be rare” paths), but they **can still happen** in real deployments; without an explicit reconciler, such jobs can remain **non-terminal** indefinitely.
+This work is **not** a replacement for **startup recovery** (`recoverStaleJobs`), which already repairs many failures using **local workdir** state when a processor restarts. The goal here is a separate line of defense: **cluster-level** detection and reconciliation for batch jobs that **fall off the normal track** for **other reasons**. The main picture is **queue–database mismatch**: the job is **no longer in** the Redis priority queue (usually because a worker **dequeued** it) while **PostgreSQL still shows a non-terminal status**, and **startup recovery cannot close the gap** because there is **no surviving processor workdir** (for example pod replaced and ephemeral disk is gone). **Partial failures** or **replica races** can cause the same problem. These are **severe edge cases**, but they **can still happen** in real deployments; without an explicit reconciler, such jobs can remain **non-terminal** indefinitely.
 
-The proposal introduces a precise definition of **orphan batch jobs** in that sense (see [Definitions](#definitions), especially [Orphan job (narrow, reconciler scope)](#orphan-job-narrow-reconciler-scope)) and a reconciliation design for them. **Orphan state** in this narrow sense still arises from the **processor + Redis queue + PostgreSQL** interaction—for example a job is dequeued, then the worker or pod is lost before metadata reaches a terminal status, and **no** stale workdir remains for `recoverStaleJobs`. The API server and garbage collector do **not** create that pattern by themselves; they still matter because a reconciler must **compose safely** with **every processor replica**, **API traffic** (submit, cancel, read paths), and **GC retention** so fixes are not duplicated, raced, or contradicted cluster-wide. When a stale workdir **does** exist, startup recovery remains the **owner**.
+The proposal introduces a precise definition of **orphan batch jobs** in that sense, **together with** supporting terms used in this document (see [Definitions](#definitions), especially [Orphan job (narrow, reconciler scope)](#orphan-job-narrow-reconciler-scope)), **and** a reconciliation design. **Orphan state** in this narrow sense still arises from the **processor + Redis queue + PostgreSQL** interaction—for example a job is dequeued, then the worker or pod is lost before metadata reaches a terminal status, and **no** stale workdir remains for `recoverStaleJobs`.
+
+The API server and garbage collector do **not** create that pattern by themselves; they still matter because a reconciler must **compose safely** with **every processor replica**, **API traffic** (submit, cancel, read paths), and **GC retention** so fixes are not duplicated, raced, or contradicted cluster-wide. When a stale workdir **does** exist, startup recovery remains the **owner**.
 
 ## Definitions
 
 ### Non-terminal status
 
-A batch job whose PostgreSQL metadata status is not a terminal OpenAI batch status (for example still `validating`, `in_progress`, `finalizing`, or `cancelling` — exact set follows product contracts).
+A batch job whose PostgreSQL metadata status is not a **terminal** status in the **OpenAI Batch API** sense (for example still `validating`, `in_progress`, `finalizing`, or `cancelling`).
 
 ### Actively processing
 
-A processor replica **owns** the job in the runtime sense: the job has been **removed from the Redis priority queue** and a **`runJob` worker goroutine** for that job ID is running (ingestion via `preProcessJob`, then execution, finalization, or cancel handling—see processor architecture).
+A processor replica **owns** the job in the runtime sense: the job has been **removed from the Redis priority queue** and a **`runJob` worker goroutine** for that job ID is running (ingestion via `preProcessJob`, then execution, finalization, or cancel handling—see [Batch processor architecture](../design/batch_processor_architecture.md)).
 
-**`validating` in DB is ambiguous** in this product model: the **API server creates** a batch job and **enqueues** it to Redis with status already **`validating`** (OpenAI-compatible lifecycle: a new job is `validating` until it moves to `in_progress` after ingestion). So “in the queue” and “`validating` in PostgreSQL” are **normal** together—they do **not** by themselves indicate a stuck or orphaned job.
+### Diverged job
 
-That same status covers two runtime situations until **`in_progress`**: (1) **waiting in the queue**—still enqueued, not yet dequeued—and (2) a **short window after dequeue** where ingestion runs but the status has not yet transitioned to `in_progress`. Only (1) is “idle wait”; (2) **is** actively processing even though the status string is still `validating`.
-
-For orphan detection, **“not actively processing”** therefore requires more than `status == validating`: for example **still present in the priority queue** (queue wait) or **no live worker goroutine** after dequeue (candidate orphan, subject to grace periods and stale-workdir rules elsewhere in this document).
-
-### Diverged job (umbrella, optional term)
-
-Any job that is **non-terminal** in DB while **no processor is actively processing** it. This includes:
-
-- jobs **not** currently in the Redis priority queue (typical after atomic dequeue), and
-- jobs still in the queue but stuck for other reasons (if any appear in operations; call out separately if discovered).
-
-This umbrella is useful for metrics or runbooks (“something is wrong with lifecycle”) but is **not** sufficient to choose a recovery action by itself.
+**PostgreSQL still shows a non-terminal status, but no processor is actively running that job** in the sense of [Actively processing](#actively-processing).
 
 ### Stale workdir job (startup-recovery eligible)
 
@@ -41,19 +32,12 @@ A job for which the processor’s local layout still contains a **stale job dire
 
 An **orphan job** is a **diverged job** that is **also** **not** startup-recovery eligible: there is **no** stale processor workdir that `recoverStaleJobs` can use to reconcile the job on restart (for example pod eviction destroyed `emptyDir`, or only a different replica’s disk could be checked and this job’s artifacts are gone). Equivalently:
 
-- DB: **non-terminal**
-- Redis PQ: **not** enqueued (or not findable as queued — exact membership check is implementation detail)
-- Runtime: **no** processor **actively processing** the job
-- Local recovery: **no** applicable stale job directory for `recoverStaleJobs`
+1. **Redis priority queue:** the job is **not** in the priority queue (in the usual case it was **dequeued** and removed atomically).
+2. **PostgreSQL:** metadata is still shows that the job is in **non-terminal** status.
+3. **Processor runtime:** no replica is **actively processing** the job ([Actively processing](#actively-processing)—dequeue alone does **not** imply an orphan if a legitimate `runJob` still exists).
+4. **Startup recovery:** `recoverStaleJobs` does **not** own the next step—there is **no** applicable **stale workdir** ([Stale workdir job](#stale-workdir-job-startup-recovery-eligible)).
 
-**Answer to “are recoverStaleJobs-pending jobs orphans?”**
-
-- Under the **broad / observational** view (“diverged”: non-terminal and nobody running it), a stale workdir job **can match** between crash and the next recovery scan — but **ownership** belongs to `recoverStaleJobs`.
-- Under the **narrow definition** above (what this proposal’s reconciler should target), **no**: if the job **will be** (or **should be**) handled by `recoverStaleJobs` because a stale workdir exists, it is a **stale workdir job**, **not** an orphan job.
-
-Implementations should use **ordering and exclusion**: e.g. only treat as reconcile-orphan after a **grace period** and after confirming **absence** of a recoverable workdir signal, so the cluster reconciler does not fight startup recovery.
-
----
+Only when **(1)–(4)** hold is a job a **candidate** for cluster-level reconciliation in the **narrow** sense of this proposal. **Grace periods** and ordering (exclude startup-recovery-eligible work first) still apply elsewhere in this document.
 
 The rest of this document uses **orphan job** in the **narrow** sense unless explicitly stated otherwise.
 
@@ -140,8 +124,9 @@ Options to compare in implementation planning:
 - **Dedicated deployment** (small controller / sidecar / job): clear ownership, single leader election optional.
 - **Processor leader** or **one replica only**: fewer moving parts; must avoid duplicating work across processor replicas.
 - **API server**: couples operational concerns to the request path; generally less attractive unless extremely lightweight and rate-limited.
+- **Colocate with batch garbage collector (`batch-gc`)**: fewer moving parts at the cluster level and one more periodic loop in an existing component, but **different problem domain**—today’s GC focuses on **retention / expiry cleanup**, while reconciliation is **queue–metadata consistency**. Combining them **tightens coupling** and can **blur ownership** (operability, on-call, review surface) unless maintainers explicitly agree. Treat as a **valid placement to evaluate**, not a default.
 
-Recommendation in this proposal: prefer a **dedicated reconciler** or **elected single instance** with explicit leader semantics, not N uncoordinated replicas.
+Recommendation in this proposal: prefer a **dedicated reconciler** or **elected single instance** with explicit leader semantics, not N uncoordinated replicas. **Final placement** (including **GC colocation**) is an **ownership and operational** decision for maintainers after review.
 
 ### Data sources
 
@@ -152,6 +137,7 @@ Recommendation in this proposal: prefer a **dedicated reconciler** or **elected 
 
 - Counters/histograms for: orphans detected, re-enqueued, failed, expired, errors, reconciliation duration.
 - Logs: job ID, tenant, previous status, action, reason code.
+- **PrometheusRule / Grafana / runbooks:** define and document when the reconciler is implemented; this proposal only assumes **metrics and structured logs** exist so those artifacts can be added later.
 
 ### Testing
 
@@ -161,27 +147,32 @@ Recommendation in this proposal: prefer a **dedicated reconciler** or **elected 
 
 ## Alternatives
 
-1. **Visibility timeout / lease-based dequeue**  
+1. **Visibility timeout / lease-based dequeue**
    Change queue semantics so dequeue is a **lease** with automatic return on expiry, instead of immediate removal. Fixes orphans at the source but is a **large protocol and implementation change** across API, Redis, and processor assumptions.
 
-2. **Heartbeat column + processor periodic tick**  
+2. **Heartbeat column + processor periodic tick**
    Processor updates `last_progress_at` in DB; reconciler only acts when stale. Reduces false positives; requires schema migration and write load tradeoffs.
 
-3. **Manual operator tooling only**  
+3. **Manual operator tooling only**
    CLI or runbook to list and fix stuck jobs. Low engineering cost, no automatic safety or SLO for stuck volume.
 
-4. **Rely on GC only**  
+4. **Rely on GC only**
    Current garbage collection focuses on retention/expiry, not queue–DB divergence; it does not replace this proposal.
 
 ## Open questions
 
+- **Deployment:** Should reconciliation live in **`batch-gc`**, a **new binary**, or elsewhere? **Trade-off:** fewer deployments vs. separation of concerns and **clear component ownership**.
 - Do we need a **first-class Redis API** to test membership by job ID without scanning the entire sorted set?
 - For `in_progress` orphans, is **re-enqueue from scratch** always acceptable to product, or must we **always fail** if any output artifact might exist in object storage?
 - Multi-tenant scale: reconciliation **batch size**, **cursor pagination**, and **per-tenant fairness**.
 - Interaction with **cancellation** and **pause/resume** if extended in the future.
 
+## Related work
+
+- [PR #135](https://github.com/llm-d-incubation/batch-gateway/pull/135) (draft) proposes **Exchange DB / priority-queue interface changes** for recovery: in-flight state and **heartbeats** around dequeue, **`PQSignalDone`**, and a periodic **`PQReEnqueue`** scanner. That work targets **queue-level** correctness; it was deferred past MVP. **This document does not replace that discussion**—cluster-level reconciliation here addresses **metadata and multi-store** gaps that can remain even with richer queue semantics (for example PostgreSQL vs Redis vs worker truth, or Redis incidents). If #135 lands, **deployment of the scanner**, **Redis data layout** (including alternatives such as an explicit **worker registry** plus per-job heartbeats), and **idempotency** should be **aligned** so two systems do not fight the same jobs.
+
 ## References
 
 - Processor startup recovery: `internal/processor/worker/recovery.go`
-- Architecture notes: `docs/design/batch_processor_architecture.md` (Startup Recovery)
+- Architecture notes: [Batch processor architecture](../design/batch_processor_architecture.md) (Startup Recovery)
 - Queue contract: `internal/database/api/database.go` (`BatchPriorityQueueClient`)
