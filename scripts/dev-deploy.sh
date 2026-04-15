@@ -10,7 +10,8 @@ source "${SCRIPT_DIR}/dev-common.sh"
 # ── Deployment-Specific Configuration ────────────────────────────────────────
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-mirror.gcr.io}"
-DEV_VERSION="${DEV_VERSION:-0.0.1}"
+IMAGE_TAG="${IMAGE_TAG:-0.0.1}"
+SKIP_BUILD="${SKIP_BUILD:-false}"
 POSTGRESQL_PASSWORD="${POSTGRESQL_PASSWORD:-postgres}"
 INFERENCE_API_KEY="${INFERENCE_API_KEY:-dummy-api-key}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-minioadmin}"
@@ -33,9 +34,9 @@ JAEGER_NODE_PORT="${JAEGER_NODE_PORT:-30086}"
 PROMETHEUS_NODE_PORT="${PROMETHEUS_NODE_PORT:-30091}"
 GRAFANA_NODE_PORT="${GRAFANA_NODE_PORT:-30030}"
 MINIO_NODE_PORT="${MINIO_NODE_PORT:-30009}"
-APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${DEV_VERSION}}"
-PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:${DEV_VERSION}}"
-GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${DEV_VERSION}}"
+APISERVER_IMG="${APISERVER_IMG:-ghcr.io/llm-d-incubation/batch-gateway-apiserver:${IMAGE_TAG}}"
+PROCESSOR_IMG="${PROCESSOR_IMG:-ghcr.io/llm-d-incubation/batch-gateway-processor:${IMAGE_TAG}}"
+GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${IMAGE_TAG}}"
 # USE_KIND=true  → use kind; create cluster if it doesn't exist (default)
 # USE_KIND=false → use existing kubeconfig context (OpenShift / Kubernetes)
 USE_KIND="${USE_KIND:-true}"
@@ -241,9 +242,17 @@ build_images() {
     local target_arch
     target_arch="$(get_target_arch)"
 
-    step "Building container images (TARGETARCH=${target_arch}, version=${DEV_VERSION})..."
+    step "Building container images (TARGETARCH=${target_arch}, version=${IMAGE_TAG})..."
     cd "${REPO_ROOT}"
-    CONTAINER_TOOL="${CONTAINER_TOOL}" TARGETARCH="${target_arch}" DEV_VERSION="${DEV_VERSION}" make image-build
+    CONTAINER_TOOL="${CONTAINER_TOOL}" TARGETARCH="${target_arch}" IMAGE_TAG="${IMAGE_TAG}" make image-build
+}
+
+pull_images() {
+    step "Pulling images from GHCR..."
+    "${CONTAINER_TOOL}" pull "${APISERVER_IMG}"
+    "${CONTAINER_TOOL}" pull "${PROCESSOR_IMG}"
+    "${CONTAINER_TOOL}" pull "${GC_IMG}"
+    log "Images pulled successfully."
 }
 
 load_images() {
@@ -810,7 +819,7 @@ EOF
 # ── Batch Gateway ─────────────────────────────────────────────────────────────
 
 install_batch_gateway() {
-    step "Installing batch-gateway via Helm (version=${DEV_VERSION})..."
+    step "Installing batch-gateway via Helm (version=${IMAGE_TAG})..."
     cd "${REPO_ROOT}"
 
     local vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
@@ -818,9 +827,9 @@ install_batch_gateway() {
 
     local helm_args=(
         --set apiserver.image.pullPolicy=IfNotPresent
-        --set "apiserver.image.tag=${DEV_VERSION}"
+        --set "apiserver.image.tag=${IMAGE_TAG}"
         --set processor.image.pullPolicy=IfNotPresent
-        --set "processor.image.tag=${DEV_VERSION}"
+        --set "processor.image.tag=${IMAGE_TAG}"
         --set "global.fileClient.type=${FILE_CLIENT_TYPE}"
         --set "global.secretName=${APP_SECRET_NAME}"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.url=${vllm_sim_url}"
@@ -848,7 +857,7 @@ install_batch_gateway() {
         --set "processor.resources.requests.memory=256Mi"
         --set "gc.enabled=true"
         --set "gc.image.pullPolicy=IfNotPresent"
-        --set "gc.image.tag=${DEV_VERSION}"
+        --set "gc.image.tag=${IMAGE_TAG}"
         --set "gc.config.interval=5s"
         --namespace "${NAMESPACE}"
     )
@@ -1132,7 +1141,11 @@ main() {
     echo ""
 
     check_prerequisites
-    build_images
+    if [ "${SKIP_BUILD}" = "true" ]; then
+        pull_images
+    else
+        build_images
+    fi
     ensure_cluster
     install_redis
     install_postgresql

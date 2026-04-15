@@ -29,7 +29,8 @@ This script:
 | `KIND_CLUSTER_NAME`   | `batch-gateway-dev`                        | Kind cluster name (created if needed)              |
 | `HELM_RELEASE`        | `batch-gateway`                            | Helm release name                                  |
 | `NAMESPACE`           | `default`                                  | Kubernetes namespace                               |
-| `DEV_VERSION`         | `0.0.1`                                    | Image tag to build and deploy                      |
+| `IMAGE_TAG`           | `0.0.1`                                    | Image tag to build and deploy                      |
+| `SKIP_BUILD`          | `false`                                    | Pull images from GHCR instead of building locally  |
 | `LOCAL_PORT`          | `8000`                                     | Local port for the apiserver                       |
 | `LOG_VERBOSITY`       | `5`                                        | klog verbosity for apiserver and processor         |
 | `POSTGRESQL_RELEASE`  | `postgresql`                               | Helm release name for PostgreSQL                   |

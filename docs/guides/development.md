@@ -55,7 +55,7 @@ This produces:
 To use a different tag:
 
 ```bash
-DEV_VERSION=dev make image-build
+IMAGE_TAG=dev make image-build
 ```
 
 ## 3. Load Images to Kind
