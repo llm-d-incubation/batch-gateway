@@ -19,6 +19,12 @@ This directory contains demo files for testing the Batch Gateway system.
    make dev-deploy
    ```
 
+   To deploy a specific release version from GHCR instead of building locally:
+
+   ```bash
+   IMAGE_TAG=v0.1.0 SKIP_BUILD=true make dev-deploy
+   ```
+
    This will start:
    - API Server at <https://localhost:8000>
    - Processor at <http://localhost:9090>

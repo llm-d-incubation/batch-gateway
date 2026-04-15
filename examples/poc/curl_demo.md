@@ -8,6 +8,9 @@ Fast-track demo using curl commands.
 # Deploy the batch gateway
 make dev-deploy
 
+# Or deploy a specific release version from GHCR
+IMAGE_TAG=v0.1.0 SKIP_BUILD=true make dev-deploy
+
 # Navigate to the demo directory
 cd test/poc
 ```

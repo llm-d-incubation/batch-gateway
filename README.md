@@ -240,6 +240,9 @@ Deploy to a local Kind cluster for development:
 ```bash
 # Creates cluster, builds images, and deploys with Helm
 make dev-deploy
+
+# Or deploy a specific release version from GHCR
+IMAGE_TAG=v0.1.0 SKIP_BUILD=true make dev-deploy
 ```
 
 For detailed instructions, see [Development Guide](docs/guides/development.md).
