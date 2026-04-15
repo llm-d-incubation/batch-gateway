@@ -4,10 +4,10 @@ This directory contains demo files for testing the Batch Gateway system.
 
 ## Files
 
-- **batch_input_short.jsonl**: Short batch input file with requests split across `sim-model` and `sim-model-b`. Used for the complete processing demo (Demo 1).
-- **batch_input_long.jsonl**: Longer batch input file with requests split across `sim-model` and `sim-model-b`. Used for the cancellation demo (Demo 2), where the larger file gives more time to cancel mid-processing.
-- **demo.http**: REST Client format file for VS Code REST Client plugin with two complete demo sequences.
-- **curl_demo.md**: Fast-track demo guide using curl commands from the command line, with detailed examples for complete batch processing and cancellation workflows.
+- **batch_input_short.jsonl**: Short batch input file with requests split across `sim-model` and `sim-model-b`.
+- **batch_input_long.jsonl**: Longer batch input file with requests split across `sim-model` and `sim-model-b`.
+- **demo.http**: REST Client file for VS Code REST Client plugin, with two demo sequences.
+- **curl_demo.md**: Demo guide using curl commands from the command line, with detailed examples and demo sequences.
 
 ## Prerequisites
 
@@ -135,7 +135,7 @@ The demo environment runs the following components in a Kubernetes cluster (kind
 
 This demo shows the full lifecycle of a batch job:
 
-1. **Upload batch input file** (short)
+1. **Upload batch input file**
 2. **Create batch job** specifying the input file
 3. **Monitor batch status** by polling the batch endpoint
 4. **Download results** when processing completes
@@ -145,10 +145,10 @@ This demo shows the full lifecycle of a batch job:
 
 This demo shows how to cancel a running batch job:
 
-1. **Upload batch input file** (long)
+1. **Upload batch input file**
 2. **Create batch job**
 3. **Check initial status**
-4. **Cancel the batch** immediately
+4. **Cancel the batch**
 5. **Verify cancelled status**
 6. **Download partial results** (completed requests before cancellation)
 
@@ -211,7 +211,7 @@ Open <http://localhost:16686> in your browser to view distributed traces:
 
 Open <http://localhost:3000> in your browser (anonymous admin access, no login required):
 
-- Pre-configured Prometheus datasource
+- Pre-configured Prometheus data source
 - Batch Gateway dashboards are auto-loaded from the Helm chart
 
 ### Prometheus Metrics
