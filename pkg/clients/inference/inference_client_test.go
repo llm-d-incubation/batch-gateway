@@ -106,6 +106,7 @@ func testNewHTTPInferenceClient(t *testing.T) {
 			}
 			if client == nil {
 				t.Fatal("expected non-nil client")
+				return
 			}
 			if client.client == nil {
 				t.Error("expected non-nil client.client")
@@ -183,6 +184,7 @@ func testGenerate(t *testing.T) {
 		}
 		if resp == nil {
 			t.Fatal("expected non-nil response")
+			return
 		}
 		if resp.RequestID != "test-request-123" {
 			t.Errorf("got RequestID %v, want %v", resp.RequestID, "test-request-123")
@@ -227,6 +229,7 @@ func testGenerate(t *testing.T) {
 		}
 		if genErr == nil {
 			t.Fatal("expected non-nil error")
+			return
 		}
 		if genErr.Category != httpclient.ErrCategoryInvalidReq {
 			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryInvalidReq)
@@ -300,6 +303,7 @@ func testGenerate(t *testing.T) {
 		}
 		if genErr == nil {
 			t.Fatal("expected non-nil error")
+			return
 		}
 		if genErr.Category != httpclient.ErrCategoryInvalidReq {
 			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryInvalidReq)
@@ -439,6 +443,7 @@ func testErrorHandling(t *testing.T) {
 				}
 				if genErr == nil {
 					t.Fatal("expected non-nil error")
+					return
 				}
 				if genErr.Category != tt.wantCategory {
 					t.Errorf("got Category %v, want %v", genErr.Category, tt.wantCategory)
@@ -482,6 +487,7 @@ func testErrorHandling(t *testing.T) {
 		}
 		if resp == nil {
 			t.Fatal("expected non-nil response")
+			return
 		}
 		if resp.RequestID != "test" {
 			t.Errorf("got RequestID %v, want %v", resp.RequestID, "test")
@@ -519,6 +525,7 @@ func testErrorHandling(t *testing.T) {
 		}
 		if resp == nil {
 			t.Fatal("expected non-nil response")
+			return
 		}
 		if resp.RequestID != "test" {
 			t.Errorf("got RequestID %v, want %v", resp.RequestID, "test")
@@ -570,6 +577,7 @@ func testErrorHandling(t *testing.T) {
 		}
 		if genErr == nil {
 			t.Fatal("expected non-nil error")
+			return
 		}
 		if !strings.Contains(genErr.Message, "cancelled") {
 			t.Errorf("expected %q to contain %q", genErr.Message, "cancelled")
@@ -608,6 +616,7 @@ func testErrorHandling(t *testing.T) {
 		}
 		if genErr == nil {
 			t.Fatal("expected non-nil error")
+			return
 		}
 		if genErr.Category != httpclient.ErrCategoryServer {
 			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryServer)
@@ -724,6 +733,7 @@ func testRetryLogic(t *testing.T) {
 					}
 					if genErr == nil {
 						t.Fatal("expected non-nil error")
+						return
 					}
 					if genErr.Category != tt.wantErrorCategory {
 						t.Errorf("got Category %v, want %v", genErr.Category, tt.wantErrorCategory)
@@ -956,6 +966,7 @@ func testTLSConfiguration(t *testing.T) {
 		}
 		if tlsConfig == nil {
 			t.Fatal("expected non-nil TLS config for custom CA")
+			return
 		}
 		if tlsConfig.RootCAs == nil {
 			t.Error("expected non-nil RootCAs")
@@ -980,6 +991,7 @@ func testTLSConfiguration(t *testing.T) {
 		}
 		if tlsConfig == nil {
 			t.Fatal("expected non-nil TLS config for mTLS")
+			return
 		}
 		if len(tlsConfig.Certificates) != 1 {
 			t.Errorf("got %d certificates, want 1", len(tlsConfig.Certificates))
@@ -1002,6 +1014,7 @@ func testTLSConfiguration(t *testing.T) {
 		}
 		if tlsConfig == nil {
 			t.Fatal("expected non-nil TLS config")
+			return
 		}
 		if tlsConfig.RootCAs == nil {
 			t.Error("expected non-nil RootCAs")
@@ -1024,6 +1037,7 @@ func testTLSConfiguration(t *testing.T) {
 		}
 		if tlsConfig == nil {
 			t.Fatal("expected non-nil TLS config for version constraints")
+			return
 		}
 		if tlsConfig.MinVersion != uint16(tls.VersionTLS12) {
 			t.Errorf("got MinVersion %v, want %v", tlsConfig.MinVersion, uint16(tls.VersionTLS12))
@@ -1240,6 +1254,7 @@ func testNetworkErrors(t *testing.T) {
 		}
 		if genErr == nil {
 			t.Fatal("expected non-nil error")
+			return
 		}
 		if genErr.Category != httpclient.ErrCategoryServer {
 			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryServer)
@@ -1274,6 +1289,7 @@ func testNetworkErrors(t *testing.T) {
 		}
 		if genErr == nil {
 			t.Fatal("expected non-nil error")
+			return
 		}
 		if genErr.Category != httpclient.ErrCategoryServer {
 			t.Errorf("got Category %v, want %v", genErr.Category, httpclient.ErrCategoryServer)

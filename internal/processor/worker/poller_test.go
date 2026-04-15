@@ -164,6 +164,7 @@ func TestPoller_DequeueOne_ReturnsFirstTask(t *testing.T) {
 	}
 	if task == nil {
 		t.Fatalf("DequeueOne() task=nil, want non-nil")
+		return
 	}
 	if task.ID != wantID {
 		t.Fatalf("DequeueOne() id=%q, want %q", task.ID, wantID)
@@ -285,6 +286,7 @@ func TestPoller_FetchJobItem_Found_ReturnsJobItem(t *testing.T) {
 	}
 	if jobItem == nil {
 		t.Fatalf("FetchJobItemByID() jobItem=nil, want non-nil")
+		return
 	}
 	if jobItem.ID != task.ID {
 		t.Fatalf("FetchJobItemByID() id=%q, want %q", jobItem.ID, task.ID)
