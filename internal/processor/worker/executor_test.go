@@ -1149,6 +1149,7 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	}
 	if counts == nil {
 		t.Fatal("expected non-nil counts")
+		return
 	}
 	// Early exit: total is known from the model map, but no requests were dispatched or drained.
 	if counts.Total != 3 {

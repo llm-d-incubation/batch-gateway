@@ -14,7 +14,8 @@
 @tenantHeader = X-MaaS-Username
 @tenantId = demo-user
 @apiKey = unused
-@inputFile = batch_input.jsonl
+@inputFileShort = batch_input_short.jsonl
+@inputFileLong = batch_input_long.jsonl
 
 # ============================================================
 # DEMO SEQUENCE 1: Complete Batch Processing Flow
@@ -32,10 +33,10 @@ Content-Disposition: form-data; name="purpose"
 
 batch
 ------WebKitFormBoundary7MA4YWxkTrZu0gW
-Content-Disposition: form-data; name="file"; filename="{{inputFile}}"
+Content-Disposition: form-data; name="file"; filename="{{inputFileShort}}"
 Content-Type: application/jsonl
 
-< ./{{inputFile}}
+< ./{{inputFileShort}}
 ------WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 # Set @fileIdN with the file ID returned in this step
@@ -101,10 +102,10 @@ Content-Disposition: form-data; name="purpose"
 
 batch
 ------WebKitFormBoundary7MA4YWxkTrZu0gW
-Content-Disposition: form-data; name="file"; filename="{{inputFile}}"
+Content-Disposition: form-data; name="file"; filename="{{inputFileLong}}"
 Content-Type: application/jsonl
 
-< ./{{inputFile}}
+< ./{{inputFileLong}}
 ------WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 # Set @fileIdC with the file ID returned in this step

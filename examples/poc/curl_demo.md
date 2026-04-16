@@ -8,6 +8,9 @@ Fast-track demo using curl commands.
 # Deploy the batch gateway
 make dev-deploy
 
+# Or deploy a specific release version from GHCR
+IMAGE_TAG=v0.1.0 SKIP_BUILD=true make dev-deploy
+
 # Navigate to the demo directory
 cd test/poc
 ```
@@ -20,7 +23,7 @@ FILE_RESPONSE=$(curl -k -s -X POST https://localhost:8000/v1/files \
   -H "X-MaaS-Username: demo-user" \
   -H "Authorization: Bearer unused" \
   -F "purpose=batch" \
-  -F "file=@batch_input.jsonl;type=application/jsonl")
+  -F "file=@batch_input_short.jsonl;type=application/jsonl")
 
 FILE_ID=$(echo $FILE_RESPONSE | jq -r '.id')
 echo "Uploaded file: $FILE_ID"
@@ -69,7 +72,7 @@ FILE_RESPONSE=$(curl -k -s -X POST https://localhost:8000/v1/files \
   -H "X-MaaS-Username: demo-user" \
   -H "Authorization: Bearer unused" \
   -F "purpose=batch" \
-  -F "file=@batch_input.jsonl;type=application/jsonl")
+  -F "file=@batch_input_long.jsonl;type=application/jsonl")
 
 FILE_ID=$(echo $FILE_RESPONSE | jq -r '.id')
 echo "Uploaded file: $FILE_ID"

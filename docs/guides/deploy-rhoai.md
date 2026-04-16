@@ -523,10 +523,6 @@ spec:
   replicas: 2
   router:
     route: {}
-    gateway:
-      refs:
-        - name: openshift-ai-inference
-          namespace: openshift-ingress
     scheduler: {}
   template:
     containers:

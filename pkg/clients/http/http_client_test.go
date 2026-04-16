@@ -57,6 +57,7 @@ func TestNewHTTPClient_Defaults(t *testing.T) {
 
 	if client == nil {
 		t.Fatal("Expected non-nil client")
+		return
 	}
 
 	// Verify transport settings (defaults should be applied)
@@ -468,6 +469,7 @@ func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
 
 	if clientErr == nil {
 		t.Fatal("Expected non-nil error")
+		return
 	}
 
 	if clientErr.Category != ErrCategoryAuth {
@@ -496,6 +498,7 @@ func TestHandleErrorResponse_PlainText(t *testing.T) {
 
 	if clientErr == nil {
 		t.Fatal("Expected non-nil error")
+		return
 	}
 
 	if clientErr.Category != ErrCategoryServer {
@@ -516,6 +519,7 @@ func TestHandleErrorResponse_EmptyBody(t *testing.T) {
 
 	if clientErr == nil {
 		t.Fatal("Expected non-nil error")
+		return
 	}
 
 	if clientErr.Category != ErrCategoryServer {
@@ -607,6 +611,7 @@ func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
 
 	if tlsConfig == nil {
 		t.Fatal("Expected non-nil TLS config")
+		return
 	}
 
 	if !tlsConfig.InsecureSkipVerify {
@@ -637,6 +642,7 @@ func TestBuildTLSConfig_CustomCA(t *testing.T) {
 
 	if tlsConfig == nil {
 		t.Fatal("Expected non-nil TLS config")
+		return
 	}
 
 	if tlsConfig.RootCAs == nil {
@@ -715,6 +721,7 @@ func TestBuildTLSConfig_TLSVersions(t *testing.T) {
 
 	if tlsConfig == nil {
 		t.Fatal("Expected non-nil TLS config")
+		return
 	}
 
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
@@ -749,6 +756,7 @@ func TestBuildTLSConfig_CombinedOptions(t *testing.T) {
 
 	if tlsConfig == nil {
 		t.Fatal("Expected non-nil TLS config")
+		return
 	}
 
 	if tlsConfig.RootCAs == nil {

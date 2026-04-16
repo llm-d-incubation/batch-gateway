@@ -159,6 +159,8 @@ EOF
     log "Cluster domain: ${domain}, Gateway hostname: ${hostname}"
 
     # Gateway CR
+    # KServe does NOT create the Gateway CR itself — it only creates HTTPRoutes
+    # that reference this Gateway. The Gateway must be pre-provisioned.
     if kubectl get gateway ${GATEWAY_NAME} -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
         log "Gateway already exists. Skipping."
     else
@@ -505,10 +507,12 @@ spec:
   replicas: ${MODEL_REPLICAS}
   router:
     route: {}
-    gateway:
-      refs:
-        - name: ${GATEWAY_NAME}
-          namespace: ${GATEWAY_NAMESPACE}
+    #gateway:
+    #  refs:
+    #    - name: ${GATEWAY_NAME}
+    #      namespace: ${GATEWAY_NAMESPACE}
+    # No gateway.refs needed: KServe uses the default gateway configured in
+    # inferenceservice-config ConfigMap (kserveIngressGateway: openshift-ingress/openshift-ai-inference).
     scheduler: {}
   template:
     containers:
@@ -560,6 +564,12 @@ spec:
             cpu: 500m
             memory: 512Mi
 EOF
+
+    step "Waiting for LLMInferenceService '${isvc_name}' pods to start"
+    for deploy in ${isvc_name}-kserve \
+                  ${isvc_name}-kserve-router-scheduler; do
+        wait_for_deployment "$deploy" "${LLM_NAMESPACE}" 180s
+    done
 
     step "Waiting for LLMInferenceService '${isvc_name}' to be ready..."
     local i=0

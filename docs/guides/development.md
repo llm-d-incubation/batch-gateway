@@ -9,6 +9,7 @@ This guide walks through deploying both the **batch-gateway-apiserver** and **ba
 - [Docker] (or [Podman])
 - [Kind]
 - [Helm]
+- [kubectl]
 
 [Make]:https://www.gnu.org/software/make/
 [Golang]:https://go.dev/
@@ -16,7 +17,7 @@ This guide walks through deploying both the **batch-gateway-apiserver** and **ba
 [Podman]:https://podman.io/
 [Kind]:https://github.com/kubernetes-sigs/kind
 [Helm]:https://helm.sh
-
+[kubectl]:https://kubernetes.io/docs/tasks/tools/
 
 ## 1. Create a Kind Cluster
 
@@ -39,6 +40,7 @@ From the repository root, build both images. The Makefile auto-detects Docker or
 ```bash
 $ make image-build
 ```
+
 To force Podman:
 
 ```bash
@@ -53,7 +55,7 @@ This produces:
 To use a different tag:
 
 ```bash
-DEV_VERSION=dev make image-build
+IMAGE_TAG=dev make image-build
 ```
 
 ## 3. Load Images to Kind

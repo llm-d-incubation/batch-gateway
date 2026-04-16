@@ -53,6 +53,7 @@ func TestNewConfig_Defaults(t *testing.T) {
 	c := NewConfig()
 	if c == nil {
 		t.Fatalf("NewConfig returned nil")
+		return
 	}
 
 	if c.PollInterval != 5*time.Second {

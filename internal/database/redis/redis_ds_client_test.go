@@ -609,6 +609,7 @@ func TestRedisDSClient(t *testing.T) {
 		}
 		if ec == nil {
 			t.Fatalf("Invalid event consumer channel")
+			return
 		}
 		if ec.ID != ID {
 			t.Fatalf("Mismatch ID %s != %s", ec.ID, ID)
@@ -1849,6 +1850,7 @@ func isEqualBatchItem(t *testing.T, a, b *db_api.BatchItem) bool {
 	t.Helper()
 	if a == nil || b == nil {
 		t.Fatalf("Invalid items to compare")
+		return false
 	}
 	if a.ID != b.ID {
 		t.Fatalf("Mismatch id %s != %s", a.ID, b.ID)
@@ -1883,6 +1885,7 @@ func isEqualFileItem(t *testing.T, a, b *db_api.FileItem) bool {
 	t.Helper()
 	if a == nil || b == nil {
 		t.Fatalf("Invalid items to compare")
+		return false
 	}
 	if a.ID != b.ID {
 		t.Fatalf("Mismatch id %s != %s", a.ID, b.ID)

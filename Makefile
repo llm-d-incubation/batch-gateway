@@ -5,7 +5,7 @@ SHELL := /usr/bin/env bash
 TARGETARCH ?= $(shell go env GOARCH)
 
 # Variables
-DEV_VERSION ?= 0.0.1
+IMAGE_TAG ?= 0.0.1
 APISERVER_BINARY=batch-gateway-apiserver
 PROCESSOR_BINARY=batch-gateway-processor
 GC_BINARY=batch-gateway-gc
@@ -20,11 +20,11 @@ RELEASE_BINARIES := apiserver:$(CMD_APISERVER) processor:$(CMD_PROCESSOR) gc:$(C
 BINARIES_DIR ?= dist/binaries
 RELEASE_DIR ?= release
 APISERVER_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(APISERVER_BINARY)
-APISERVER_IMG = $(APISERVER_IMAGE_TAG_BASE):$(DEV_VERSION)
+APISERVER_IMG = $(APISERVER_IMAGE_TAG_BASE):$(IMAGE_TAG)
 PROCESSOR_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(PROCESSOR_BINARY)
-PROCESSOR_IMG = $(PROCESSOR_IMAGE_TAG_BASE):$(DEV_VERSION)
+PROCESSOR_IMG = $(PROCESSOR_IMAGE_TAG_BASE):$(IMAGE_TAG)
 GC_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(GC_BINARY)
-GC_IMG = $(GC_IMAGE_TAG_BASE):$(DEV_VERSION)
+GC_IMG = $(GC_IMAGE_TAG_BASE):$(IMAGE_TAG)
 GO=go
 GOFLAGS=
 LDFLAGS=-ldflags "-s -w"
