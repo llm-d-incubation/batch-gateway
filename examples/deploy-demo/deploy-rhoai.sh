@@ -28,6 +28,7 @@ LLM_NAMESPACE="${LLM_NAMESPACE:-llm}"
 KUADRANT_NAMESPACE="${KUADRANT_NAMESPACE:-kuadrant-system}"
 
 OPERATOR_TYPE="${OPERATOR_TYPE:-rhoai}"    # rhoai or odh
+CUSTOM_CATALOG="${CUSTOM_CATALOG:-}"       # custom catalog image (e.g. quay.io/rhoai/rhoai-fbc-fragment:...)
 RHOAI_VERSION="${RHOAI_VERSION:-3.4}"
 RHOAI_CHANNEL="${RHOAI_CHANNEL:-stable-${RHOAI_VERSION}}"
 ODH_CHANNEL="${ODH_CHANNEL:-fast-3}"
@@ -317,9 +318,8 @@ spec:
       enabled: false
 EOF
 
-    step "Waiting for Authorino pods to be ready..."
-    kubectl wait --for=condition=ready pod -l authorino-resource=authorino \
-        -n "${ns}" --timeout=180s
+    step "Waiting for Authorino deployment to be ready..."
+    wait_for_deployment "authorino" "${ns}" 180s
 
     # If RHOAI was already installed before Connectivity Link, restart controllers
     if kubectl get deployment odh-model-controller -n redhat-ods-applications &>/dev/null; then
@@ -332,6 +332,48 @@ EOF
 }
 
 # ── 5. RHOAI / ODH operator ─────────────────────────────────────────────────
+
+create_custom_catalogsource() {
+    local name="$1"
+    local namespace="$2"
+    local image="$3"
+    local timeout="${4:-120}"
+
+    step "Creating custom CatalogSource '${name}' from image: ${image}"
+
+    # Delete existing CatalogSource to force image refresh
+    if kubectl get catalogsource "${name}" -n "${namespace}" &>/dev/null; then
+        log "CatalogSource '${name}' already exists. Updating..."
+        kubectl delete catalogsource "${name}" -n "${namespace}" --ignore-not-found
+    fi
+
+    kubectl apply -f - <<EOF
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: ${name}
+  namespace: ${namespace}
+spec:
+  sourceType: grpc
+  image: ${image}
+  displayName: "Custom ${name} Catalog"
+  publisher: "Custom"
+  updateStrategy:
+    registryPoll:
+      interval: 10m
+EOF
+
+    step "Waiting for CatalogSource '${name}' to be ready..."
+    if ! kubectl wait catalogsource "${name}" -n "${namespace}" \
+        --for=jsonpath='{.status.connectionState.lastObservedState}'=READY \
+        --timeout="${timeout}s" 2>/dev/null; then
+        local state
+        state=$(kubectl get catalogsource "${name}" -n "${namespace}" \
+            -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "unknown")
+        die "CatalogSource '${name}' not ready after ${timeout}s (state: ${state})"
+    fi
+    log "CatalogSource '${name}' is ready."
+}
 
 install_rhoai_operator() {
     step "Installing ${OPERATOR_TYPE} operator (OLM)..."
@@ -355,19 +397,30 @@ install_rhoai_operator() {
             ;;
     esac
 
+    # Custom catalog: create CatalogSource and override catalog source name
+    if [ -n "${CUSTOM_CATALOG}" ]; then
+        local custom_catalog_name="${OPERATOR_TYPE}-custom-catalog"
+        log "Using custom catalog: ${CUSTOM_CATALOG}"
+        create_custom_catalogsource "${custom_catalog_name}" "openshift-marketplace" "${CUSTOM_CATALOG}"
+        catalog="${custom_catalog_name}"
+    fi
+
     if kubectl get subscription.operators.coreos.com "${operator_name}" \
         -n "${namespace}" &>/dev/null 2>&1; then
         log "${OPERATOR_TYPE} operator already installed. Skipping."
     else
-        # Validate channel exists in catalog
-        local available_channels
-        available_channels=$(kubectl get packagemanifest "${operator_name}" \
-            -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
-        if [ -z "${available_channels}" ]; then
-            die "PackageManifest '${operator_name}' not found in catalog. Is the catalog source available?"
-        fi
-        if ! echo " ${available_channels} " | grep -q " ${channel} "; then
-            die "Channel '${channel}' not found for '${operator_name}'. Available: ${available_channels}"
+        # Validate channel exists in catalog (skip for custom catalogs —
+        # PackageManifest may not be synced yet after CatalogSource creation)
+        if [ -z "${CUSTOM_CATALOG}" ]; then
+            local available_channels
+            available_channels=$(kubectl get packagemanifest "${operator_name}" \
+                -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+            if [ -z "${available_channels}" ]; then
+                die "PackageManifest '${operator_name}' not found in catalog. Is the catalog source available?"
+            fi
+            if ! echo " ${available_channels} " | grep -q " ${channel} "; then
+                die "Channel '${channel}' not found for '${operator_name}'. Available: ${available_channels}"
+            fi
         fi
 
         kubectl create namespace "${namespace}" 2>/dev/null || true
@@ -408,6 +461,24 @@ EOF
             die "Expected RHOAI ${RHOAI_VERSION} but installedCSV is '${installed_csv}'."
         fi
         log "RHOAI installedCSV: ${installed_csv}"
+    fi
+
+    # Verify operator was installed from the expected catalog source
+    if [ -n "${CUSTOM_CATALOG}" ]; then
+        local expected_catalog="${OPERATOR_TYPE}-custom-catalog"
+        local install_plan
+        install_plan=$(kubectl get subscription.operators.coreos.com "${operator_name}" \
+            -n "${namespace}" -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null || echo "")
+        if [ -z "${install_plan}" ]; then
+            die "No InstallPlan found for subscription '${operator_name}'."
+        fi
+        local actual_catalog
+        actual_catalog=$(kubectl get installplan "${install_plan}" \
+            -n "${namespace}" -o jsonpath='{.status.bundleLookups[0].catalogSourceRef.name}' 2>/dev/null || echo "")
+        if [ "${actual_catalog}" != "${expected_catalog}" ]; then
+            die "Operator installed from catalog '${actual_catalog}' instead of '${expected_catalog}'. Custom catalog was not used!"
+        fi
+        log "Verified: operator installed from custom catalog '${actual_catalog}'."
     fi
 }
 
@@ -755,6 +826,7 @@ cmd_install() {
     echo ""
     log "Setup complete."
     log "  Operator: ${OPERATOR_TYPE}"
+    [ -n "${CUSTOM_CATALOG}" ] && log "  Catalog:  ${CUSTOM_CATALOG} (custom)"
     log "  Model: ${MODEL_NAME} (simulator, ${MODEL_REPLICAS} replicas, no GPU)"
     log "  Batch Gateway: ${BATCH_HELM_RELEASE} (${BATCH_NAMESPACE})"
     if [ -n "${BATCH_RELEASE_VERSION}" ]; then
@@ -899,6 +971,9 @@ cmd_uninstall() {
         csv=$(kubectl get csv -n "${namespace}" --no-headers 2>/dev/null | grep "${operator_name}" | awk '{print $1}')
         [ -n "${csv}" ] && kubectl delete csv "${csv}" -n "${namespace}" 2>/dev/null || true
 
+        # Remove custom CatalogSource if it exists
+        kubectl delete catalogsource "${OPERATOR_TYPE}-custom-catalog" -n openshift-marketplace 2>/dev/null || true
+
         # Red Hat Connectivity Link (Kuadrant)
         step "Removing Connectivity Link..."
         kubectl delete kuadrant kuadrant -n "${KUADRANT_NAMESPACE}" 2>/dev/null || true
@@ -964,6 +1039,7 @@ usage() {
     echo ""
     echo "Environment Variables:"
     echo "  OPERATOR_TYPE    rhoai or odh (default: rhoai)"
+    echo "  CUSTOM_CATALOG    Custom catalog image for operator (creates CatalogSource)"
     echo "  RHOAI_VERSION    RHOAI version (default: 3.4)"
     echo "  RHOAI_CHANNEL    OLM channel (default: stable-\${RHOAI_VERSION})"
     echo "  MODEL_NAME       Model name for simulator (default: facebook/opt-125m)"
