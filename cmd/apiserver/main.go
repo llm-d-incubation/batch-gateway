@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
+	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/server"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
@@ -65,6 +66,8 @@ func run() error {
 			logger.Error(err, "Failed to shutdown tracer")
 		}
 	}()
+
+	metrics.InitMetrics()
 
 	logger.Info("starting api server")
 

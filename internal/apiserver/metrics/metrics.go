@@ -46,7 +46,8 @@ var (
 	)
 )
 
-func init() {
+// Register registers all HTTP metrics with the default Prometheus registry.
+func InitMetrics() {
 	prometheus.MustRegister(httpRequestsTotal)
 	prometheus.MustRegister(httpRequestDuration)
 	prometheus.MustRegister(httpRequestsInFlight)

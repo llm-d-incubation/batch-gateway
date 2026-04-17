@@ -21,7 +21,7 @@ OpenAI-compatible batch API gateway for llm-d. Three binaries: apiserver, batch-
 - **No os.Exit outside main**: `os.Exit` and `log.Fatal` belong only in `main()`. Everywhere else, return errors.
 - **No mutable globals**: Avoid package-level mutable variables. Use dependency injection. Exceptions: compiled regexps, SQL schemas, error sentinels.
 - **Type assertions**: Always use comma-ok form `v, ok := x.(T)` to avoid panics.
-- **No init()**: Avoid `func init()` except for metric/schema registration. Pass dependencies explicitly.
+- **No init()**: Avoid `func init()`. Pass dependencies explicitly.
 - **Defer for cleanup**: Use `defer` to release resources (files, locks, HTTP bodies).
 
 ## Build & Verify
