@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -311,11 +310,10 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		p.wg.Add(1)
 		go p.runJob(jobCtx, &jobExecutionParams{
-			updater:         p.updater,
-			jobItem:         jobItem,
-			jobInfo:         jobInfo,
-			task:            task,
-			cancelRequested: &atomic.Bool{},
+			updater: p.updater,
+			jobItem: jobItem,
+			jobInfo: jobInfo,
+			task:    task,
 		})
 	}
 }

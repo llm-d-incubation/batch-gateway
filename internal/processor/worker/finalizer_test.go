@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -313,12 +312,12 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 	}
 
 	// Simulate that the worker observed the cancel request before writing the final status.
-	var cancelRequested atomic.Bool
-	cancelRequested.Store(true)
+	cancelledCtx, cancelFn := context.WithCancel(ctx)
+	cancelFn()
 
-	err := p.finalizeJob(ctx, updater, staleJob, jobInfo, counts, &cancelRequested)
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled, got: %v", err)
+	err := p.finalizeJob(ctx, cancelledCtx, updater, staleJob, jobInfo, counts)
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled, got: %v", err)
 	}
 
 	// Verify that the final status written to the DB is cancelled, not completed.
@@ -334,6 +333,320 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 
 	if finalStatus.Status != openai.BatchStatusCancelled {
 		t.Fatalf("expected final status to be %s, got %s", openai.BatchStatusCancelled, finalStatus.Status)
+	}
+}
+
+// TestFinalizeJob_ShutdownDuringFinalization_CompletesNotCancelled verifies that a SIGTERM
+// (ctx cancelled) during finalization does NOT route the job to cancelled.
+// userCancelCtx is derived from context.Background(), so SIGTERM does not propagate into it.
+// The job must transition to completed regardless of whether the parent ctx is cancelled.
+func TestFinalizeJob_ShutdownDuringFinalization_CompletesNotCancelled(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	dbClient := newSpyBatchDB(newMockBatchDBClient())
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobID := "job-shutdown-during-final"
+	tenantID := "tenant-1"
+
+	dbJob := seedDBJob(t, dbClient, jobID)
+	dbJob.TenantID = tenantID
+	dbJob.Status = mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})
+	setupCtx := testLoggerCtx(t)
+	if err := dbClient.DBStore(setupCtx, dbJob); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  newMockFileDBClient(),
+		File:    &failNTimesFilesClient{failCount: 0},
+		Status:  statusClient,
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, dbClient)
+
+	updater := NewStatusUpdater(dbClient, statusClient, 86400)
+
+	jobDir, _ := p.jobRootDir(jobID, tenantID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte("test output\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	staleJob := &db.BatchItem{
+		BaseIndexes: db.BaseIndexes{ID: jobID, TenantID: tenantID},
+		BaseContents: db.BaseContents{
+			Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress}),
+		},
+	}
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
+
+	// Simulate SIGTERM: parent ctx is cancelled.
+	// userCancelCtx is derived from context.Background() — NOT from ctx — so it is not cancelled.
+	shutdownCtx, shutdownCancel := context.WithCancel(testLoggerCtx(t))
+	shutdownCancel() // SIGTERM fires
+
+	userCancelCtx := context.Background() // no user cancel
+
+	err := p.finalizeJob(shutdownCtx, userCancelCtx, updater, staleJob, jobInfo, counts)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	jobsFinal, _, _, getErr := dbClient.DBGet(testLoggerCtx(t), &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if getErr != nil || len(jobsFinal) == 0 {
+		t.Fatalf("DBGet failed: err=%v len=%d", getErr, len(jobsFinal))
+	}
+	var finalStatus openai.BatchStatusInfo
+	if err := json.Unmarshal(jobsFinal[0].Status, &finalStatus); err != nil {
+		t.Fatalf("Unmarshal status: %v", err)
+	}
+	if finalStatus.Status != openai.BatchStatusCompleted {
+		t.Fatalf("expected completed (SIGTERM must not trigger user-cancel path), got %s", finalStatus.Status)
+	}
+}
+
+// --- failover file-ID preservation tests ---
+
+// TestFinalizeJob_CompletedWriteFails_FallsBackToFailedWithFileIDs verifies that when
+// uploads succeed but UpdateCompletedStatus fails, finalizeJob falls back to
+// UpdateFailedStatus with file IDs preserved (not empty). This prevents the orphan-file
+// scenario where real output exists in storage but the batch object has no references.
+func TestFinalizeJob_CompletedWriteFails_FallsBackToFailedWithFileIDs(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	innerDB := newMockBatchDBClient()
+	failDB := &failOnStatusDB{
+		inner:      innerDB,
+		failStatus: openai.BatchStatusCompleted,
+		failErr:    errors.New("injected: completed write failed"),
+	}
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobID := "job-failover-completed"
+	tenantID := "tenant-1"
+
+	dbJob := seedDBJob(t, innerDB, jobID)
+	dbJob.TenantID = tenantID
+
+	clients := &clientset.Clientset{
+		BatchDB: failDB,
+		FileDB:  newMockFileDBClient(),
+		File:    &failNTimesFilesClient{failCount: 0},
+		Status:  statusClient,
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, failDB)
+	updater := NewStatusUpdater(failDB, statusClient, 86400)
+
+	jobDir, _ := p.jobRootDir(jobID, tenantID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"r1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	staleJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
+
+	ctx := testLoggerCtx(t)
+	err := p.finalizeJob(ctx, context.Background(), updater, staleJob, jobInfo, counts)
+
+	// Must return errFinalizeFailedOver (fallback succeeded).
+	if !errors.Is(err, errFinalizeFailedOver) {
+		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
+	}
+
+	// Verify DB state: status must be "failed" with file IDs preserved.
+	items, _, _, getErr := innerDB.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if getErr != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", getErr, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.OutputFileID == nil {
+		t.Fatal("output_file_id must be preserved in fallback, got nil")
+	}
+	if got.RequestCounts.Total != 1 || got.RequestCounts.Completed != 1 {
+		t.Fatalf("request_counts = %+v, want {1,1,0}", got.RequestCounts)
+	}
+}
+
+// TestFinalizeJob_CancelledWriteFails_FallsBackToFailedWithFileIDs verifies the cancel
+// path of the failover logic: uploads succeed, then user cancel triggers during
+// finalization, but UpdateCancelledStatus fails. The fallback must write "failed"
+// status with file IDs preserved, exactly like the completed-write-failure variant.
+func TestFinalizeJob_CancelledWriteFails_FallsBackToFailedWithFileIDs(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	innerDB := newMockBatchDBClient()
+	failDB := &failOnStatusDB{
+		inner:      innerDB,
+		failStatus: openai.BatchStatusCancelled,
+		failErr:    errors.New("injected: cancelled write failed"),
+	}
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobID := "job-failover-cancelled"
+	tenantID := "tenant-1"
+
+	dbJob := seedDBJob(t, innerDB, jobID)
+	dbJob.TenantID = tenantID
+
+	clients := &clientset.Clientset{
+		BatchDB: failDB,
+		FileDB:  newMockFileDBClient(),
+		File:    &failNTimesFilesClient{failCount: 0},
+		Status:  statusClient,
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, failDB)
+	updater := NewStatusUpdater(failDB, statusClient, 86400)
+
+	jobDir, _ := p.jobRootDir(jobID, tenantID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"r1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	staleJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
+
+	// userCancelCtx is cancelled → finalization takes the cancel path.
+	ctx := testLoggerCtx(t)
+	userCancelCtx, userCancelFn := context.WithCancel(context.Background())
+	userCancelFn()
+
+	err := p.finalizeJob(ctx, userCancelCtx, updater, staleJob, jobInfo, counts)
+
+	if !errors.Is(err, errFinalizeFailedOver) {
+		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
+	}
+
+	items, _, _, getErr := innerDB.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if getErr != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", getErr, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.OutputFileID == nil {
+		t.Fatal("output_file_id must be preserved in cancel-path fallback, got nil")
+	}
+	if got.RequestCounts.Total != 1 || got.RequestCounts.Completed != 1 {
+		t.Fatalf("request_counts = %+v, want {1,1,0}", got.RequestCounts)
+	}
+}
+
+// TestFinalizeJob_OneUploadFails_FailedWithSurvivingFileID verifies that when one of the
+// two concurrent uploads fails, finalizeJob marks the job as failed (not completed) and
+// preserves the surviving file ID in the DB. Marking completed with a missing artifact
+// would violate the batch contract; marking failed with empty file IDs would orphan the
+// successfully-uploaded artifact.
+func TestFinalizeJob_OneUploadFails_FailedWithSurvivingFileID(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	innerDB := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+	filesClient := &failOnNthCallClient{
+		failN:   1,
+		failErr: errors.New("injected: one upload fails"),
+	}
+
+	jobID := "job-partial-upload"
+	tenantID := "tenant-1"
+
+	dbJob := seedDBJob(t, innerDB, jobID)
+	dbJob.TenantID = tenantID
+
+	clients := &clientset.Clientset{
+		BatchDB: innerDB,
+		FileDB:  newMockFileDBClient(),
+		File:    filesClient,
+		Status:  statusClient,
+		Queue:   mockdb.NewMockBatchPriorityQueueClient(),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, innerDB)
+	updater := NewStatusUpdater(innerDB, statusClient, 86400)
+
+	jobDir, _ := p.jobRootDir(jobID, tenantID)
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte(`{"id":"batch_req_1","custom_id":"r1","response":{"status_code":200}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile output: %v", err)
+	}
+	errorPath, _ := p.jobErrorFilePath(jobID, tenantID)
+	if err := os.WriteFile(errorPath, []byte(`{"id":"batch_req_2","custom_id":"r2","error":{"code":"batch_failed"}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	staleJob := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: jobID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
+	}
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	counts := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
+
+	ctx := testLoggerCtx(t)
+	err := p.finalizeJob(ctx, context.Background(), updater, staleJob, jobInfo, counts)
+	if !errors.Is(err, errFinalizeFailedOver) {
+		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
+	}
+
+	items, _, _, getErr := innerDB.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if getErr != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", getErr, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed (partial upload must not be marked completed)", got.Status)
+	}
+
+	// Exactly one upload failed (1st Store call), so exactly one file ID should survive.
+	hasOutput := got.OutputFileID != nil
+	hasError := got.ErrorFileID != nil
+	if hasOutput == hasError {
+		t.Fatalf("expected exactly one surviving file ID, got output=%v error=%v", got.OutputFileID, got.ErrorFileID)
 	}
 }
 
@@ -437,7 +750,7 @@ func TestFinalizeJob_UploadsFilesInParallel(t *testing.T) {
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
 
-	err := p.finalizeJob(ctx, updater, dbJob, jobInfo, counts, nil)
+	err := p.finalizeJob(ctx, context.Background(), updater, dbJob, jobInfo, counts)
 	if err != nil {
 		t.Fatalf("finalizeJob returned error: %v", err)
 	}

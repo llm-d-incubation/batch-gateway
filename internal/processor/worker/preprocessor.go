@@ -21,11 +21,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -42,35 +42,30 @@ import (
 // error entries for requests targeting unregistered models.
 // The rejected count is persisted in model_map.json so executeJob can
 // seed BatchRequestCounts.Failed without an extra parameter.
-func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo, cancelRequested *atomic.Bool) error {
+func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jobInfo *batch_types.JobInfo) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
 	planBuildStart := time.Now()
 	jobID := jobInfo.JobID
 	inputFileID := jobInfo.BatchJob.InputFileID
 	if inputFileID == "" {
-		err := fmt.Errorf("input file ID is empty")
-		logger.Error(err, "Input file ID is empty")
-		return err
+		return fmt.Errorf("input file ID is empty")
 	}
 
 	jobRootDir, err := p.jobRootDir(jobID, jobInfo.TenantID)
 	if err != nil {
-		logger.Error(err, "Failed to resolve job root directory")
-		return err
+		return fmt.Errorf("resolve job root directory: %w", err)
 	}
 
 	// job directory creation
 	if err := os.MkdirAll(jobRootDir, 0o700); err != nil {
-		logger.Error(err, "Failed to create job root directory", "jobRootDir", jobRootDir)
-		return err
+		return fmt.Errorf("create job root directory %q: %w", jobRootDir, err)
 	}
 
 	// input file stream open
 	reader, metadata, err := p.openInputFileStream(ctx, inputFileID)
 	if err != nil {
-		logger.Error(err, "Failed to open input file stream", "inputFileId", inputFileID)
-		return err
+		return fmt.Errorf("open input file stream %q: %w", inputFileID, err)
 	}
 	defer reader.Close()
 
@@ -81,8 +76,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	// create local input file
 	localInputFile, localInputFilePath, err := p.createLocalInputFile(jobID, jobInfo.TenantID)
 	if err != nil {
-		logger.Error(err, "Failed to create local input file", "path", localInputFilePath)
-		return err
+		return fmt.Errorf("create local input file: %w", err)
 	}
 	defer localInputFile.Close()
 
@@ -131,22 +125,24 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	inputFileReader := bufio.NewReaderSize(reader, 1024*1024)
 
 	for {
-		// Ingestion uses the parent ctx (not abortCtx), so user-cancel signals do not
-		// propagate through the context tree. Check cancelRequested explicitly.
-		if ctx.Err() != nil {
-			return ctx.Err()
+		// Priority: SLO expiry > user cancel > pod shutdown, matching processModel's
+		// drain switch. This ensures a user cancel is honoured even when SIGTERM arrives
+		// concurrently, instead of re-enqueueing a job the user asked to cancel.
+		if errors.Is(sloCtx.Err(), context.DeadlineExceeded) {
+			return errExpired
 		}
-		if cancelRequested.Load() {
+		if userCancelCtx.Err() != nil {
 			logger.V(logging.INFO).Info("preProcess: cancel requested")
-			return ErrCancelled
+			return errCancelled
+		}
+		if ctx.Err() != nil {
+			return errShutdown
 		}
 
 		// read a line from the input file
 		line, done, err := readNormalizedLine(inputFileReader)
 		if err != nil {
-			// if error occurs, fail the pre-processing and the job
-			logger.Error(err, "Failed to read line from input file")
-			return err
+			return fmt.Errorf("read line %d from input file: %w", lineCount+1, err)
 		}
 		if done {
 			break
@@ -156,20 +152,16 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 		// write the line to the input file.
 		if _, err := writer.Write(line); err != nil {
-			logger.Error(err, "Failed to write line to input file", "path", localInputFilePath, "lineCount", lineCount)
-			return err
+			return fmt.Errorf("write line %d to input file %q: %w", lineCount, localInputFilePath, err)
 		}
 
 		requestMeta, err := extractAndValidateLine(line)
 		if err != nil {
-			logger.Error(err, "Failed to validate request line", "lineCount", lineCount)
-			return err
+			return fmt.Errorf("validate request at line %d: %w", lineCount, err)
 		}
 
 		if _, exists := seenCustomIDs[requestMeta.CustomID]; exists {
-			err := fmt.Errorf("line %d: duplicate custom_id %q", lineCount, requestMeta.CustomID)
-			logger.Error(err, "Duplicate custom_id in batch input")
-			return err
+			return fmt.Errorf("line %d: duplicate custom_id %q", lineCount, requestMeta.CustomID)
 		}
 		seenCustomIDs[requestMeta.CustomID] = struct{}{}
 
@@ -215,19 +207,16 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 	// flush input.jsonl file
 	if err := writer.Flush(); err != nil {
-		logger.Error(err, "Failed to flush input file", "path", localInputFilePath)
-		return err
+		return fmt.Errorf("flush input file %q: %w", localInputFilePath, err)
 	}
 
 	if err := finalizePlanFiles(acc, modelToSafe); err != nil {
-		logger.Error(err, "Failed to finalize plan files")
-		return err
+		return fmt.Errorf("finalize plan files: %w", err)
 	}
 
 	// model map file writing
 	if err := writeModelMappings(jobRootDir, modelToSafe, lineCount, rejectedCount); err != nil {
-		logger.Error(err, "Failed to write model map file")
-		return err
+		return fmt.Errorf("write model map: %w", err)
 	}
 
 	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), metrics.GetSizeBucket(int(lineCount)))
@@ -239,17 +228,6 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 		"inputFilePath", localInputFilePath, "planFilePath", acc.plansDir(),
 		"lineCount", lineCount, "rejected", rejectedCount, "models", modelCounts)
 
-	return nil
-}
-
-// checkAbortCondition returns a non-nil error if dispatch should stop because the context
-// is done (cancelled, deadline exceeded, or SLO deadline). It does NOT check the
-// cancelRequested flag; that flag is only consulted in the error-handling path to
-// distinguish the cancellation reason (user cancel vs SLO vs pod shutdown).
-func checkAbortCondition(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	return nil
 }
 
