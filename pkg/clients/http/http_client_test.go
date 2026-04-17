@@ -460,6 +460,229 @@ func TestPost_NoRetryOn400(t *testing.T) {
 	}
 }
 
+// TestRetryAfter_429WithRetryAfterHeader tests that 429 responses with Retry-After header
+// are retried after the server-specified delay.
+func TestRetryAfter_429WithRetryAfterHeader(t *testing.T) {
+	tests := []struct {
+		name         string
+		retryAfter   string
+		minElapsed   time.Duration
+		maxElapsed   time.Duration
+		assertTiming bool
+	}{
+		{
+			name:         "seconds format",
+			retryAfter:   "0",
+			maxElapsed:   80 * time.Millisecond,
+			assertTiming: true,
+		},
+		{
+			name:         "HTTP-date format",
+			retryAfter:   time.Now().Add(120 * time.Millisecond).UTC().Format(http.TimeFormat),
+			assertTiming: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attemptCount atomic.Int32
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				count := attemptCount.Add(1)
+				if count < 2 {
+					w.Header().Set("Retry-After", tt.retryAfter)
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error": {"message": "rate limited"}}`))
+				} else {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"result": "success"}`))
+				}
+			}))
+			defer server.Close()
+
+			client, err := NewHTTPClient(Config{
+				BaseURL:        server.URL,
+				MaxRetries:     3,
+				InitialBackoff: 10 * time.Millisecond,
+				MaxBackoff:     100 * time.Millisecond,
+			}, testLogger(t))
+			if err != nil {
+				t.Fatalf("NewHTTPClient failed: %v", err)
+			}
+
+			start := time.Now()
+			_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-after")
+			elapsed := time.Since(start)
+			if err != nil {
+				t.Fatalf("Post failed: %v", err)
+			}
+
+			if statusCode != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", statusCode)
+			}
+
+			if attemptCount.Load() != 2 {
+				t.Errorf("Expected 2 attempts, got %d", attemptCount.Load())
+			}
+			if tt.assertTiming {
+				if tt.minElapsed > 0 && elapsed < tt.minElapsed {
+					t.Errorf("Expected elapsed >= %v, got %v", tt.minElapsed, elapsed)
+				}
+				if tt.maxElapsed > 0 && elapsed > tt.maxElapsed {
+					t.Errorf("Expected elapsed <= %v, got %v", tt.maxElapsed, elapsed)
+				}
+			}
+		})
+	}
+}
+
+// TestRetryAfter_429WithoutHeader tests that 429 responses without Retry-After header
+// still retry with the 429-specific longer backoff.
+func TestRetryAfter_429WithoutHeader(t *testing.T) {
+	var attemptCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := attemptCount.Add(1)
+		if count < 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error": {"message": "rate limited"}}`))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"result": "success"}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		BaseURL:        server.URL,
+		MaxRetries:     3,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     1 * time.Second,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-429-no-header")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+
+	if attemptCount.Load() != 2 {
+		t.Errorf("Expected 2 attempts, got %d", attemptCount.Load())
+	}
+}
+
+// TestRetryAfter_5xxUsesFasterBackoff tests that 502/503/504 responses use a
+// faster retry with maxBackoff/2 cap (transient failures).
+func TestRetryAfter_5xxUsesFasterBackoff(t *testing.T) {
+	runScenario := func(t *testing.T, firstFailureStatus int) time.Duration {
+		t.Helper()
+		var attemptCount atomic.Int32
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			count := attemptCount.Add(1)
+			if count <= 3 {
+				w.WriteHeader(firstFailureStatus)
+				_, _ = w.Write([]byte(`{"error": {"message": "transient failure"}}`))
+			} else {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"result": "success"}`))
+			}
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     4,
+			InitialBackoff: 20 * time.Millisecond,
+			MaxBackoff:     80 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewHTTPClient failed: %v", err)
+		}
+
+		start := time.Now()
+		_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-5xx")
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Post failed: %v", err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", statusCode)
+		}
+		if attemptCount.Load() != 4 {
+			t.Fatalf("Expected 4 attempts, got %d", attemptCount.Load())
+		}
+		return elapsed
+	}
+
+	const samples = 5
+	var elapsed503Samples []time.Duration
+	var elapsed500Samples []time.Duration
+	for range samples {
+		elapsed503Samples = append(elapsed503Samples, runScenario(t, http.StatusServiceUnavailable))
+		elapsed500Samples = append(elapsed500Samples, runScenario(t, http.StatusInternalServerError))
+	}
+
+	median := func(values []time.Duration) time.Duration {
+		ordered := append([]time.Duration(nil), values...)
+		for i := 0; i < len(ordered); i++ {
+			for j := i + 1; j < len(ordered); j++ {
+				if ordered[j] < ordered[i] {
+					ordered[i], ordered[j] = ordered[j], ordered[i]
+				}
+			}
+		}
+		return ordered[len(ordered)/2]
+	}
+
+	median503 := median(elapsed503Samples)
+	median500 := median(elapsed500Samples)
+	if median503 >= median500 {
+		t.Errorf("Expected 503 median retry time (%v) < 500 median retry time (%v)", median503, median500)
+	}
+}
+
+// TestParseRetryAfter tests the Retry-After header parsing function.
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		wantOK   bool
+		wantZero bool // if wantOK, whether the duration should be zero
+	}{
+		{name: "integer seconds", value: "120", wantOK: true, wantZero: false},
+		{name: "zero seconds", value: "0", wantOK: true, wantZero: true},
+		{name: "HTTP-date future", value: time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat), wantOK: true, wantZero: false},
+		{name: "HTTP-date past", value: time.Now().Add(-10 * time.Second).UTC().Format(http.TimeFormat), wantOK: true, wantZero: true},
+		{name: "invalid value", value: "abc", wantOK: false},
+		{name: "empty string", value: "", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, ok := parseRetryAfter(tt.value)
+			if ok != tt.wantOK {
+				t.Fatalf("parseRetryAfter(%q): ok = %v, want %v", tt.value, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if tt.wantZero && d != 0 {
+				t.Errorf("Expected zero duration, got %v", d)
+			}
+			if !tt.wantZero && d <= 0 {
+				t.Errorf("Expected positive duration, got %v", d)
+			}
+		})
+	}
+}
+
 // TestHandleErrorResponse_OpenAIFormat tests parsing OpenAI-style error response
 func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
 	body := []byte(`{"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}}`)
