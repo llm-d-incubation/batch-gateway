@@ -926,6 +926,49 @@ func TestOutputFileHasContent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// recoverExpired success path — verify partial file IDs are recorded in DB
+// ---------------------------------------------------------------------------
+
+func TestRecoverJob_InProgress_EmptyOutput_ExpiredSLO_PreservesErrorFileID(t *testing.T) {
+	workDir := t.TempDir()
+	p, dbClient, spyQueue := newRecoveryTestProcessor(t, workDir)
+
+	jobID := "job-inprog-expired-with-errors"
+	tenantID := "tenant-1"
+	counts := &openai.BatchRequestCounts{Total: 100, Completed: 50, Failed: 0}
+	expiredSLO := time.Now().UTC().Add(-1 * time.Minute)
+
+	seedDBJobWithStatusAndSLO(t, dbClient, jobID, tenantID,
+		openai.BatchStatusInProgress, counts, expiredSLO)
+
+	jobDir := createJobDir(t, p, jobID, tenantID)
+	createOutputFile(t, jobDir, "")
+	createErrorFile(t, jobDir, `{"id":"batch_req_2","custom_id":"req-2","error":{"code":"server_error","message":"fail"}}`+"\n")
+
+	ctx := testLoggerCtx(t)
+	if err := p.recoverJob(ctx, jobID); err != nil {
+		t.Fatalf("recoverJob: %v", err)
+	}
+
+	info := getDBJobStatusInfo(t, dbClient, jobID)
+	if info.Status != openai.BatchStatusExpired {
+		t.Fatalf("expected expired, got %s", info.Status)
+	}
+	if info.OutputFileID != nil {
+		t.Fatalf("output_file_id should be nil for empty output file, got %s", *info.OutputFileID)
+	}
+	if info.ErrorFileID == nil {
+		t.Fatal("error_file_id must be preserved for expired job with partial errors on disk")
+	}
+
+	if spyQueue.EnqueueCalls() != 0 {
+		t.Fatalf("expected 0 enqueue calls, got %d", spyQueue.EnqueueCalls())
+	}
+
+	assertJobDirRemoved(t, p, jobID, tenantID)
+}
+
+// ---------------------------------------------------------------------------
 // Router fallback tests — verify recoverJob routes errors through
 // recoverWithFailed and preserves fileIDs from the recoveryResult.
 // ---------------------------------------------------------------------------
