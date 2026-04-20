@@ -377,7 +377,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 // Already-dispatched goroutines may finish with errors or cancellation rather than successful
 // completion, depending on when requestAbortFn fires.
 func (p *Processor) processModel(
-	ctx context.Context,
+	requestAbortCtx context.Context,
 	mainCtx context.Context,
 	sloCtx context.Context,
 	userCancelCtx context.Context,
@@ -387,8 +387,8 @@ func (p *Processor) processModel(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 ) error {
-	logger := logr.FromContextOrDiscard(ctx).WithValues("model", modelID)
-	ctx = logr.NewContext(ctx, logger)
+	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
+	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
 	planPath := filepath.Join(plansDir, safeModelID+".plan")
 	entries, err := readPlanEntries(planPath)
@@ -410,20 +410,20 @@ func (p *Processor) processModel(
 
 dispatch:
 	for i, entry := range entries {
-		if ctx.Err() != nil {
+		if requestAbortCtx.Err() != nil {
 			// Context cancelled (SLO expiry, SIGTERM, or user cancel via requestAbortFn).
 			// Do not set modelErr here; the drain switch determines the correct sentinel
-			// by inspecting sloCtx, userCancelCtx, and ctx independently.
+			// by inspecting sloCtx, userCancelCtx, and requestAbortCtx independently.
 			break
 		}
 
 		// Acquire semaphores in order: local (per-model) before global (shared).
 		// This order prevents starving other models — blocking on global only wastes a local slot.
-		if err := modelSem.Acquire(ctx); err != nil {
+		if err := modelSem.Acquire(requestAbortCtx); err != nil {
 			break dispatch
 		}
 
-		if err := p.globalSem.Acquire(ctx); err != nil {
+		if err := p.globalSem.Acquire(requestAbortCtx); err != nil {
 			modelSem.Release()
 			break dispatch
 		}
@@ -435,7 +435,7 @@ dispatch:
 			defer modelSem.Release()
 			defer p.globalSem.Release()
 
-			result, execErr := p.executeOneRequest(ctx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
+			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
 			if execErr != nil {
 				// Fatal read failure: the input file is unreadable at this offset
 				// (e.g. disk corruption). We do not know the CustomID, so we cannot
@@ -457,7 +457,7 @@ dispatch:
 					Code:    batch_types.ErrCodeBatchCancelled,
 					Message: "This request was cancelled while in progress.",
 				}
-				progress.record(ctx, false)
+				progress.record(requestAbortCtx, false)
 
 				lineBytes, marshalErr := json.Marshal(result)
 				if marshalErr != nil {
@@ -473,7 +473,7 @@ dispatch:
 				return
 			}
 
-			progress.record(ctx, result.isSuccess())
+			progress.record(requestAbortCtx, result.isSuccess())
 
 			lineBytes, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
@@ -501,8 +501,8 @@ dispatch:
 	// Drain undispatched entries to the error file based on the termination reason, and return the
 	// appropriate sentinel so executeJob can route without re-examining context state.
 	// Priority: SLO expiry > user cancel > system error > pod shutdown.
-	// Use sloCtx.Err() rather than ctx.Err(): ctx (requestAbortCtx) may report Canceled if requestAbortFn()
-	// was called by another goroutine before the sloCtx deadline propagated.
+	// Use sloCtx.Err() rather than requestAbortCtx.Err(): requestAbortCtx may report Canceled if
+	// requestAbortFn() was called by another goroutine before the sloCtx deadline propagated.
 	undispatched := entries[dispatchedCount:]
 	var returnErr error
 	switch {
@@ -510,7 +510,7 @@ dispatch:
 		// SLO deadline fired during dispatch — record remaining requests as expired.
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchExpired,
 				"This request could not be executed before the completion window expired.")
 		}
@@ -520,7 +520,7 @@ dispatch:
 		// User-initiated cancel — record remaining requests as cancelled.
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Cancelled: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchCancelled,
 				"This request was not executed because the batch was cancelled.")
 		}
@@ -530,7 +530,7 @@ dispatch:
 		// System error in a model goroutine — record remaining requests as failed.
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Fatal error: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchFailed,
 				"This request was not executed because the batch encountered a system error.")
 		}
@@ -542,19 +542,19 @@ dispatch:
 			// Do not drain here — startup recovery or the re-enqueued worker
 			// will process these entries from scratch.
 			returnErr = errShutdown
-		} else if ctx.Err() != nil && len(undispatched) > 0 {
+		} else if requestAbortCtx.Err() != nil && len(undispatched) > 0 {
 			// Sibling model abort: requestAbortCtx was cancelled by another
 			// model's error (requestAbortFn), but this is not SLO/cancel/SIGTERM.
 			// Drain undispatched entries as batch_failed so that
 			// completed + failed == total holds for the job.
 			logger.V(logging.INFO).Info("Sibling abort: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchFailed,
 				"This request was not executed because the batch encountered a system error.")
 		}
 	}
 
-	siblingAbort := returnErr == nil && ctx.Err() != nil
+	siblingAbort := returnErr == nil && requestAbortCtx.Err() != nil
 	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", returnErr != nil, "siblingAbort", siblingAbort)
 	return returnErr
 }

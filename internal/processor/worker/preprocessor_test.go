@@ -375,6 +375,7 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 
 	userCancelCtx, userCancelFn := context.WithCancel(ctx)
 	requestAbortCtx, requestAbortFn := context.WithCancel(ctx)
+	context.AfterFunc(userCancelCtx, requestAbortFn)
 
 	params := &jobExecutionParams{
 		eventWatcher:   evCh,

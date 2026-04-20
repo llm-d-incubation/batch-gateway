@@ -2027,7 +2027,7 @@ func TestHandleJobError_ExpiredDuringIngestion_NilCountsTransitionsExpired(t *te
 }
 
 // =====================================================================
-// Tests: handleCancelled / handleFailedWithPartial / handleFailed
+// Tests: handleCancelled / handleFailed
 // with partial output
 // =====================================================================
 
@@ -2169,7 +2169,7 @@ func TestHandleCancelled_CancelledWriteFails_FallsBackToFailed(t *testing.T) {
 	}
 }
 
-func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
+func TestHandleFailed_Execution_UploadsPartialOutput(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -2191,8 +2191,8 @@ func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 10, Completed: 7, Failed: 3}
 
 	ctx := testLoggerCtx(t)
-	if err := env.p.handleFailedWithPartial(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
-		t.Fatalf("handleFailedWithPartial: %v", err)
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts, jobInfo); err != nil {
+		t.Fatalf("handleFailed: %v", err)
 	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)

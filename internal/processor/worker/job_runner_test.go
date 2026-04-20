@@ -369,13 +369,13 @@ func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
 	assertJobStatus(t, dbClient, "job-panic-cancelled-ctx", openai.BatchStatusFailed)
 }
 
-func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
+func TestHandlePanicRecovery_DBError_DoesNotCrash(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	dbClient := &dbUpdateFailOnceWrapper{inner: newMockBatchDBClient(), failCount: 1}
 	statusClient := mockdb.NewMockBatchStatusClient()
 
 	jobItem := &db.BatchItem{
-		BaseIndexes:  db.BaseIndexes{ID: "job-panic-fallback", TenantID: "tenantA"},
+		BaseIndexes:  db.BaseIndexes{ID: "job-panic-db-err", TenantID: "tenantA"},
 		BaseContents: db.BaseContents{Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})},
 	}
 	if err := dbClient.DBStore(ctx, jobItem); err != nil {
@@ -387,10 +387,10 @@ func TestHandlePanicRecovery_PartialFails_FallbackSucceeds(t *testing.T) {
 	p.handlePanicRecovery(ctx, &jobExecutionParams{
 		updater: NewStatusUpdater(dbClient, statusClient, 86400),
 		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-panic-fallback"},
+		jobInfo: &batch_types.JobInfo{JobID: "job-panic-db-err"},
 	}, true, counts)
 
-	assertJobStatus(t, dbClient, "job-panic-fallback", openai.BatchStatusFailed)
+	assertJobStatus(t, dbClient, "job-panic-db-err", openai.BatchStatusInProgress)
 }
 
 func TestHandlePanicRecovery_NilParams_DoesNotPanic(t *testing.T) {
@@ -814,7 +814,7 @@ func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.
 	if got.RequestCounts.Total != 5 || got.RequestCounts.Completed != 3 || got.RequestCounts.Failed != 2 {
 		t.Fatalf("request_counts = %+v, want {5,3,2}", got.RequestCounts)
 	}
-	// handleFailedWithPartial uploads partial results; at least one file ID should be present.
+	// handleFailed uploads partial results when jobInfo is non-nil; at least one file ID should be present.
 	if got.OutputFileID == nil && got.ErrorFileID == nil {
 		t.Fatal("expected at least one file ID to be preserved from partial upload")
 	}

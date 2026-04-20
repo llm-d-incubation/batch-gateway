@@ -131,17 +131,17 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// userCancelCtx is a user-cancel-only signal: it is derived from context.Background so that
 	// SIGTERM and SLO expiry do NOT propagate into it. userCancelCtx.Err() != nil exclusively means
-	// the user requested cancellation via the API. watchCancel calls userCancelFn to set it,
-	// and also calls requestAbortFn to stop the dispatch loop immediately.
+	// the user requested cancellation via the API.
 	userCancelCtx, userCancelFn := context.WithCancel(context.Background())
 	params.userCancelFn = userCancelFn
 	defer userCancelFn()
 
 	// requestAbortCtx is derived from sloCtx so SLO expiry and SIGTERM propagate automatically
-	// to all dispatch loops and inference calls. It is created here, before watchCancel starts,
-	// so params.requestAbortFn is set before any cancel event can arrive — eliminating the
-	// race window where watchCancel fires between runJob and executeJob setting the function.
+	// to all dispatch loops and inference calls. User cancel is wired via AfterFunc so that
+	// cancelling userCancelCtx automatically cancels requestAbortCtx without manual dispatch.
+	// Fatal I/O errors in executor.go still call requestAbortFn directly.
 	requestAbortCtx, requestAbortFn := context.WithCancel(sloCtx)
+	context.AfterFunc(userCancelCtx, requestAbortFn)
 	params.requestAbortFn = requestAbortFn
 	defer requestAbortFn()
 
@@ -269,14 +269,7 @@ func (p *Processor) handlePanicRecovery(
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), panicRecoveryTimeout)
 	defer bgCancel()
 	bgCtx = logr.NewContext(bgCtx, logger)
-	if transitionedToInProgress && requestCounts != nil && params.jobInfo != nil {
-		if err := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
-			logger.Error(err, "handleFailedWithPartial failed after panic, falling back to handleFailed")
-		} else {
-			return
-		}
-	}
-	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts, nil); err != nil {
+	if err := p.handleFailed(bgCtx, params.updater, params.jobItem, requestCounts, params.jobInfo); err != nil {
 		logger.Error(err, "Failed to mark job as failed after panic — job will remain in_progress until startup recovery runs",
 			"jobID", params.jobItem.ID, "tenantID", params.jobItem.TenantID)
 	}
@@ -331,14 +324,8 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 				// executeJob flushed partial output/error files to disk before returning
 				// errShutdown. Upload them so the user can retrieve whatever completed
 				// before SIGTERM, rather than losing those results silently.
-				if params.requestCounts != nil && params.jobInfo != nil {
-					if failErr := p.handleFailedWithPartial(bgCtx, params.updater, params.jobItem, params.jobInfo, params.requestCounts); failErr != nil {
-						logger.Error(failErr, "Failed to handle failed event with partial output after re-enqueue failure")
-					}
-				} else {
-					if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, nil, params.jobInfo); failErr != nil {
-						logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
-					}
+				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, params.requestCounts, params.jobInfo); failErr != nil {
+					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
 				}
 			} else {
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
@@ -347,14 +334,8 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 		}
 
 	default:
-		if params.requestCounts != nil && params.jobInfo != nil {
-			if failErr := p.handleFailedWithPartial(ctx, params.updater, params.jobItem, params.jobInfo, params.requestCounts); failErr != nil {
-				logger.Error(failErr, "Failed to handle failed event with partial output")
-			}
-		} else {
-			if failErr := p.handleFailed(ctx, params.updater, params.jobItem, nil, params.jobInfo); failErr != nil {
-				logger.Error(failErr, "Failed to handle failed event")
-			}
+		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, params.requestCounts, params.jobInfo); failErr != nil {
+			logger.Error(failErr, "Failed to handle failed event")
 		}
 	}
 }
@@ -446,50 +427,14 @@ func (p *Processor) handleExpired(
 	return nil
 }
 
-// handleFailedWithPartial finalizes an execution failure by uploading partial results before
-// transitioning to failed status. Completed requests are preserved in the output file,
-// and unexecuted requests were already drained to the error file as "batch_failed".
-// Records E2E latency as failed.
-// Uses a detached context so that a concurrent SIGTERM cannot abort the upload or DB write.
-func (p *Processor) handleFailedWithPartial(
-	ctx context.Context,
-	updater *StatusUpdater,
-	jobItem *db.BatchItem,
-	jobInfo *batch_types.JobInfo,
-	requestCounts *openai.BatchRequestCounts,
-) error {
-	ioCtx, ioSpan := uotel.DetachedContext(ctx, "handle-failed-partial")
-	ioCtx, ioCancel := context.WithTimeout(ioCtx, finalizationTimeout)
-	defer ioCancel()
-	defer ioSpan.End()
-
-	logger := logr.FromContextOrDiscard(ctx)
-	logger.V(logging.INFO).Info("Job failed mid-execution, uploading partial results")
-
-	outputFileID, errorFileID := p.uploadPartialResults(ioCtx, jobInfo, jobItem)
-
-	if err := updater.UpdateFailedStatus(ioCtx, jobItem, requestCounts, outputFileID, errorFileID); err != nil {
-		logger.Error(err, "Failed to update status to failed")
-		return err
-	}
-
-	// Cleanup after terminal status write: if the write failed above, the local
-	// files survive for startup recovery to re-upload.
-	p.cleanupJobArtifacts(ioCtx, jobItem.ID, jobItem.TenantID)
-
-	setRequestCountAttrs(ctx, requestCounts)
-
-	recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
-	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
-	logger.V(logging.INFO).Info("Job failed handled with partial output", "outputFileID", outputFileID, "errorFileID", errorFileID)
-	return nil
-}
-
-// handleFailed finalizes a failed job without partial output upload.
-// Used for ingestion failures (no output files) and pre-upload finalization failures
-// (e.g. finalizing status write). requestCounts is recorded in DB when non-nil.
+// handleFailed finalizes a failed job by optionally uploading partial results before
+// transitioning to failed status. When jobInfo is non-nil and partial output exists on
+// disk, the output and error files are uploaded so the user can retrieve whatever
+// completed before the failure. When jobInfo is nil (e.g. ingestion failure, malformed
+// job), only the DB status transition is performed.
+//
 // Records E2E latency as failed when jobInfo is available (nil-safe).
-// Uses a detached context so that a concurrent SIGTERM cannot abort the DB write.
+// Uses a detached context so that a concurrent SIGTERM cannot abort the upload or DB write.
 // If the caller already has a tighter deadline (e.g. panic recovery), that deadline is respected.
 func (p *Processor) handleFailed(
 	ctx context.Context,
@@ -512,18 +457,23 @@ func (p *Processor) handleFailed(
 
 	logger := logr.FromContextOrDiscard(ctx)
 
-	p.cleanupJobArtifacts(ioCtx, jobItem.ID, jobItem.TenantID)
+	var outputFileID, errorFileID string
+	if jobInfo != nil {
+		outputFileID, errorFileID = p.uploadPartialResults(ioCtx, jobInfo, jobItem)
+	}
 
-	if err := updater.UpdateFailedStatus(ioCtx, jobItem, requestCounts, "", ""); err != nil {
+	if err := updater.UpdateFailedStatus(ioCtx, jobItem, requestCounts, outputFileID, errorFileID); err != nil {
 		logger.Error(err, "Failed to update status to failed")
 		return err
 	}
+
+	p.cleanupJobArtifacts(ioCtx, jobItem.ID, jobItem.TenantID)
 
 	setRequestCountAttrs(ctx, requestCounts)
 
 	recordE2ELatency(jobInfo, metrics.E2EStatusFailed)
 	metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
-	logger.V(logging.INFO).Info("Job failed handled")
+	logger.V(logging.INFO).Info("Job failed handled", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
 }
 

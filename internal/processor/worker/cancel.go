@@ -45,12 +45,9 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 			if event.Type == db.BatchEventCancel {
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
-				// userCancelFn marks userCancelCtx as cancelled (user-cancel signal).
-				// requestAbortFn stops the dispatch loop immediately via requestAbortCtx.
+				// userCancelFn marks userCancelCtx as cancelled. requestAbortCtx is
+				// automatically cancelled via context.AfterFunc wired in runJob.
 				params.userCancelFn()
-				if params.requestAbortFn != nil {
-					params.requestAbortFn()
-				}
 
 				// We don't update the DB status to 'cancelling' here because
 				// the API server already wrote 'cancelling' before sending this event.
@@ -81,8 +78,10 @@ func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionPar
 	}
 
 	if err := params.updater.UpdateCancelledStatus(ioCtx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
+		ioSpan.RecordError(err)
 		logger.Error(err, "Failed to update cancelled status, falling back to failed with file IDs preserved")
 		if failErr := params.updater.UpdateFailedStatus(ioCtx, params.jobItem, params.requestCounts, outputFileID, errorFileID); failErr != nil {
+			ioSpan.RecordError(failErr)
 			return fmt.Errorf("failed to update job status to cancelled (%w) and fallback to failed also failed: %w", err, failErr)
 		}
 		// Cleanup after fallback succeeded so startup recovery doesn't re-process.
