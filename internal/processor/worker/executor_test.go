@@ -512,8 +512,8 @@ func TestExecuteOneRequest_SLOExpiredBeforeExecution(t *testing.T) {
 	if result.Error.Code != string(batch_types.ErrCodeBatchExpired) {
 		t.Fatalf("error code = %q, want %q", result.Error.Code, batch_types.ErrCodeBatchExpired)
 	}
-	if result.Error.Message != "This request could not be executed before the completion window expired." {
-		t.Fatalf("error message = %q, want %q", result.Error.Message, "This request could not be executed before the completion window expired.")
+	if result.Error.Message != batch_types.ErrCodeBatchExpired.Message() {
+		t.Fatalf("error message = %q, want %q", result.Error.Message, batch_types.ErrCodeBatchExpired.Message())
 	}
 }
 
@@ -552,8 +552,8 @@ func TestExecuteOneRequest_SLOExpiredDuringExecution(t *testing.T) {
 	if result.Error.Code != string(batch_types.ErrCodeBatchExpired) {
 		t.Fatalf("error code = %q, want %q", result.Error.Code, batch_types.ErrCodeBatchExpired)
 	}
-	if result.Error.Message != "This request could not be executed before the completion window expired." {
-		t.Fatalf("error message = %q, want %q", result.Error.Message, "This request could not be executed before the completion window expired.")
+	if result.Error.Message != batch_types.ErrCodeBatchExpired.Message() {
+		t.Fatalf("error message = %q, want %q", result.Error.Message, batch_types.ErrCodeBatchExpired.Message())
 	}
 }
 
@@ -678,7 +678,7 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	if unmarshalErr := json.Unmarshal(errLines[0], &drainEntry); unmarshalErr != nil {
 		t.Fatalf("unmarshal drain entry: %v", unmarshalErr)
 	}
-	if drainEntry.Error == nil || drainEntry.Error.Code != batch_types.ErrCodeBatchCancelled {
+	if drainEntry.Error == nil || drainEntry.Error.Code != string(batch_types.ErrCodeBatchCancelled) {
 		t.Fatalf("expected error code %s, got %+v", batch_types.ErrCodeBatchCancelled, drainEntry.Error)
 	}
 }
@@ -760,7 +760,7 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	if entry.CustomID != "inflight-1" {
 		t.Errorf("custom_id = %q, want %q", entry.CustomID, "inflight-1")
 	}
-	if entry.Error == nil || entry.Error.Code != batch_types.ErrCodeBatchCancelled {
+	if entry.Error == nil || entry.Error.Code != string(batch_types.ErrCodeBatchCancelled) {
 		t.Fatalf("expected error code %s, got %+v", batch_types.ErrCodeBatchCancelled, entry.Error)
 	}
 	if entry.Response != nil {
@@ -1409,7 +1409,7 @@ func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 			if err := json.Unmarshal(line, &entry); err != nil {
 				t.Fatalf("unmarshal error line %d: %v", i, err)
 			}
-			if entry.Error == nil || entry.Error.Code != batch_types.ErrCodeBatchExpired {
+			if entry.Error == nil || entry.Error.Code != string(batch_types.ErrCodeBatchExpired) {
 				t.Errorf("error line %d: expected code %s, got %+v", i, batch_types.ErrCodeBatchExpired, entry.Error)
 			}
 		}

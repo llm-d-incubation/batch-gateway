@@ -167,9 +167,10 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 //     before SIGTERM, flush preserves partial output for startup recovery
 //
 // requestAbortCtx controls the dispatch loop and all in-flight inference calls: cancelling it
-// stops dispatch and aborts in-flight requests. It is derived from sloCtx in the caller (in runJob)
-// so SLO expiry and SIGTERM propagate automatically. watchCancel also calls requestAbortFn directly
-// for user-initiated cancellation.
+// stops dispatch and aborts in-flight requests. It is derived from sloCtx in runJob, so SLO
+// expiry and SIGTERM propagate automatically. User cancel also triggers requestAbortFn via
+// context.AfterFunc(userCancelCtx, requestAbortFn) wired in runJob — watchCancel itself only
+// calls userCancelFn.
 // userCancelCtx is a user-cancel-only signal derived from context.Background; it does not inherit
 // SLO expiry or SIGTERM. Its sole purpose is to let the drain phase distinguish user cancel from
 // SLO expiry.
@@ -260,12 +261,12 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
 	}
 
-	// User-initiated cancellation stops dispatch via two independent cancel calls:
-	// watchCancel calls userCancelFn() to mark userCancelCtx (user-cancel signal),
-	// and requestAbortFn() to cancel requestAbortCtx (stops dispatch loop).
-	// These are independent — userCancelCtx does NOT propagate to requestAbortCtx.
-	// processModel's drain phase checks sloCtx.Err() vs userCancelCtx.Err() to choose
-	// the right error code (errExpired vs errCancelled).
+	// User-initiated cancellation: watchCancel calls userCancelFn() only.
+	// context.AfterFunc(userCancelCtx, requestAbortFn) — wired in runJob — then
+	// cancels requestAbortCtx to stop the dispatch loop. userCancelCtx is isolated
+	// from sloCtx (derived from context.Background), so SLO expiry and SIGTERM do
+	// not set it. processModel's drain phase checks sloCtx.Err() vs
+	// userCancelCtx.Err() to choose the right error code (errExpired vs errCancelled).
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		// Ordering guarantee: processModel returns → requestAbortFn → errCh send.
 		// This ensures the first real error reaches errCh before any context.Canceled
@@ -454,7 +455,7 @@ dispatch:
 			if sloCtx.Err() == nil && userCancelCtx.Err() != nil {
 				result.Response = nil
 				result.Error = &outputError{
-					Code:    batch_types.ErrCodeBatchCancelled,
+					Code:    string(batch_types.ErrCodeBatchCancelled),
 					Message: "This request was cancelled while in progress.",
 				}
 				progress.record(requestAbortCtx, false)
@@ -511,8 +512,7 @@ dispatch:
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
 			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
-				batch_types.ErrCodeBatchExpired,
-				"This request could not be executed before the completion window expired.")
+				batch_types.ErrCodeBatchExpired)
 		}
 		returnErr = errExpired
 
@@ -521,8 +521,7 @@ dispatch:
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Cancelled: draining undispatched entries", "count", len(undispatched))
 			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
-				batch_types.ErrCodeBatchCancelled,
-				"This request was not executed because the batch was cancelled.")
+				batch_types.ErrCodeBatchCancelled)
 		}
 		returnErr = errCancelled
 
@@ -531,8 +530,7 @@ dispatch:
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Fatal error: draining undispatched entries", "count", len(undispatched))
 			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
-				batch_types.ErrCodeBatchFailed,
-				"This request was not executed because the batch encountered a system error.")
+				batch_types.ErrCodeBatchFailed)
 		}
 		returnErr = modelErr
 
@@ -549,8 +547,7 @@ dispatch:
 			// completed + failed == total holds for the job.
 			logger.V(logging.INFO).Info("Sibling abort: draining undispatched entries", "count", len(undispatched))
 			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
-				batch_types.ErrCodeBatchFailed,
-				"This request was not executed because the batch encountered a system error.")
+				batch_types.ErrCodeBatchFailed)
 		}
 	}
 
@@ -562,16 +559,16 @@ dispatch:
 // drainUnprocessedRequests records undispatched requests in the error file when a job terminates
 // mid-execution (SLO expiry, cancellation, or systemic failure). For each plan entry, it reads
 // the original request from input.jsonl to extract the custom_id, then writes an error line with
-// the given error code and message.
+// the given error code and its canonical message.
 func (p *Processor) drainUnprocessedRequests(
 	ctx context.Context,
 	inputFile *os.File,
 	entries []planEntry,
 	writers *outputWriters,
 	progress *executionProgress,
-	errCode string,
-	errMessage string,
+	errCode batch_types.BatchErrorCode,
 ) {
+	errMessage := errCode.Message()
 	logger := logr.FromContextOrDiscard(ctx)
 
 	// Allocate a single read buffer sized to the largest entry to avoid per-entry allocations.
@@ -598,7 +595,7 @@ func (p *Processor) drainUnprocessedRequests(
 			ID:       newBatchRequestID(requestID),
 			CustomID: customID,
 			Error: &outputError{
-				Code:    errCode,
+				Code:    string(errCode),
 				Message: errMessage,
 			},
 		}
@@ -737,8 +734,8 @@ func (p *Processor) executeOneRequest(
 			ID:       newBatchRequestID(requestID),
 			CustomID: req.CustomID,
 			Error: &outputError{
-				Code:    batch_types.ErrCodeBatchExpired,
-				Message: "This request could not be executed before the completion window expired.",
+				Code:    string(batch_types.ErrCodeBatchExpired),
+				Message: batch_types.ErrCodeBatchExpired.Message(),
 			},
 		}
 		metrics.RecordRequestError(modelID)

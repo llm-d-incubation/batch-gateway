@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 6
--   **Last Updated**: 2026-03-30
+-   **Revision**: 7
+-   **Last Updated**: 2026-04-20
 
 -------------------------------------------------------------------
 
@@ -104,11 +104,11 @@ Unsupported features must return OpenAI-compatible error responses.
 
 When the processor starts, `recoverStaleJobs` scans the local work directory for job directories left behind by a previous container crash (OOM, panic, node eviction). For each stale directory it finds the corresponding DB record and takes action based on the job's status:
 
--   `in_progress` (no output on disk): re-enqueue the job so another worker can process it from scratch. If SLO expired, mark as `expired`. If re-enqueue fails, mark as `failed`.
+-   `in_progress` (no output on disk): re-enqueue the job so another worker can process it from scratch. If SLO expired, upload any surviving partial files (e.g. error.jsonl from ingestion) and mark as `expired`. If re-enqueue fails, mark as `failed`.
 -   `in_progress` (output exists on disk): upload partial results and mark as `failed` (inference cost is significant — preserve completed work rather than retry from scratch).
--   `finalizing`: attempt to complete finalization (upload output). If upload fails, mark as `failed`.
+-   `finalizing`: attempt to complete finalization (upload output). If upload fails, mark as `failed` with surviving file IDs preserved.
 -   `cancelling`: upload partial results and transition to `cancelled`.
--   `validating`: re-enqueue (ingestion had not started). If SLO expired, mark as `expired`.
+-   `validating`: re-enqueue (ingestion had not started). If SLO expired, mark as `expired` (no output files exist at this stage). If re-enqueue fails, mark as `failed`.
 -   Other terminal states: clean up the directory only.
 
 After recovery, stale directories are removed. Resume-from-checkpoint is not supported — recovered jobs are retried from scratch.
@@ -165,7 +165,8 @@ flowchart TD
     phase2 -->|"SLO expired"| expiredState["expired — partial output"]
     phase2 -->|"user cancel"| cancelledState["cancelled — partial output"]
     phase2 -->|"system error"| failedPartial["failed — partial output"]
-    phase3 -->|"upload retry exhausted"| failedCounts["failed — counts only"]
+    phase2 -->|"pod shutdown"| reenqueue["re-enqueued — partial flushed to disk"]
+    phase3 -->|"upload failure"| failedPreserved["failed — surviving file IDs preserved"]
 ```
 
 **Ingestion**
@@ -225,36 +226,42 @@ Terminal states are removed from the priority queue.
 The processor uses a layered context tree to propagate cancellation signals.
 The critical invariant is the **fork** at `ctx`: `pollingCtx` and `jobCtx` are siblings, so cancelling the polling loop does not kill in-flight jobs.
 
+A second critical invariant is the **isolation** of `userCancelCtx`: it is derived from `context.Background()` (not from `ctx` or `sloCtx`), so SIGTERM and SLO expiry **never** propagate into it. `userCancelCtx.Err() != nil` exclusively means the user requested cancellation via the API.
+
 ```mermaid
 graph TD
     ctx(["ctx — SIGTERM / SIGINT"])
 
     ctx -->|"semaphore guard"| pollingCtx(["pollingCtx"])
-    ctx -->|"per job"| jobCtx(["jobCtx ×N"])
+    ctx -->|"per active worker"| jobCtx(["jobCtx"])
 
     pollingCtx -.-> polling["acquire · dequeue · DB fetch · validate · poll wait"]
 
     jobCtx --> sloCtx(["sloCtx — SLO deadline"])
     jobCtx -.-> watchCancel["watchCancel goroutine"]
 
-    sloCtx --> abortCtx(["abortCtx — user cancel"])
-    abortCtx --> execCtx(["execCtx — first model error"])
+    sloCtx --> requestAbortCtx(["requestAbortCtx — stop dispatch + abort in-flight"])
+
+    bg(["context.Background() — isolated"])
+    bg --> userCancelCtx(["userCancelCtx — user cancel only"])
+    watchCancel -->|"userCancelFn()"| userCancelCtx
+    userCancelCtx -.->|"context.AfterFunc → requestAbortFn()"| requestAbortCtx
 ```
 
-| Context | Cancelled by | Blast radius |
-|---------|-------------|--------------|
-| `ctx` | SIGTERM / SIGINT | Everything — polling loop exits, in-flight jobs re-enqueue |
-| `pollingCtx` | Semaphore double-release guard (also inherits `ctx` cancellation) | **Polling loop + pre-launch** — acquire, dequeue, DB fetch, validation, and guard re-enqueue all use `pollingCtx`. Stops accepting new jobs; running jobs unaffected. Jobs dequeued but not yet launched are re-enqueued (fallback: marked failed). |
-| `jobCtx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). Created only at launch commit, **after** all pre-launch checks pass. **Not** cancelled when only `pollingCtx` is cancelled (e.g. semaphore guard). |
-| `sloCtx` | SLO deadline fires | Stops dispatch; in-flight requests finish; undispatched drained as `batch_expired` |
-| `abortCtx` | `watchCancel` calls `abortInferFn` | Aborts in-flight HTTP inference requests immediately |
-| `execCtx` | First model goroutine error | Stops dispatch in all model goroutines; already-dispatched requests complete |
+| Context | Derived from | Cancelled by | Blast radius |
+|---------|-------------|-------------|--------------|
+| `ctx` | (processor root) | SIGTERM / SIGINT | Everything — polling loop exits, in-flight jobs return `errShutdown` and are re-enqueued |
+| `pollingCtx` | `ctx` | Semaphore double-release guard (also inherits `ctx` cancellation) | **Polling loop + pre-launch** — acquire, dequeue, DB fetch, validation, and guard re-enqueue all use `pollingCtx`. Stops accepting new jobs; running jobs unaffected. Jobs dequeued but not yet launched are re-enqueued (fallback: marked failed). |
+| `jobCtx` | `ctx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). One per active worker — up to `NumWorkers` can exist concurrently. Created only at launch commit, **after** all pre-launch checks pass. **Not** cancelled when only `pollingCtx` is cancelled (e.g. semaphore guard). |
+| `sloCtx` | `jobCtx` | SLO deadline fires (`context.DeadlineExceeded`) | Propagates into `requestAbortCtx`; stops dispatch; in-flight requests finish; undispatched drained as `batch_expired` |
+| `requestAbortCtx` | `sloCtx` | SLO deadline (propagated), SIGTERM (propagated via `ctx → jobCtx → sloCtx`), or `requestAbortFn()` triggered by `context.AfterFunc(userCancelCtx, requestAbortFn)` on user cancel | Stops the dispatch loop and aborts in-flight HTTP inference requests immediately |
+| `userCancelCtx` | `context.Background()` | `userCancelFn()` called by `watchCancel` on user cancel **only** | User-cancel signal only — checked in error-routing paths to distinguish user cancel from SLO expiry or pod shutdown. SIGTERM and SLO expiry **do not** propagate here. |
 
 **Design notes:**
--   The fork is intentional: `pollingCtx` controls the loop, `jobCtx` controls the job. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. By contrast, **SIGTERM / SIGINT cancel `ctx`**, so both polling and in-flight jobs see cancellation and re-enqueue / teardown as designed.
--   `abortCtx` is derived from `sloCtx` so the SLO deadline propagates to inference requests automatically.
--   `execCtx` is derived from `abortCtx` so both user cancel and SLO expiry stop dispatch.
--   The `cancelRequested` flag is **not** used to stop dispatch (context cancellation handles that). It is only consulted in the error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown) and to drain undispatched entries with the correct error code.
+-   The fork at `ctx` is intentional: `pollingCtx` controls the polling loop, `jobCtx` controls the job lifecycle. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. **SIGTERM / SIGINT cancel `ctx`**, so both polling and jobs see cancellation simultaneously.
+-   `requestAbortCtx` is derived from `sloCtx`, so SLO expiry and SIGTERM (via `ctx → jobCtx → sloCtx`) propagate automatically to both the dispatch loop and in-flight inference requests.
+-   `userCancelCtx` is intentionally **isolated** from the `sloCtx` chain. This prevents SLO expiry or SIGTERM from being misclassified as user cancellation. Cancellation reason routing (`errCancelled` vs `errExpired` vs `errShutdown`) depends on this isolation being correct.
+-   On user cancel: `watchCancel` calls `userCancelFn()` only. `requestAbortFn()` is triggered automatically via `context.AfterFunc(userCancelCtx, requestAbortFn)` wired in `runJob`, so `userCancelCtx` cancellation propagates into `requestAbortCtx` without watchCancel knowing about dispatch.
 -   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
 -   Pre-launch operations (DB fetch, conversion, expired/runnable checks) run under `pollingCtx` so they abort promptly when the guard fires. `jobCtx` is created from `jobBaseCtx` only at the moment we commit to launching `runJob`.
 -   On semaphore double-release: guard cancels `pollingCtx` → pre-launch aborts or guard re-enqueue fires → `Run` returns → `main.go` sets `ready=false` → K8s removes the pod from service (readiness probe fails). If re-enqueue also fails, the job is marked failed as a terminal fallback. The pod is restarted only if a liveness probe or restart policy triggers it.
@@ -276,16 +283,18 @@ graph TD
 
 Directory layout:
 ```
-jobs/
-└── <job_id>/
-    ├── input.jsonl        # downloaded from shared storage; read-only during execution
-    ├── output.jsonl       # written during execution; contains successful responses
-    ├── error.jsonl        # written during execution; contains failed responses
-    ├── model_map.json
-    └── plans/
-        ├── <safe_model_id_1>.plan
-        ├── <safe_model_id_2>.plan
-        └── ...
+<WorkDir>/
+└── <tenantHash>/
+    └── jobs/
+        └── <job_id>/
+            ├── input.jsonl        # downloaded from shared storage; read-only during execution
+            ├── output.jsonl       # written during execution; contains successful responses
+            ├── error.jsonl        # written during execution; contains failed responses
+            ├── model_map.json
+            └── plans/
+                ├── <safe_model_id_1>.plan
+                ├── <safe_model_id_2>.plan
+                └── ...
 ```
 -   `input.jsonl` is append-only. Each line is an inference request in json format.
 -   `model_map.json` provides bidirectional mapping between original model IDs and sanitized (safe) file names, plus the total request line count.
@@ -299,18 +308,20 @@ jobs/
         "org_model_A_1": "org/model-A:1",
         "model_B": "model-B"
     },
-    "line_count": 5000
+    "line_count": 5000,
+    "rejected_count": 2
 }
 ```
 -   `model_to_safe` maps original model IDs to sanitized file names used for plan files.
 -   `safe_to_model` is the reverse mapping, used during execution to recover the original model ID.
 -   `line_count` is stored since ingestion is the first (and only) pass over the entire input file.
+-   `rejected_count` tracks requests rejected during ingestion (e.g. `model_not_found` for unregistered models). Execution seeds its failure counter from this value so that `completed + failed == total` holds.
 
 For each `input.jsonl` line:
 1.  Compute current byte offset in input.jsonl file
 2.  Compute request length (including newline)
 3.  Parse minimal JSON to extract model
-4.  Extract and hash the system prompt content from the request body for grouping requests with identical system prompts during execution. If the system prompt is absent, the hash defaults to 0.
+4.  Extract and hash the system prompt content from the request body for grouping requests with identical system prompts during execution. If the system prompt is absent, the hash defaults to `NoPrefixHash` (`math.MaxUint32`), which sorts these entries last during execution.
 5.  Intern modelID for plan file name
 6.  Accumulate plan entry (offset, length, prefix hash) in memory per model
 
@@ -321,22 +332,22 @@ For each `input.jsonl` line:
 
 Each model has its own plan file:
 
-    jobs/<job_id>/plans/<model_id>.plan
+    <WorkDir>/<tenantHash>/jobs/<job_id>/plans/<safe_model_id>.plan
 
 Incomplete files are written as:
 
-    <model_id>.plan.tmp
+    <safe_model_id>.plan.tmp
 
 Renamed atomically upon completion.
 
 - Plan entry format:
 
 ``` go
-// Plan Entry Structure (Binary, 16 bytes)
-type PlanEntry struct {
+// planEntry (binary, 16 bytes per entry)
+type planEntry struct {
     Offset     int64  // 8 bytes: Position in input.jsonl
     Length     uint32 // 4 bytes: Length of the JSON line
-    PrefixHash uint32 // 4 bytes: FNV-32a hash of the request's system prompt, used to group requests with identical system prompts during execution
+    PrefixHash uint32 // 4 bytes: FNV-32a hash of the request's system prompt (NoPrefixHash = math.MaxUint32 if absent)
 }
 ```
 The request JSON body is NOT stored in the plan.
@@ -575,8 +586,8 @@ Concretely:
 
 SLO is enforced via `context.WithDeadline(ctx, slo)` on the job execution context. When the deadline fires:
 1.  New request dispatch stops — semaphore acquisition fails on the expired context, breaking the dispatch loop
-2.  In-flight inference requests that are mid-flight have their context cancelled; they are written to the error file with whatever error the inference client returns (not `batch_expired`)
-3.  Requests that were never dispatched (pending in the plan but not yet started) are written to the error file as `batch_expired`
+2.  In-flight inference requests that complete (even after the deadline fires) are written to the **output** file with whatever response the inference client returns — SLO expiry does not overwrite in-flight results. Requests where the inference call itself fails due to context cancellation are written to the output file with the HTTP error response from the backend.
+3.  Requests that were never dispatched (pending in the plan but not yet started) are drained to the error file as `batch_expired`
 4.  Requests that already completed successfully remain in the output file
 
 The job then transitions directly `in_progress → expired` (no `finalizing` transient state).
@@ -597,10 +608,10 @@ For all terminal states where work was interrupted (expired, cancelled, failed),
 -   **Cancelled (user-initiated)**: In-flight requests complete, undispatched requests are drained as `batch_cancelled`, partial output is uploaded, status transitions to `cancelled`.
 -   **Failed (execution system error)**: Undispatched requests are drained as `batch_failed`, partial output is uploaded, status transitions to `failed`.
 -   **Failed (ingestion)**: No output files exist — nothing to preserve. Status transitions to `failed` without file IDs.
--   **Failed (finalization — upload retry exhausted)**: Upload retries (exponential backoff, `MaxRetries + 1` attempts) are already exhausted inside `finalizeJob`. Re-attempting upload would fail for the same reason. Only `requestCounts` are recorded in the `failed` status; no file IDs.
--   **Graceful shutdown (pod termination)**: Job is re-enqueued for another worker to process from scratch. No partial upload — preserving the chance for a complete result.
+-   **Failed (finalization — upload failure)**: Upload retries (exponential backoff) are exhausted inside `finalizeJob`. The two uploads (output and error files) run independently — a failure in one does not cancel the other. The job is marked `failed` with whatever file IDs survived, so the successfully-uploaded artifact remains reachable via the API (`errFinalizeFailedOver`). If the terminal DB write itself fails after uploads succeeded, the fallback also preserves file IDs.
+-   **Graceful shutdown (pod termination)**: Output and error writers are flushed to disk before returning `errShutdown`. The job is re-enqueued for another worker. If re-enqueue fails, partial results are uploaded and the job is marked `failed` with file IDs (`handleFailed` with non-nil `jobInfo`). On container restart with emptyDir intact, startup recovery can also upload partial output from the flushed files.
 
-Partial upload is best-effort: upload failures are logged but do not block the terminal status transition.
+Partial upload in error handlers (`handleExpired`, `handleCancelled`, `handleFailed`) is best-effort: upload failures are logged but do not block the terminal status transition. In contrast, `finalizeJob` (the happy-path finalization) treats upload failures as hard errors and falls back to `failed` status with surviving file IDs (`errFinalizeFailedOver`).
 
 ---
 
@@ -619,9 +630,13 @@ The root `"process-batch"` span covers the full job lifecycle (ingestion → exe
 | Span | Parent | Description |
 |------|--------|-------------|
 | `process-batch` | apiserver trace (linked via propagated trace context) | Root span for the entire job lifecycle |
-| `storage.Store` | `process-batch` (during ingestion/finalization) | File upload to shared storage (S3/filesystem) |
+| `storage.Store` | `process-batch` (during ingestion), `finalize` / `handle-cancelled` / `handle-expired` / `handle-failed` (during terminalization) | File upload to shared storage (S3/filesystem) |
 | `storage.Retrieve` | `process-batch` (during ingestion) | File download from shared storage |
 | `storage.Delete` | `process-batch` (during cleanup) | File deletion from shared storage |
+| `finalize` | Detached (linked to `process-batch`) | File uploads and final DB status write for completed jobs; uses `DetachedContext` so SIGTERM cannot abort the operation |
+| `handle-cancelled` | Detached (linked to `process-batch`) | Partial upload and cancelled status write; uses `DetachedContext` so SIGTERM cannot abort the operation |
+| `handle-expired` | Detached (linked to `process-batch`) | Partial upload and expired status write; uses `DetachedContext` so SIGTERM cannot abort the operation |
+| `handle-failed` | Detached (linked to `process-batch`) | Optional partial upload (when `jobInfo` is non-nil), failed status write, and cleanup; uses `DetachedContext` so SIGTERM cannot abort the operation |
 | `re-enqueue` | Detached (linked to `process-batch`) | Best-effort re-enqueue after failure; uses `DetachedContext` so it survives parent cancellation |
 
 The `process-batch` span records the following attributes:
