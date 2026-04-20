@@ -282,9 +282,13 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 				progress,
 				passThroughHeaders,
 			)
-			// Cancel requestAbortCtx for all sibling models when this model fails.
-			// In production, params.requestAbortFn is always set by runJob before
-			// executeJob is called. Guard against nil for direct-call test paths.
+			// Abort all sibling models when any model hits a fatal I/O error
+			// (e.g. output file write failure). modelErr is only set for local
+			// I/O failures — not inference errors, which are recorded normally
+			// in the error file. Since all models share the same output writers,
+			// a write failure in one model means the shared file is unusable
+			// and continuing other models would produce corrupt output.
+			// Guard against nil requestAbortFn for direct-call test paths.
 			if err != nil {
 				if fn := params.requestAbortFn; fn != nil {
 					fn()
