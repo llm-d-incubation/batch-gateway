@@ -74,7 +74,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
      - Priority queue, event channels, and status updates: `Redis` or `Valkey`.
      - File storage: `S3`, `filesystem`.
 
-4. **Batch Dispatcher**
+4. **Batch Dispatcher** (also called **Async Processor**, implemented in [llm-d-incubation/llm-d-async](https://github.com/llm-d-incubation/llm-d-async))
    - Implements intelligent flow control to balance batch and interactive workloads.
    - Monitors downstream inference system metrics (e.g. queue depth, latency, utilization).
    - Dynamically adjusts dispatch flow of batch requests based on downstream system load, to minimize interference with interactive requests while meeting batch jobs SLOs.
