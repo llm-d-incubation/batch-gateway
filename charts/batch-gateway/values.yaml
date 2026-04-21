@@ -1,0 +1,465 @@
+# Global settings (shared by apiserver, processor, and gc)
+global:
+  imagePullSecrets: []
+
+  # Shared pod security context for all components.
+  # All three components (apiserver, processor, gc) must run with the same UID/GID
+  # when sharing files on a PVC. Per-component overrides are possible via
+  # <component>.podSecurityContext, but use with caution to avoid permission issues.
+  #
+  # Only runAsNonRoot is set by default. The actual UID comes from the Dockerfile
+  # (USER 65532:65532) on vanilla Kubernetes, or from the namespace UID range on
+  # OpenShift (assigned by the restricted-v2 SCC). This avoids hardcoding UIDs that
+  # conflict with OpenShift's Security Context Constraints.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
+  # Shared by all components; mounted read-only at /etc/.secrets/ in each container.
+  # The secret must use these exact key names (hardcoded in the application):
+  #   redis-url             — Redis connection URL (e.g. redis://host:6379/0)
+  #   postgresql-url        — PostgreSQL connection URL (e.g. postgresql://user:pass@host/db)
+  #   inference-api-key     — API key for the inference gateway (optional; omit if not required)
+  #   s3-secret-access-key  — S3 secret access key (required when file_client.type is "s3")
+  # Create with: kubectl create secret generic <name> --from-literal=redis-url=redis://...
+  secretName: "batch-gateway-secrets"
+
+  # Database client configuration (shared by apiserver, processor, and gc).
+  dbClient:
+    # Database backend type: "redis" or "postgresql"
+    type: "postgresql"
+    # Redis client settings.
+    # The connection URL is read from the app secret (redis-url key), not from here.
+    # 0 (or "0s") means go-redis library default.
+    redis:
+      db: 0
+      enableTLS: false
+      insecure: false
+      timeout: "0s"
+      maxRetries: 0
+      minRetryBackoff: "0s"
+      maxRetryBackoff: "0s"
+      poolTimeout: "0s"
+      connMaxIdleTime: "0s"
+      connMaxLifetime: "0s"
+
+  # OpenTelemetry configuration
+  otel:
+    # OTLP gRPC endpoint for trace collection. Examples:
+    #   Dev (Jaeger all-in-one):     "http://jaeger.default.svc.cluster.local:4317"
+    #   OpenShift TempoStack:        "http://tempo-distributor.openshift-tempo-operator.svc:4317"
+    #   OpenShift OTEL Collector:    "http://otel-collector.openshift-distributed-tracing.svc:4317"
+    #   Grafana Alloy/Agent:         "http://alloy.monitoring.svc.cluster.local:4317"
+    # Leave empty to disable tracing.
+    endpoint: ""
+    # Use insecure (plaintext) gRPC connection to the collector.
+    insecure: true
+    # Sampling configuration (maps to standard OTel env vars).
+    # Options: "always_on", "always_off", "traceidratio", "parentbased_traceidratio"
+    # Default is "parentbased_traceidratio" (recommended for production).
+    sampler: "parentbased_traceidratio"
+    # Sampling ratio (0.0 to 1.0), used when sampler is "*traceidratio".
+    # 1.0 = 100% (dev), 0.1 = 10% (production).
+    samplerArg: "1.0"
+    # Enable per-command Redis tracing spans. Can produce high span volume
+    # for batch workloads — leave disabled unless actively debugging Redis.
+    redisTracing: false
+    # Enable per-query PostgreSQL tracing spans via otelpgx.
+    postgresqlTracing: false
+
+  # File client configuration
+  fileClient:
+    type: "fs"  # Options: "fs", "s3"
+    # Filesystem client configuration (required when type is "fs")
+    fs:
+      basePath: "/tmp/batch-gateway"
+      # Name of a PersistentVolumeClaim to use for file storage.
+      pvcName: ""
+    # S3 client configuration (required when type is "s3")
+    s3:
+      region: ""
+      endpoint: ""
+      accessKeyId: ""
+      prefix: ""
+      usePathStyle: false
+      autoCreateBucket: true
+    # Retry configuration for file storage operations (Store, Retrieve, Delete).
+    # Set maxRetries to 0 to disable. Useful for S3 transient errors.
+    retry:
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "10s"
+
+# API Server configuration
+apiserver:
+  enabled: true
+  replicaCount: 1
+  terminationGracePeriodSeconds: 120
+
+  image:
+    repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
+    pullPolicy: Always
+    tag: "latest"
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
+
+  podAnnotations: {}
+  podLabels: {}
+
+  # Per-component podSecurityContext override (optional).
+  # If not set, inherits global.podSecurityContext.
+  # podSecurityContext: {}
+
+  # Container security context (minimal, works with OpenShift)
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+    annotations: {}
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: observability
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: observability
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  volumes: []
+  volumeMounts: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Gateway API HTTPRoute configuration (requires Gateway API CRDs to be installed)
+  # When enabled, creates an HTTPRoute to expose the Batch API endpoints
+  # (/v1/batches and /v1/files) through a Gateway API-compliant gateway.
+  httpRoute:
+    enabled: false
+    annotations: {}
+    # parentRefs define which Gateway(s) this HTTPRoute attaches to.
+    parentRefs:
+      - name: "llm-d-inference-gateway"
+        # Namespace of the parent Gateway. Leave empty to use the release namespace.
+        namespace: ""
+        # Section on the Gateway to attach to (e.g. a specific listener name).
+        sectionName: ""
+
+  # Application configuration
+  config:
+    host: ""
+    port: "8000"
+    observabilityPort: "8081"
+    inputHeaders:
+      tenant: "X-MaaS-Username"
+    readHeaderTimeoutSeconds: 10
+    readTimeoutSeconds: 900
+    writeTimeoutSeconds: 120
+    idleTimeoutSeconds: 90
+    apiShutdownTimeoutSeconds: 60
+    observabilityShutdownTimeoutSeconds: 60
+    batchAPI:
+      eventTTLSeconds: 2592000
+      passThroughHeaders: []
+    fileAPI:
+      defaultExpirationSeconds: 7776000
+      maxSizeBytes: 209715200
+      maxLineCount: 50000
+    # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
+    enablePprof: false
+
+  # TLS/SSL Configuration
+  tls:
+    enabled: false
+    secretName: ""
+    certManager:
+      enabled: false
+      issuerName: ""
+      issuerKind: ClusterIssuer
+      dnsNames: []
+
+  # ServiceMonitor for Prometheus Operator auto-discovery.
+  # Scrapes the observability port (default 8081) where /metrics is served.
+  serviceMonitor:
+    enabled: false
+    interval: "30s"
+    # Extra labels to match Prometheus Operator's serviceMonitorSelector.
+    labels: {}
+
+  # Logging configuration
+  logging:
+    verbosity: 2
+
+# Processor configuration
+processor:
+  enabled: true
+  replicaCount: 1
+  terminationGracePeriodSeconds: 60
+
+  workDirVolume:
+    sizeLimit: "10Gi"
+    medium: "" # node disk
+
+  image:
+    repository: ghcr.io/llm-d-incubation/batch-gateway-processor
+    pullPolicy: Always
+    tag: "latest"
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
+
+  podAnnotations: {}
+  podLabels: {}
+
+  # Per-component podSecurityContext override (optional).
+  # If not set, inherits global.podSecurityContext.
+  # podSecurityContext: {}
+
+  # Container security context (minimal, works with OpenShift)
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: metrics
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: metrics
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  volumes: []
+  volumeMounts: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Processor specific configuration
+  config:
+    addr: ":9090"
+    taskWaitTime: "1s"
+    pollInterval: "5s"
+    numWorkers: 20
+    globalConcurrency: 100
+    perModelMaxConcurrency: 10
+    # Maximum number of concurrent job recoveries during startup
+    recoveryMaxConcurrency: 5
+    queueTimeBucket:
+      start: 0.1
+      factor: 2
+      count: 10
+    processTimeBucket:
+      start: 0.1
+      factor: 2
+      count: 15
+    e2eLatencyBucket:
+      start: 1
+      factor: 3
+      count: 12
+    terminateOnObservabilityFailure: false
+    shutdownTimeout: "30s"
+    workDir: "/var/lib/batch-gateway/processor"
+    # REQUIRED: Configure exactly one of globalInferenceGateway or modelGateways.
+    # The processor will fail to start if neither is set.
+    #
+    # globalInferenceGateway routes ALL inference requests to a single endpoint,
+    # regardless of model name. Use this for MaaS / multi-model platforms or
+    # LoRA-only deployments where all adapters share a single vLLM instance.
+    # Mutually exclusive with modelGateways — the processor rejects config with both set.
+    # globalInferenceGateway:
+    #   url: "http://inference-gateway:8000"
+    #   requestTimeout: "5m"
+    #   maxRetries: 3
+    #   initialBackoff: "1s"
+    #   maxBackoff: "60s"
+    #   tlsInsecureSkipVerify: false   # testing only; prefer tlsCaCertFile for private CAs
+    #   tlsCaCertFile: ""             # in-container path; mount PEM via processor.volumes / volumeMounts
+    #   tlsClientCertFile: ""         # mTLS client cert PEM path (set with tlsClientKeyFile)
+    #   tlsClientKeyFile: ""          # mTLS client key PEM path
+
+    # modelGateways maps specific model names to gateway configs.
+    # Only models listed here are routed; unlisted models get a request-level error.
+    # Either globalInferenceGateway or modelGateways must be configured.
+    # modelGateways:
+    #   "llama-3":
+    #     url: "http://gateway-a:8000"
+    #     requestTimeout: "5m"
+    #     maxRetries: 3
+    #     initialBackoff: "1s"
+    #     maxBackoff: "60s"
+    #     tlsInsecureSkipVerify: false
+    #     tlsCaCertFile: ""
+    #     tlsClientCertFile: ""
+    #     tlsClientKeyFile: ""
+    #   "mistral":
+    #     url: "http://gateway-b:8000"
+    #     apiKeyName: "gateway-b-api-key"
+    #     requestTimeout: "2m"
+    #     maxRetries: 1
+    defaultOutputExpirationSeconds: 7776000  # 90 days
+    progressTTLSeconds: 86400  # 24 hours
+    # Name of a GIE InferenceObjective CRD to reference in the
+    # x-gateway-inference-objective header on inference requests.
+    # Used by GIE flow control to assign batch requests to a priority band.
+    # Empty (default) means the header is not sent.
+    inferenceObjective: ""
+    # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
+    enablePprof: false
+
+  # PodMonitor for Prometheus Operator auto-discovery.
+  # Scrapes the metrics port (default 9090) where /metrics is served.
+  # PodMonitor is used instead of ServiceMonitor because the processor has no Service.
+  podMonitor:
+    enabled: false
+    interval: "30s"
+    # Extra labels to match Prometheus Operator's podMonitorSelector.
+    labels: {}
+
+  # Logging configuration
+  logging:
+    verbosity: 2
+
+# Grafana dashboard configuration
+# When enabled, creates a ConfigMap with dashboard JSON files that Grafana's
+# sidecar auto-loads (requires grafana.sidecar.dashboards.enabled=true).
+grafana:
+  dashboards:
+    enabled: false
+    # Label that the Grafana sidecar watches for dashboard ConfigMaps.
+    label: grafana_dashboard
+    labelValue: "1"
+
+# PrometheusRule for Prometheus Operator alerting.
+prometheusRule:
+  enabled: false
+  # Extra labels to match Prometheus Operator's ruleSelector.
+  labels: {}
+  rules:
+    highQueueWait:
+      enabled: true
+      thresholdSeconds: 300
+      for: "15m"
+    highJobFailureRate:
+      enabled: true
+      thresholdRatio: 0.1
+      for: "10m"
+    expiredJobsDetected:
+      enabled: true
+      thresholdRatio: 0.03
+      for: "10m"
+    workersSaturated:
+      enabled: true
+      thresholdRatio: 0.9
+      for: "15m"
+
+# Garbage Collector configuration
+gc:
+  enabled: true
+  # Only one replica should run to avoid concurrent deletes of the same items.
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/llm-d-incubation/batch-gateway-gc
+    pullPolicy: IfNotPresent
+    tag: "latest"
+
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
+
+  # GC application config (rendered into a ConfigMap and mounted as config.yaml)
+  config:
+    dryRun: false
+    # Interval between garbage collection cycles (Go duration format)
+    interval: "30m"
+    # Maximum number of concurrent item deletions per GC cycle
+    maxConcurrency: 10
+
+  # Per-component podSecurityContext override (optional).
+  # If not set, inherits global.podSecurityContext.
+  # podSecurityContext: {}
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+  logging:
+    verbosity: 2
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

@@ -1,0 +1,136 @@
+{{- if .Values.apiserver.enabled -}}
+{{- include "batch-gateway.validateTLS" (dict "tls" .Values.apiserver.tls "component" "apiserver") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "batch-gateway.apiserver.fullname" . }}
+  labels:
+    {{- include "batch-gateway.apiserver.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiserver.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "batch-gateway.apiserver.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/apiserver-configmap.yaml") . | sha256sum }}
+        {{- with .Values.apiserver.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "batch-gateway.apiserver.labels" . | nindent 8 }}
+        {{- with .Values.apiserver.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.apiserver.terminationGracePeriodSeconds | default 120 }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "batch-gateway.apiserver.serviceAccountName" . }}
+      securityContext:
+        {{- if hasKey .Values.apiserver "podSecurityContext" }}
+        {{- toYaml .Values.apiserver.podSecurityContext | nindent 8 }}
+        {{- else }}
+        {{- toYaml .Values.global.podSecurityContext | nindent 8 }}
+        {{- end }}
+      containers:
+      - name: apiserver
+        securityContext:
+          {{- toYaml .Values.apiserver.securityContext | nindent 12 }}
+        image: {{ include "batch-gateway.apiserver.image" . }}
+        imagePullPolicy: {{ .Values.apiserver.image.pullPolicy }}
+        args:
+        - --config=/etc/config/config.yaml
+        - --v={{ .Values.apiserver.logging.verbosity }}
+        {{- if .Values.global.otel.endpoint }}
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.global.otel.endpoint | quote }}
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: {{ .Values.global.otel.insecure | quote }}
+        - name: OTEL_TRACES_SAMPLER
+          value: {{ .Values.global.otel.sampler | quote }}
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: {{ .Values.global.otel.samplerArg | quote }}
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "k8s.namespace.name=$(NAMESPACE),k8s.pod.name=$(POD_NAME),service.version={{ .Chart.AppVersion }}"
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.apiserver.config.port }}
+          protocol: TCP
+        - name: observability
+          containerPort: {{ .Values.apiserver.config.observabilityPort }}
+          protocol: TCP
+        livenessProbe:
+          {{- toYaml .Values.apiserver.livenessProbe | nindent 12 }}
+        readinessProbe:
+          {{- toYaml .Values.apiserver.readinessProbe | nindent 12 }}
+        resources:
+          {{- toYaml .Values.apiserver.resources | nindent 12 }}
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        {{- include "batch-gateway.filesStorage.volumeMount" . | nindent 8 }}
+        {{- if .Values.apiserver.tls.enabled }}
+        - name: tls
+          mountPath: /etc/tls
+          readOnly: true
+        {{- end }}
+        {{- with .Values.apiserver.volumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.global.secretName }}
+        - name: secrets
+          mountPath: /etc/.secrets
+          readOnly: true
+        {{- end }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "batch-gateway.apiserver.fullname" . }}-config
+      {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
+      {{- if .Values.apiserver.tls.enabled }}
+      - name: tls
+        secret:
+          {{- if .Values.apiserver.tls.secretName }}
+          secretName: {{ .Values.apiserver.tls.secretName }}
+          {{- else }}
+          secretName: {{ include "batch-gateway.apiserver.fullname" . }}-tls
+          {{- end }}
+      {{- end }}
+      {{- if .Values.global.secretName }}
+      - name: secrets
+        projected:
+          sources:
+          - secret:
+              name: {{ .Values.global.secretName }}
+      {{- end }}
+      {{- with .Values.apiserver.volumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.apiserver.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.apiserver.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.apiserver.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

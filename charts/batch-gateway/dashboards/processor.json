@@ -1,0 +1,268 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["batch-gateway", "processor"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "prometheus" },
+        "definition": "label_values(jobs_processed_total, namespace)",
+        "name": "namespace",
+        "type": "query",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Batch Gateway — Processor",
+  "uid": "batch-gateway-processor",
+  "panels": [
+    {
+      "title": "Job Throughput",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(jobs_processed_total{namespace=\"$namespace\"}[5m])) by (result, reason)",
+          "legendFormat": "{{result}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Job Processing Duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(job_processing_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(job_processing_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(job_processing_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Queue Wait Time (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(job_queue_wait_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(job_queue_wait_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(job_queue_wait_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Worker Utilization",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(active_workers{namespace=\"$namespace\"}) / sum(total_workers{namespace=\"$namespace\"})",
+          "legendFormat": "utilization"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "max": 1 }
+      }
+    },
+    {
+      "title": "Inflight Concurrency Utilization",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(processor_inflight_requests{namespace=\"$namespace\"}) / sum(processor_max_inflight_concurrency{namespace=\"$namespace\"})",
+          "legendFormat": "utilization"
+        },
+        {
+          "expr": "sum(processor_inflight_requests{namespace=\"$namespace\"})",
+          "legendFormat": "in-flight"
+        },
+        {
+          "expr": "sum(processor_max_inflight_concurrency{namespace=\"$namespace\"})",
+          "legendFormat": "max"
+        }
+      ]
+    },
+    {
+      "title": "Per-Model Inflight Requests",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(model_inflight_requests{namespace=\"$namespace\"}) by (model)",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "title": "Per-Model Execution Duration (p95)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(model_request_execution_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, model))",
+          "legendFormat": "{{model}} p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Error Rate by Model",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(request_errors_by_model_total{namespace=\"$namespace\"}[5m])) by (model)",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Plan Build Duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(plan_build_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(plan_build_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(plan_build_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "File storage operations (retry)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(file_storage_operations_total{namespace=\"$namespace\", status=\"retry\", component=\"processor\"}[5m])) by (operation)",
+          "legendFormat": "{{operation}} retry/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Startup Recovery",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(batch_startup_recovery_total{namespace=\"$namespace\"}) by (status, action)",
+          "legendFormat": "{{status}} / {{action}}"
+        }
+      ]
+    },
+    {
+      "title": "Token Throughput (prompt)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 48, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_request_prompt_tokens_total{namespace=\"$namespace\"}[5m])) by (model)",
+          "legendFormat": "{{model}} prompt tok/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "title": "Token Throughput (generation)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 48, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_request_generation_tokens_total{namespace=\"$namespace\"}[5m])) by (model)",
+          "legendFormat": "{{model}} gen tok/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    },
+    {
+      "title": "Cancellation Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 56, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_cancellation_total{namespace=\"$namespace\"}[5m])) by (phase)",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Job E2E Latency (p50 / p95 / p99 by status)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 56, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(batch_job_e2e_latency_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, status))",
+          "legendFormat": "{{status}} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(batch_job_e2e_latency_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, status))",
+          "legendFormat": "{{status}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(batch_job_e2e_latency_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le, status))",
+          "legendFormat": "{{status}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    }
+  ]
+}

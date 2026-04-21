@@ -1,0 +1,40 @@
+name: Pre-commit
+
+on:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+
+concurrency:
+  group: pre-commit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Go tools (goimports, gosec, ruleguard)
+        run: make install-pre-commit-tools
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.4
+
+      - name: Run pre-commit hooks
+        uses: pre-commit/action@v3.0.1

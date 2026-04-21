@@ -1,0 +1,39 @@
+suite: httproute fail guards
+templates:
+  - templates/apiserver-httproute.yaml
+# Required: fs file client (the default) needs a pvcName to pass template validation.
+set:
+  global.fileClient.fs.pvcName: "test-pvc"
+tests:
+  - it: should not render HTTPRoute when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/apiserver-httproute.yaml
+
+  - it: should fail when httpRoute enabled but parentRefs is empty
+    set:
+      apiserver.httpRoute.enabled: true
+      apiserver.httpRoute.parentRefs: []
+    asserts:
+      - failedTemplate:
+          errorMessage: "apiserver.httpRoute.parentRefs must not be empty when httpRoute is enabled"
+
+  - it: should fail when parentRef name is empty
+    set:
+      apiserver.httpRoute.enabled: true
+      apiserver.httpRoute.parentRefs:
+        - name: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "each entry in apiserver.httpRoute.parentRefs must have a non-empty name"
+
+  - it: should render HTTPRoute with valid parentRefs
+    set:
+      apiserver.httpRoute.enabled: true
+      apiserver.httpRoute.parentRefs:
+        - name: "my-gateway"
+    asserts:
+      - isKind:
+          of: HTTPRoute
+        template: templates/apiserver-httproute.yaml

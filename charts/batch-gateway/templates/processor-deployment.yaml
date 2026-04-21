@@ -1,0 +1,128 @@
+{{- if .Values.processor.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "batch-gateway.processor.fullname" . }}
+  labels:
+    {{- include "batch-gateway.processor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.processor.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "batch-gateway.processor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/processor-configmap.yaml") . | sha256sum }}
+        {{- with .Values.processor.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "batch-gateway.processor.labels" . | nindent 8 }}
+        {{- with .Values.processor.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.processor.terminationGracePeriodSeconds | default 60 }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "batch-gateway.processor.serviceAccountName" . }}
+      securityContext:
+        {{- if hasKey .Values.processor "podSecurityContext" }}
+        {{- toYaml .Values.processor.podSecurityContext | nindent 8 }}
+        {{- else }}
+        {{- toYaml .Values.global.podSecurityContext | nindent 8 }}
+        {{- end }}
+      containers:
+      - name: processor
+        securityContext:
+          {{- toYaml .Values.processor.securityContext | nindent 12 }}
+        image: {{ include "batch-gateway.processor.image" . }}
+        imagePullPolicy: {{ .Values.processor.image.pullPolicy }}
+        args:
+        - --config=/etc/config/config.yaml
+        - --v={{ .Values.processor.logging.verbosity }}
+        {{- if .Values.global.otel.endpoint }}
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: {{ .Values.global.otel.endpoint | quote }}
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: {{ .Values.global.otel.insecure | quote }}
+        - name: OTEL_TRACES_SAMPLER
+          value: {{ .Values.global.otel.sampler | quote }}
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: {{ .Values.global.otel.samplerArg | quote }}
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "k8s.namespace.name=$(NAMESPACE),k8s.pod.name=$(POD_NAME),service.version={{ .Chart.AppVersion }}"
+        {{- end }}
+        ports:
+        - name: metrics
+          containerPort: {{ (splitList ":" .Values.processor.config.addr | last) | int }}
+          protocol: TCP
+        livenessProbe:
+          {{- toYaml .Values.processor.livenessProbe | nindent 12 }}
+        readinessProbe:
+          {{- toYaml .Values.processor.readinessProbe | nindent 12 }}
+        resources:
+          {{- toYaml .Values.processor.resources | nindent 12 }}
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+          readOnly: true
+        - name: workdir
+          mountPath: {{ .Values.processor.config.workDir }}
+        {{- include "batch-gateway.filesStorage.volumeMount" . | nindent 8 }}
+        {{- with .Values.processor.volumeMounts }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.global.secretName }}
+        - name: secrets
+          mountPath: /etc/.secrets
+          readOnly: true
+        {{- end }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "batch-gateway.processor.fullname" . }}-config
+      - name: workdir
+        emptyDir:
+          {{- if .Values.processor.workDirVolume.medium }}
+          medium: {{ .Values.processor.workDirVolume.medium | quote }}
+          {{- end }}
+          {{- if .Values.processor.workDirVolume.sizeLimit }}
+          sizeLimit: {{ .Values.processor.workDirVolume.sizeLimit | quote }}
+          {{- end }}
+      {{- include "batch-gateway.filesStorage.volume" . | nindent 6 }}
+      {{- if .Values.global.secretName }}
+      - name: secrets
+        projected:
+          sources:
+          - secret:
+              name: {{ .Values.global.secretName }}
+      {{- end }}
+      {{- with .Values.processor.volumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.processor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.processor.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.processor.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

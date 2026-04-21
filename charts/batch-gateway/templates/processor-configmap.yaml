@@ -1,0 +1,133 @@
+{{- if .Values.processor.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "batch-gateway.processor.fullname" . }}-config
+  labels:
+    {{- include "batch-gateway.processor.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Processor configuration
+
+    addr: {{ .Values.processor.config.addr | quote }}
+    task_wait_time: {{ .Values.processor.config.taskWaitTime | quote }}
+    poll_interval: {{ .Values.processor.config.pollInterval | quote }}
+    num_workers: {{ .Values.processor.config.numWorkers }}
+    global_concurrency: {{ .Values.processor.config.globalConcurrency }}
+    per_model_max_concurrency: {{ .Values.processor.config.perModelMaxConcurrency }}
+    recovery_max_concurrency: {{ .Values.processor.config.recoveryMaxConcurrency }}
+
+    terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
+    shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}
+    work_dir: {{ .Values.processor.config.workDir | quote }}
+
+    db_client:
+      type: {{ .Values.global.dbClient.type | quote }}
+      redis:
+        db: {{ .Values.global.dbClient.redis.db }}
+        enable_tls: {{ .Values.global.dbClient.redis.enableTLS }}
+        insecure: {{ .Values.global.dbClient.redis.insecure }}
+        timeout: {{ .Values.global.dbClient.redis.timeout | quote }}
+        max_retries: {{ .Values.global.dbClient.redis.maxRetries }}
+        min_retry_backoff: {{ .Values.global.dbClient.redis.minRetryBackoff | quote }}
+        max_retry_backoff: {{ .Values.global.dbClient.redis.maxRetryBackoff | quote }}
+        pool_timeout: {{ .Values.global.dbClient.redis.poolTimeout | quote }}
+        conn_max_idle_time: {{ .Values.global.dbClient.redis.connMaxIdleTime | quote }}
+        conn_max_lifetime: {{ .Values.global.dbClient.redis.connMaxLifetime | quote }}
+
+    {{- with .Values.processor.config.globalInferenceGateway }}
+    global_inference_gateway:
+      url: {{ .url | quote }}
+      request_timeout: {{ .requestTimeout | quote }}
+      max_retries: {{ .maxRetries }}
+      initial_backoff: {{ .initialBackoff | quote }}
+      max_backoff: {{ .maxBackoff | quote }}
+      tls_insecure_skip_verify: {{ .tlsInsecureSkipVerify | default false }}
+      {{- if .apiKeyName }}
+      api_key_name: {{ .apiKeyName | quote }}
+      {{- end }}
+      {{- if .apiKeyFile }}
+      api_key_file: {{ .apiKeyFile | quote }}
+      {{- end }}
+      {{- if .tlsCaCertFile }}
+      tls_ca_cert_file: {{ .tlsCaCertFile | quote }}
+      {{- end }}
+      {{- if .tlsClientCertFile }}
+      tls_client_cert_file: {{ .tlsClientCertFile | quote }}
+      {{- end }}
+      {{- if .tlsClientKeyFile }}
+      tls_client_key_file: {{ .tlsClientKeyFile | quote }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.processor.config.modelGateways }}
+    model_gateways:
+      {{- range $model, $cfg := .Values.processor.config.modelGateways }}
+      {{ $model | quote }}:
+        url: {{ $cfg.url | quote }}
+        request_timeout: {{ $cfg.requestTimeout | quote }}
+        max_retries: {{ $cfg.maxRetries }}
+        initial_backoff: {{ $cfg.initialBackoff | quote }}
+        max_backoff: {{ $cfg.maxBackoff | quote }}
+        tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify | default false }}
+        {{- if $cfg.apiKeyName }}
+        api_key_name: {{ $cfg.apiKeyName | quote }}
+        {{- end }}
+        {{- if $cfg.apiKeyFile }}
+        api_key_file: {{ $cfg.apiKeyFile | quote }}
+        {{- end }}
+        {{- if $cfg.tlsCaCertFile }}
+        tls_ca_cert_file: {{ $cfg.tlsCaCertFile | quote }}
+        {{- end }}
+        {{- if $cfg.tlsClientCertFile }}
+        tls_client_cert_file: {{ $cfg.tlsClientCertFile | quote }}
+        {{- end }}
+        {{- if $cfg.tlsClientKeyFile }}
+        tls_client_key_file: {{ $cfg.tlsClientKeyFile | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.processor.config.inferenceObjective }}
+    inference_objective: {{ .Values.processor.config.inferenceObjective | quote }}
+    {{- end }}
+
+    default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
+    progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
+
+    file_client:
+      type: {{ .Values.global.fileClient.type | quote }}
+      fs:
+        base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
+      s3:
+        region: {{ .Values.global.fileClient.s3.region | quote }}
+        endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
+        prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
+        use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+        auto_create_bucket: {{ .Values.global.fileClient.s3.autoCreateBucket }}
+      retry:
+        max_retries: {{ .Values.global.fileClient.retry.maxRetries }}
+        initial_backoff: {{ .Values.global.fileClient.retry.initialBackoff | quote }}
+        max_backoff: {{ .Values.global.fileClient.retry.maxBackoff | quote }}
+
+    queue_time_bucket:
+      start: {{ .Values.processor.config.queueTimeBucket.start }}
+      factor: {{ .Values.processor.config.queueTimeBucket.factor }}
+      count: {{ .Values.processor.config.queueTimeBucket.count }}
+
+    process_time_bucket:
+      start: {{ .Values.processor.config.processTimeBucket.start }}
+      factor: {{ .Values.processor.config.processTimeBucket.factor }}
+      count: {{ .Values.processor.config.processTimeBucket.count }}
+
+    e2e_latency_bucket:
+      start: {{ .Values.processor.config.e2eLatencyBucket.start }}
+      factor: {{ .Values.processor.config.e2eLatencyBucket.factor }}
+      count: {{ .Values.processor.config.e2eLatencyBucket.count }}
+
+    enable_pprof: {{ .Values.processor.config.enablePprof }}
+    otel:
+      redis_tracing: {{ .Values.global.otel.redisTracing }}
+      postgresql_tracing: {{ .Values.global.otel.postgresqlTracing }}
+{{- end }}

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: batch-gateway
+description: A Helm chart for the Batch Gateway
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+keywords:
+  - batch-gateway
+  - api-server
+  - processor
+  - worker
+  - llm
+maintainers:
+  - name: llm-d
+    url: https://github.com/llm-d-incubation/batch-gateway

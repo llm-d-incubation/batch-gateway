@@ -1,0 +1,42 @@
+{{- if .Values.gc.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "batch-gateway.gc.fullname" . }}-config
+  labels:
+    {{- include "batch-gateway.gc.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Garbage Collector configuration
+    dry_run: {{ .Values.gc.config.dryRun }}
+    interval: {{ .Values.gc.config.interval | quote }}
+    max_concurrency: {{ .Values.gc.config.maxConcurrency }}
+    db_client:
+      type: {{ .Values.global.dbClient.type | quote }}
+      redis:
+        db: {{ .Values.global.dbClient.redis.db }}
+        enable_tls: {{ .Values.global.dbClient.redis.enableTLS }}
+        insecure: {{ .Values.global.dbClient.redis.insecure }}
+        timeout: {{ .Values.global.dbClient.redis.timeout | quote }}
+        max_retries: {{ .Values.global.dbClient.redis.maxRetries }}
+        min_retry_backoff: {{ .Values.global.dbClient.redis.minRetryBackoff | quote }}
+        max_retry_backoff: {{ .Values.global.dbClient.redis.maxRetryBackoff | quote }}
+        pool_timeout: {{ .Values.global.dbClient.redis.poolTimeout | quote }}
+        conn_max_idle_time: {{ .Values.global.dbClient.redis.connMaxIdleTime | quote }}
+        conn_max_lifetime: {{ .Values.global.dbClient.redis.connMaxLifetime | quote }}
+    file_client:
+      type: {{ .Values.global.fileClient.type | quote }}
+      fs:
+        base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
+      s3:
+        region: {{ .Values.global.fileClient.s3.region | quote }}
+        endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
+        prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
+        use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+        auto_create_bucket: {{ .Values.global.fileClient.s3.autoCreateBucket }}
+      retry:
+        max_retries: {{ .Values.global.fileClient.retry.maxRetries }}
+        initial_backoff: {{ .Values.global.fileClient.retry.initialBackoff | quote }}
+        max_backoff: {{ .Values.global.fileClient.retry.maxBackoff | quote }}
+{{- end }}

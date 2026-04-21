@@ -1,0 +1,1205 @@
+/*
+Copyright 2026 The llm-d Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package http
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
+)
+
+func testLogger(t testing.TB) logr.Logger {
+	return testr.NewWithInterface(t, testr.Options{})
+}
+
+// TestNewHTTPClient_Defaults tests that NewHTTPClient sets proper defaults
+func TestNewHTTPClient_Defaults(t *testing.T) {
+	config := Config{
+		BaseURL: "http://localhost:8000",
+	}
+
+	client, err := NewHTTPClient(config, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("Expected non-nil client")
+		return
+	}
+
+	// Verify transport settings (defaults should be applied)
+	if client.transport == nil {
+		t.Fatal("Expected non-nil Transport")
+	}
+	if client.transport.MaxIdleConns != 100 {
+		t.Errorf("Expected Transport.MaxIdleConns=100, got %d", client.transport.MaxIdleConns)
+	}
+	if client.transport.MaxIdleConnsPerHost != 100 {
+		t.Errorf("Expected Transport.MaxIdleConnsPerHost=100, got %d", client.transport.MaxIdleConnsPerHost)
+	}
+	if client.transport.ResponseHeaderTimeout != 5*time.Minute {
+		t.Errorf("Expected Transport.ResponseHeaderTimeout=5m (same as default Timeout), got %v", client.transport.ResponseHeaderTimeout)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestHTTPClient_Close_nilReceiver(t *testing.T) {
+	var c *HTTPClient
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close on nil: %v", err)
+	}
+}
+
+// TestNewHTTPClient_CustomConfig tests NewHTTPClient with custom configuration
+func TestNewHTTPClient_CustomConfig(t *testing.T) {
+	config := Config{
+		BaseURL:         "http://example.com",
+		Timeout:         10 * time.Second,
+		MaxIdleConns:    50,
+		IdleConnTimeout: 60 * time.Second,
+		APIKey:          "test-api-key",
+	}
+
+	client, err := NewHTTPClient(config, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("Expected non-nil client")
+	}
+
+	// Client created successfully with custom settings
+}
+
+// TestNewHTTPClient_RetryDefaults tests retry configuration defaults
+func TestNewHTTPClient_RetryDefaults(t *testing.T) {
+	config := Config{
+		BaseURL:    "http://localhost:8000",
+		MaxRetries: 3,
+	}
+
+	client, err := NewHTTPClient(config, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("Expected non-nil client")
+	}
+
+	// Client created successfully with retry enabled (defaults applied internally)
+}
+
+// TestNewHTTPClient_RetryCustom tests custom retry configuration
+func TestNewHTTPClient_RetryCustom(t *testing.T) {
+	config := Config{
+		BaseURL:        "http://localhost:8000",
+		MaxRetries:     5,
+		InitialBackoff: 500 * time.Millisecond,
+		MaxBackoff:     30 * time.Second,
+	}
+
+	client, err := NewHTTPClient(config, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("Expected non-nil client")
+	}
+
+	// Client created successfully with custom retry settings
+}
+
+// TestPost_Success tests successful POST request
+func TestPost_Success(t *testing.T) {
+	requestBody := map[string]string{"key": "value"}
+	expectedResponse := map[string]string{"result": "success"}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		// Verify headers
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("Expected Content-Type=application/json, got %s", r.Header.Get("Content-Type"))
+		}
+
+		// Verify request body
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("Failed to decode request body: %v", err)
+		}
+		if body["key"] != "value" {
+			t.Errorf("Expected body key=value, got %v", body)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(expectedResponse)
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	respBody, statusCode, err := client.Post(context.Background(), "/test", requestBody, nil, "")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+
+	var response map[string]string
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response["result"] != "success" {
+		t.Errorf("Expected result=success, got %v", response)
+	}
+}
+
+// TestPost_WithRequestID tests POST request with request ID header
+func TestPost_WithRequestID(t *testing.T) {
+	expectedRequestID := "test-request-123"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := r.Header.Get("X-Request-ID")
+		if requestID != expectedRequestID {
+			t.Errorf("Expected X-Request-ID=%s, got %s", expectedRequestID, requestID)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, expectedRequestID)
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+}
+
+// TestPost_WithCustomHeaders tests POST request with custom headers
+func TestPost_WithCustomHeaders(t *testing.T) {
+	customHeaders := map[string]string{
+		"X-Custom-Header": "custom-value",
+		"X-Another":       "another-value",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range customHeaders {
+			if r.Header.Get(k) != v {
+				t.Errorf("Expected header %s=%s, got %s", k, v, r.Header.Get(k))
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, customHeaders, "")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+}
+
+// TestPost_WithAPIKey tests that API key is included as Bearer token
+func TestPost_WithAPIKey(t *testing.T) {
+	expectedAPIKey := "test-api-key-123"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		expectedAuth := "Bearer " + expectedAPIKey
+		if authHeader != expectedAuth {
+			t.Errorf("Expected Authorization=%s, got %s", expectedAuth, authHeader)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		BaseURL: server.URL,
+		APIKey:  expectedAPIKey,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+}
+
+// TestPost_ContextCancellation tests POST request with cancelled context
+func TestPost_ContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, _, err = client.Post(ctx, "/test", nil, nil, "")
+	if err == nil {
+		t.Fatal("Expected error for cancelled context, got nil")
+	}
+}
+
+// TestPost_ContextTimeout tests POST request with timeout
+func TestPost_ContextTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{BaseURL: server.URL}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, _, err = client.Post(ctx, "/test", nil, nil, "")
+	if err == nil {
+		t.Fatal("Expected timeout error, got nil")
+	}
+}
+
+// TestPost_RetryOn500 tests that 500 errors are retried
+func TestPost_RetryOn500(t *testing.T) {
+	var attemptCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := attemptCount.Add(1)
+		if count < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error": {"message": "server error"}}`))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"result": "success"}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		BaseURL:        server.URL,
+		MaxRetries:     3,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+
+	if attemptCount.Load() != 3 {
+		t.Errorf("Expected 3 attempts, got %d", attemptCount.Load())
+	}
+}
+
+// TestPost_RetryOn429 tests that 429 (rate limit) errors are retried
+func TestPost_RetryOn429(t *testing.T) {
+	var attemptCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := attemptCount.Add(1)
+		if count < 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error": {"message": "rate limit exceeded"}}`))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"result": "success"}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		BaseURL:        server.URL,
+		MaxRetries:     3,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-429")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+
+	if attemptCount.Load() != 2 {
+		t.Errorf("Expected 2 attempts, got %d", attemptCount.Load())
+	}
+}
+
+// TestPost_NoRetryOn400 tests that 400 errors are not retried
+func TestPost_NoRetryOn400(t *testing.T) {
+	var attemptCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attemptCount.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error": {"message": "bad request"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		BaseURL:        server.URL,
+		MaxRetries:     3,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-no-retry")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d", statusCode)
+	}
+
+	if attemptCount.Load() != 1 {
+		t.Errorf("Expected 1 attempt (no retry), got %d", attemptCount.Load())
+	}
+}
+
+// TestRetryAfter_429WithRetryAfterHeader tests that 429 responses with Retry-After header
+// are retried after the server-specified delay.
+func TestRetryAfter_429WithRetryAfterHeader(t *testing.T) {
+	tests := []struct {
+		name         string
+		retryAfter   string
+		minElapsed   time.Duration
+		maxElapsed   time.Duration
+		assertTiming bool
+	}{
+		{
+			name:         "seconds format",
+			retryAfter:   "0",
+			maxElapsed:   80 * time.Millisecond,
+			assertTiming: true,
+		},
+		{
+			name:         "HTTP-date format",
+			retryAfter:   time.Now().Add(120 * time.Millisecond).UTC().Format(http.TimeFormat),
+			assertTiming: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attemptCount atomic.Int32
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				count := attemptCount.Add(1)
+				if count < 2 {
+					w.Header().Set("Retry-After", tt.retryAfter)
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error": {"message": "rate limited"}}`))
+				} else {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"result": "success"}`))
+				}
+			}))
+			defer server.Close()
+
+			client, err := NewHTTPClient(Config{
+				BaseURL:        server.URL,
+				MaxRetries:     3,
+				InitialBackoff: 10 * time.Millisecond,
+				MaxBackoff:     100 * time.Millisecond,
+			}, testLogger(t))
+			if err != nil {
+				t.Fatalf("NewHTTPClient failed: %v", err)
+			}
+
+			start := time.Now()
+			_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-after")
+			elapsed := time.Since(start)
+			if err != nil {
+				t.Fatalf("Post failed: %v", err)
+			}
+
+			if statusCode != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", statusCode)
+			}
+
+			if attemptCount.Load() != 2 {
+				t.Errorf("Expected 2 attempts, got %d", attemptCount.Load())
+			}
+			if tt.assertTiming {
+				if tt.minElapsed > 0 && elapsed < tt.minElapsed {
+					t.Errorf("Expected elapsed >= %v, got %v", tt.minElapsed, elapsed)
+				}
+				if tt.maxElapsed > 0 && elapsed > tt.maxElapsed {
+					t.Errorf("Expected elapsed <= %v, got %v", tt.maxElapsed, elapsed)
+				}
+			}
+		})
+	}
+}
+
+// TestRetryAfter_429WithoutHeader tests that 429 responses without Retry-After header
+// still retry with the 429-specific longer backoff.
+func TestRetryAfter_429WithoutHeader(t *testing.T) {
+	var attemptCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := attemptCount.Add(1)
+		if count < 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error": {"message": "rate limited"}}`))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"result": "success"}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		BaseURL:        server.URL,
+		MaxRetries:     3,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     1 * time.Second,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-429-no-header")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+
+	if attemptCount.Load() != 2 {
+		t.Errorf("Expected 2 attempts, got %d", attemptCount.Load())
+	}
+}
+
+// TestRetryAfter_5xxUsesFasterBackoff tests that 502/503/504 responses use a
+// faster retry with maxBackoff/2 cap (transient failures).
+func TestRetryAfter_5xxUsesFasterBackoff(t *testing.T) {
+	runScenario := func(t *testing.T, firstFailureStatus int) time.Duration {
+		t.Helper()
+		var attemptCount atomic.Int32
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			count := attemptCount.Add(1)
+			if count <= 3 {
+				w.WriteHeader(firstFailureStatus)
+				_, _ = w.Write([]byte(`{"error": {"message": "transient failure"}}`))
+			} else {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"result": "success"}`))
+			}
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     4,
+			InitialBackoff: 20 * time.Millisecond,
+			MaxBackoff:     80 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewHTTPClient failed: %v", err)
+		}
+
+		start := time.Now()
+		_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-5xx")
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Post failed: %v", err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", statusCode)
+		}
+		if attemptCount.Load() != 4 {
+			t.Fatalf("Expected 4 attempts, got %d", attemptCount.Load())
+		}
+		return elapsed
+	}
+
+	const samples = 5
+	var elapsed503Samples []time.Duration
+	var elapsed500Samples []time.Duration
+	for range samples {
+		elapsed503Samples = append(elapsed503Samples, runScenario(t, http.StatusServiceUnavailable))
+		elapsed500Samples = append(elapsed500Samples, runScenario(t, http.StatusInternalServerError))
+	}
+
+	median := func(values []time.Duration) time.Duration {
+		ordered := append([]time.Duration(nil), values...)
+		for i := 0; i < len(ordered); i++ {
+			for j := i + 1; j < len(ordered); j++ {
+				if ordered[j] < ordered[i] {
+					ordered[i], ordered[j] = ordered[j], ordered[i]
+				}
+			}
+		}
+		return ordered[len(ordered)/2]
+	}
+
+	median503 := median(elapsed503Samples)
+	median500 := median(elapsed500Samples)
+	if median503 >= median500 {
+		t.Errorf("Expected 503 median retry time (%v) < 500 median retry time (%v)", median503, median500)
+	}
+}
+
+// TestParseRetryAfter tests the Retry-After header parsing function.
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		wantOK   bool
+		wantZero bool // if wantOK, whether the duration should be zero
+	}{
+		{name: "integer seconds", value: "120", wantOK: true, wantZero: false},
+		{name: "zero seconds", value: "0", wantOK: true, wantZero: true},
+		{name: "HTTP-date future", value: time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat), wantOK: true, wantZero: false},
+		{name: "HTTP-date past", value: time.Now().Add(-10 * time.Second).UTC().Format(http.TimeFormat), wantOK: true, wantZero: true},
+		{name: "invalid value", value: "abc", wantOK: false},
+		{name: "empty string", value: "", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, ok := parseRetryAfter(tt.value)
+			if ok != tt.wantOK {
+				t.Fatalf("parseRetryAfter(%q): ok = %v, want %v", tt.value, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if tt.wantZero && d != 0 {
+				t.Errorf("Expected zero duration, got %v", d)
+			}
+			if !tt.wantZero && d <= 0 {
+				t.Errorf("Expected positive duration, got %v", d)
+			}
+		})
+	}
+}
+
+// TestHandleErrorResponse_OpenAIFormat tests parsing OpenAI-style error response
+func TestHandleErrorResponse_OpenAIFormat(t *testing.T) {
+	body := []byte(`{"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}}`)
+
+	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
+	clientErr := client.HandleErrorResponse(context.Background(), http.StatusUnauthorized, body)
+
+	if clientErr == nil {
+		t.Fatal("Expected non-nil error")
+		return
+	}
+
+	if clientErr.Category != ErrCategoryAuth {
+		t.Errorf("Expected category AUTH_ERROR, got %s", clientErr.Category)
+	}
+
+	if clientErr.Message != "HTTP 401: Invalid API key" {
+		t.Errorf("Expected message 'HTTP 401: Invalid API key', got %s", clientErr.Message)
+	}
+
+	if clientErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected StatusCode 401, got %d", clientErr.StatusCode)
+	}
+
+	if string(clientErr.ResponseBody) != string(body) {
+		t.Errorf("Expected ResponseBody to be preserved, got %s", clientErr.ResponseBody)
+	}
+}
+
+// TestHandleErrorResponse_PlainText tests parsing plain text error response
+func TestHandleErrorResponse_PlainText(t *testing.T) {
+	body := []byte("Internal Server Error")
+
+	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
+	clientErr := client.HandleErrorResponse(context.Background(), http.StatusInternalServerError, body)
+
+	if clientErr == nil {
+		t.Fatal("Expected non-nil error")
+		return
+	}
+
+	if clientErr.Category != ErrCategoryServer {
+		t.Errorf("Expected category SERVER_ERROR, got %s", clientErr.Category)
+	}
+
+	if clientErr.Message != "HTTP 500: Internal Server Error" {
+		t.Errorf("Expected message 'HTTP 500: Internal Server Error', got %s", clientErr.Message)
+	}
+}
+
+// TestHandleErrorResponse_EmptyBody tests handling empty error response
+func TestHandleErrorResponse_EmptyBody(t *testing.T) {
+	body := []byte("")
+
+	client, _ := NewHTTPClient(Config{BaseURL: "http://localhost"}, testLogger(t))
+	clientErr := client.HandleErrorResponse(context.Background(), http.StatusBadGateway, body)
+
+	if clientErr == nil {
+		t.Fatal("Expected non-nil error")
+		return
+	}
+
+	if clientErr.Category != ErrCategoryServer {
+		t.Errorf("Expected category SERVER_ERROR, got %s", clientErr.Category)
+	}
+
+	if clientErr.Message != "HTTP 502: " {
+		t.Errorf("Expected message 'HTTP 502: ', got %s", clientErr.Message)
+	}
+}
+
+// TestMapStatusCodeToCategory tests all status code mappings
+func TestMapStatusCodeToCategory(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		expected   ErrorCategory
+	}{
+		{http.StatusBadRequest, ErrCategoryInvalidReq},          // 400
+		{http.StatusUnauthorized, ErrCategoryAuth},              // 401
+		{http.StatusForbidden, ErrCategoryAuth},                 // 403
+		{http.StatusTooManyRequests, ErrCategoryRateLimit},      // 429
+		{http.StatusInternalServerError, ErrCategoryServer},     // 500
+		{http.StatusBadGateway, ErrCategoryServer},              // 502
+		{http.StatusServiceUnavailable, ErrCategoryServer},      // 503
+		{http.StatusGatewayTimeout, ErrCategoryServer},          // 504
+		{http.StatusHTTPVersionNotSupported, ErrCategoryServer}, // 505 (other 5xx)
+		{http.StatusNotFound, ErrCategoryUnknown},               // 404 (unmapped 4xx)
+		{http.StatusTeapot, ErrCategoryUnknown},                 // 418 (unmapped)
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("status_%d", tt.statusCode), func(t *testing.T) {
+			category := MapStatusCodeToCategory(tt.statusCode)
+			if category != tt.expected {
+				t.Errorf("For status %d, expected category %s, got %s", tt.statusCode, tt.expected, category)
+			}
+		})
+	}
+}
+
+func TestClientError_OpenAIErrorType(t *testing.T) {
+	tests := []struct {
+		name     string
+		category ErrorCategory
+		want     string
+	}{
+		{name: "invalid request", category: ErrCategoryInvalidReq, want: "invalid_request_error"},
+		{name: "auth", category: ErrCategoryAuth, want: "authentication_error"},
+		{name: "rate limit", category: ErrCategoryRateLimit, want: "rate_limit_error"},
+		{name: "server", category: ErrCategoryServer, want: "server_error"},
+		{name: "parse", category: ErrCategoryParse, want: "invalid_response"},
+		{name: "unknown", category: ErrCategoryUnknown, want: "unknown_error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (&ClientError{Category: tt.category}).OpenAIErrorType()
+			if got != tt.want {
+				t.Fatalf("OpenAIErrorType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildTLSConfig_Nil tests that BuildTLSConfig returns nil for default config
+func TestBuildTLSConfig_Nil(t *testing.T) {
+	config := Config{}
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err != nil {
+		t.Fatalf("BuildTLSConfig failed: %v", err)
+	}
+
+	if tlsConfig != nil {
+		t.Error("Expected nil TLS config for default settings")
+	}
+}
+
+// TestBuildTLSConfig_InsecureSkipVerify tests InsecureSkipVerify option
+func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
+	config := Config{
+		TLSInsecureSkipVerify: true,
+	}
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err != nil {
+		t.Fatalf("BuildTLSConfig failed: %v", err)
+	}
+
+	if tlsConfig == nil {
+		t.Fatal("Expected non-nil TLS config")
+		return
+	}
+
+	if !tlsConfig.InsecureSkipVerify {
+		t.Error("Expected InsecureSkipVerify=true")
+	}
+}
+
+// TestBuildTLSConfig_CustomCA tests custom CA certificate
+func TestBuildTLSConfig_CustomCA(t *testing.T) {
+	// Create a temporary CA cert file
+	tmpDir := t.TempDir()
+	caCertFile := filepath.Join(tmpDir, "ca.crt")
+
+	// Generate a valid self-signed certificate
+	caCertPEM := generateTestCertificate(t)
+	if err := os.WriteFile(caCertFile, caCertPEM, 0644); err != nil {
+		t.Fatalf("Failed to write CA cert file: %v", err)
+	}
+
+	config := Config{
+		TLSCACertFile: caCertFile,
+	}
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err != nil {
+		t.Fatalf("BuildTLSConfig failed: %v", err)
+	}
+
+	if tlsConfig == nil {
+		t.Fatal("Expected non-nil TLS config")
+		return
+	}
+
+	if tlsConfig.RootCAs == nil {
+		t.Error("Expected non-nil RootCAs")
+	}
+}
+
+// TestBuildTLSConfig_CustomCA_FileNotFound tests error when CA cert file doesn't exist
+func TestBuildTLSConfig_CustomCA_FileNotFound(t *testing.T) {
+	config := Config{
+		TLSCACertFile: "/nonexistent/ca.crt",
+	}
+	_, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err == nil {
+		t.Fatal("Expected error for missing CA cert file")
+	}
+}
+
+// TestBuildTLSConfig_CustomCA_InvalidPEM tests error when CA cert is invalid
+func TestBuildTLSConfig_CustomCA_InvalidPEM(t *testing.T) {
+	tmpDir := t.TempDir()
+	caCertFile := filepath.Join(tmpDir, "ca.crt")
+
+	if err := os.WriteFile(caCertFile, []byte("not a valid PEM certificate"), 0644); err != nil {
+		t.Fatalf("Failed to write invalid CA cert file: %v", err)
+	}
+
+	config := Config{
+		TLSCACertFile: caCertFile,
+	}
+	_, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err == nil {
+		t.Fatal("Expected error for invalid PEM certificate")
+	}
+}
+
+// TestBuildTLSConfig_ClientCert_BothRequired tests that both cert and key are required for mTLS
+func TestBuildTLSConfig_ClientCert_BothRequired(t *testing.T) {
+	tests := []struct {
+		name     string
+		certFile string
+		keyFile  string
+	}{
+		{"only cert", "/path/to/cert.pem", ""},
+		{"only key", "", "/path/to/key.pem"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := Config{
+				TLSClientCertFile: tt.certFile,
+				TLSClientKeyFile:  tt.keyFile,
+			}
+			_, err := BuildTLSConfig(&config, testLogger(t))
+
+			if err == nil {
+				t.Fatal("Expected error when only one of cert/key is specified")
+			}
+		})
+	}
+}
+
+// TestBuildTLSConfig_TLSVersions tests TLS version constraints
+func TestBuildTLSConfig_TLSVersions(t *testing.T) {
+	config := Config{
+		TLSMinVersion: tls.VersionTLS12,
+		TLSMaxVersion: tls.VersionTLS13,
+	}
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err != nil {
+		t.Fatalf("BuildTLSConfig failed: %v", err)
+	}
+
+	if tlsConfig == nil {
+		t.Fatal("Expected non-nil TLS config")
+		return
+	}
+
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Errorf("Expected MinVersion=TLS1.2, got 0x%04x", tlsConfig.MinVersion)
+	}
+
+	if tlsConfig.MaxVersion != tls.VersionTLS13 {
+		t.Errorf("Expected MaxVersion=TLS1.3, got 0x%04x", tlsConfig.MaxVersion)
+	}
+}
+
+// TestBuildTLSConfig_CombinedOptions tests combination of TLS options
+func TestBuildTLSConfig_CombinedOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+	caCertFile := filepath.Join(tmpDir, "ca.crt")
+
+	// Generate a valid self-signed certificate
+	caCertPEM := generateTestCertificate(t)
+	if err := os.WriteFile(caCertFile, caCertPEM, 0644); err != nil {
+		t.Fatalf("Failed to write CA cert file: %v", err)
+	}
+
+	config := Config{
+		TLSCACertFile: caCertFile,
+		TLSMinVersion: tls.VersionTLS12,
+	}
+	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+
+	if err != nil {
+		t.Fatalf("BuildTLSConfig failed: %v", err)
+	}
+
+	if tlsConfig == nil {
+		t.Fatal("Expected non-nil TLS config")
+		return
+	}
+
+	if tlsConfig.RootCAs == nil {
+		t.Error("Expected non-nil RootCAs")
+	}
+
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Errorf("Expected MinVersion=TLS1.2, got 0x%04x", tlsConfig.MinVersion)
+	}
+}
+
+// TestClientError_Error tests ClientError Error() method
+func TestClientError_Error(t *testing.T) {
+	err := &ClientError{
+		Category: ErrCategoryAuth,
+		Message:  "authentication failed",
+		RawError: fmt.Errorf("invalid token"),
+	}
+
+	if err.Error() != "authentication failed" {
+		t.Errorf("Expected error message 'authentication failed', got %s", err.Error())
+	}
+}
+
+// TestClientError_IsRetryable tests ClientError IsRetryable() method
+func TestClientError_IsRetryable(t *testing.T) {
+	tests := []struct {
+		category ErrorCategory
+		expected bool
+	}{
+		{ErrCategoryRateLimit, true},
+		{ErrCategoryServer, true},
+		{ErrCategoryInvalidReq, false},
+		{ErrCategoryAuth, false},
+		{ErrCategoryParse, false},
+		{ErrCategoryUnknown, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.category), func(t *testing.T) {
+			err := &ClientError{Category: tt.category}
+			if err.IsRetryable() != tt.expected {
+				t.Errorf("For category %s, expected IsRetryable=%v, got %v", tt.category, tt.expected, err.IsRetryable())
+			}
+		})
+	}
+}
+
+// TestNewHTTPClient_TLSInsecureSkipVerify_Integration tests insecure TLS in integration
+func TestNewHTTPClient_TLSInsecureSkipVerify_Integration(t *testing.T) {
+	// Create HTTPS test server with self-signed cert
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result": "success"}`))
+	}))
+	defer server.Close()
+
+	// Client with InsecureSkipVerify should work
+	client, err := NewHTTPClient(Config{
+		BaseURL:               server.URL,
+		TLSInsecureSkipVerify: true,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+}
+
+// TestNewHTTPClient_TLSVerifyFails tests that TLS verification fails without InsecureSkipVerify
+func TestNewHTTPClient_TLSVerifyFails(t *testing.T) {
+	// Create HTTPS test server with self-signed cert
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result": "success"}`))
+	}))
+	defer server.Close()
+
+	// Client without InsecureSkipVerify should fail on self-signed cert
+	client, err := NewHTTPClient(Config{
+		BaseURL: server.URL,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, _, err = client.Post(context.Background(), "/test", nil, nil, "")
+	if err == nil {
+		t.Fatal("Expected TLS verification error, got nil")
+	}
+
+	// Verify it's a certificate verification error
+	if !isTLSError(err) {
+		t.Errorf("Expected TLS error, got: %v", err)
+	}
+}
+
+// TestNewHTTPClient_WithCustomCA_Integration tests custom CA certificate
+func TestNewHTTPClient_WithCustomCA_Integration(t *testing.T) {
+	// Create HTTPS test server
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result": "success"}`))
+	}))
+	defer server.Close()
+
+	// Extract the server's CA cert
+	tmpDir := t.TempDir()
+	caCertFile := filepath.Join(tmpDir, "ca.crt")
+
+	serverCert := server.Certificate()
+	caCertPool := x509.NewCertPool()
+	caCertPool.AddCert(serverCert)
+
+	// Write server cert as CA cert
+	certPEM := pemEncodeCert(serverCert.Raw)
+	if err := os.WriteFile(caCertFile, certPEM, 0644); err != nil {
+		t.Fatalf("Failed to write CA cert: %v", err)
+	}
+
+	// Client with custom CA should work
+	client, err := NewHTTPClient(Config{
+		BaseURL:       server.URL,
+		TLSCACertFile: caCertFile,
+	}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewHTTPClient failed: %v", err)
+	}
+
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
+	if err != nil {
+		t.Fatalf("Post failed: %v", err)
+	}
+
+	if statusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", statusCode)
+	}
+}
+
+// Helper functions
+
+// generateTestCertificate generates a valid self-signed certificate for testing
+func generateTestCertificate(t *testing.T) []byte {
+	t.Helper()
+
+	// Generate a private key
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate private key: %v", err)
+	}
+
+	// Create certificate template
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("Failed to generate serial number: %v", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: "localhost",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	// Create self-signed certificate
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("Failed to create certificate: %v", err)
+	}
+
+	// Encode to PEM
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: derBytes,
+	})
+
+	return certPEM
+}
+
+func isTLSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return containsString(errStr, "tls") ||
+		containsString(errStr, "certificate") ||
+		containsString(errStr, "x509")
+}
+
+func containsString(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func pemEncodeCert(derBytes []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: derBytes,
+	})
+}

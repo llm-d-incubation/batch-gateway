@@ -1,0 +1,74 @@
+{{- if .Values.apiserver.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "batch-gateway.apiserver.fullname" . }}-config
+  labels:
+    {{- include "batch-gateway.apiserver.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # API Server configuration
+    host: {{ .Values.apiserver.config.host | quote }}
+    port: {{ .Values.apiserver.config.port | quote }}
+    observability_port: {{ .Values.apiserver.config.observabilityPort | quote }}
+    {{- if .Values.apiserver.config.inputHeaders }}
+    input_headers:
+      {{- range $key, $value := .Values.apiserver.config.inputHeaders }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
+    {{- end }}
+    read_header_timeout_seconds: {{ .Values.apiserver.config.readHeaderTimeoutSeconds }}
+    read_timeout_seconds: {{ .Values.apiserver.config.readTimeoutSeconds }}
+    write_timeout_seconds: {{ .Values.apiserver.config.writeTimeoutSeconds }}
+    idle_timeout_seconds: {{ .Values.apiserver.config.idleTimeoutSeconds }}
+    api_shutdown_timeout_seconds: {{ .Values.apiserver.config.apiShutdownTimeoutSeconds }}
+    observability_shutdown_timeout_seconds: {{ .Values.apiserver.config.observabilityShutdownTimeoutSeconds }}
+    db_client:
+      type: {{ .Values.global.dbClient.type | quote }}
+      redis:
+        db: {{ .Values.global.dbClient.redis.db }}
+        enable_tls: {{ .Values.global.dbClient.redis.enableTLS }}
+        insecure: {{ .Values.global.dbClient.redis.insecure }}
+        timeout: {{ .Values.global.dbClient.redis.timeout | quote }}
+        max_retries: {{ .Values.global.dbClient.redis.maxRetries }}
+        min_retry_backoff: {{ .Values.global.dbClient.redis.minRetryBackoff | quote }}
+        max_retry_backoff: {{ .Values.global.dbClient.redis.maxRetryBackoff | quote }}
+        pool_timeout: {{ .Values.global.dbClient.redis.poolTimeout | quote }}
+        conn_max_idle_time: {{ .Values.global.dbClient.redis.connMaxIdleTime | quote }}
+        conn_max_lifetime: {{ .Values.global.dbClient.redis.connMaxLifetime | quote }}
+    file_client:
+      type: {{ .Values.global.fileClient.type | quote }}
+      fs:
+        base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
+      s3:
+        region: {{ .Values.global.fileClient.s3.region | quote }}
+        endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
+        access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
+        prefix: {{ .Values.global.fileClient.s3.prefix | quote }}
+        use_path_style: {{ .Values.global.fileClient.s3.usePathStyle }}
+        auto_create_bucket: {{ .Values.global.fileClient.s3.autoCreateBucket }}
+      retry:
+        max_retries: {{ .Values.global.fileClient.retry.maxRetries }}
+        initial_backoff: {{ .Values.global.fileClient.retry.initialBackoff | quote }}
+        max_backoff: {{ .Values.global.fileClient.retry.maxBackoff | quote }}
+    batch_api:
+      batch_event_ttl_seconds: {{ .Values.apiserver.config.batchAPI.eventTTLSeconds }}
+      {{- if .Values.apiserver.config.batchAPI.passThroughHeaders }}
+      pass_through_headers:
+        {{- range .Values.apiserver.config.batchAPI.passThroughHeaders }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    file_api:
+      default_expiration_seconds: {{ .Values.apiserver.config.fileAPI.defaultExpirationSeconds }}
+      max_size_bytes: {{ .Values.apiserver.config.fileAPI.maxSizeBytes }}
+      max_line_count: {{ .Values.apiserver.config.fileAPI.maxLineCount }}
+    enable_pprof: {{ .Values.apiserver.config.enablePprof }}
+    otel:
+      redis_tracing: {{ .Values.global.otel.redisTracing }}
+      postgresql_tracing: {{ .Values.global.otel.postgresqlTracing }}
+    {{- if .Values.apiserver.tls.enabled }}
+    ssl_cert_file: "/etc/tls/tls.crt"
+    ssl_key_file: "/etc/tls/tls.key"
+    {{- end }}
+{{- end }}

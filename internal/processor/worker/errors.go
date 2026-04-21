@@ -1,0 +1,47 @@
+/*
+Copyright 2026 The llm-d Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package worker
+
+import "errors"
+
+// Sentinel errors used for routing within the processor worker.
+
+var (
+	// errCancelled signals a user-initiated batch job cancellation.
+	// Returned by preprocessor and executor when userCancelCtx is cancelled.
+	errCancelled = errors.New("batch job cancelled")
+
+	// errExpired signals that the batch SLO deadline was reached during execution.
+	// Returned by executor when the SLO context expires.
+	errExpired = errors.New("batch SLO expired")
+
+	// errRequestInputRead signals a fatal failure reading a request entry from the
+	// plan input file. Unlike per-request errors (which are embedded in output),
+	// this prevents the entire model from processing further.
+	errRequestInputRead = errors.New("failed to read request from input file")
+
+	// errShutdown signals that the processor is shutting down (SIGTERM).
+	// The job is re-enqueued so another worker can pick it up.
+	errShutdown = errors.New("processor shutting down")
+
+	// errFinalizeFailedOver signals that a terminal status transition (completed,
+	// cancelled) or an upload failed, but the fallback to failed status with
+	// surviving file IDs succeeded. The caller must NOT call handleFailed again,
+	// as that would overwrite file IDs with empty strings and orphan
+	// already-uploaded files.
+	errFinalizeFailedOver = errors.New("finalization fell back to failed")
+)

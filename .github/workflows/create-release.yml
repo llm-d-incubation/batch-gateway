@@ -1,0 +1,130 @@
+# Release workflow: creates a GitHub Release on version tags (v*.*.*),
+# builds multi-arch binaries (as .tar.gz to preserve execute bit), and publishes release notes.
+# Docker images for the same tag are built by ci-release.yaml.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  verify-tag-on-allowed-branch:
+    name: Verify tag is on main or a release-vX.Y.Z branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tagged commit is reachable from main or release-vX.Y.Z
+        run: |
+          git fetch origin
+          TAG="${{ github.ref_name }}"
+          TAG_SHA="${GITHUB_SHA}"
+          if git merge-base --is-ancestor "$TAG_SHA" "origin/main" 2>/dev/null; then
+            echo "Tag is reachable from origin/main."
+            exit 0
+          fi
+          matched_branch=""
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            if git merge-base --is-ancestor "$TAG_SHA" "$ref" 2>/dev/null; then
+              echo "Tag is reachable from ${ref}."
+              matched_branch="$ref"
+              break
+            fi
+          done < <(git branch -r | sed 's/^[ *]*//' | grep -E '^origin/release-v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || true)
+          if [ -z "$matched_branch" ]; then
+            echo "::error::Release tags must point to a commit on main or on an origin/release-vX.Y.Z branch (same naming as a version tag)."
+            exit 1
+          fi
+
+          # Validate that the tag version matches the release branch's major.minor.
+          branch_name="${matched_branch#origin/}"
+          branch_ver="${branch_name#release-}"
+          branch_major=$(echo "$branch_ver" | cut -d. -f1 | sed 's/^v//')
+          branch_minor=$(echo "$branch_ver" | cut -d. -f2)
+          tag_major=$(echo "$TAG" | cut -d. -f1 | sed 's/^v//')
+          tag_minor=$(echo "$TAG" | cut -d. -f2)
+          if [ "$tag_major" != "$branch_major" ] || [ "$tag_minor" != "$branch_minor" ]; then
+            echo "::error::Tag ${TAG} has major.minor v${tag_major}.${tag_minor} but branch ${branch_name} expects v${branch_major}.${branch_minor}.*"
+            exit 1
+          fi
+          echo "Tag ${TAG} matches release line v${branch_major}.${branch_minor}.*"
+
+  build:
+    name: Build binaries
+    needs: verify-tag-on-allowed-branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build release binaries (linux/amd64)
+        run: GOOS=linux GOARCH=amd64 make build-release
+      - name: Build release binaries (linux/arm64)
+        run: GOOS=linux GOARCH=arm64 make build-release
+
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-binaries
+          path: bin/batch-gateway-*
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: release-binaries
+          path: dist/binaries
+
+      - name: Package binaries as tar.gz (preserves execute bit on extract)
+        run: make package-release
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: '3.16.4'
+
+      - name: Install yq
+        uses: frenck/action-setup-yq@v1.0.2
+        with:
+          version: v4.52.4
+
+      - name: Package and publish Helm chart
+        env:
+          VERSION: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: make publish-helm-chart
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: release/*
+          draft: false
+          make_latest: legacy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,160 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.5.2 Chrome/142.0.7444.265 Electron/39.6.1 Safari/537.36" version="29.5.2">
+  <diagram id="gateway-integration-arch" name="Page-1">
+    <mxGraphModel dx="3466" dy="1155" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="client" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;fontSize=14;" value="Client" vertex="1">
+          <mxGeometry height="60" width="30" x="-60" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="150" width="240" x="120" y="190" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-ns-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;istio-ingress&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="130" x="170" y="207.5" as="geometry" />
+        </mxCell>
+        <mxCell id="gateway" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;Envoy Proxy&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="55" width="160" x="160" y="252" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="230" width="440" x="500" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-ns-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;batch-api&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="100" x="680" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-route" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;batch-route&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;HTTPRoute&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;/v1/batches, /v1/files&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="55" width="205" x="515" y="85" as="geometry" />
+        </mxCell>
+        <mxCell id="apiserver" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;API Server&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;HTTPS :8000&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="55" width="130" x="800" y="85" as="geometry" />
+        </mxCell>
+        <mxCell id="processor" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;Processor&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="130" x="800" y="190" as="geometry" />
+        </mxCell>
+        <mxCell id="postgresql" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;PostgreSQL&lt;/font&gt;" vertex="1">
+          <mxGeometry height="45" width="75" x="515" y="187.5" as="geometry" />
+        </mxCell>
+        <mxCell id="redis" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;Redis&lt;/font&gt;" vertex="1">
+          <mxGeometry height="45" width="75" x="610" y="187.5" as="geometry" />
+        </mxCell>
+        <mxCell id="pvc" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;span style=&quot;font-size: 10px;&quot;&gt;FileStore&lt;/span&gt;" vertex="1">
+          <mxGeometry height="45" width="75" x="705" y="187.5" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="290" width="360" x="500" y="410" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-ns-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;llm&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="40" x="660" y="415" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-route" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;llm-route&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;HTTPRoute&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="45" width="245" x="565" y="440" as="geometry" />
+        </mxCell>
+        <mxCell id="free-pool-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;" value="" vertex="1">
+          <mxGeometry height="70" width="240" x="570" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="free-pool-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;free-model&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="18" width="90" x="645" y="522" as="geometry" />
+        </mxCell>
+        <mxCell id="free-infpool" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;InferencePool&lt;br&gt;+ EPP&lt;/font&gt;" vertex="1">
+          <mxGeometry height="35" width="100" x="580" y="545" as="geometry" />
+        </mxCell>
+        <mxCell id="free-vllm" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;vLLM&lt;br&gt;(free-model)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="35" width="100" x="700" y="545" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-pool-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;" value="" vertex="1">
+          <mxGeometry height="70" width="240" x="570" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-pool-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;gold-model&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="18" width="90" x="645" y="612" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-infpool" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;InferencePool&lt;br&gt;+ EPP&lt;/font&gt;" vertex="1">
+          <mxGeometry height="35" width="100" x="580" y="635" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-vllm" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;vLLM&lt;br&gt;(gold-model)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="35" width="100" x="700" y="635" as="geometry" />
+        </mxCell>
+        <mxCell id="control-plane-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#666666;dashed=1;dashPattern=8 8;opacity=80;" value="" vertex="1">
+          <mxGeometry height="200" width="250" x="115" y="500" as="geometry" />
+        </mxCell>
+        <mxCell id="control-plane-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px; color: #666666;&quot;&gt;&lt;b&gt;Control Plane&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="120" x="180" y="505" as="geometry" />
+        </mxCell>
+        <mxCell id="istio-sys-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="70" width="220" x="130" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="istio-sys-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;istio-system&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="130" x="160" y="535" as="geometry" />
+        </mxCell>
+        <mxCell id="istiod" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;shadow=1;" value="&lt;font style=&quot;font-size: 14px;&quot;&gt;&lt;b&gt;istiod&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="35" width="120" x="180" y="558" as="geometry" />
+        </mxCell>
+        <mxCell id="certmgr-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="55" width="220" x="130" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="certmgr-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;cert-manager&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="130" x="160" y="633" as="geometry" />
+        </mxCell>
+        <mxCell id="certmgr" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;cert-manager&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="25" width="120" x="180" y="655" as="geometry" />
+        </mxCell>
+        <mxCell id="e-client-gw" edge="1" parent="1" style="labelBackgroundColor=#ffffff;edgeStyle=none;html=1;dashed=1;dashPattern=8 8;verticalAlign=bottom;strokeColor=#0000CC;" value="&lt;font style=&quot;font-size: 11px; color: #0000CC;&quot;&gt;&lt;b&gt;1) {gateway-url}/v1/batches&lt;/b&gt;&lt;/font&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-30" y="280" as="sourcePoint" />
+            <mxPoint x="160" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-gw-br" edge="1" parent="1" source="gateway" style="labelBackgroundColor=#ffffff;edgeStyle=orthogonalEdgeStyle;verticalAlign=bottom;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;strokeColor=#CC0000;" target="batch-route" value="&lt;font style=&quot;font-size: 11px; color: #CC0000;&quot;&gt;&lt;b&gt;2) /v1/batches&lt;/b&gt;&lt;/font&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="240" y="113" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-br-api" edge="1" parent="1" source="batch-route" style="labelBackgroundColor=#ffffff;dashed=1;dashPattern=8 8;edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#CC0000;" target="apiserver" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-proc-gw" edge="1" parent="1" source="processor" style="labelBackgroundColor=#ffffff;edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;dashed=1;dashPattern=8 8;strokeColor=#009900;" value="&lt;font style=&quot;font-size: 10px; color: #009900;&quot;&gt;&lt;b&gt;3) {gateway-url}/{ns}/{model}/v1/*&lt;/b&gt;&lt;/font&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="865" y="360" />
+              <mxPoint x="410" y="360" />
+              <mxPoint x="410" y="280" />
+            </Array>
+            <mxPoint x="320" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-gw-llm" edge="1" parent="1" source="gateway" style="labelBackgroundColor=#ffffff;edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;verticalAlign=bottom;strokeColor=#009900;" target="llm-route" value="&lt;font style=&quot;font-size: 11px; color: #009900;&quot;&gt;&lt;b&gt;4) /{ns}/{model}/v1/*&lt;/b&gt;&lt;/font&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="240" y="463" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-llm-free" edge="1" parent="1" source="llm-route" style="labelBackgroundColor=#ffffff;dashed=1;dashPattern=8 8;edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;verticalAlign=top;strokeColor=#009900;" target="free-infpool" value="&lt;font style=&quot;font-size: 10px; color: #009900;&quot;&gt;&lt;b&gt;5) Inference&lt;/b&gt;&lt;/font&gt;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="640" y="500" />
+              <mxPoint x="560" y="500" />
+              <mxPoint x="560" y="563" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-llm-gold" edge="1" parent="1" source="llm-route" style="labelBackgroundColor=#ffffff;dashed=1;dashPattern=8 8;edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#009900;" target="gold-infpool">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="640" y="500" />
+              <mxPoint x="560" y="500" />
+              <mxPoint x="560" y="653" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-free-ip-vllm" edge="1" parent="1" source="free-infpool" style="labelBackgroundColor=#ffffff;dashed=1;dashPattern=8 8;edgeStyle=none;html=1;strokeColor=#009900;" target="free-vllm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-gold-ip-vllm" edge="1" parent="1" source="gold-infpool" style="labelBackgroundColor=#ffffff;dashed=1;dashPattern=8 8;edgeStyle=none;html=1;strokeColor=#009900;" target="gold-vllm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

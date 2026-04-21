@@ -1,0 +1,13 @@
+name: Prow Auto-merge
+on:
+  workflow_dispatch:  # Manual trigger only - automerge disabled for manual control
+  # schedule:
+  #   - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    uses: llm-d/llm-d-infra/.github/workflows/reusable-prow-automerge.yml@main

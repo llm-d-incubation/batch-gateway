@@ -1,0 +1,121 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.5.2 Chrome/142.0.7444.265 Electron/39.6.1 Safari/537.36" version="29.5.2">
+  <diagram id="maas-integration-arch" name="Page-1">
+    <mxGraphModel dx="3666" dy="1155" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="client" parent="1" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;fontSize=14;" value="User" vertex="1">
+          <mxGeometry height="60" width="30" x="-60" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="200" width="250" x="100" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-ns-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;openshift-ingress&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="160" x="145" y="235" as="geometry" />
+        </mxCell>
+        <mxCell id="gateway" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;MaaS Gateway&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;maas-default-gateway&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;HTTPS 443&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="60" width="180" x="135" y="290" as="geometry" />
+        </mxCell>
+        <mxCell id="gw-auth" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;shadow=1;" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;gateway-auth-policy&lt;/font&gt;" vertex="1">
+          <mxGeometry height="35" width="130" x="160" y="365" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="180" width="440" x="500" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-ns-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;batch-api&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="100" x="700" y="65" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-route" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 13px;&quot;&gt;&lt;b&gt;batch-route&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;HTTPRoute&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;/v1/batches, /v1/files&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="55" width="185" x="515" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-auth" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;shadow=1;" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;Batch&amp;nbsp;&lt;/font&gt;&lt;span style=&quot;font-size: 9px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;AuthPolicy&lt;/span&gt;" vertex="1">
+          <mxGeometry height="35" width="80" x="510" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="batch-rl" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;shadow=1;" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;Batch&amp;nbsp;&lt;/font&gt;&lt;span style=&quot;font-size: 9px; background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;RateLimitPolicy&lt;/span&gt;" vertex="1">
+          <mxGeometry height="35" width="100" x="600" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="apiserver" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;batch-gateway&lt;br&gt;api server&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="200" x="730" y="102.5" as="geometry" />
+        </mxCell>
+        <mxCell id="processor" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;shadow=1;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;batch-gateway&lt;br&gt;processor&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="200" x="730" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-ns" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;opacity=50;" value="" vertex="1">
+          <mxGeometry height="300" width="360" x="500" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-ns-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;llm&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="40" x="660" y="405" as="geometry" />
+        </mxCell>
+        <mxCell id="model-route" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;model-route&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="45" width="280" x="540" y="435" as="geometry" />
+        </mxCell>
+        <mxCell id="model-trlp" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;shadow=1;" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;TokenRateLimitPolicy&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="120" x="540" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="llmisvc" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;shadow=1;" value="&lt;font style=&quot;font-size: 12px;&quot;&gt;&lt;b&gt;LLMInferenceService&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="45" width="200" x="580" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="vllm" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;shadow=1;" value="&lt;b&gt;Model Server&lt;/b&gt;" vertex="1">
+          <mxGeometry height="45" width="140" x="610" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="cp-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#666666;dashed=1;dashPattern=8 8;opacity=80;" value="" vertex="1">
+          <mxGeometry height="210" width="280" x="80" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="cp-label" parent="1" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" value="&lt;font style=&quot;font-size: 12px; color: #666666;&quot;&gt;&lt;b&gt;MaaS Control Plane&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="20" width="160" x="140" y="495" as="geometry" />
+        </mxCell>
+        <mxCell id="authorino" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;Authorino&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="30" width="110" x="90" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="limitador" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;Limitador&lt;/b&gt;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="30" width="110" x="230" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="maas-api" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;MaaS API&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 9px;&quot;&gt;API key mgmt&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="40" width="110" x="90" y="580" as="geometry" />
+        </mxCell>
+        <mxCell id="maas-ctrl" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;MaaS Controller&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 9px;&quot;&gt;reconciles CRs → TRLP&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="40" width="130" x="220" y="580" as="geometry" />
+        </mxCell>
+        <mxCell id="odh-op" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;shadow=1;" value="&lt;font style=&quot;font-size: 11px;&quot;&gt;&lt;b&gt;ODH Operator&lt;/b&gt;&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 9px;&quot;&gt;DataScienceCluster&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="40" width="120" x="160" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" style="edgeStyle=none;html=1;dashed=1;dashPattern=8 8;verticalAlign=bottom;strokeColor=#CC0000;fontColor=#CC0000;fontSize=11;fontStyle=1;" value="1) POST /v1/batches&lt;br&gt;Authorization: Bearer &amp;lt;token&amp;gt;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-30" y="330" as="sourcePoint" />
+            <mxPoint x="135" y="320" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="gateway" style="edgeStyle=orthogonalEdgeStyle;verticalAlign=bottom;html=1;dashed=1;dashPattern=8 8;strokeColor=#CC0000;fontColor=#CC0000;fontSize=11;fontStyle=1;" target="batch-route" value="2) /v1/batches">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="225" y="123" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e2b" edge="1" parent="1" source="batch-route" style="dashed=1;dashPattern=8 8;edgeStyle=none;html=1;strokeColor=#CC0000;" target="apiserver">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="processor" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;dashPattern=8 8;verticalAlign=bottom;strokeColor=#CC0000;fontColor=#CC0000;fontSize=10;fontStyle=1;" target="gateway" value="3) POST /llm/{model}/v1/chat/completions">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="830" y="320" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="gateway" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;dashPattern=8 8;verticalAlign=bottom;strokeColor=#CC0000;fontColor=#CC0000;fontSize=10;fontStyle=1;" target="model-route" value="5) /llm/&lt;model&gt;/v1/*">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="225" y="458" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" edge="1" parent="1" source="model-route" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;dashPattern=8 8;strokeColor=#CC0000;fontColor=#CC0000;fontSize=10;fontStyle=1;" target="llmisvc" value="6) Inference">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="llmisvc" style="edgeStyle=none;html=1;dashed=1;dashPattern=8 8;strokeColor=#CC0000;" target="vllm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

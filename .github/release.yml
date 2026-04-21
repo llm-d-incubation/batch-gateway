@@ -1,0 +1,36 @@
+# Configures automatically generated release notes (GitHub UI "Generate release notes"
+# and the Release workflow). PRs are grouped by labels; use "*" as catch-all.
+
+changelog:
+  exclude:
+    labels:
+      - release-note-none
+      - skip-changelog
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: "Breaking changes"
+      labels:
+        - breaking-change
+        - semver-major
+    - title: "Features"
+      labels:
+        - enhancement
+        - feature
+        - semver-minor
+    - title: "Bug fixes"
+      labels:
+        - bug
+        - bugfix
+        - semver-patch
+    - title: "Documentation"
+      labels:
+        - documentation
+        - docs
+    - title: "Dependencies"
+      labels:
+        - dependencies
+    - title: "Other changes"
+      labels:
+        - "*"

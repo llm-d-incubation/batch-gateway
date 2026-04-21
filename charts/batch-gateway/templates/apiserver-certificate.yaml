@@ -1,0 +1,17 @@
+{{- if and .Values.apiserver.enabled .Values.apiserver.tls.enabled .Values.apiserver.tls.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "batch-gateway.apiserver.fullname" . }}-tls
+  labels:
+    {{- include "batch-gateway.apiserver.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "batch-gateway.apiserver.fullname" . }}-tls
+  issuerRef:
+    name: {{ .Values.apiserver.tls.certManager.issuerName }}
+    kind: {{ .Values.apiserver.tls.certManager.issuerKind }}
+  {{- with .Values.apiserver.tls.certManager.dnsNames }}
+  dnsNames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

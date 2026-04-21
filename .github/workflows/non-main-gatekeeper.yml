@@ -1,0 +1,12 @@
+name: Non-Main Gatekeeper
+on:
+  workflow_dispatch:  # Manual trigger only - disabled for feature branch collaboration
+  # pull_request:
+  #   types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  gatekeeper:
+    uses: llm-d/llm-d-infra/.github/workflows/reusable-non-main-gatekeeper.yml@main

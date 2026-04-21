@@ -1,0 +1,324 @@
+suite: deployments
+templates:
+  - templates/apiserver-deployment.yaml
+  - templates/apiserver-configmap.yaml
+  - templates/processor-deployment.yaml
+  - templates/processor-configmap.yaml
+  - templates/gc-deployment.yaml
+  - templates/gc-configmap.yaml
+# Required: fs file client (the default) needs a pvcName to pass template validation.
+set:
+  global.fileClient.fs.pvcName: "test-pvc"
+tests:
+  - it: should render apiserver Deployment
+    asserts:
+      - isKind:
+          of: Deployment
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.replicas
+          value: 1
+        template: templates/apiserver-deployment.yaml
+
+  - it: should render processor Deployment
+    asserts:
+      - isKind:
+          of: Deployment
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.replicas
+          value: 1
+        template: templates/processor-deployment.yaml
+
+  - it: should render gc Deployment
+    asserts:
+      - isKind:
+          of: Deployment
+        template: templates/gc-deployment.yaml
+      - equal:
+          path: spec.replicas
+          value: 1
+        template: templates/gc-deployment.yaml
+
+  - it: should set apiserver replicaCount
+    set:
+      apiserver.replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+        template: templates/apiserver-deployment.yaml
+
+  - it: should set default apiserver terminationGracePeriodSeconds
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 120
+        template: templates/apiserver-deployment.yaml
+
+  - it: should allow overriding apiserver terminationGracePeriodSeconds
+    set:
+      apiserver.terminationGracePeriodSeconds: 90
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 90
+        template: templates/apiserver-deployment.yaml
+
+  - it: should set processor replicaCount
+    set:
+      processor.replicaCount: 5
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 5
+        template: templates/processor-deployment.yaml
+
+  - it: should not render apiserver Deployment when disabled
+    set:
+      apiserver.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/apiserver-deployment.yaml
+
+  - it: should not render processor Deployment when disabled
+    set:
+      processor.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/processor-deployment.yaml
+
+  - it: should not render gc Deployment when disabled
+    set:
+      gc.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/gc-deployment.yaml
+
+  - it: should inherit global.podSecurityContext on all Deployments
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+        template: templates/apiserver-deployment.yaml
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+        template: templates/processor-deployment.yaml
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+        template: templates/gc-deployment.yaml
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+        template: templates/gc-deployment.yaml
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+        template: templates/gc-deployment.yaml
+
+  - it: should allow per-component podSecurityContext override
+    set:
+      processor.podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 1000
+        template: templates/processor-deployment.yaml
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+        template: templates/apiserver-deployment.yaml
+      - isNull:
+          path: spec.template.spec.securityContext.runAsUser
+        template: templates/gc-deployment.yaml
+
+  # --- ServiceAccount ---
+
+  - it: should set default serviceAccountName on all Deployments
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-batch-gateway-apiserver
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-batch-gateway-processor
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-batch-gateway-gc
+        template: templates/gc-deployment.yaml
+
+  - it: should use custom serviceAccountName when specified
+    set:
+      apiserver.serviceAccount.name: "custom-apiserver-sa"
+      processor.serviceAccount.name: "custom-processor-sa"
+      gc.serviceAccount.name: "custom-gc-sa"
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-apiserver-sa
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-processor-sa
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-gc-sa
+        template: templates/gc-deployment.yaml
+
+  - it: should use default SA when serviceAccount.create is false
+    set:
+      apiserver.serviceAccount.create: false
+      processor.serviceAccount.create: false
+      gc.serviceAccount.create: false
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: default
+        template: templates/apiserver-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: default
+        template: templates/processor-deployment.yaml
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: default
+        template: templates/gc-deployment.yaml
+
+  # --- OTel env vars ---
+
+  - it: should not inject OTel env vars when endpoint is empty
+    templates:
+      - templates/apiserver-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  - it: should inject all OTel env vars when endpoint is set
+    templates:
+      - templates/apiserver-deployment.yaml
+    set:
+      global.otel.endpoint: "http://jaeger:4317"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "http://jaeger:4317"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_TRACES_SAMPLER
+            value: "parentbased_traceidratio"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_TRACES_SAMPLER_ARG
+            value: "1.0"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  - it: should not inject OTel env vars on processor when endpoint is empty
+    templates:
+      - templates/processor-deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  - it: should inject all OTel env vars on processor when endpoint is set
+    templates:
+      - templates/processor-deployment.yaml
+    set:
+      global.otel.endpoint: "http://jaeger:4317"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "http://jaeger:4317"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OTEL_TRACES_SAMPLER
+            value: "parentbased_traceidratio"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_NAME
+          any: true
+
+  # --- Fail guards ---
+
+  - it: should fail when fs pvcName is empty
+    templates:
+      - templates/processor-deployment.yaml
+    set:
+      global.fileClient.type: "fs"
+      global.fileClient.fs.pvcName: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: 'global.fileClient.fs.pvcName must be set when global.fileClient.type is "fs"'
+
+  - it: should fail when TLS has both secretName and certManager
+    templates:
+      - templates/apiserver-deployment.yaml
+    set:
+      apiserver.tls.enabled: true
+      apiserver.tls.secretName: "my-secret"
+      apiserver.tls.certManager.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "apiserver.tls: secretName and certManager are mutually exclusive — set only one"
+
+  - it: should fail when TLS enabled but neither secretName nor certManager
+    templates:
+      - templates/apiserver-deployment.yaml
+    set:
+      apiserver.tls.enabled: true
+      apiserver.tls.secretName: ""
+      apiserver.tls.certManager.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "apiserver.tls: enabled but neither secretName nor certManager is configured"

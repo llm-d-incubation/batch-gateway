@@ -1,0 +1,46 @@
+{{- if and .Values.apiserver.enabled .Values.apiserver.httpRoute.enabled -}}
+{{- if not .Values.apiserver.httpRoute.parentRefs -}}
+{{- fail "apiserver.httpRoute.parentRefs must not be empty when httpRoute is enabled" -}}
+{{- end -}}
+{{- range .Values.apiserver.httpRoute.parentRefs -}}
+{{- if not .name -}}
+{{- fail "each entry in apiserver.httpRoute.parentRefs must have a non-empty name" -}}
+{{- end -}}
+{{- end -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "batch-gateway.apiserver.fullname" . }}
+  labels:
+    {{- include "batch-gateway.apiserver.labels" . | nindent 4 }}
+  {{- with .Values.apiserver.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- range .Values.apiserver.httpRoute.parentRefs }}
+    - name: {{ .name }}
+      {{- if .namespace }}
+      namespace: {{ .namespace }}
+      {{- end }}
+      {{- if .sectionName }}
+      sectionName: {{ .sectionName }}
+      {{- end }}
+    {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/batches
+      backendRefs:
+        - name: {{ include "batch-gateway.apiserver.fullname" . }}
+          port: {{ .Values.apiserver.service.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/files
+      backendRefs:
+        - name: {{ include "batch-gateway.apiserver.fullname" . }}
+          port: {{ .Values.apiserver.service.port }}
+{{- end }}

@@ -1,0 +1,60 @@
+suite: gc configmap
+templates:
+  - templates/gc-configmap.yaml
+tests:
+  - it: should render a ConfigMap with default values
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'dry_run: false'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'interval: "30m"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'db_client:\n\s+type: "postgresql"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_concurrency: 10'
+
+  - it: should render custom maxConcurrency
+    set:
+      gc.config.maxConcurrency: 20
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'max_concurrency: 20'
+
+  - it: should render dryRun true when set
+    set:
+      gc.config.dryRun: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'dry_run: true'
+
+  - it: should render custom interval
+    set:
+      gc.config.interval: "1h"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'interval: "1h"'
+
+  - it: should render file_client config
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'type: "fs"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'base_path: "/tmp/batch-gateway"'
+
+  - it: should not render ConfigMap when gc is disabled
+    set:
+      gc.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
