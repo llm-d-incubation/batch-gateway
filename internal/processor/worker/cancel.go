@@ -18,12 +18,14 @@ package worker
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/go-logr/logr"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
 )
 
 func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {
@@ -43,8 +45,9 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 			if event.Type == db.BatchEventCancel {
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
-				params.cancelRequested.Store(true)
-				params.abortInferFn()
+				// userCancelFn marks userCancelCtx as cancelled. requestAbortCtx is
+				// automatically cancelled via context.AfterFunc wired in runJob.
+				params.userCancelFn()
 
 				// We don't update the DB status to 'cancelling' here because
 				// the API server already wrote 'cancelling' before sending this event.
@@ -54,31 +57,46 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 }
 
 // handleCancelled finalizes a user-cancelled job.
-// When called after executeJob (execution), requestCounts and jobInfo are non-nil and partial
-// results are uploaded. When called before executeJob (ingestion), both are nil and only
-// cleanup + status transition is performed.
+// When called after executeJob (execution), requestCounts is non-nil and partial results are
+// uploaded. When called before executeJob (ingestion), requestCounts is nil — only cleanup
+// and status transition are performed. jobInfo is always non-nil on the normal runJob path
+// (it is populated before the job goroutine is launched).
+//
+// Uses a detached context so that a concurrent SIGTERM cannot abort the upload or DB write.
 func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionParams) error {
+	ioCtx, ioSpan := uotel.DetachedContext(ctx, "handle-cancelled")
+	ioCtx, ioCancel := context.WithTimeout(ioCtx, finalizationTimeout)
+	defer ioCancel()
+	defer ioSpan.End()
+
 	logger := logr.FromContextOrDiscard(ctx)
 
 	var outputFileID, errorFileID string
 	if params.requestCounts != nil && params.jobInfo != nil {
 		logger.V(logging.INFO).Info("Job cancelled mid-execution, uploading partial results")
-		outputFileID, errorFileID = p.uploadPartialResults(ctx, params.jobInfo, params.jobItem)
+		outputFileID, errorFileID = p.uploadPartialResults(ioCtx, params.jobInfo, params.jobItem)
 	}
 
-	p.cleanupJobArtifacts(ctx, params.jobItem.ID, params.jobItem.TenantID)
-
-	if err := params.updater.UpdateCancelledStatus(ctx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
-		logger.Error(err, "Failed to update status to cancelled")
-		return err
+	if err := params.updater.UpdateCancelledStatus(ioCtx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
+		ioSpan.RecordError(err)
+		logger.Error(err, "Failed to update cancelled status, falling back to failed with file IDs preserved")
+		if failErr := params.updater.UpdateFailedStatus(ioCtx, params.jobItem, params.requestCounts, outputFileID, errorFileID); failErr != nil {
+			ioSpan.RecordError(failErr)
+			return fmt.Errorf("failed to update job status to cancelled (%w) and fallback to failed also failed: %w", err, failErr)
+		}
+		// Cleanup after fallback succeeded so startup recovery doesn't re-process.
+		p.cleanupJobArtifacts(ioCtx, params.jobItem.ID, params.jobItem.TenantID)
+		return fmt.Errorf("cancelled status write failed: %w", errFinalizeFailedOver)
 	}
+
+	// Cleanup after terminal status write: if the write failed above, the local
+	// files survive for startup recovery to re-upload.
+	p.cleanupJobArtifacts(ioCtx, params.jobItem.ID, params.jobItem.TenantID)
 
 	setRequestCountAttrs(ctx, params.requestCounts)
 
 	recordE2ELatency(params.jobInfo, metrics.E2EStatusCancelled)
 
-	// requestCounts is non-nil only after executeJob populates it, so it
-	// reliably distinguishes execution-phase cancellation from queue-phase.
 	if params.requestCounts != nil {
 		metrics.RecordCancellation(metrics.CancelPhaseInProgress)
 	} else {

@@ -18,7 +18,6 @@ package worker
 
 import (
 	"context"
-	"sync/atomic"
 
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
@@ -27,19 +26,20 @@ import (
 
 // jobExecutionParams holds the job-scoped state shared across processing stages.
 // Contexts are NOT stored here — they are passed explicitly per Go convention.
-//
-// cancelRequested must be a non-nil *atomic.Bool — it is shared across goroutines
-// (watchCancel, preProcessJob, executeJob, finalizeJob).
+// userCancelFn and requestAbortFn are exceptions: they are cancel functions stored
+// here so that the watchCancel goroutine can call them when a cancel event arrives.
+// userCancelFn cancels userCancelCtx (user-cancel signal, derived from context.Background).
+// requestAbortFn cancels requestAbortCtx (dispatch loop control, derived from sloCtx) to stop
+// dispatch immediately when the user cancels.
 type jobExecutionParams struct {
 	updater *StatusUpdater
 	jobItem *db.BatchItem
 	jobInfo *batch_types.JobInfo
 	task    *db.BatchJobPriority
 
-	eventWatcher *db.BatchEventsChan
-	abortInferFn context.CancelFunc
-
-	cancelRequested *atomic.Bool
+	eventWatcher   *db.BatchEventsChan
+	userCancelFn   context.CancelFunc
+	requestAbortFn context.CancelFunc
 
 	requestCounts *openai.BatchRequestCounts
 }

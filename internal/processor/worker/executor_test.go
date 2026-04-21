@@ -588,7 +588,6 @@ func TestProcessModel_Success(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
 		total:   int64(len(requests)),
@@ -600,7 +599,7 @@ func TestProcessModel_Success(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -624,10 +623,8 @@ func TestProcessModel_Success(t *testing.T) {
 	}
 }
 
-// TestProcessModel_CancelStopsDispatch verifies that when the context is cancelled
-// and cancelRequested is set (matching the real watchCancel flow), processModel stops
-// dispatch via context cancellation and drains undispatched entries as batch_cancelled
-// using the cancelRequested flag to determine the drain reason.
+// TestProcessModel_CancelStopsDispatch verifies that when userCancelCtx is cancelled,
+// processModel stops dispatch and drains undispatched entries as batch_cancelled.
 func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -645,8 +642,6 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	cancelReq := &atomic.Bool{}
-	cancelReq.Store(true)
 
 	progress := &executionProgress{
 		total:   1,
@@ -658,17 +653,20 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	errWriter := bufio.NewWriter(&errBuf)
 	writers := &outputWriters{output: writer, errors: errWriter}
 
-	// Cancel context to simulate the real flow: watchCancel cancels abortCtx (which
-	// propagates to execCtx passed to processModel) AND sets cancelRequested.
-	ctx, cancel := context.WithCancel(testLoggerCtx(t))
+	// Cancel ctx to simulate requestAbortCtx being cancelled (by watchCancel calling requestAbortFn).
+	// Separately pass ctx as userCancelCtx so drain chooses errCancelled, not errShutdown.
+	// mainCtx (baseCtx) is not cancelled — errShutdown should NOT fire.
+	// sloCtx is background — drain should choose userCancelCtx path (errCancelled), not SLO.
+	baseCtx := testLoggerCtx(t)
+	ctx, cancel := context.WithCancel(baseCtx)
 	cancel()
 
-	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got: %v", err)
+	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled, got: %v", err)
 	}
 
-	// Verify that undispatched entry was drained as batch_cancelled (reason from cancelRequested).
+	// Verify that undispatched entry was drained as batch_cancelled.
 	if flushErr := errWriter.Flush(); flushErr != nil {
 		t.Fatalf("flush error writer: %v", flushErr)
 	}
@@ -685,23 +683,22 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	}
 }
 
-// TestProcessModel_CancelWritesInFlightToErrorFile verifies that when cancelRequested
-// is set while an inference request is in-flight, the completed result is overwritten
-// as batch_cancelled and written to the error file (not silently dropped).
+// TestProcessModel_CancelWritesInFlightToErrorFile verifies that when userCancelCtx is
+// cancelled after inference returns (but before the goroutine writes the result), the
+// completed response is overwritten as batch_cancelled and written to the error file.
+// This tests the "late cancel overwrite" path — the cancel arrives between Generate()
+// returning and the result being written. processModel must return errCancelled.
 func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.GlobalConcurrency = 10
 	cfg.PerModelMaxConcurrency = 10
 
-	cancelReq := &atomic.Bool{}
+	userCancelCtx, abortFn := context.WithCancel(context.Background())
 
 	mock := &mockInferenceClient{
 		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
-			// Simulate cancel arriving while the request is in-flight:
-			// set the flag after inference "completes" but before the
-			// goroutine checks cancelRequested.
-			cancelReq.Store(true)
+			abortFn()
 			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
 		},
 	}
@@ -729,7 +726,10 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	_ = env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	if !errors.Is(modelErr, errCancelled) {
+		t.Fatalf("expected errCancelled from processModel, got: %v", modelErr)
+	}
 
 	if flushErr := outWriter.Flush(); flushErr != nil {
 		t.Fatalf("flush output: %v", flushErr)
@@ -797,7 +797,6 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
 		total:   int64(len(requests)),
@@ -809,7 +808,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -845,7 +844,6 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
-	cancelReq := &atomic.Bool{}
 
 	progress := &executionProgress{
 		total:   int64(len(requests)),
@@ -860,7 +858,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, ctx, inputFile, plansDir, "m1", "m1", writers, cancelReq, progress, nil)
+		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
 	}()
 
 	<-started
@@ -870,6 +868,51 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 	err := <-done
 	if err == nil {
 		t.Fatalf("expected error on context cancellation")
+	}
+}
+
+// TestProcessModel_SiblingAbort_ReturnsNil verifies that when requestAbortCtx is cancelled
+// by a sibling model error (via requestAbortFn), processModel returns nil rather than errShutdown.
+//
+// P1c regression: Before the fix, the drain-switch default checked ctx.Err() (which is
+// requestAbortCtx), so a sibling abort looked like a pod shutdown and returned errShutdown.
+// executeJob would then route the job to re-enqueue instead of failed-with-partial, breaking
+// retry safety for batches with partial results. After the fix, the default checks mainCtx
+// (the main processor context), which is only cancelled on SIGTERM.
+func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+	var buf bytes.Buffer
+	writers := &outputWriters{output: bufio.NewWriter(&buf), errors: bufio.NewWriter(&buf)}
+
+	progress := &executionProgress{
+		total:   1,
+		updater: env.updater,
+		jobID:   jobInfo.JobID,
+	}
+
+	// mainCtx is not cancelled — only requestAbortCtx is, simulating a sibling model calling
+	// requestAbortFn() on error. SLO and user-cancel signals are both absent.
+	mainCtx := testLoggerCtx(t)
+	requestAbortCtx, requestAbortFn := context.WithCancel(mainCtx)
+	requestAbortFn() // simulate sibling model calling requestAbortFn
+
+	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	// requestAbortCtx cancelled, but no SLO / user-cancel / SIGTERM → nil, not errShutdown
+	if err != nil {
+		t.Fatalf("expected nil when only requestAbortCtx is cancelled (sibling abort), got: %v", err)
 	}
 }
 
@@ -887,13 +930,11 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
-	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
@@ -913,6 +954,31 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	outputLines := bytes.Split(bytes.TrimSpace(outBytes), []byte{'\n'})
 	if len(outputLines) != 2 {
 		t.Fatalf("output lines = %d, want 2", len(outputLines))
+	}
+
+	// Verify each custom_id appears exactly once — guards against duplicates.
+	seenIDs := make(map[string]int)
+	for _, line := range outputLines {
+		var entry outputLine
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("unmarshal output line: %v", err)
+		}
+		seenIDs[entry.CustomID]++
+	}
+	for _, wantID := range []string{"r1", "r2"} {
+		if seenIDs[wantID] != 1 {
+			t.Errorf("custom_id %q appeared %d times, want 1", wantID, seenIDs[wantID])
+		}
+	}
+
+	// Error file should be empty (all requests succeeded).
+	errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
+	errBytes, err := os.ReadFile(errorPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read error file: %v", err)
+	}
+	if len(bytes.TrimSpace(errBytes)) > 0 {
+		t.Fatalf("expected empty error file, got: %s", errBytes)
 	}
 }
 
@@ -935,13 +1001,11 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 		{CustomID: "d", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m2"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
-	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
@@ -951,6 +1015,30 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	}
 	if int(callCount.Load()) != 4 {
 		t.Fatalf("inference calls = %d, want 4", callCount.Load())
+	}
+
+	// Verify each custom_id appears exactly once and all 4 are present.
+	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outBytes, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	outputLines := bytes.Split(bytes.TrimSpace(outBytes), []byte{'\n'})
+	if len(outputLines) != 4 {
+		t.Fatalf("output lines = %d, want 4", len(outputLines))
+	}
+	seenIDs := make(map[string]int)
+	for _, line := range outputLines {
+		var entry outputLine
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("unmarshal output line: %v", err)
+		}
+		seenIDs[entry.CustomID]++
+	}
+	for _, wantID := range []string{"a", "b", "c", "d"} {
+		if seenIDs[wantID] != 1 {
+			t.Errorf("custom_id %q appeared %d times, want 1", wantID, seenIDs[wantID])
+		}
 	}
 }
 
@@ -969,66 +1057,42 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
-	cancelReq := &atomic.Bool{}
 
 	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
-	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+	_, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
+	// All four contexts are the same cancelled context. sloCtx.Err() == context.Canceled
+	// (not DeadlineExceeded), so the SLO branch is skipped. userCancelCtx.Err() != nil,
+	// so the drain switch routes to errCancelled.
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled, got: %v", err)
+	}
 }
 
-// TestExecuteJob_UserCancelFlag verifies that when abortCtx is cancelled and cancelRequested
-// is set (matching the real watchCancel flow), executeJob returns ErrCancelled. Context
-// cancellation stops dispatch; cancelRequested is used in the error-handling path to
-// return the correct sentinel error.
+// TestExecuteJob_UserCancelFlag verifies that when only userCancelCtx is cancelled
+// (ctx, sloCtx, and requestAbortCtx all remain alive), executeJob returns errCancelled.
+// This enforces the separation contract: userCancelCtx is an independent signal derived
+// from context.Background() in production. requestAbortCtx must NOT be cancelled here —
+// the dispatch loop runs to completion, the mock returns a normal response, and the
+// post-execution switch detects userCancelCtx.Err() to produce errCancelled.
+// If requestAbortCtx were also cancelled, the test would pass even if the two contexts
+// were conflated, hiding regressions.
 func TestExecuteJob_UserCancelFlag(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
-	requests := []batch_types.Request{
-		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
-	}
-	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
+	userCancelCtx, cancelFn := context.WithCancel(context.Background())
 
-	cancelReq := &atomic.Bool{}
-	cancelReq.Store(true)
-
-	ctx := testLoggerCtx(t)
-	abortCtx, abortFn := context.WithCancel(ctx)
-	abortFn()
-
-	_, err := env.p.executeJob(ctx, ctx, abortCtx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
-	})
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled, got: %v", err)
-	}
-}
-
-// TestExecuteJob_CancelFlagSetAfterAllRequestsComplete verifies that if the cancel flag is set
-// after all requests have already been dispatched and completed successfully (i.e. context
-// cancellation never interrupted dispatch), executeJob still returns ErrCancelled rather than
-// nil, preventing the job from being finalized as "completed".
-func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.WorkDir = t.TempDir()
-
-	cancelReq := &atomic.Bool{}
-
-	// The mock sets cancelRequested=true only after the inference call returns, simulating
-	// the race where the cancel event arrives while (or just after) the last request completes.
 	mock := &mockInferenceClient{
 		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
-			cancelReq.Store(true)
+			cancelFn()
 			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
 		},
 	}
@@ -1039,19 +1103,101 @@ func TestExecuteJob_CancelFlagSetAfterAllRequestsComplete(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx(t)
-	_, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+
+	counts, err := env.p.executeJob(ctx, ctx, userCancelCtx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled when cancel flag set after all requests complete, got: %v", err)
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled, got: %v", err)
+	}
+	if counts == nil || counts.Total != 1 {
+		t.Fatalf("expected counts with Total=1, got %+v", counts)
+	}
+	if counts.Failed != 1 {
+		t.Fatalf("expected Failed=1 (cancel overwrites completed response as batch_cancelled), got %+v", counts)
 	}
 }
 
-// TestExecuteJob_AbortCtxCancel_AbortsInflightRequests verifies that cancelling abortCtx
-// aborts in-flight inference requests. The mock blocks until it sees context cancellation,
-// simulating a long-running inference call that should be interrupted.
+// TestExecuteJob_CancelAfterAllRequestsComplete verifies that if userCancelCtx is cancelled
+// after all requests have already been dispatched and completed successfully (i.e. context
+// cancellation never interrupted dispatch), executeJob still returns errCancelled rather than
+// nil, preventing the job from being finalized as "completed".
+func TestExecuteJob_CancelAfterAllRequestsComplete(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	userCancelCtx, abortFn := context.WithCancel(context.Background())
+
+	// The mock cancels userCancelCtx after the inference call returns, simulating
+	// the race where the cancel event arrives while (or just after) the last request completes.
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			abortFn()
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	ctx := testLoggerCtx(t)
+	_, err := env.p.executeJob(ctx, ctx, userCancelCtx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
+	})
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled when cancel arrives after all requests complete, got: %v", err)
+	}
+}
+
+// TestExecuteJob_SIGTERMAfterAllComplete verifies that when all requests finish successfully
+// and SIGTERM arrives before executeJob returns, the function returns nil (not errShutdown).
+// This ensures the caller proceeds to finalizeJob (which uses a detached context) rather than
+// re-enqueueing a fully-complete job.
+func TestExecuteJob_SIGTERMAfterAllComplete(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	// ctx (processor/main context) is cancelled after the inference call returns,
+	// simulating SIGTERM arriving just after the last request completes.
+	mainCtx, mainCancel := context.WithCancel(testLoggerCtx(t))
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			mainCancel()
+			return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	userCancelCtx := context.Background()
+	counts, err := env.p.executeJob(mainCtx, mainCtx, userCancelCtx, mainCtx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error when SIGTERM arrives after all requests complete, got: %v", err)
+	}
+	if counts == nil {
+		t.Fatal("expected non-nil counts")
+	}
+	if counts.Total != 1 || counts.Completed != 1 {
+		t.Fatalf("counts = {Total:%d, Completed:%d, Failed:%d}, want {1,1,0}",
+			counts.Total, counts.Completed, counts.Failed)
+	}
+}
+
+// TestExecuteJob_AbortCtxCancel_AbortsInflightRequests verifies that a user cancel aborts
+// in-flight inference requests. The test calls both userCancelFn() (user-cancel signal) and
+// requestAbortFn() (stops dispatch), mirroring watchCancel's production behavior. The mock
+// blocks until requestAbortCtx cancellation propagates to its ctx argument. executeJob must
+// return errCancelled with the in-flight request counted as failed.
 func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -1075,32 +1221,37 @@ func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
-	cancelReq := &atomic.Bool{}
 	ctx := testLoggerCtx(t)
-	abortCtx, abortInferFn := context.WithCancel(ctx)
+	// userCancelCtx must be background-derived (user-cancel-only signal, no parent propagation).
+	userCancelCtx, userCancelFn := context.WithCancel(context.Background())
+	// requestAbortCtx is pre-set in params before the goroutine starts, matching the production
+	// flow where runJob sets requestAbortFn before starting watchCancel.
+	requestAbortCtx, requestAbortFn := context.WithCancel(ctx)
 
+	params := &jobExecutionParams{
+		updater:        env.updater,
+		jobInfo:        jobInfo,
+		requestAbortFn: requestAbortFn,
+	}
 	type result struct {
 		counts *openai.BatchRequestCounts
 		err    error
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		counts, err := env.p.executeJob(ctx, ctx, abortCtx, &jobExecutionParams{
-			updater:         env.updater,
-			jobInfo:         jobInfo,
-			cancelRequested: cancelReq,
-		})
+		counts, err := env.p.executeJob(ctx, ctx, userCancelCtx, requestAbortCtx, params)
 		resCh <- result{counts, err}
 	}()
 
 	<-inferStarted
-	cancelReq.Store(true)
-	abortInferFn()
+	// Simulate watchCancel: set userCancelCtx (user-cancel signal) and stop dispatch via requestAbortFn.
+	userCancelFn()
+	requestAbortFn()
 
 	select {
 	case res := <-resCh:
-		if !errors.Is(res.err, ErrCancelled) {
-			t.Fatalf("expected ErrCancelled, got: %v", res.err)
+		if !errors.Is(res.err, errCancelled) {
+			t.Fatalf("expected errCancelled, got: %v", res.err)
 		}
 		if res.counts == nil {
 			t.Fatal("expected non-nil counts")
@@ -1115,12 +1266,12 @@ func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 			t.Errorf("Failed = %d, want 1 (aborted request counted as failed)", res.counts.Failed)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("executeJob did not return within 5s after abortCtx cancellation")
+		t.Fatal("executeJob did not return within 5s after userCancelCtx cancellation")
 	}
 }
 
 // TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
-// passed before execution begins, executeJob returns ErrExpired immediately with the total
+// passed before execution begins, executeJob returns errExpired immediately with the total
 // request count and no output/error files are written (early-exit fast path).
 func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	cfg := config.NewConfig()
@@ -1132,20 +1283,18 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
-	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx(t)
 	// SLO deadline already in the past: early check fires before any files are opened.
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+	counts, err := env.p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
-	if !errors.Is(err, ErrExpired) {
-		t.Fatalf("expected ErrExpired, got: %v", err)
+	if !errors.Is(err, errExpired) {
+		t.Fatalf("expected errExpired, got: %v", err)
 	}
 	if counts == nil {
 		t.Fatal("expected non-nil counts")
@@ -1176,14 +1325,16 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 // TestExecuteJob_SLOExpiredDuringDispatch verifies that when the SLO deadline fires while
 // requests are being dispatched, completed requests are preserved in the output file,
 // undispatched requests are drained to the error file as batch_expired, and executeJob
-// returns ErrExpired with accurate partial counts.
+// returns errExpired with accurate partial counts.
 //
-// This exercises the full context-cancellation chain for SLO expiry:
+// Context hierarchy for SLO expiry:
 //
-//	sloCtx (WithDeadline) → abortCtx (WithCancel) → execCtx (WithCancel)
-//	         DeadlineExceeded       Canceled                Canceled
+//	processorCtx → sloCtx (WithDeadline) → requestAbortCtx (WithCancel)
+//	                        DeadlineExceeded        Canceled (propagated)
 //
-// checkAbortCondition sees Canceled on execCtx to stop dispatch;
+//	userCancelCtx (WithCancel, derived from context.Background — NOT in the chain above)
+//
+// requestAbortCtx sees Canceled to stop dispatch;
 // processModel's drain switch checks sloCtx.Err() == DeadlineExceeded to select batch_expired.
 func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 	cfg := config.NewConfig()
@@ -1208,7 +1359,6 @@ func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
-	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx(t)
 	// Use context.WithDeadline so sloCtx.Err() returns DeadlineExceeded (matching real code).
@@ -1221,18 +1371,17 @@ func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		counts, err := env.p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
-			updater:         env.updater,
-			jobInfo:         jobInfo,
-			cancelRequested: cancelReq,
+		counts, err := env.p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
+			updater: env.updater,
+			jobInfo: jobInfo,
 		})
 		resCh <- result{counts, err}
 	}()
 
 	select {
 	case res := <-resCh:
-		if !errors.Is(res.err, ErrExpired) {
-			t.Fatalf("expected ErrExpired, got: %v", res.err)
+		if !errors.Is(res.err, errExpired) {
+			t.Fatalf("expected errExpired, got: %v", res.err)
 		}
 		if res.counts == nil {
 			t.Fatal("expected non-nil counts")
@@ -1297,8 +1446,7 @@ func TestFinalizeJob_Success(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
 	ctx := testLoggerCtx(t)
-	var cancelRequested atomic.Bool
-	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested)
+	err := env.p.finalizeJob(ctx, context.Background(), env.updater, dbJob, jobInfo, counts)
 	if err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
 	}
@@ -1319,6 +1467,9 @@ func TestFinalizeJob_Success(t *testing.T) {
 	}
 }
 
+// TestFinalizeJob_UploadFailure verifies that when all uploads fail, finalizeJob marks the
+// job as failed (not completed) and returns errFinalizeFailedOver. The job must not be
+// marked completed with missing artifacts — that would violate the batch contract.
 func TestFinalizeJob_UploadFailure(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -1343,10 +1494,21 @@ func TestFinalizeJob_UploadFailure(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1}
 
 	ctx := testLoggerCtx(t)
-	var cancelRequested atomic.Bool
-	err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested)
-	if err == nil {
-		t.Fatalf("expected error from upload failure")
+	err := env.p.finalizeJob(ctx, context.Background(), env.updater, dbJob, jobInfo, counts)
+	if !errors.Is(err, errFinalizeFailedOver) {
+		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
+	}
+
+	items, _, _, getErr := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if getErr != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", getErr, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed (upload failure must not produce completed)", got.Status)
 	}
 }
 
@@ -1375,13 +1537,11 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
-	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
@@ -1457,13 +1617,11 @@ func TestExecuteJob_HTTPErrorGoesToOutputFile(t *testing.T) {
 		{CustomID: "r3", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
 	}
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
-	cancelReq := &atomic.Bool{}
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         env.updater,
-		jobInfo:         jobInfo,
-		cancelRequested: cancelReq,
+	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
 	})
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
@@ -1567,8 +1725,7 @@ func TestFinalizeJob_EmptyOutputFile_OutputFileIDOmitted(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 0, Failed: 1}
 
 	ctx := testLoggerCtx(t)
-	var cancelRequested atomic.Bool
-	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested); err != nil {
+	if err := env.p.finalizeJob(ctx, context.Background(), env.updater, dbJob, jobInfo, counts); err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
 	}
 
@@ -1618,8 +1775,7 @@ func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
 	ctx := testLoggerCtx(t)
-	var cancelRequested atomic.Bool
-	if err := env.p.finalizeJob(ctx, env.updater, dbJob, jobInfo, counts, &cancelRequested); err != nil {
+	if err := env.p.finalizeJob(ctx, context.Background(), env.updater, dbJob, jobInfo, counts); err != nil {
 		t.Fatalf("finalizeJob error: %v", err)
 	}
 
@@ -1643,7 +1799,7 @@ func TestFinalizeJob_EmptyErrorFile_ErrorFileIDOmitted(t *testing.T) {
 // Tests: handleJobError (routing branches)
 // =====================================================================
 
-func TestHandleJobError_ErrCancelled(t *testing.T) {
+func TestHandleJobError_errCancelled(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -1662,7 +1818,7 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 		updater: env.updater,
 		jobItem: dbJob,
 		jobInfo: ji,
-	}, ErrCancelled)
+	}, errCancelled)
 
 	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 	if delta := after - before; delta != 1 {
@@ -1682,7 +1838,7 @@ func TestHandleJobError_ErrCancelled(t *testing.T) {
 	}
 }
 
-func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
+func TestHandleJobError_Shutdown_ReEnqueues(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -1703,7 +1859,7 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 		jobItem: dbJob,
 		task:    task,
 		jobInfo: ji,
-	}, context.Canceled)
+	}, errShutdown)
 
 	afterFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 	if delta := afterFailed - beforeFailed; delta != 0 {
@@ -1719,32 +1875,7 @@ func TestHandleJobError_ContextCanceled_ReEnqueues(t *testing.T) {
 	}
 }
 
-func TestHandleJobError_DeadlineExceeded_ReEnqueues(t *testing.T) {
-	cfg := config.NewConfig()
-	cfg.WorkDir = t.TempDir()
-
-	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
-
-	dbJob := seedDBJob(t, env.dbClient, "job-deadline")
-	task := &db.BatchJobPriority{ID: "job-deadline"}
-
-	ctx := testLoggerCtx(t)
-	env.p.handleJobError(ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobItem: dbJob,
-		task:    task,
-	}, context.DeadlineExceeded)
-
-	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
-	if err != nil {
-		t.Fatalf("PQDequeue: %v", err)
-	}
-	if len(tasks) == 0 {
-		t.Fatalf("expected re-enqueued task, got none")
-	}
-}
-
-func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
+func TestHandleJobError_Shutdown_NilTask(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -1757,7 +1888,7 @@ func TestHandleJobError_ContextCanceled_NilTask(t *testing.T) {
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
 		jobItem: dbJob,
-	}, context.Canceled)
+	}, errShutdown)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-ctx-nil"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -1811,8 +1942,92 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	}
 }
 
+// TestHandleJobError_ExpiredWithCancelledCtx_StillTransitionsExpired verifies that
+// handleExpired completes the DB status write even when the parent context is already
+// cancelled (e.g. SIGTERM arrived concurrently with SLO expiry). handleExpired must use
+// a detached context for the UpdateExpiredStatus call so that SIGTERM does not abort
+// the DB write after file uploads succeed.
+func TestHandleJobError_ExpiredWithCancelledCtx_StillTransitionsExpired(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-expired-sigterm"
+	dbJob := seedDBJob(t, env.dbClient, jobID)
+	ji := &batch_types.JobInfo{
+		JobID:    jobID,
+		TenantID: dbJob.TenantID,
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+	counts := &openai.BatchRequestCounts{Total: 10, Completed: 5, Failed: 5}
+
+	// Simulate SIGTERM: parent ctx is already cancelled.
+	cancelledCtx, cancel := context.WithCancel(testLoggerCtx(t))
+	cancel()
+
+	env.p.handleJobError(cancelledCtx, &jobExecutionParams{
+		updater:       env.updater,
+		jobItem:       dbJob,
+		jobInfo:       ji,
+		requestCounts: counts,
+	}, errExpired)
+
+	items, _, _, err := env.dbClient.DBGet(context.Background(), &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if got.Status != openai.BatchStatusExpired {
+		t.Fatalf("status = %s, want expired (detached context must survive SIGTERM)", got.Status)
+	}
+	if got.RequestCounts.Total != 10 || got.RequestCounts.Completed != 5 {
+		t.Fatalf("request_counts = %+v, want {10,5,5}", got.RequestCounts)
+	}
+}
+
+// TestHandleJobError_ExpiredDuringIngestion_NilCountsTransitionsExpired verifies that
+// handleJobError routes errExpired with nil requestCounts (SLO expired during preprocessing,
+// before executeJob ran) to handleExpired, which tolerates nil counts and transitions the
+// job to expired status.
+func TestHandleJobError_ExpiredDuringIngestion_NilCountsTransitionsExpired(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	dbJob := seedDBJob(t, env.dbClient, "job-expired-ingestion")
+	ji := &batch_types.JobInfo{
+		JobID:    "job-expired-ingestion",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+
+	ctx := testLoggerCtx(t)
+	env.p.handleJobError(ctx, &jobExecutionParams{
+		updater:       env.updater,
+		jobItem:       dbJob,
+		jobInfo:       ji,
+		requestCounts: nil, // nil: SLO expired before executeJob ran
+	}, errExpired)
+
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-expired-ingestion"}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if got.Status != openai.BatchStatusExpired {
+		t.Fatalf("status = %s, want %s", got.Status, openai.BatchStatusExpired)
+	}
+}
+
 // =====================================================================
-// Tests: handleCancelled / handleFailedWithPartial / handleFailed
+// Tests: handleCancelled / handleFailed
 // with partial output
 // =====================================================================
 
@@ -1880,7 +2095,81 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 	}
 }
 
-func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
+// TestHandleCancelled_CancelledWriteFails_FallsBackToFailed verifies that when
+// UpdateCancelledStatus fails inside handleCancelled, the fallback writes "failed"
+// status with file IDs preserved. This mirrors the failover pattern in finalizeJob.
+func TestHandleCancelled_CancelledWriteFails_FallsBackToFailed(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	innerDB := newMockBatchDBClient()
+	failDB := &failOnStatusDB{
+		inner:      innerDB,
+		failStatus: openai.BatchStatusCancelled,
+		failErr:    errors.New("injected: cancelled write failed"),
+	}
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	jobID := "job-cancel-failover"
+	tenantID := "tenant__tenantA"
+
+	dbJob := seedDBJob(t, innerDB, jobID)
+	dbJob.TenantID = tenantID
+
+	clients := &clientset.Clientset{
+		BatchDB:   failDB,
+		FileDB:    newMockFileDBClient(),
+		File:      mockfiles.NewMockBatchFilesClient(),
+		Status:    statusClient,
+		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
+		Event:     mockdb.NewMockBatchEventChannelClient(),
+		Inference: inference.NewSingleClientResolver(&mockInferenceClient{}),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, failDB)
+	updater := NewStatusUpdater(failDB, statusClient, 86400)
+
+	createPartialOutputFiles(t, p, jobID, tenantID)
+
+	jobInfo := &batch_types.JobInfo{
+		JobID:    jobID,
+		TenantID: tenantID,
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
+	}
+	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
+
+	ctx := testLoggerCtx(t)
+	err := p.handleCancelled(ctx, &jobExecutionParams{
+		updater:       updater,
+		jobItem:       dbJob,
+		jobInfo:       jobInfo,
+		requestCounts: counts,
+	})
+
+	if !errors.Is(err, errFinalizeFailedOver) {
+		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
+	}
+
+	items, _, _, getErr := innerDB.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if getErr != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", getErr, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if unmarshalErr := json.Unmarshal(items[0].Status, &got); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.OutputFileID == nil {
+		t.Fatal("output_file_id must be preserved in fallback, got nil")
+	}
+	if got.RequestCounts.Total != 5 || got.RequestCounts.Completed != 3 || got.RequestCounts.Failed != 2 {
+		t.Fatalf("request_counts = %+v, want {5,3,2}", got.RequestCounts)
+	}
+}
+
+func TestHandleFailed_Execution_UploadsPartialOutput(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -1902,8 +2191,8 @@ func TestHandleFailedWithPartial_Execution_UploadsPartialOutput(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 10, Completed: 7, Failed: 3}
 
 	ctx := testLoggerCtx(t)
-	if err := env.p.handleFailedWithPartial(ctx, env.updater, dbJob, jobInfo, counts); err != nil {
-		t.Fatalf("handleFailedWithPartial: %v", err)
+	if err := env.p.handleFailed(ctx, env.updater, dbJob, counts, jobInfo); err != nil {
+		t.Fatalf("handleFailed: %v", err)
 	}
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -1974,6 +2263,38 @@ func TestHandleFailed_Finalization_RecordsCountsOnly(t *testing.T) {
 	}
 	if got.ErrorFileID != nil {
 		t.Fatalf("expected nil error_file_id, got %s", *got.ErrorFileID)
+	}
+}
+
+// TestHandleFailed_CancelledCtx_StillWritesDB verifies that handleFailed completes
+// the DB status write even when the parent context is already cancelled.
+func TestHandleFailed_CancelledCtx_StillWritesDB(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	env := newTestProcessorEnv(t, cfg, &mockInferenceClient{})
+
+	jobID := "job-failed-sigterm"
+	dbJob := seedDBJob(t, env.dbClient, jobID)
+	counts := &openai.BatchRequestCounts{Total: 3, Completed: 1, Failed: 2}
+
+	cancelledCtx, cancel := context.WithCancel(testLoggerCtx(t))
+	cancel()
+
+	if err := env.p.handleFailed(cancelledCtx, env.updater, dbJob, counts, nil); err != nil {
+		t.Fatalf("handleFailed with cancelled ctx: %v", err)
+	}
+
+	items, _, _, err := env.dbClient.DBGet(context.Background(), &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Status != openai.BatchStatusFailed {
+		t.Fatalf("status = %s, want failed (detached context must survive cancelled parent)", got.Status)
 	}
 }
 
@@ -2057,6 +2378,71 @@ func TestUploadPartialResults_MissingFiles(t *testing.T) {
 	}
 	if errorFileID != "" {
 		t.Fatalf("errorFileID = %q, want empty (error file does not exist)", errorFileID)
+	}
+}
+
+// TestUploadPartialResults_OneUploadFails_OtherSurvives verifies that when one of the two
+// parallel uploads fails, the other file ID is still returned. uploadPartialResults is
+// best-effort: one-side failure must not lose the other side's reference.
+func TestUploadPartialResults_OneUploadFails_OtherSurvives(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	dbClient := newMockBatchDBClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+	filesClient := &failOnNthCallClient{
+		failN:   1,
+		failErr: errors.New("injected: one-side upload failure"),
+	}
+
+	clients := &clientset.Clientset{
+		BatchDB:   dbClient,
+		FileDB:    newMockFileDBClient(),
+		File:      filesClient,
+		Status:    statusClient,
+		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
+		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
+	}
+	p := mustNewProcessor(t, cfg, clients)
+	p.poller = NewPoller(clients.Queue, dbClient)
+
+	jobID := "partial-one-side"
+	tenantID := "tenant__tenantA"
+
+	jobDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	outputPath, _ := p.jobOutputFilePath(jobID, tenantID)
+	if err := os.WriteFile(outputPath, []byte(`{"custom_id":"r1"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile output: %v", err)
+	}
+	errorPath, _ := p.jobErrorFilePath(jobID, tenantID)
+	if err := os.WriteFile(errorPath, []byte(`{"custom_id":"e1"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+	dbJob := seedDBJob(t, dbClient, jobID)
+
+	ctx := testLoggerCtx(t)
+	outputFileID, errorFileID := p.uploadPartialResults(ctx, jobInfo, dbJob)
+
+	// Exactly one of the two uploads failed (the first call to Store).
+	// The other must have succeeded and returned a non-empty file ID.
+	nonEmpty := 0
+	if outputFileID != "" {
+		nonEmpty++
+	}
+	if errorFileID != "" {
+		nonEmpty++
+	}
+	if nonEmpty != 1 {
+		t.Fatalf("expected exactly 1 surviving file ID (one upload failed), got output=%q error=%q",
+			outputFileID, errorFileID)
 	}
 }
 

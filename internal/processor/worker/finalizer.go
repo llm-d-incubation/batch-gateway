@@ -22,19 +22,17 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
-	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/sync/errgroup"
-
 	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
@@ -81,65 +79,106 @@ func (p *Processor) uploadFileAndStoreFileRecord(
 	return fileID, nil
 }
 
+// finalizationTimeout bounds how long finalizeJob waits for file uploads and DB
+// writes before giving up. Storage and DB clients have their own timeouts, but
+// this provides an explicit application-level bound — same pattern as
+// panicRecoveryTimeout. Declared as var (not const) so tests can shorten it.
+var finalizationTimeout = 5 * time.Minute
+
 // finalizeJob performs finalization: uploads output and error files to shared storage,
 // creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
 	ctx context.Context,
+	userCancelCtx context.Context,
 	updater *StatusUpdater,
 	dbJob *db.BatchItem,
 	jobInfo *batch_types.JobInfo,
 	requestCounts *openai.BatchRequestCounts,
-	cancelRequested *atomic.Bool,
 ) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting finalization: finalizing job")
 
+	// ioCtx is detached from ctx so that SIGTERM cannot abort file uploads or the
+	// final status write. DetachedContext preserves a span link back to the parent
+	// process-batch trace while severing cancellation propagation.
+	// finalizationTimeout provides an explicit upper bound so that an unreachable
+	// storage/DB cannot block the worker token indefinitely.
+	ioCtx, ioSpan := uotel.DetachedContext(ctx, "finalize")
+	ioCtx, ioCancel := context.WithTimeout(ioCtx, finalizationTimeout)
+	defer ioCancel()
+	defer ioSpan.End()
+
 	// in_progress → finalizing
 	// Written before file uploads so the API server can reject cancel requests once
 	// finalization has begun, narrowing the cancel-vs-complete race window.
-	if err := updater.UpdatePersistentStatus(ctx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
+	if err := updater.UpdatePersistentStatus(ioCtx, dbJob, openai.BatchStatusFinalizing, requestCounts, nil); err != nil {
 		return fmt.Errorf("failed to update job status to finalizing: %w", err)
 	}
 
 	// Per the OpenAI batch spec, output_file_id and error_file_id are both optional:
 	// output_file_id is omitted when all requests failed; error_file_id is omitted when no
 	// requests failed. We skip uploading and recording empty files accordingly.
-	// The two uploads are independent (different local files, different S3 keys,
-	// different DB records), so we run them concurrently.
+	//
+	// The two uploads are fully independent (different local files, different S3 keys,
+	// different DB records). A failure in one must not discard the other's file ID —
+	// otherwise a transient error-file upload failure would orphan an already-uploaded
+	// output file. Both uploads run to completion; if any fails, the job is marked
+	// failed with surviving file IDs preserved.
 	var outputFileID, errorFileID string
-	grp, gCtx := errgroup.WithContext(ctx)
-	grp.Go(func() error {
-		var err error
-		outputFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeOutput)
-		return err
-	})
-	grp.Go(func() error {
-		var err error
-		errorFileID, err = p.uploadFileAndStoreFileRecord(gCtx, jobInfo, dbJob, metrics.FileTypeError)
-		return err
-	})
-	if err := grp.Wait(); err != nil {
-		return err
+	var outputUploadErr, errorUploadErr error
+	var uploadWG sync.WaitGroup
+	uploadWG.Add(2)
+	go func() {
+		defer uploadWG.Done()
+		outputFileID, outputUploadErr = p.uploadFileAndStoreFileRecord(ioCtx, jobInfo, dbJob, metrics.FileTypeOutput)
+	}()
+	go func() {
+		defer uploadWG.Done()
+		errorFileID, errorUploadErr = p.uploadFileAndStoreFileRecord(ioCtx, jobInfo, dbJob, metrics.FileTypeError)
+	}()
+	uploadWG.Wait()
+
+	if outputUploadErr != nil {
+		logger.Error(outputUploadErr, "Failed to upload output file during finalization")
+	}
+	if errorUploadErr != nil {
+		logger.Error(errorUploadErr, "Failed to upload error file during finalization")
 	}
 
-	// Best-effort cancel check: if a cancel event arrived during file uploads,
-	// finalize as cancelled instead of completed. This covers the narrow window
-	// between executeJob's last cancelRequested check and this point.
-	// A residual TOCTOU race remains (cancel arriving between this check and the
-	// completed write below), but at this stage all requests have already completed
-	// and output files are uploaded — the user receives the same results either way.
-	if cancelRequested != nil && cancelRequested.Load() {
+	// If any upload failed, the job cannot be marked completed or cancelled — that would
+	// expose a partial-artifact terminal state to the user. Instead, write failed status
+	// with whatever file IDs survived so the successfully-uploaded artifact remains
+	// reachable via the API.
+	if outputUploadErr != nil || errorUploadErr != nil {
+		if failErr := updater.UpdateFailedStatus(ioCtx, dbJob, requestCounts, outputFileID, errorFileID); failErr != nil {
+			return fmt.Errorf("upload failed and fallback status write also failed: %w", failErr)
+		}
+		return fmt.Errorf("upload failure during finalization: %w", errFinalizeFailedOver)
+	}
+
+	// Best-effort: honour a user cancel that arrived during finalization.
+	// userCancelCtx is background-derived so it only fires for explicit user cancellation;
+	// SLO expiry and SIGTERM do not propagate here.
+	if userCancelCtx.Err() != nil {
 		logger.V(logging.INFO).Info("Cancel requested during finalization; finalizing as cancelled")
-		if err := updater.UpdateCancelledStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
-			return fmt.Errorf("failed to update job status to cancelled: %w", err)
+		if err := updater.UpdateCancelledStatus(ioCtx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
+			logger.Error(err, "Failed to update cancelled status, falling back to failed with file IDs preserved")
+			if failErr := updater.UpdateFailedStatus(ioCtx, dbJob, requestCounts, outputFileID, errorFileID); failErr != nil {
+				return fmt.Errorf("failed to update job status to cancelled (%w) and fallback to failed also failed: %w", err, failErr)
+			}
+			return fmt.Errorf("cancelled status write failed: %w", errFinalizeFailedOver)
 		}
 		setRequestCountAttrs(ctx, requestCounts)
-		return ErrCancelled
+		return errCancelled
 	}
 
 	// finalizing → completed
-	if err := updater.UpdateCompletedStatus(ctx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
-		return fmt.Errorf("failed to update job status to completed: %w", err)
+	if err := updater.UpdateCompletedStatus(ioCtx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
+		logger.Error(err, "Failed to update job status to completed, falling back to failed with file IDs preserved")
+		if failErr := updater.UpdateFailedStatus(ioCtx, dbJob, requestCounts, outputFileID, errorFileID); failErr != nil {
+			return fmt.Errorf("failed to update job status to completed (%w) and fallback to failed also failed: %w", err, failErr)
+		}
+		return fmt.Errorf("completed status write failed: %w", errFinalizeFailedOver)
 	}
 
 	setRequestCountAttrs(ctx, requestCounts)

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,8 +102,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -254,8 +252,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -376,39 +373,35 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 	}
 	defer evCh.CloseFn()
 
-	var cancelRequested atomic.Bool
-	abortCtx, abortInferFn := context.WithCancel(ctx)
+	userCancelCtx, userCancelFn := context.WithCancel(ctx)
+	requestAbortCtx, requestAbortFn := context.WithCancel(ctx)
+	context.AfterFunc(userCancelCtx, requestAbortFn)
 
-	// Start watching cancel in background
 	params := &jobExecutionParams{
-		eventWatcher:    evCh,
-		updater:         updater,
-		jobItem:         jobItem,
-		abortInferFn:    abortInferFn,
-		cancelRequested: &cancelRequested,
+		eventWatcher:   evCh,
+		updater:        updater,
+		jobItem:        jobItem,
+		userCancelFn:   userCancelFn,
+		requestAbortFn: requestAbortFn,
 	}
 	go p.watchCancel(ctx, params)
 
-	// Send cancel event
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
 		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
 	})
 
-	// Verify cancelRequested flag was set
-	deadline := time.Now().Add(2 * time.Second)
-	for !params.cancelRequested.Load() && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !params.cancelRequested.Load() {
-		t.Fatalf("cancelRequested was not set")
+	// Verify userCancelFn was called (user-cancel signal).
+	select {
+	case <-userCancelCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("userCancelCtx was not cancelled within 2s after cancel event")
 	}
 
-	// Verify abort context was cancelled
+	// Verify requestAbortFn was called (dispatch abort signal).
 	select {
-	case <-abortCtx.Done():
-		// success — abortInferFn was called
+	case <-requestAbortCtx.Done():
 	case <-time.After(2 * time.Second):
-		t.Fatal("abortCtx was not cancelled within 2s after cancel event")
+		t.Fatal("requestAbortCtx was not cancelled within 2s after cancel event")
 	}
 
 	// Verify that watchCancel does NOT update status to cancelling
@@ -489,11 +482,160 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	cancelRequested.Store(true)
-	err = p.preProcessJob(ctx, jobInfo, &cancelRequested)
-	if !errors.Is(err, ErrCancelled) {
-		t.Fatalf("expected ErrCancelled, got: %v", err)
+	userCancelCtx, abortFn := context.WithCancel(ctx)
+	abortFn()
+	err = p.preProcessJob(ctx, ctx, userCancelCtx, jobInfo)
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled, got: %v", err)
+	}
+}
+
+// TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled verifies that when both userCancelCtx
+// and ctx (SIGTERM) are cancelled, preProcessJob returns errCancelled — not errShutdown.
+// This matches processModel's priority (SLO > cancel > shutdown) and prevents re-enqueueing
+// a job the user asked to cancel.
+func TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled(t *testing.T) {
+	ctx := testLoggerCtx(t)
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-preprocess-cancel-sigterm"
+	inputFileID := "file-preprocess-cancel-sigterm"
+	tenantID := uniqueTestFolder(t, "tenantA/preprocess-cancel-sigterm")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	cleanMockFilesFolder(t, folder)
+
+	models := make([]string, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		models = append(models, "mA")
+	}
+	lines := makeInputLines(models)
+	var remoteBuf bytes.Buffer
+	for _, ln := range lines {
+		remoteBuf.Write(ln)
+	}
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, "input.jsonl"), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+	fileSpec := &openai.FileObject{Filename: "input.jsonl"}
+	if err := fileDBClient.DBStore(ctx, &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, fileSpec)},
+	}); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	// Both ctx (SIGTERM) and userCancelCtx are cancelled.
+	shutdownCtx, shutdownCancel := context.WithCancel(ctx)
+	shutdownCancel()
+
+	userCancelCtx, userCancelFn := context.WithCancel(ctx)
+	userCancelFn()
+
+	err = p.preProcessJob(shutdownCtx, shutdownCtx, userCancelCtx, jobInfo)
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("expected errCancelled when both SIGTERM and user cancel fire, got: %v", err)
+	}
+}
+
+func TestPreProcess_SLOExpiredDuringIngestion_ReturnsErrExpired(t *testing.T) {
+	ctx := testLoggerCtx(t)
+
+	workDir := t.TempDir()
+	cfg := config.NewConfig()
+	cfg.WorkDir = workDir
+	dbClient := newMockBatchDBClient()
+	fileDBClient := newMockFileDBClient()
+	filesClient := mockfiles.NewMockBatchFilesClient()
+
+	clients := &clientset.Clientset{
+		BatchDB: dbClient,
+		FileDB:  fileDBClient,
+		File:    filesClient,
+	}
+	p := mustNewProcessor(t, cfg, clients)
+
+	jobID := "job-preprocess-slo-expired"
+	inputFileID := "file-preprocess-slo-expired"
+	tenantID := uniqueTestFolder(t, "tenantA/preprocess-slo-expired")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	cleanMockFilesFolder(t, folder)
+
+	// A single request is enough: sloCtx is already expired, so the ingestion loop
+	// returns errExpired on the first iteration before reading any lines.
+	lines := makeInputLines([]string{"any-model"}) // content irrelevant; loop exits before reading
+	var remoteBuf bytes.Buffer
+	for _, ln := range lines {
+		remoteBuf.Write(ln)
+	}
+
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, "input.jsonl"), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+	fileSpec := &openai.FileObject{Filename: "input.jsonl"}
+	if err := fileDBClient.DBStore(ctx, &db.FileItem{
+		BaseIndexes: db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{
+			Spec: mustJSON(t, fileSpec),
+		},
+	}); err != nil {
+		t.Fatalf("DBStore file item: %v", err)
+	}
+
+	jobInfo := &batch_types.JobInfo{
+		JobID: jobID,
+		BatchJob: &openai.Batch{
+			ID: jobID,
+			BatchSpec: openai.BatchSpec{
+				InputFileID: inputFileID,
+			},
+			BatchStatusInfo: openai.BatchStatusInfo{
+				Status: openai.BatchStatusInProgress,
+			},
+		},
+		TenantID: tenantID,
+	}
+
+	// Use a context with a deadline in the past so sloCtx.Err() == DeadlineExceeded immediately.
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
+	defer sloCancel()
+
+	err = p.preProcessJob(ctx, sloCtx, context.Background(), jobInfo)
+	if !errors.Is(err, errExpired) {
+		t.Fatalf("expected errExpired, got: %v", err)
 	}
 }
 
@@ -558,6 +700,18 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 	jobs, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("DBGet job after cancel: err=%v len=%d", err, len(jobs))
+	}
+
+	var status openai.BatchStatusInfo
+	if err := json.Unmarshal(jobs[0].Status, &status); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if status.Status != openai.BatchStatusCancelled {
+		t.Fatalf("status = %s, want %s", status.Status, openai.BatchStatusCancelled)
+	}
+	// handleCancelled was called before executeJob (requestCounts nil) so counts remain zero.
+	if status.RequestCounts.Total != 0 {
+		t.Fatalf("expected zero request_counts for pre-execution cancel, got %+v", status.RequestCounts)
 	}
 }
 
@@ -1148,8 +1302,7 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	err = p.preProcessJob(ctx, jobInfo, &cancelRequested)
+	err = p.preProcessJob(ctx, ctx, context.Background(), jobInfo)
 	if err == nil {
 		t.Fatal("expected preProcessJob to fail for input with stream: true")
 	}
@@ -1217,8 +1370,7 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	err = p.preProcessJob(ctx, jobInfo, &cancelRequested)
+	err = p.preProcessJob(ctx, ctx, context.Background(), jobInfo)
 	if err == nil {
 		t.Fatal("expected preProcessJob to fail for duplicate custom_id")
 	}
@@ -1289,8 +1441,7 @@ func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("expected preProcessJob to succeed with unique custom_ids, got: %v", err)
 	}
 }
@@ -1368,8 +1519,7 @@ func TestPreProcess_UnregisteredModel_RejectedToErrorFile(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1488,8 +1638,7 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1532,10 +1681,9 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 		t.Fatalf("plan files = %d, want 0", planFiles)
 	}
 
-	counts, execErr := p.executeJob(ctx, ctx, ctx, &jobExecutionParams{
-		updater:         NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
-		jobInfo:         jobInfo,
-		cancelRequested: &cancelRequested,
+	counts, execErr := p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
+		jobInfo: jobInfo,
 	})
 	if execErr != nil {
 		t.Fatalf("executeJob: %v", execErr)
@@ -1625,8 +1773,7 @@ func TestPreProcess_ReEnqueue_TruncatesStaleErrorFile(t *testing.T) {
 		t.Fatalf("WriteFile stale error: %v", err)
 	}
 
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1711,8 +1858,7 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	}
 
 	// Run ingestion — should reject model-b and write to error.jsonl.
-	var cancelRequested atomic.Bool
-	if err := p.preProcessJob(ctx, jobInfo, &cancelRequested); err != nil {
+	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1731,13 +1877,12 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	defer sloCancel()
 
-	counts, execErr := p.executeJob(ctx, sloCtx, sloCtx, &jobExecutionParams{
-		updater:         NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
-		jobInfo:         jobInfo,
-		cancelRequested: &cancelRequested,
+	counts, execErr := p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
+		updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
+		jobInfo: jobInfo,
 	})
-	if !errors.Is(execErr, ErrExpired) {
-		t.Fatalf("expected ErrExpired, got: %v", execErr)
+	if !errors.Is(execErr, errExpired) {
+		t.Fatalf("expected errExpired, got: %v", execErr)
 	}
 	if counts.Failed != 1 {
 		t.Fatalf("Failed = %d, want 1 (model_not_found from ingestion)", counts.Failed)

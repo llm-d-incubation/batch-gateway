@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -153,26 +154,26 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 }
 
 // executeJob performs execution: reads plan files per model, sends inference
-// requests concurrently (one goroutine per model), and writes results to
+// requests concurrently (one goroutine per model, multiple requests per model), and writes results to
 // output.jsonl (successes) and error.jsonl (failures). Returns request counts for finalization.
 //
-// On success, returns (counts, nil). On interruption or error, undispatched requests are
-// drained to the error file with the appropriate code, writers are flushed, and partial counts
-// are returned alongside the sentinel/cause error:
-//   - SLO expired:    (counts, ErrExpired)    — drain as batch_expired
-//   - User cancel:    (counts, ErrCancelled)  — drain as batch_cancelled
-//   - System error:   (counts, firstErr)      — drain as batch_failed
-//   - Pod shutdown:   (nil, ctx.Err())        — no flush, caller re-enqueues
-
-// abortCtx is cancelled when the user requests batch cancellation. Cancelling it aborts all
-// in-flight inference HTTP requests immediately, freeing downstream resources (GPU slots, EPP
-// capacity). abortCtx is derived from sloCtx in the caller so the SLO deadline is also respected.
+// On success, returns (counts, nil). On interruption or error, output and error writers are
+// always flushed (buffered data written to the underlying files) before returning, and partial
+// counts are returned alongside the sentinel/cause error:
+//   - SLO expired:    (counts, errExpired)   — undispatched drained as batch_expired
+//   - User cancel:    (counts, errCancelled) — undispatched drained as batch_cancelled
+//   - System error:   (counts, firstErr)     — undispatched drained as batch_failed
+//   - Pod shutdown:   (counts, errShutdown)  — caller re-enqueues; counts reflect work done
+//     before SIGTERM, flush preserves partial output for startup recovery
 //
-// Dispatch abort relies solely on context cancellation (checkAbortCondition checks ctx.Err()).
-// The cancelRequested flag is NOT polled to stop dispatch; it is only consulted in the
-// error-handling path to distinguish the cancellation reason (user cancel vs SLO vs pod shutdown)
-// and to drain undispatched entries with the correct error code.
-func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+// requestAbortCtx controls the dispatch loop and all in-flight inference calls: cancelling it
+// stops dispatch and aborts in-flight requests. It is derived from sloCtx in the caller (in runJob)
+// so SLO expiry and SIGTERM propagate automatically. watchCancel also calls requestAbortFn directly
+// for user-initiated cancellation.
+// userCancelCtx is a user-cancel-only signal derived from context.Background; it does not inherit
+// SLO expiry or SIGTERM. Its sole purpose is to let the drain phase distinguish user cancel from
+// SLO expiry.
+func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
@@ -193,7 +194,7 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 	if sloCtx.Err() == context.DeadlineExceeded {
 		logger.V(logging.INFO).Info("SLO already expired at execution start, skipping dispatch",
 			"total", modelMap.LineCount)
-		return &openai.BatchRequestCounts{Total: modelMap.LineCount, Failed: modelMap.RejectedCount}, ErrExpired
+		return &openai.BatchRequestCounts{Total: modelMap.LineCount, Failed: modelMap.RejectedCount}, errExpired
 	}
 
 	inputFilePath, err := p.jobInputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
@@ -237,12 +238,8 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 		return nil, err
 	}
 
-	// one goroutine per model; concurrency within each model is bounded
-	// by globalSem (processor-wide concurrency limit) and perModelMaxConcurrency (per-model concurrency limit).
-	// execCtx is derived from abortCtx (which itself is derived from sloCtx) so both the SLO
-	// deadline and user-initiated cancellation propagate to all dispatch loops and inference calls.
-	execCtx, execCancel := context.WithCancel(abortCtx)
-	defer execCancel()
+	// requestAbortCtx and requestAbortFn are set in runJob before watchCancel starts,
+	// eliminating the race window where a cancel event could arrive before the fn is assigned.
 
 	progress := &executionProgress{
 		total:   modelMap.LineCount,
@@ -263,23 +260,39 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
 	}
 
+	// User-initiated cancellation stops dispatch via two independent cancel calls:
+	// watchCancel calls userCancelFn() to mark userCancelCtx (user-cancel signal),
+	// and requestAbortFn() to cancel requestAbortCtx (stops dispatch loop).
+	// These are independent — userCancelCtx does NOT propagate to requestAbortCtx.
+	// processModel's drain phase checks sloCtx.Err() vs userCancelCtx.Err() to choose
+	// the right error code (errExpired vs errCancelled).
 	for safeModelID, modelID := range modelMap.SafeToModel {
-		// Ordering guarantee: processModel returns → execCancel → errCh send.
+		// Ordering guarantee: processModel returns → requestAbortFn → errCh send.
 		// This ensures the first real error reaches errCh before any context.Canceled
-		// from other models whose contexts were cancelled by execCancel.
+		// from other models whose contexts were cancelled by requestAbortFn.
 		go func(safeModelID, modelID string) {
 			err := p.processModel(
-				execCtx,
+				requestAbortCtx,
+				ctx,
 				sloCtx,
+				userCancelCtx,
 				inputFile,
 				plansDir, safeModelID, modelID,
 				writers,
-				params.cancelRequested,
 				progress,
 				passThroughHeaders,
 			)
+			// Abort all sibling models when any model hits a fatal I/O error
+			// (e.g. output file write failure). modelErr is only set for local
+			// I/O failures — not inference errors, which are recorded normally
+			// in the error file. Since all models share the same output writers,
+			// a write failure in one model means the shared file is unusable
+			// and continuing other models would produce corrupt output.
+			// Guard against nil requestAbortFn for direct-call test paths.
 			if err != nil {
-				execCancel()
+				if fn := params.requestAbortFn; fn != nil {
+					fn()
+				}
 			}
 			errCh <- err
 		}(safeModelID, modelID)
@@ -297,37 +310,30 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 	progress.flush(ctx)
 
 	if firstErr != nil {
-		// prefer parent-context / user-cancel errors for correct routing in handleJobError
-		if ctx.Err() != nil {
-			return nil, ctx.Err() // parent-context error (e.g. pod shutdown)
+		// Flush partial results to disk before routing the error.
+		// Required for all non-nil firstErr paths: errExpired, errCancelled, system errors
+		// (callers upload from disk), and SIGTERM (startup recovery reads from disk on restart).
+		if err := writers.output.Flush(); err != nil {
+			logger.Error(err, "Failed to flush output file on error path (partial results may be truncated)")
 		}
-		if params.cancelRequested.Load() {
-			_ = writers.output.Flush()
-			_ = writers.errors.Flush()
-			counts := progress.counts()
-			logger.V(logging.INFO).Info("Execution cancelled, returning partial counts",
-				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
-			return counts, ErrCancelled
+		if err := writers.errors.Flush(); err != nil {
+			logger.Error(err, "Failed to flush error file on error path (partial results may be truncated)")
 		}
-		// SLO deadline exceeded: sloCtx deadline fired during execution.
-		// processModel already drained undispatched entries to error file; flush and return partial counts.
-		// Use sloCtx.Err() rather than execCtx.Err(): execCtx may have been cancelled by a goroutine
-		// via execCancel() before the sloCtx deadline propagated, setting execCtx.Err() = Canceled.
-		if sloCtx.Err() == context.DeadlineExceeded {
-			// best-effort: flush the output and error files
-			_ = writers.output.Flush()
-			_ = writers.errors.Flush()
-			counts := progress.counts()
+		// processModel already drained undispatched entries and returned a sentinel (errExpired or
+		// errCancelled) or the underlying system error. All terminal handlers now use detached
+		// contexts, so we preserve processModel's decision even when SIGTERM is concurrent.
+		counts := progress.counts()
+		switch {
+		case errors.Is(firstErr, errExpired):
 			logger.V(logging.INFO).Info("Execution SLO expired, returning partial counts",
 				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
-			return counts, ErrExpired
+		case errors.Is(firstErr, errCancelled):
+			logger.V(logging.INFO).Info("Execution cancelled, returning partial counts",
+				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
+		default:
+			logger.V(logging.INFO).Info("Execution system error, returning partial counts",
+				"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 		}
-		// System error from model goroutines — flush partial results.
-		_ = writers.output.Flush()
-		_ = writers.errors.Flush()
-		counts := progress.counts()
-		logger.V(logging.INFO).Info("Execution system error, returning partial counts",
-			"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 		return counts, firstErr
 	}
 
@@ -342,10 +348,17 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 	logger.V(logging.INFO).Info("Execution completed",
 		"total", counts.Total, "completed", counts.Completed, "failed", counts.Failed)
 
-	// Cancel may have arrived after all requests were dispatched and completed normally
-	// (i.e. context cancellation never interrupted dispatch). Honour the cancellation.
-	if params.cancelRequested.Load() {
-		return counts, ErrCancelled
+	// A terminal signal may have arrived after all requests completed normally.
+	// SLO expiry and user cancel affect the job's terminal status even when all
+	// requests finished — e.g. "completed but past SLO" vs "completed".
+	// SIGTERM is NOT checked here: all output is already flushed to disk and counts
+	// are final, so the caller should proceed to finalizeJob (which uses a detached
+	// context) rather than re-enqueueing a fully-complete job.
+	switch {
+	case errors.Is(sloCtx.Err(), context.DeadlineExceeded):
+		return counts, errExpired
+	case userCancelCtx.Err() != nil:
+		return counts, errCancelled
 	}
 
 	return counts, nil
@@ -360,34 +373,33 @@ func (p *Processor) executeJob(ctx, sloCtx, abortCtx context.Context, params *jo
 //
 // Error strategy in this function: when a goroutine encounters a fatal error, modelErr is captured
 // via errOnce but the context is NOT cancelled within this function. Context cancellation is
-// propagated at the executeJob level (execCancel), which stops dispatch across all models.
+// propagated at the executeJob level (requestAbortFn), which stops dispatch across all models.
 // Already-dispatched goroutines may finish with errors or cancellation rather than successful
-// completion, depending on when execCancel fires.
+// completion, depending on when requestAbortFn fires.
 func (p *Processor) processModel(
-	ctx context.Context,
+	requestAbortCtx context.Context,
+	mainCtx context.Context,
 	sloCtx context.Context,
+	userCancelCtx context.Context,
 	inputFile *os.File,
 	plansDir, safeModelID, modelID string,
 	writers *outputWriters,
-	cancelRequested *atomic.Bool,
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 ) error {
-	logger := logr.FromContextOrDiscard(ctx).WithValues("model", modelID)
-	ctx = logr.NewContext(ctx, logger)
+	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
+	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
 	planPath := filepath.Join(plansDir, safeModelID+".plan")
 	entries, err := readPlanEntries(planPath)
 	if err != nil {
-		return fmt.Errorf("failed to read plan for model %s: %w", modelID, err)
+		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
 	}
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
-	modelSem, err := semaphore.New(p.cfg.PerModelMaxConcurrency, p.guardCallback)
-	if err != nil {
-		return fmt.Errorf("failed to create model semaphore: %w", err)
-	}
+	// PerModelMaxConcurrency > 0 is enforced by config validation; this cannot fail.
+	modelSem, _ := semaphore.New(p.cfg.PerModelMaxConcurrency, p.guardCallback)
 
 	var (
 		wg              sync.WaitGroup
@@ -398,18 +410,20 @@ func (p *Processor) processModel(
 
 dispatch:
 	for i, entry := range entries {
-		if err := checkAbortCondition(ctx); err != nil {
-			errOnce.Do(func() { modelErr = err })
+		if requestAbortCtx.Err() != nil {
+			// Context cancelled (SLO expiry, SIGTERM, or user cancel via requestAbortFn).
+			// Do not set modelErr here; the drain switch determines the correct sentinel
+			// by inspecting sloCtx, userCancelCtx, and requestAbortCtx independently.
 			break
 		}
 
 		// Acquire semaphores in order: local (per-model) before global (shared).
 		// This order prevents starving other models — blocking on global only wastes a local slot.
-		if err := modelSem.Acquire(ctx); err != nil {
+		if err := modelSem.Acquire(requestAbortCtx); err != nil {
 			break dispatch
 		}
 
-		if err := p.globalSem.Acquire(ctx); err != nil {
+		if err := p.globalSem.Acquire(requestAbortCtx); err != nil {
 			modelSem.Release()
 			break dispatch
 		}
@@ -421,46 +435,49 @@ dispatch:
 			defer modelSem.Release()
 			defer p.globalSem.Release()
 
-			result, execErr := p.executeOneRequest(ctx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
+			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
 			if execErr != nil {
+				// Fatal read failure: the input file is unreadable at this offset
+				// (e.g. disk corruption). We do not know the CustomID, so we cannot
+				// write a batch_failed entry to the error file. This means
+				// completed + failed < total for this job, but the job status is
+				// set to failed, which already signals that output files are incomplete.
 				logger.Error(execErr, "Fatal error executing request", "offset", entry.Offset)
 				errOnce.Do(func() { modelErr = execErr })
 				return
 			}
 
-			// If cancel was requested while this request was in-flight,
+			// If user-initiated cancel arrived while this request was in-flight,
 			// overwrite the result as batch_cancelled and write to the error file
 			// so that output lines + error lines == total requests.
-			// Note: abortCtx is already cancelled at this point, so the HTTP
-			// request was aborted and this goroutine returns almost immediately.
-			if cancelRequested.Load() {
+			// SLO expiry does not overwrite in-flight results — only user cancel does.
+			if sloCtx.Err() == nil && userCancelCtx.Err() != nil {
 				result.Response = nil
 				result.Error = &outputError{
 					Code:    batch_types.ErrCodeBatchCancelled,
 					Message: "This request was cancelled while in progress.",
 				}
-				progress.record(ctx, false)
+				progress.record(requestAbortCtx, false)
 
 				lineBytes, marshalErr := json.Marshal(result)
 				if marshalErr != nil {
-					logger.Error(marshalErr, "Failed to marshal cancelled output line", "offset", entry.Offset)
-					errOnce.Do(func() { modelErr = fmt.Errorf("failed to marshal cancelled line: %w", marshalErr) })
+					errOnce.Do(func() {
+						modelErr = fmt.Errorf("marshal cancelled output line at offset %d: %w", entry.Offset, marshalErr)
+					})
 					return
 				}
 				lineBytes = append(lineBytes, '\n')
 				if writeErr := writers.write(lineBytes, true); writeErr != nil {
-					logger.Error(writeErr, "Failed to write cancelled line", "offset", entry.Offset)
-					errOnce.Do(func() { modelErr = fmt.Errorf("failed to write cancelled line: %w", writeErr) })
+					errOnce.Do(func() { modelErr = fmt.Errorf("write cancelled output line at offset %d: %w", entry.Offset, writeErr) })
 				}
 				return
 			}
 
-			progress.record(ctx, result.isSuccess())
+			progress.record(requestAbortCtx, result.isSuccess())
 
 			lineBytes, marshalErr := json.Marshal(result)
 			if marshalErr != nil {
-				logger.Error(marshalErr, "Failed to marshal output line", "offset", entry.Offset)
-				errOnce.Do(func() { modelErr = fmt.Errorf("failed to marshal output line: %w", marshalErr) })
+				errOnce.Do(func() { modelErr = fmt.Errorf("marshal output line at offset %d: %w", entry.Offset, marshalErr) })
 				return
 			}
 			lineBytes = append(lineBytes, '\n')
@@ -474,57 +491,72 @@ dispatch:
 				if isError {
 					kind = "error"
 				}
-				logger.Error(writeErr, "Failed to write line", "kind", kind, "offset", entry.Offset)
-				errOnce.Do(func() { modelErr = fmt.Errorf("failed to write %s line: %w", kind, writeErr) })
+				errOnce.Do(func() { modelErr = fmt.Errorf("write %s line at offset %d: %w", kind, entry.Offset, writeErr) })
 			}
 		}(entry)
 	}
 
 	wg.Wait()
 
-	// Drain undispatched entries to the error file based on the termination reason.
-	// Priority: SLO expiry > user cancel > system error.
-	// Use sloCtx.Err() rather than ctx.Err(): ctx (execCtx) may report Canceled if execCancel()
-	// was called by another goroutine before the sloCtx deadline propagated.
-	// (Same rationale as the sloCtx check in executeJob.)
+	// Drain undispatched entries to the error file based on the termination reason, and return the
+	// appropriate sentinel so executeJob can route without re-examining context state.
+	// Priority: SLO expiry > user cancel > system error > pod shutdown.
+	// Use sloCtx.Err() rather than requestAbortCtx.Err(): requestAbortCtx may report Canceled if
+	// requestAbortFn() was called by another goroutine before the sloCtx deadline propagated.
+	undispatched := entries[dispatchedCount:]
+	var returnErr error
 	switch {
-	case sloCtx.Err() == context.DeadlineExceeded && !cancelRequested.Load():
+	case errors.Is(sloCtx.Err(), context.DeadlineExceeded):
 		// SLO deadline fired during dispatch — record remaining requests as expired.
-		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchExpired,
 				"This request could not be executed before the completion window expired.")
 		}
+		returnErr = errExpired
 
-	case cancelRequested.Load():
+	case userCancelCtx.Err() != nil:
 		// User-initiated cancel — record remaining requests as cancelled.
-		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Cancelled: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchCancelled,
 				"This request was not executed because the batch was cancelled.")
 		}
+		returnErr = errCancelled
 
 	case modelErr != nil:
 		// System error in a model goroutine — record remaining requests as failed.
-		undispatched := entries[dispatchedCount:]
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Fatal error: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(ctx, inputFile, undispatched, writers, progress,
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+				batch_types.ErrCodeBatchFailed,
+				"This request was not executed because the batch encountered a system error.")
+		}
+		returnErr = modelErr
+
+	default:
+		if mainCtx.Err() != nil && len(undispatched) > 0 {
+			// Pod shutdown (SIGTERM): main processor context is cancelled.
+			// Do not drain here — startup recovery or the re-enqueued worker
+			// will process these entries from scratch.
+			returnErr = errShutdown
+		} else if requestAbortCtx.Err() != nil && len(undispatched) > 0 {
+			// Sibling model abort: requestAbortCtx was cancelled by another
+			// model's error (requestAbortFn), but this is not SLO/cancel/SIGTERM.
+			// Drain undispatched entries as batch_failed so that
+			// completed + failed == total holds for the job.
+			logger.V(logging.INFO).Info("Sibling abort: draining undispatched entries", "count", len(undispatched))
+			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
 				batch_types.ErrCodeBatchFailed,
 				"This request was not executed because the batch encountered a system error.")
 		}
 	}
 
-	if modelErr == nil && ctx.Err() != nil {
-		modelErr = ctx.Err()
-	}
-
-	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", modelErr != nil)
-	return modelErr
+	siblingAbort := returnErr == nil && requestAbortCtx.Err() != nil
+	logger.V(logging.INFO).Info("Finished processing model", "numEntries", len(entries), "hasError", returnErr != nil, "siblingAbort", siblingAbort)
+	return returnErr
 }
 
 // drainUnprocessedRequests records undispatched requests in the error file when a job terminates
@@ -644,7 +676,7 @@ func (p *Processor) executeOneRequest(
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
 	if _, err := inputFile.ReadAt(buf, entry.Offset); err != nil {
-		return nil, fmt.Errorf("failed to read plan entry input at offset %d: %w", entry.Offset, err)
+		return nil, fmt.Errorf("%w at offset %d: %w", errRequestInputRead, entry.Offset, err)
 	}
 
 	// trim the newline character from the request line
