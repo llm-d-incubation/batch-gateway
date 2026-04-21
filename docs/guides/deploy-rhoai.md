@@ -2,7 +2,7 @@
 
 This guide demonstrates how to deploy batch-gateway on OpenShift with RHOAI (Red Hat OpenShift AI), using Red Hat Connectivity Link (Kuadrant) for authentication, authorization, and rate limiting.
 
-## 1. Architecture
+## 1. Architecture Overview
 
 ### 1.1 Namespace Layout
 
@@ -37,58 +37,15 @@ This guide demonstrates how to deploy batch-gateway on OpenShift with RHOAI (Red
 
 ### 1.3 Authentication
 
-Both the LLM route and the batch route use **kubernetesTokenReview** for authentication. Clients must provide a valid Kubernetes token via the `Authorization: Bearer <token>` header. The token must include the audience `https://kubernetes.default.svc`.
+Both the LLM route and the batch route use **kubernetesTokenReview** for authentication. Clients provide a valid Kubernetes token via the `Authorization: Bearer <token>` header. The token must include the audience `https://kubernetes.default.svc`. Tokens are typically created from a ServiceAccount using `oc create token`.
 
-```bash
-# Create a token for a ServiceAccount
-oc create token <sa-name> -n <namespace> --audience=https://kubernetes.default.svc --duration=10m
-```
-
-HTTPRoute authentication behavior:
 - **LLM route**: Requires a valid Kubernetes token — unauthenticated requests are rejected with **401**
 - **Batch route**: Requires a valid Kubernetes token — unauthenticated requests are rejected with **401**
 
 ### 1.4 Authorization Model
 
-Users need RBAC `get` permission on the specific `LLMInferenceService` resource to access the model. To grant access, create a Role and RoleBinding:
+Model access is controlled through Kubernetes RBAC. Users need `get` permission on the specific `LLMInferenceService` resource to access a model. This is granted by creating a Role and RoleBinding in the model's namespace (see [Enabling authentication and authorization for LLM inference service](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploying_models/deploying_models#enabling-authentication-and-authorization-for-llm-inference-service_rhoai-user) for details).
 
-```bash
-oc apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: llm-reader
-  namespace: <llm-namespace>
-rules:
-- apiGroups: ["serving.kserve.io"]
-  resources: ["llminferenceservices"]
-  resourceNames: ["<isvc-name>"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: llm-reader-binding
-  namespace: <llm-namespace>
-subjects:
-- kind: ServiceAccount
-  name: <sa-name>
-  namespace: <llm-namespace>
-roleRef:
-  kind: Role
-  name: llm-reader
-  apiGroup: rbac.authorization.k8s.io
-EOF
-```
-
-Verify that the user has access:
-
-```bash
-oc auth can-i get llminferenceservices/<isvc-name> -n <llm-namespace> --as=system:serviceaccount:<namespace>:<sa-name>
-# Expected output: yes
-```
-
-HTTPRoute authorization behavior:
 - **LLM route**: SubjectAccessReview checks if user can `get llminferenceservices/<name>` — unauthorized requests are rejected with **403**
 - **Batch route**: No authorization check — authorization is enforced by the LLM route when the processor forwards inference requests with the user's original token
 
@@ -594,6 +551,8 @@ facebook-opt-125m-kserve-route               13m
 </details>
 
 ### 3.7 Configure TokenRateLimitPolicy for LLMInferenceService
+
+Configure per-user token rate limiting for inference requests. See [Red Hat Connectivity Link docs](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.3) for details. The following is an example configuration.
 
 > **Note**: The TokenRateLimitPolicy targets the Gateway (not HTTPRoute) because LLMInferenceService dynamically generates the inference HTTPRoute name.
 
