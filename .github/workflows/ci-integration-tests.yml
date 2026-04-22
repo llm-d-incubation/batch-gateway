@@ -19,9 +19,13 @@ permissions:
 
 jobs:
   integration-tests:
-    name: Integration Tests (Kind)
+    name: Integration Tests (${{ matrix.file_client_type }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        file_client_type: [s3, fs]
     steps:
       - uses: actions/checkout@v6
 
@@ -37,6 +41,8 @@ jobs:
 
       - name: Deploy dev environment
         run: make dev-deploy
+        env:
+          FILE_CLIENT_TYPE: ${{ matrix.file_client_type }}
 
       - name: Run integration tests
         run: make test-e2e
