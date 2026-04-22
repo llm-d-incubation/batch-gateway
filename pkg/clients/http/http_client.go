@@ -334,7 +334,7 @@ func computeBackoff(attempt int, base, max time.Duration) time.Duration {
 
 // parseRetryAfter parses a Retry-After header value, which can be either
 // a number of seconds (e.g. "120") or an HTTP-date (e.g. "Thu, 01 Dec 1994 16:00:00 GMT").
-// Returns the parsed duration and true if successful, or (0, false) if unparseable.
+// Returns the parsed duration and true if successful, or (0, false) if unparsable.
 // A value of 0 seconds is valid and means "retry as soon as possible" (subject to
 // resty's InitialBackoff floor).
 func parseRetryAfter(value string) (time.Duration, bool) {
