@@ -37,11 +37,10 @@ func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		logr.FromContextOrDiscard(ctx).Error(err, "DBStore[Batch]: item validation failed")
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeBatch, "DBStore[Batch]", nil)
+		itemTypeBatch, nil)
 }
 
 func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) (err error) {
@@ -50,16 +49,15 @@ func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) 
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		logr.FromContextOrDiscard(ctx).Error(err, "DBStore[File]: item validation failed")
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeFile, "DBStore[File]", []any{item.Purpose})
+		itemTypeFile, []any{item.Purpose})
 }
 
 func (c *DSClientRedis) dbStore(ctx context.Context,
 	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
-	itemType, logPref string, extraFields []any) (err error) {
+	itemType string, extraFields []any) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -68,7 +66,6 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 
 	ptags, err := packTags(indexes.Tags)
 	if err != nil {
-		logger.Error(err, logPref+": tags packing failed")
 		return err
 	}
 	args := []any{itemType, versionV1, indexes.ID, indexes.TenantID,
@@ -82,16 +79,14 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 	res, err := redisScriptStore.Run(cctx, c.redisClient,
 		[]string{getKeyForStore(indexes.ID, itemType)}, args...).Text()
 	if err != nil {
-		logger.Error(err, logPref+": script failed")
 		return err
 	}
 	if len(res) > 0 {
 		err = fmt.Errorf("%s", res)
-		logger.Error(err, logPref+": script failed")
 		return
 	}
 
-	logger.Info(logPref + ": succeeded")
+	logger.Info("DBStore: succeeded")
 	return nil
 }
 
@@ -121,7 +116,6 @@ func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		logr.FromContextOrDiscard(ctx).Error(err, "DBUpdate[Batch]: item validation failed")
 		return
 	}
 	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeBatch, "DBUpdate[Batch]")
@@ -133,7 +127,6 @@ func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem)
 		ctx = context.Background()
 	}
 	if err = item.Validate(); err != nil {
-		logr.FromContextOrDiscard(ctx).Error(err, "DBUpdate[File]: item validation failed")
 		return
 	}
 	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeFile, "DBUpdate[File]")
@@ -150,7 +143,6 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 
 	fields, updatedStatus, updatedTags, err := getUpdateFields(contents.Status, indexes.Tags)
 	if err != nil {
-		logger.Error(err, logPref+": getUpdateFields failed")
 		return err
 	}
 	if len(fields) == 0 {
@@ -162,7 +154,6 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 	defer ccancel()
 	err = c.redisClient.HSet(cctx, getKeyForStore(indexes.ID, itemType), fields...).Err()
 	if err != nil {
-		logger.Error(err, logPref+": HSet failed")
 		return
 	}
 
@@ -201,13 +192,11 @@ func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, lo
 		return nil
 	})
 	if err != nil {
-		logger.Error(err, logPref+": Pipelined failed")
 		return
 	}
 	for _, cmd := range cmds {
 		if cmd.Err() != nil && cmd.Err() != goredis.Nil {
 			err = cmd.Err()
-			logger.Error(err, logPref+": Command inside pipeline failed")
 			break
 		}
 	}
@@ -230,7 +219,6 @@ func (c *DSClientRedis) dbGet(
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := logr.FromContextOrDiscard(ctx)
 	includeSpec := strconv.FormatBool(includeStatic)
 
 	if len(IDs) > 0 {
@@ -244,7 +232,6 @@ func (c *DSClientRedis) dbGet(
 		res, err = redisScriptGetByIDs.Run(cctx, c.redisClient,
 			keys, tenantID, includeSpec).Slice()
 		if err != nil {
-			logger.Error(err, logPref+": script failed")
 			return
 		}
 
@@ -253,7 +240,6 @@ func (c *DSClientRedis) dbGet(
 		cond, found := db_api.LogicalCondNames[tagsLogicalCond]
 		if !found {
 			err = fmt.Errorf("invalid logical condition value: %d", tagsLogicalCond)
-			logger.Error(err, logPref+":")
 			return
 		}
 		ctags := convertTags(tagSelectors)
@@ -262,7 +248,6 @@ func (c *DSClientRedis) dbGet(
 		res, err = redisScriptGetByTags.Run(cctx, c.redisClient,
 			ctags, cond, getKeyPatternForStore(itemType), start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
-			logger.Error(err, logPref+": script failed")
 			return
 		}
 
@@ -275,7 +260,6 @@ func (c *DSClientRedis) dbGet(
 			[]string{}, curTimestamp, getKeyPatternForStore(itemType),
 			start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
-			logger.Error(err, logPref+": script failed")
 			return
 		}
 
@@ -287,7 +271,6 @@ func (c *DSClientRedis) dbGet(
 			[]string{}, purpose, getKeyPatternForStore(itemType),
 			start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
-			logger.Error(err, logPref+": script failed")
 			return
 		}
 
@@ -299,7 +282,6 @@ func (c *DSClientRedis) dbGet(
 			[]string{}, tenantID, getKeyPatternForStore(itemType),
 			start, limit, includeSpec).Slice()
 		if err != nil {
-			logger.Error(err, logPref+": script failed")
 			return
 		}
 
@@ -331,7 +313,6 @@ func (c *BatchDBClientRedis) DBGet(
 	if res != nil {
 		cursor, expectMore, items, err = processGetScriptResultBatch(res)
 		if err != nil {
-			logger.Error(err, "DBGet[Batch]: processGetScriptResultBatch failed")
 			return
 		}
 	}
@@ -363,7 +344,6 @@ func (c *FileDBClientRedis) DBGet(
 	if res != nil {
 		cursor, expectMore, items, err = processGetScriptResultFile(res)
 		if err != nil {
-			logger.Error(err, "DBGet[File]: processGetScriptResultFile failed")
 			return
 		}
 	}
@@ -390,8 +370,12 @@ func processGetScriptResultBatch(res []any) (
 		return
 	}
 	items = make([]*db_api.BatchItem, 0, len(resItems))
-	for _, resItem := range resItems {
-		item, err := batchItemFromHget(resItem.([]any))
+	for i, resItem := range resItems {
+		fields, ok := resItem.([]any)
+		if !ok {
+			return 0, false, nil, fmt.Errorf("unexpected item type at index %d: %T", i, resItem)
+		}
+		item, err := batchItemFromHget(fields)
 		if err != nil {
 			return 0, false, nil, err
 		}
@@ -423,8 +407,12 @@ func processGetScriptResultFile(res []any) (
 		return
 	}
 	items = make([]*db_api.FileItem, 0, len(resItems))
-	for _, resItem := range resItems {
-		item, err := fileItemFromHget(resItem.([]any))
+	for i, resItem := range resItems {
+		fields, ok := resItem.([]any)
+		if !ok {
+			return 0, false, nil, fmt.Errorf("unexpected item type at index %d: %T", i, resItem)
+		}
+		item, err := fileItemFromHget(fields)
 		if err != nil {
 			return 0, false, nil, err
 		}

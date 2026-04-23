@@ -111,7 +111,11 @@ func NewHTTPClient(config Config, logger logr.Logger) (*HTTPClient, error) {
 
 	// Configure transport - start with Go's secure defaults (http.DefaultTransport)
 	// This gives us: TLS 1.2+, system root CAs, certificate verification, proper timeouts
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("unexpected default transport type: %T", http.DefaultTransport)
+	}
+	transport := defaultTransport.Clone()
 
 	// Override only the settings we need to customize for batch processing
 	transport.MaxIdleConns = config.MaxIdleConns

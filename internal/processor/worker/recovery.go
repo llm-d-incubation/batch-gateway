@@ -122,7 +122,6 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 	// next container restart retries. If the pod is evicted (emptyDir destroyed), this job
 	// becomes an orphan that only an external entity can detect.
 	if err != nil {
-		logger.Error(err, "Startup recovery: DB lookup failed, skipping (will retry on next restart)")
 		metrics.RecordStartupRecovery(string(recoveryUnknownStatus), recoveryActionError)
 		return err
 	}
