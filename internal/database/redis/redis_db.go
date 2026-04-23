@@ -40,7 +40,7 @@ func (c *BatchDBClientRedis) DBStore(ctx context.Context, item *db_api.BatchItem
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeBatch, "DBStore[Batch]", nil)
+		itemTypeBatch, nil)
 }
 
 func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) (err error) {
@@ -52,12 +52,12 @@ func (c *FileDBClientRedis) DBStore(ctx context.Context, item *db_api.FileItem) 
 		return
 	}
 	return c.dbStore(ctx, &item.BaseIndexes, &item.BaseContents,
-		itemTypeFile, "DBStore[File]", []any{item.Purpose})
+		itemTypeFile, []any{item.Purpose})
 }
 
 func (c *DSClientRedis) dbStore(ctx context.Context,
 	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
-	itemType, logPref string, extraFields []any) (err error) {
+	itemType string, extraFields []any) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -86,7 +86,7 @@ func (c *DSClientRedis) dbStore(ctx context.Context,
 		return
 	}
 
-	logger.Info(logPref + ": succeeded")
+	logger.Info("DBStore: succeeded")
 	return nil
 }
 
