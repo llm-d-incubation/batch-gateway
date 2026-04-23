@@ -36,6 +36,11 @@ var (
 	testNamespace         = getEnvOrDefault("TEST_NAMESPACE", "default")
 	testHelmRelease       = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 	testPostgresqlRelease = getEnvOrDefault("TEST_POSTGRESQL_RELEASE", "postgresql")
+	testRedisRelease      = getEnvOrDefault("TEST_REDIS_RELEASE", "redis")
+
+	// testDBClientType is detected from the Helm release at startup;
+	// see detectDBClientType in TestE2E.
+	testDBClientType string
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
@@ -85,6 +90,9 @@ func TestE2E(t *testing.T) {
 	} else {
 		testKubectlAvailable = true
 	}
+
+	testDBClientType = detectDBClientType(t)
+	t.Logf("DB client type: %s", testDBClientType)
 
 	waitForReady(t, testApiserverObsURL, 30*time.Second)
 

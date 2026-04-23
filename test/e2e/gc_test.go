@@ -32,9 +32,19 @@ func testGarbageCollection(t *testing.T) {
 	t.Run("CollectsExpiredBatch", doTestGCCollectsExpiredBatch)
 }
 
-// expireInDB uses kubectl exec to run a SQL UPDATE against the PostgreSQL pod,
-// setting the expiry of the given item to 1 (epoch second 1 = long past).
+// expireInDB sets the expiry of the given item to 1 (epoch second 1 = long past).
+// It dispatches to PostgreSQL or Redis depending on the configured DB client type.
 func expireInDB(t *testing.T, table, id string) {
+	t.Helper()
+
+	if testDBClientType == "redis" {
+		expireInRedis(t, table, id)
+	} else {
+		expireInPostgresql(t, table, id)
+	}
+}
+
+func expireInPostgresql(t *testing.T, table, id string) {
 	t.Helper()
 
 	sql := fmt.Sprintf("UPDATE %s SET expiry = 1 WHERE id = '%s'", table, id)
@@ -47,7 +57,26 @@ func expireInDB(t *testing.T, table, id string) {
 	if err != nil {
 		t.Fatalf("kubectl exec psql failed: %v\n%s", err, out)
 	}
-	t.Logf("expired %s/%s in DB: %s", table, id, strings.TrimSpace(string(out)))
+	t.Logf("expired %s/%s in PostgreSQL: %s", table, id, strings.TrimSpace(string(out)))
+}
+
+func expireInRedis(t *testing.T, table, id string) {
+	t.Helper()
+
+	// Redis key format: llmd_batch:store:<type>:<id>
+	// table is "batch_items" or "file_items"; map to the Redis type prefix.
+	itemType := strings.TrimSuffix(table, "_items")
+	key := fmt.Sprintf("llmd_batch:store:%s:%s", itemType, id)
+	cmd := fmt.Sprintf("redis-cli HSET %s expiry 1", key)
+	out, err := exec.Command("kubectl", "exec",
+		fmt.Sprintf("%s-master-0", testRedisRelease),
+		"-n", testNamespace,
+		"--", "bash", "-c", cmd,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl exec redis-cli failed: %v\n%s", err, out)
+	}
+	t.Logf("expired %s/%s in Redis: %s", table, id, strings.TrimSpace(string(out)))
 }
 
 // doTestGCCollectsExpiredFile creates a file, force-expires it in the DB,
