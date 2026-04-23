@@ -56,23 +56,4 @@ repeat
 	end
 until scan_cursor == "0"
 
--- Sort by key for stable ordering.
-table.sort(matched, function(a, b) return a[1] < b[1] end)
-
--- Slice [start+1, start+limit].
-local sliced = {}
-for i = start + 1, math.min(start + limit, #matched) do
-	local contents = matched[i][2]
-	if shouldFilterSpec then
-		contents = remove_spec_field(contents)
-	end
-	table.insert(sliced, contents)
-end
-
--- Return next cursor (0 = no more items).
-local next_cursor = 0
-if (start + #sliced) < #matched then
-	next_cursor = start + #sliced
-end
-
-return {next_cursor, sliced}
+return paginate_results(matched, start, limit, shouldFilterSpec)

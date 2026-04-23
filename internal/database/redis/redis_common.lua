@@ -38,3 +38,23 @@ local function remove_spec_field(contents)
 	end
 	return filtered
 end
+
+-- Sort matched items by key, slice the requested page, optionally filter spec,
+-- and return {next_cursor, sliced}. next_cursor is 0 when there are no more items.
+-- matched is a list of {key, contents} pairs.
+local function paginate_results(matched, start, limit, shouldFilterSpec)
+	table.sort(matched, function(a, b) return a[1] < b[1] end)
+	local sliced = {}
+	for i = start + 1, math.min(start + limit, #matched) do
+		local contents = matched[i][2]
+		if shouldFilterSpec then
+			contents = remove_spec_field(contents)
+		end
+		table.insert(sliced, contents)
+	end
+	local next_cursor = start + #sliced
+	if next_cursor >= #matched then
+		next_cursor = 0
+	end
+	return {next_cursor, sliced}
+end
