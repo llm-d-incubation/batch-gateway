@@ -2079,6 +2079,94 @@ func TestRedisDSClient(t *testing.T) {
 		_, _ = batchClient.DBDelete(context.Background(), allIDs)
 	})
 
+	t.Run("Expiry query excludes zero-expiry items", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		tenant := "ZeroExpiryTenant"
+
+		// Store items with expiry=0 (no expiry, like batch jobs).
+		var zeroExpiryIDs []string
+		for i := 0; i < 5; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: tenant,
+					Expiry:   0,
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			zeroExpiryIDs = append(zeroExpiryIDs, id)
+		}
+
+		// Store items with a past expiry (truly expired).
+		var expiredIDs []string
+		for i := 0; i < 3; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: tenant,
+					Expiry:   time.Now().Add(time.Second).Unix(),
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("expired-status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			expiredIDs = append(expiredIDs, id)
+		}
+		time.Sleep(3 * time.Second)
+
+		// Query for expired items — should only return the 3 truly expired items,
+		// not the 5 zero-expiry items.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					Expired:  true,
+					TenantID: tenant,
+				},
+			}, true, 0, 100)
+		if err != nil {
+			t.Fatalf("Failed to get items: %v", err)
+		}
+		if len(resItems) != 3 {
+			t.Fatalf("Expected 3 expired items, got %d", len(resItems))
+		}
+
+		// Verify returned items are only the truly expired ones.
+		returnedIDs := make(map[string]bool)
+		for _, item := range resItems {
+			returnedIDs[item.ID] = true
+		}
+		for _, id := range expiredIDs {
+			if !returnedIDs[id] {
+				t.Fatalf("Expected expired item %s to be returned", id)
+			}
+		}
+		for _, id := range zeroExpiryIDs {
+			if returnedIDs[id] {
+				t.Fatalf("Zero-expiry item %s should NOT be returned by expiry query", id)
+			}
+		}
+
+		_, _ = batchClient.DBDelete(context.Background(), zeroExpiryIDs)
+		_, _ = batchClient.DBDelete(context.Background(), expiredIDs)
+	})
+
 	t.Run("Get by IDs with tenant filter", func(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)

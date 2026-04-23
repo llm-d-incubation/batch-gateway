@@ -41,7 +41,7 @@ repeat
 		local contents = redis.call('HGETALL', key)
 		local hash = contents_to_hash(contents)
 		local expVal = tonumber(hash["expiry"])
-		if expVal and (expVal <= expTime) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
+		if expVal and expVal > 0 and (expVal <= expTime) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
 			table.insert(matched, {key, contents})
 		end
 	end
