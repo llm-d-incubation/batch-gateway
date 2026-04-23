@@ -17,8 +17,8 @@
 -- Parse inputs.
 local tenantID = ARGV[1]
 local pattern = ARGV[2]
-local cursor = ARGV[3]
-local count = ARGV[4]
+local start = tonumber(ARGV[3])
+local limit = tonumber(ARGV[4])
 local includeSpec = ARGV[5]
 
 -- Check inputs.
@@ -30,25 +30,38 @@ end
 -- Pre-compute boolean to avoid string comparison in loop.
 local shouldFilterSpec = (includeSpec == "false")
 
--- Get the keys for the current iteration.
-local scan_out = redis.call('SCAN', cursor, 'TYPE', 'hash', 'MATCH', pattern, 'COUNT', count)
-
--- Iterate over the keys.
-for _, key in ipairs(scan_out[2]) do
-	-- Get the key's contents.
-	local contents = redis.call('HGETALL', key)
-	-- Create a map of the contents.
-	local hash = contents_to_hash(contents)
-	-- Check inclusion condition.
-	if tenantID == hash["tenantID"] then
-		-- Remove spec field if needed.
-		if shouldFilterSpec then
-			contents = remove_spec_field(contents)
+-- Full scan: collect all matching items.
+local scan_cursor = "0"
+local matched = {}
+repeat
+	local scan_out = redis.call('SCAN', scan_cursor, 'TYPE', 'hash', 'MATCH', pattern, 'COUNT', 100)
+	scan_cursor = scan_out[1]
+	for _, key in ipairs(scan_out[2]) do
+		local contents = redis.call('HGETALL', key)
+		local hash = contents_to_hash(contents)
+		if tenantID == hash["tenantID"] then
+			table.insert(matched, {key, contents})
 		end
-		-- Add the item to the result.
-		table.insert(result, contents)
 	end
+until scan_cursor == "0"
+
+-- Sort by key for stable ordering.
+table.sort(matched, function(a, b) return a[1] < b[1] end)
+
+-- Slice [start+1, start+limit].
+local sliced = {}
+for i = start + 1, math.min(start + limit, #matched) do
+	local contents = matched[i][2]
+	if shouldFilterSpec then
+		contents = remove_spec_field(contents)
+	end
+	table.insert(sliced, contents)
 end
 
--- Return the result.
-return {tonumber(scan_out[1]), result}
+-- Return next cursor (0 = no more items).
+local next_cursor = 0
+if (start + #sliced) < #matched then
+	next_cursor = start + #sliced
+end
+
+return {next_cursor, sliced}
