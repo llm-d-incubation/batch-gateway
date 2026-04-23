@@ -49,13 +49,12 @@ func (p *Poller) validate() error {
 }
 
 func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
-	logger := logr.FromContextOrDiscard(ctx)
-
 	tasks, err := p.pq.PQDequeue(ctx, 0, 1) // get only one job without blocking the queue
 	if err != nil {
-		logger.Error(err, "Failed to dequeue a batch job")
 		return nil, err
 	}
+
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// there's no backlog
 	if len(tasks) == 0 {
@@ -68,32 +67,23 @@ func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 }
 
 func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) error {
-	logger := logr.FromContextOrDiscard(ctx)
 	if task == nil {
-		err := fmt.Errorf("cannot enqueue nil batch job task")
-		logger.Error(err, "CRITICAL: Failed to enqueue a job")
-		return err
+		return fmt.Errorf("cannot enqueue nil batch job task")
 	}
-	err := p.pq.PQEnqueue(ctx, task)
-	if err != nil {
-		logger.Error(err, "CRITICAL: Failed to enqueue a job")
-		return err
-	}
-	return nil
+	return p.pq.PQEnqueue(ctx, task)
 }
 
 func (p *Poller) fetchJobItemByID(ctx context.Context, jobID string) (*db.BatchItem, error) {
-	logger := logr.FromContextOrDiscard(ctx)
-
 	jobs, _, _, err := p.db.DBGet(ctx,
 		&db.BatchQuery{
 			BaseQuery: db.BaseQuery{IDs: []string{jobID}},
 		},
 		true, 0, 1)
 	if err != nil {
-		logger.Error(err, "Failed to fetch job item from DB")
 		return nil, err
 	}
+
+	logger := logr.FromContextOrDiscard(ctx)
 
 	// (nil, nil) signals "not found" — caller decides how to handle.
 	if len(jobs) == 0 {

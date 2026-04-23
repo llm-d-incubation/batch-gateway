@@ -50,7 +50,7 @@ func GetTlsConfig(loadType LoadType, insecure bool, certFile string, keyFile str
 	if certFile != "" {
 		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			return nil, fmt.Errorf("GetTlsConfig: LoadX509KeyPair failed: %v", err) // pragma: allowlist secret
+			return nil, fmt.Errorf("GetTlsConfig: LoadX509KeyPair failed: %w", err) // pragma: allowlist secret
 		}
 		tlsConf.Certificates = []tls.Certificate{certificate}
 	}
@@ -60,7 +60,7 @@ func GetTlsConfig(loadType LoadType, insecure bool, certFile string, keyFile str
 	} else if caCertFile != "" {
 		ca, err := os.ReadFile(caCertFile)
 		if err != nil {
-			return nil, fmt.Errorf("GetTlsConfig: Could not read CA certificate file: %v", err) // pragma: allowlist secret
+			return nil, fmt.Errorf("GetTlsConfig: Could not read CA certificate file: %w", err) // pragma: allowlist secret
 		}
 		certPool := x509.NewCertPool()
 		if ok := certPool.AppendCertsFromPEM(ca); !ok {

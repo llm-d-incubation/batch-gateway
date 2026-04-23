@@ -41,11 +41,9 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		err = fmt.Errorf("empty item")
-		logger.Error(err, "PQEnqueue:")
 		return
 	}
 	if err = item.IsValid(); err != nil {
-		logger.Error(err, "PQEnqueue: item is invalid")
 		return
 	}
 	logger = logger.WithValues("ID", item.ID)
@@ -53,7 +51,6 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	data, lerr := json.Marshal(item)
 	if lerr != nil {
 		err = lerr
-		logger.Error(err, "PQEnqueue: Marshal failed")
 		return
 	}
 	zitem := goredis.Z{
@@ -71,16 +68,13 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	})
 	if lerr != nil {
 		err = lerr
-		logger.Error(err, "PQEnqueue:")
 	}
 	if cmdRes == nil {
 		err = fmt.Errorf("redis command result is nil")
-		logger.Error(err, "PQEnqueue:")
 		return
 	}
 	for _, cmd := range cmdRes {
 		if err = cmd.Err(); err != nil {
-			logger.Error(err, "PQEnqueue: redis command failed", "cmd", cmd.Name())
 			return
 		}
 	}
@@ -97,11 +91,9 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		err = fmt.Errorf("empty item")
-		logger.Error(err, "PQDelete:")
 		return
 	}
 	if err = item.IsValid(); err != nil {
-		logger.Error(err, "PQDelete: item is invalid")
 		return
 	}
 	logger = logger.WithValues("ID", item.ID)
@@ -112,7 +104,6 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	res := c.redisClient.ZRemRangeByScore(cctx, priorityQueueKeyName, score, score)
 	if res == nil {
 		err = fmt.Errorf("redis command result is nil")
-		logger.Error(err, "PQDelete:")
 		return
 	}
 	if res.Err() == goredis.Nil {
@@ -120,7 +111,6 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 		return
 	}
 	if err = res.Err(); err != nil {
-		logger.Error(err, "PQDelete: redis ZRemRangeByScore failed")
 		return
 	}
 	nDeleted = int(res.Val())
@@ -177,7 +167,12 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	jobPriorities = make([]*db_api.BatchJobPriority, 0, len(vals))
 	for _, val := range vals {
 		item := &db_api.BatchJobPriority{}
-		err = json.Unmarshal([]byte(val.Member.(string)), item)
+		member, ok := val.Member.(string)
+		if !ok {
+			err = fmt.Errorf("unexpected member type: %T", val.Member)
+			return
+		}
+		err = json.Unmarshal([]byte(member), item)
 		if err != nil {
 			logger.Error(err, "PQDequeue: Unmarshal failed")
 			return

@@ -36,13 +36,11 @@ func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL in
 	logger := logr.FromContextOrDiscard(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
-		logger.Error(err, "StatusSet:")
 		return
 	}
 	logger = logger.WithValues("ID", ID)
 	if len(data) == 0 {
 		err = fmt.Errorf("empty data")
-		logger.Error(err, "StatusSet:")
 		return
 	}
 	if TTL <= 0 {
@@ -54,11 +52,9 @@ func (c *ExchangeDBClientRedis) StatusSet(ctx context.Context, ID string, TTL in
 	res := c.redisClient.Set(cctx, getKeyForStatus(ID), data, time.Duration(TTL)*time.Second)
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
-		logger.Error(err, "StatusSet:")
 		return
 	}
 	if err = res.Err(); err != nil {
-		logger.Error(err, "StatusSet: redis command error")
 		return
 	}
 
@@ -75,7 +71,6 @@ func (c *ExchangeDBClientRedis) StatusGet(ctx context.Context, ID string) (data 
 	logger := logr.FromContextOrDiscard(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
-		logger.Error(err, "StatusGet:")
 		return
 	}
 	logger = logger.WithValues("ID", ID)
@@ -85,14 +80,12 @@ func (c *ExchangeDBClientRedis) StatusGet(ctx context.Context, ID string) (data 
 	res := c.redisClient.Get(cctx, getKeyForStatus(ID))
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
-		logger.Error(err, "StatusGet:")
 		return
 	}
 	if res.Err() == goredis.Nil {
 		logger.Info("StatusGet: no status")
 		return
 	} else if err = res.Err(); err != nil {
-		logger.Error(err, "StatusGet: redis command error")
 		return
 	}
 
@@ -110,7 +103,6 @@ func (c *ExchangeDBClientRedis) StatusDelete(ctx context.Context, ID string) (nD
 	logger := logr.FromContextOrDiscard(ctx)
 	if len(ID) == 0 {
 		err = fmt.Errorf("empty ID")
-		logger.Error(err, "StatusDelete:")
 		return
 	}
 	logger = logger.WithValues("ID", ID)
@@ -120,11 +112,9 @@ func (c *ExchangeDBClientRedis) StatusDelete(ctx context.Context, ID string) (nD
 	res := c.redisClient.Del(cctx, getKeyForStatus(ID))
 	if res == nil {
 		err = fmt.Errorf("nil redis command result")
-		logger.Error(err, "StatusDelete:")
 		return
 	}
 	if err = res.Err(); err != nil {
-		logger.Error(err, "StatusDelete: redis command error")
 		return
 	}
 	nDeleted = int(res.Val())
