@@ -194,7 +194,8 @@ apiserver:
     observabilityShutdownTimeoutSeconds: 60
     batchAPI:
       eventTTLSeconds: 2592000
-      passThroughHeaders: []
+      passThroughHeaders:
+        - Authorization
     fileAPI:
       defaultExpirationSeconds: 7776000
       maxSizeBytes: 209715200
