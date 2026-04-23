@@ -1390,7 +1390,7 @@ func TestRedisDSClient(t *testing.T) {
 		batch := &db_api.BatchItem{
 			BaseIndexes: db_api.BaseIndexes{
 				ID:       batchID,
-				TenantID: "Tnt1",
+				TenantID: "IncludeStaticBatchTnt",
 				Expiry:   time.Now().Add(time.Hour).Unix(),
 				Tags:     map[string]string{tagKey1: tagVal1},
 			},
@@ -1712,7 +1712,7 @@ func TestRedisDSClient(t *testing.T) {
 		batch := &db_api.BatchItem{
 			BaseIndexes: db_api.BaseIndexes{
 				ID:       batchID,
-				TenantID: "Tnt1",
+				TenantID: "EmptyUpdateTnt",
 				Tags:     map[string]string{tagKey1: tagVal1},
 			},
 			BaseContents: db_api.BaseContents{
