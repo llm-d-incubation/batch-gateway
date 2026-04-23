@@ -124,12 +124,10 @@ func (c *ExchangeDBClientRedis) ECProducerSendEvents(ctx context.Context, events
 	logger := logr.FromContextOrDiscard(ctx)
 	if len(events) == 0 {
 		err = fmt.Errorf("empty events")
-		logger.Error(err, "ECProducerSendEvents:")
 		return
 	}
 	for _, event := range events {
 		if err = event.IsValid(); err != nil {
-			logger.Error(err, "ECProducerSendEvents: invalid event")
 			return
 		}
 	}
@@ -148,7 +146,6 @@ func (c *ExchangeDBClientRedis) ECProducerSendEvents(ctx context.Context, events
 		return nil
 	})
 	if err != nil {
-		logger.Error(err, "ECProducerSendEvents: Pipelined failed")
 		return
 	}
 	sentIDs = make([]string, 0, len(resMap))

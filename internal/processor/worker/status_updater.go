@@ -94,11 +94,8 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		return fmt.Errorf("dbJob.Status is empty")
 	}
 
-	logger := logr.FromContextOrDiscard(ctx)
-
 	var original openai.BatchStatusInfo
 	if err := json.Unmarshal(dbJob.Status, &original); err != nil {
-		logger.Error(err, "Failed to unmarshal batch status")
 		return err
 	}
 
@@ -106,7 +103,6 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	// to set additional fields (e.g. file IDs) that aren't part of the standard transition.
 	updated, err := batch_utils.BuildUpdatedStatusInfo(&original, newStatus, counts, slo)
 	if err != nil {
-		logger.Error(err, "Failed to build updated batch status")
 		return err
 	}
 
@@ -116,7 +112,6 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 
 	statusBytes, err := json.Marshal(updated)
 	if err != nil {
-		logger.Error(err, "Failed to marshal updated batch status")
 		return err
 	}
 
@@ -128,9 +123,9 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 			Status: statusBytes,
 		},
 	}); err != nil {
-		logger.Error(err, "Failed to update batch status in DB")
 		return err
 	}
+	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Batch status updated successfully", "newStatus", newStatus)
 	return nil
 }

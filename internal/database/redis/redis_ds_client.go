@@ -172,7 +172,6 @@ func NewDSClientRedis(ctx context.Context, conf *uredis.RedisClientConfig, opTim
 	logger := logr.FromContextOrDiscard(ctx)
 	if conf == nil {
 		err := fmt.Errorf("empty redis config")
-		logger.Error(err, "NewBatchDSClientRedis:")
 		return nil, err
 	}
 	if opTimeout <= 0 {
