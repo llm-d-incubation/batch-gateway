@@ -48,25 +48,17 @@ func detectDBClientType(t *testing.T) string {
 		t.Logf("helm get values failed, defaulting to postgresql: %v", err)
 		return "postgresql"
 	}
-	// Look for "global":{"dbClient":{"type":"..."}} in the JSON output.
-	// Use simple string search to avoid importing encoding/json in this helper.
-	s := string(out)
-	const marker = `"type":"`
-	idx := strings.Index(s, `"dbClient"`)
-	if idx < 0 {
+	var vals struct {
+		Global struct {
+			DBClient struct {
+				Type string `json:"type"`
+			} `json:"dbClient"`
+		} `json:"global"`
+	}
+	if err := json.Unmarshal(out, &vals); err != nil || vals.Global.DBClient.Type == "" {
 		return "postgresql"
 	}
-	sub := s[idx:]
-	idx = strings.Index(sub, marker)
-	if idx < 0 {
-		return "postgresql"
-	}
-	sub = sub[idx+len(marker):]
-	end := strings.Index(sub, `"`)
-	if end < 0 {
-		return "postgresql"
-	}
-	return sub[:end]
+	return vals.Global.DBClient.Type
 }
 
 // ── Client helpers ───────────────────────────────────────────────────────
