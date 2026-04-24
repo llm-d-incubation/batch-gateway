@@ -178,14 +178,15 @@ func TestRedisDSClient(t *testing.T) {
 		wg.Wait()
 		time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry items.
 
-		// Get expired.
+		// Get expired (filter by tenant to avoid interference from parallel tests).
 		expectMore := true
 		nRet, cursor := 0, 0
 		for expectMore {
 			resItems, cur, expectM, err := batchClient.DBGet(context.Background(),
 				&db_api.BatchQuery{
 					BaseQuery: db_api.BaseQuery{
-						Expired: true,
+						Expired:  true,
+						TenantID: "Tnt2",
 					},
 				}, true, cursor, nBatchesRmv*2)
 			if err != nil {
@@ -419,14 +420,15 @@ func TestRedisDSClient(t *testing.T) {
 		wg.Wait()
 		time.Sleep(3 * time.Second) // To pass the expiry time of the short expiry items.
 
-		// Get expired.
+		// Get expired (filter by tenant to avoid interference from parallel tests).
 		expectMore := true
 		nRet, cursor := 0, 0
 		for expectMore {
 			resItems, cur, expectM, err := fileClient.DBGet(context.Background(),
 				&db_api.FileQuery{
 					BaseQuery: db_api.BaseQuery{
-						Expired: true,
+						Expired:  true,
+						TenantID: "Tnt2",
 					},
 				}, true, cursor, nFilesRmv*2)
 			if err != nil {
@@ -1388,7 +1390,7 @@ func TestRedisDSClient(t *testing.T) {
 		batch := &db_api.BatchItem{
 			BaseIndexes: db_api.BaseIndexes{
 				ID:       batchID,
-				TenantID: "Tnt1",
+				TenantID: "IncludeStaticBatchTnt",
 				Expiry:   time.Now().Add(time.Hour).Unix(),
 				Tags:     map[string]string{tagKey1: tagVal1},
 			},
@@ -1710,7 +1712,7 @@ func TestRedisDSClient(t *testing.T) {
 		batch := &db_api.BatchItem{
 			BaseIndexes: db_api.BaseIndexes{
 				ID:       batchID,
-				TenantID: "Tnt1",
+				TenantID: "EmptyUpdateTnt",
 				Tags:     map[string]string{tagKey1: tagVal1},
 			},
 			BaseContents: db_api.BaseContents{
@@ -1757,6 +1759,412 @@ func TestRedisDSClient(t *testing.T) {
 
 		// Cleanup.
 		_, _ = batchClient.DBDelete(context.Background(), []string{batchID})
+	})
+
+	t.Run("Pagination - Batch by tenant", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		// Store 10 items for the same tenant.
+		nItems := 10
+		pageSize := 3
+		tenant := "PaginationTenant"
+		stored := make(map[string]*db_api.BatchItem)
+		var allIDs []string
+		for i := 0; i < nItems; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: tenant,
+					Expiry:   time.Now().Add(time.Hour).Unix(),
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			stored[id] = batch
+			allIDs = append(allIDs, id)
+		}
+
+		// Paginate with small page size.
+		seen := make(map[string]bool)
+		cursor := 0
+		pages := 0
+		expectMore := true
+		for expectMore {
+			resItems, cur, em, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID: tenant,
+					},
+				}, true, cursor, pageSize)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, item := range resItems {
+				if seen[item.ID] {
+					t.Fatalf("Duplicate item returned: %s", item.ID)
+				}
+				seen[item.ID] = true
+				if _, ok := stored[item.ID]; !ok {
+					t.Fatalf("Unexpected item returned: %s", item.ID)
+				}
+			}
+			if len(resItems) > pageSize {
+				t.Fatalf("Page returned more items than limit: %d > %d", len(resItems), pageSize)
+			}
+			expectMore = em
+			cursor = cur
+			pages++
+		}
+		if len(seen) != nItems {
+			t.Fatalf("Expected %d total items, got %d", nItems, len(seen))
+		}
+		expectedPages := (nItems + pageSize - 1) / pageSize
+		if pages != expectedPages {
+			t.Fatalf("Expected %d pages, got %d", expectedPages, pages)
+		}
+
+		// Verify stable ordering: paginate again and compare order.
+		var firstPassIDs []string
+		cursor = 0
+		expectMore = true
+		for expectMore {
+			resItems, cur, em, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID: tenant,
+					},
+				}, true, cursor, pageSize)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, item := range resItems {
+				firstPassIDs = append(firstPassIDs, item.ID)
+			}
+			expectMore = em
+			cursor = cur
+		}
+		var secondPassIDs []string
+		cursor = 0
+		expectMore = true
+		for expectMore {
+			resItems, cur, em, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID: tenant,
+					},
+				}, true, cursor, pageSize)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, item := range resItems {
+				secondPassIDs = append(secondPassIDs, item.ID)
+			}
+			expectMore = em
+			cursor = cur
+		}
+		if len(firstPassIDs) != len(secondPassIDs) {
+			t.Fatalf("Pass lengths differ: %d vs %d", len(firstPassIDs), len(secondPassIDs))
+		}
+		for i := range firstPassIDs {
+			if firstPassIDs[i] != secondPassIDs[i] {
+				t.Fatalf("Order differs at position %d: %s vs %s", i, firstPassIDs[i], secondPassIDs[i])
+			}
+		}
+
+		// Cleanup.
+		_, _ = batchClient.DBDelete(context.Background(), allIDs)
+	})
+
+	t.Run("Pagination - Batch by tags", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		nItems := 7
+		pageSize := 2
+		stored := make(map[string]*db_api.BatchItem)
+		var allIDs []string
+		for i := 0; i < nItems; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: "PagTagTenant",
+					Expiry:   time.Now().Add(time.Hour).Unix(),
+					Tags:     map[string]string{"env": "test-pagination"},
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			stored[id] = batch
+			allIDs = append(allIDs, id)
+		}
+
+		seen := make(map[string]bool)
+		cursor := 0
+		expectMore := true
+		for expectMore {
+			resItems, cur, em, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						TagSelectors:    db_api.Tags{"env": "test-pagination"},
+						TagsLogicalCond: db_api.LogicalCondAnd,
+						TenantID:        "PagTagTenant",
+					},
+				}, true, cursor, pageSize)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, item := range resItems {
+				if seen[item.ID] {
+					t.Fatalf("Duplicate item returned: %s", item.ID)
+				}
+				seen[item.ID] = true
+			}
+			if len(resItems) > pageSize {
+				t.Fatalf("Page returned more items than limit: %d > %d", len(resItems), pageSize)
+			}
+			expectMore = em
+			cursor = cur
+		}
+		if len(seen) != nItems {
+			t.Fatalf("Expected %d total items, got %d", nItems, len(seen))
+		}
+
+		_, _ = batchClient.DBDelete(context.Background(), allIDs)
+	})
+
+	t.Run("Pagination - File by purpose", func(t *testing.T) {
+		t.Parallel()
+		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		nItems := 9
+		pageSize := 4
+		stored := make(map[string]*db_api.FileItem)
+		var allIDs []string
+		for i := 0; i < nItems; i++ {
+			id := uuid.New().String()
+			file := &db_api.FileItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: "PagPurposeTenant",
+					Expiry:   time.Now().Add(time.Hour).Unix(),
+				},
+				Purpose: "pagination-test",
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("status-%d", i)),
+				},
+			}
+			err := fileClient.DBStore(context.Background(), file)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			stored[id] = file
+			allIDs = append(allIDs, id)
+		}
+
+		seen := make(map[string]bool)
+		cursor := 0
+		expectMore := true
+		for expectMore {
+			resItems, cur, em, err := fileClient.DBGet(context.Background(),
+				&db_api.FileQuery{
+					BaseQuery: db_api.BaseQuery{
+						TenantID: "PagPurposeTenant",
+					},
+					Purpose: "pagination-test",
+				}, true, cursor, pageSize)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, item := range resItems {
+				if seen[item.ID] {
+					t.Fatalf("Duplicate item returned: %s", item.ID)
+				}
+				seen[item.ID] = true
+			}
+			if len(resItems) > pageSize {
+				t.Fatalf("Page returned more items than limit: %d > %d", len(resItems), pageSize)
+			}
+			expectMore = em
+			cursor = cur
+		}
+		if len(seen) != nItems {
+			t.Fatalf("Expected %d total items, got %d", nItems, len(seen))
+		}
+
+		_, _ = fileClient.DBDelete(context.Background(), allIDs)
+	})
+
+	t.Run("Pagination - Batch by expiry", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		nItems := 8
+		pageSize := 3
+		var allIDs []string
+		for i := 0; i < nItems; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: "PagExpiryTenant",
+					Expiry:   time.Now().Add(time.Second).Unix(),
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			allIDs = append(allIDs, id)
+		}
+		time.Sleep(3 * time.Second)
+
+		seen := make(map[string]bool)
+		cursor := 0
+		expectMore := true
+		for expectMore {
+			resItems, cur, em, err := batchClient.DBGet(context.Background(),
+				&db_api.BatchQuery{
+					BaseQuery: db_api.BaseQuery{
+						Expired:  true,
+						TenantID: "PagExpiryTenant",
+					},
+				}, true, cursor, pageSize)
+			if err != nil {
+				t.Fatalf("Failed to get items: %v", err)
+			}
+			for _, item := range resItems {
+				if seen[item.ID] {
+					t.Fatalf("Duplicate item returned: %s", item.ID)
+				}
+				seen[item.ID] = true
+			}
+			if len(resItems) > pageSize {
+				t.Fatalf("Page returned more items than limit: %d > %d", len(resItems), pageSize)
+			}
+			expectMore = em
+			cursor = cur
+		}
+		if len(seen) != nItems {
+			t.Fatalf("Expected %d total items, got %d", nItems, len(seen))
+		}
+
+		_, _ = batchClient.DBDelete(context.Background(), allIDs)
+	})
+
+	t.Run("Expiry query excludes zero-expiry items", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		tenant := "ZeroExpiryTenant"
+
+		// Store items with expiry=0 (no expiry, like batch jobs).
+		var zeroExpiryIDs []string
+		for i := 0; i < 5; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: tenant,
+					Expiry:   0,
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			zeroExpiryIDs = append(zeroExpiryIDs, id)
+		}
+
+		// Store items with a past expiry (truly expired).
+		var expiredIDs []string
+		for i := 0; i < 3; i++ {
+			id := uuid.New().String()
+			batch := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: tenant,
+					Expiry:   time.Now().Add(time.Second).Unix(),
+				},
+				BaseContents: db_api.BaseContents{
+					Status: []byte(fmt.Sprintf("expired-status-%d", i)),
+				},
+			}
+			err := batchClient.DBStore(context.Background(), batch)
+			if err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+			expiredIDs = append(expiredIDs, id)
+		}
+		time.Sleep(3 * time.Second)
+
+		// Query for expired items — should only return the 3 truly expired items,
+		// not the 5 zero-expiry items.
+		resItems, _, _, err := batchClient.DBGet(context.Background(),
+			&db_api.BatchQuery{
+				BaseQuery: db_api.BaseQuery{
+					Expired:  true,
+					TenantID: tenant,
+				},
+			}, true, 0, 100)
+		if err != nil {
+			t.Fatalf("Failed to get items: %v", err)
+		}
+		if len(resItems) != 3 {
+			t.Fatalf("Expected 3 expired items, got %d", len(resItems))
+		}
+
+		// Verify returned items are only the truly expired ones.
+		returnedIDs := make(map[string]bool)
+		for _, item := range resItems {
+			returnedIDs[item.ID] = true
+		}
+		for _, id := range expiredIDs {
+			if !returnedIDs[id] {
+				t.Fatalf("Expected expired item %s to be returned", id)
+			}
+		}
+		for _, id := range zeroExpiryIDs {
+			if returnedIDs[id] {
+				t.Fatalf("Zero-expiry item %s should NOT be returned by expiry query", id)
+			}
+		}
+
+		_, _ = batchClient.DBDelete(context.Background(), zeroExpiryIDs)
+		_, _ = batchClient.DBDelete(context.Background(), expiredIDs)
 	})
 
 	t.Run("Get by IDs with tenant filter", func(t *testing.T) {

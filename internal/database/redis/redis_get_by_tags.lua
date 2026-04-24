@@ -18,8 +18,8 @@
 local tags = KEYS
 local tagsCond = ARGV[1]
 local pattern = ARGV[2]
-local cursor = ARGV[3]
-local count = ARGV[4]
+local start = tonumber(ARGV[3])
+local limit = tonumber(ARGV[4])
 local tenantID = ARGV[5]
 local includeSpec = ARGV[6]
 
@@ -32,35 +32,28 @@ end
 -- Pre-compute boolean to avoid string comparison in loop.
 local shouldFilterSpec = (includeSpec == "false")
 
--- Get the keys for the current iteration.
-local scan_out = redis.call('SCAN', cursor, 'TYPE', 'hash', 'MATCH', pattern, 'COUNT', count)
-
--- Iterate over the keys.
-for _, key in ipairs(scan_out[2]) do
-	-- Get the key's contents.
-	local contents = redis.call('HGETALL', key)
-	-- Create a map of the contents.
-	local hash = contents_to_hash(contents)
-	-- Search for the tags.
-	local ofound = 0
-	if hash["tags"] ~= nil then
-		for _, tag in ipairs(tags) do
-			local found = string.find(hash["tags"], tag, 0, true)
-			if found ~= nil then
-				ofound = ofound + 1
+-- Full scan: collect all matching items.
+local scan_cursor = "0"
+local matched = {}
+repeat
+	local scan_out = redis.call('SCAN', scan_cursor, 'TYPE', 'hash', 'MATCH', pattern, 'COUNT', 100)
+	scan_cursor = scan_out[1]
+	for _, key in ipairs(scan_out[2]) do
+		local contents = redis.call('HGETALL', key)
+		local hash = contents_to_hash(contents)
+		local ofound = 0
+		if hash["tags"] ~= nil then
+			for _, tag in ipairs(tags) do
+				local found = string.find(hash["tags"], tag, 0, true)
+				if found ~= nil then
+					ofound = ofound + 1
+				end
 			end
 		end
-	end
-	-- Check inclusion condition.
-	if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
-		-- Remove spec field if needed.
-		if shouldFilterSpec then
-			contents = remove_spec_field(contents)
+		if ((tagsCond == 'and' and ofound == #tags) or (tagsCond == 'or' and ofound > 0)) and (tenantID == nil or tenantID == '' or tenantID == hash["tenantID"]) then
+			table.insert(matched, {key, contents})
 		end
-		-- Add the item to the result.
-		table.insert(result, contents)
 	end
-end
+until scan_cursor == "0"
 
--- Return the result.
-return {tonumber(scan_out[1]), result}
+return paginate_results(matched, start, limit, shouldFilterSpec)

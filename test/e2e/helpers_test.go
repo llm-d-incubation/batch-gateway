@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,30 @@ func getEnvOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// detectDBClientType queries the Helm release for the configured DB client type.
+// Falls back to "postgresql" if the value cannot be detected.
+func detectDBClientType(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("helm", "get", "values", testHelmRelease,
+		"-n", testNamespace, "-o", "json",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("helm get values failed, defaulting to postgresql: %v", err)
+		return "postgresql"
+	}
+	var vals struct {
+		Global struct {
+			DBClient struct {
+				Type string `json:"type"`
+			} `json:"dbClient"`
+		} `json:"global"`
+	}
+	if err := json.Unmarshal(out, &vals); err != nil || vals.Global.DBClient.Type == "" {
+		return "postgresql"
+	}
+	return vals.Global.DBClient.Type
 }
 
 // ── Client helpers ───────────────────────────────────────────────────────
