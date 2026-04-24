@@ -71,7 +71,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
    - Supports pluggable backends.
    - Backends available out of the box:
      - Job and file metadata storage: `PostgreSQL`.
-     - Priority queue, event channels, and status updates: `Redis`.
+     - Priority queue, event channels, and status updates: `Redis` or `Valkey`.
      - File storage: `S3`, `filesystem`.
 
 4. **Batch Dispatcher**
@@ -83,7 +83,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
 ### Processing Flow
 
 ```text
-User → API Server → PostgreSQL (metadata) + Redis (queue) + S3 (input file)
+User → API Server → PostgreSQL (metadata) + Redis/Valkey (queue) + S3 (input file)
                          ↓
                   Priority Queue
                          ↓
@@ -171,7 +171,7 @@ batch-gateway/
 
 - Go 1.25 or later.
 - PostgreSQL 12+ (for metadata storage).
-- Redis 6+ (for job queue).
+- Redis 6+ or Valkey 8+ (for job queue).
 - S3-compatible object storage or local filesystem.
 - Docker or Podman (for containerized deployment).
 - Kubernetes 1.19+ and Helm 3.0+ (for Kubernetes deployment).

@@ -27,7 +27,7 @@ import (
 
 // DBClientConfig holds database client configuration shared by all components.
 type DBClientConfig struct {
-	// Type specifies the database backend: "mock", "redis", or "postgresql".
+	// Type specifies the database backend: "mock", "redis", "valkey", or "postgresql".
 	Type string `yaml:"type"`
 	// PostgreSQLCfg holds PostgreSQL connection settings (used when Type is "postgresql").
 	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`

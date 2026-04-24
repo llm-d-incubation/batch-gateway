@@ -138,10 +138,11 @@ EOF
     fi
 }
 
-# ── Redis ─────────────────────────────────────────────────────────────────────
+# ── Exchange (Redis / Valkey) ──────────────────────────────────────────────────
 
-install_redis() {
-    step "Installing Redis..."
+install_exchange() {
+    local chart="bitnami/${EXCHANGE_CLIENT_TYPE}"
+    step "Installing exchange backend (${chart})..."
 
     if ! helm repo list 2>/dev/null | grep -q bitnami; then
         helm repo add bitnami https://charts.bitnami.com/bitnami
@@ -149,18 +150,23 @@ install_redis() {
     helm repo update || warn "Some Helm repo updates failed; continuing."
 
     if helm status "${REDIS_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
-        log "Redis release '${REDIS_RELEASE}' is already installed. Skipping."
+        log "Exchange backend (${chart}) release '${REDIS_RELEASE}' is already installed. Skipping."
         return
     fi
 
-    helm install "${REDIS_RELEASE}" bitnami/redis \
+    local persistence_key="master.persistence.enabled"
+    if [[ "${EXCHANGE_CLIENT_TYPE}" == "valkey" ]]; then
+        persistence_key="primary.persistence.enabled"
+    fi
+
+    helm install "${REDIS_RELEASE}" "${chart}" \
         --namespace "${NAMESPACE}" \
         --set auth.enabled=false \
         --set replica.replicaCount=0 \
-        --set master.persistence.enabled=false \
+        --set "${persistence_key}"=false \
         --wait --timeout 120s
 
-    log "Redis installed successfully."
+    log "Exchange backend (${chart}) installed successfully."
 }
 
 install_postgresql() {
@@ -188,7 +194,11 @@ install_postgresql() {
 create_secret() {
     step "Creating secret '${APP_SECRET_NAME}'..."
 
-    local redis_url="redis://${REDIS_RELEASE}-master.${NAMESPACE}.svc.cluster.local:6379/0"
+    local exchange_svc="${REDIS_RELEASE}-master"
+    if [[ "${EXCHANGE_CLIENT_TYPE}" == "valkey" ]]; then
+        exchange_svc="${REDIS_RELEASE}-valkey-primary"
+    fi
+    local redis_url="redis://${exchange_svc}.${NAMESPACE}.svc.cluster.local:6379/0"
     local postgresql_url="postgresql://postgres:${POSTGRESQL_PASSWORD}@${POSTGRESQL_RELEASE}.${NAMESPACE}.svc.cluster.local:5432/postgres"
 
     kubectl create secret generic "${APP_SECRET_NAME}" \
@@ -1148,7 +1158,7 @@ main() {
         build_images
     fi
     ensure_cluster
-    install_redis
+    install_exchange
     install_postgresql
     create_secret
     create_tls_secret

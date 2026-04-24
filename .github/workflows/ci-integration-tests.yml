@@ -19,14 +19,28 @@ permissions:
 
 jobs:
   integration-tests:
-    name: Integration Tests (${{ matrix.file_client_type }}, ${{ matrix.db_client_type }})
+    name: Integration Tests (${{ matrix.file_client_type }}, ${{ matrix.db_client_type }}, ${{ matrix.exchange_client_type }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        file_client_type: [s3, fs]
-        db_client_type: [postgresql, redis]
+        include:
+          - file_client_type: s3
+            db_client_type: postgresql
+            exchange_client_type: redis
+          - file_client_type: fs
+            db_client_type: postgresql
+            exchange_client_type: redis
+          - file_client_type: s3
+            db_client_type: postgresql
+            exchange_client_type: valkey
+          - file_client_type: s3
+            db_client_type: redis
+            exchange_client_type: redis
+          - file_client_type: s3
+            db_client_type: valkey
+            exchange_client_type: valkey
     steps:
       - uses: actions/checkout@v6
 
@@ -45,6 +59,7 @@ jobs:
         env:
           FILE_CLIENT_TYPE: ${{ matrix.file_client_type }}
           DB_CLIENT_TYPE: ${{ matrix.db_client_type }}
+          EXCHANGE_CLIENT_TYPE: ${{ matrix.exchange_client_type }}
 
       - name: Run integration tests
         run: make test-e2e

@@ -214,7 +214,7 @@ func NewClientset(
 
 	// build database client
 	switch dbType {
-	case "redis":
+	case "redis", "valkey":
 		batchDB, fileDB, err := NewRedisDBClients(ctx, redisCfg)
 		if err != nil {
 			return nil, err
@@ -229,7 +229,7 @@ func NewClientset(
 		cs.BatchDB = batchDB
 		cs.FileDB = fileDB
 	default:
-		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, postgresql)", dbType)
+		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, valkey, postgresql)", dbType)
 	}
 
 	// build inference client(s)

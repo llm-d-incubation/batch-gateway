@@ -69,6 +69,7 @@ GW_MAX_RETRIES="${GW_MAX_RETRIES:-3}"
 GW_INITIAL_BACKOFF="${GW_INITIAL_BACKOFF:-1s}"
 GW_MAX_BACKOFF="${GW_MAX_BACKOFF:-60s}"
 BATCH_REDIS_RELEASE="${BATCH_REDIS_RELEASE:-redis}"
+BATCH_EXCHANGE_CLIENT_TYPE="${BATCH_EXCHANGE_CLIENT_TYPE:-redis}"
 BATCH_POSTGRESQL_RELEASE="${BATCH_POSTGRESQL_RELEASE:-postgresql}"
 # WARNING: Default passwords are for demo only. For production, override via env vars or use K8s secrets.
 BATCH_POSTGRESQL_PASSWORD="${BATCH_POSTGRESQL_PASSWORD:-postgres}"
@@ -386,17 +387,23 @@ EOF
 # ── Database / Storage Functions ──────────────────────────────────────────────
 
 install_batch_redis() {
-    step "Installing Redis..."
+    local chart="oci://registry-1.docker.io/bitnamicharts/${BATCH_EXCHANGE_CLIENT_TYPE}"
+    step "Installing exchange backend (${chart})..."
     if helm status "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
-        log "Redis release '${BATCH_REDIS_RELEASE}' is already installed. Skipping."
+        log "Exchange release '${BATCH_REDIS_RELEASE}' is already installed. Skipping."
         return
     fi
-    helm install "${BATCH_REDIS_RELEASE}" oci://registry-1.docker.io/bitnamicharts/redis \
+    helm install "${BATCH_REDIS_RELEASE}" "${chart}" \
         --namespace "${BATCH_NAMESPACE}" --create-namespace \
         --set architecture=standalone \
         --set auth.enabled=false
-    kubectl rollout status statefulset/"${BATCH_REDIS_RELEASE}-master" -n "${BATCH_NAMESPACE}" --timeout=180s
-    log "Redis installed (standalone, no auth)."
+
+    local sts_name="${BATCH_REDIS_RELEASE}-master"
+    if [[ "${BATCH_EXCHANGE_CLIENT_TYPE}" == "valkey" ]]; then
+        sts_name="${BATCH_REDIS_RELEASE}-valkey-primary"
+    fi
+    kubectl rollout status statefulset/"${sts_name}" -n "${BATCH_NAMESPACE}" --timeout=180s
+    log "Exchange backend (${chart}) installed (standalone, no auth)."
 }
 
 install_batch_postgresql() {
@@ -526,7 +533,11 @@ EOF
 create_batch_secret() {
     step "Creating app secret '${BATCH_APP_SECRET_NAME}'..."
 
-    local redis_url="redis://${BATCH_REDIS_RELEASE}-master.${BATCH_NAMESPACE}.svc.cluster.local:6379/0"
+    local exchange_svc="${BATCH_REDIS_RELEASE}-master"
+    if [[ "${BATCH_EXCHANGE_CLIENT_TYPE}" == "valkey" ]]; then
+        exchange_svc="${BATCH_REDIS_RELEASE}-valkey-primary"
+    fi
+    local redis_url="redis://${exchange_svc}.${BATCH_NAMESPACE}.svc.cluster.local:6379/0"
     local postgresql_url="postgresql://postgres:${BATCH_POSTGRESQL_PASSWORD}@${BATCH_POSTGRESQL_RELEASE}.${BATCH_NAMESPACE}.svc.cluster.local:5432/batch?sslmode=disable"
 
     kubectl apply -f - <<EOF
