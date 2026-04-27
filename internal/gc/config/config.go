@@ -69,7 +69,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	switch cfg.DBClientCfg.Type {
-	case "redis", "valkey", "postgresql":
+	case sharedcfg.DBTypeRedis, sharedcfg.DBTypeValkey, sharedcfg.DBTypePostgreSQL:
 		// valid
 	case "":
 		return nil, fmt.Errorf("db_client.type is required (must be \"redis\", \"valkey\", or \"postgresql\")")
@@ -78,7 +78,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	switch cfg.FileClientCfg.Type {
-	case "fs", "s3":
+	case sharedcfg.FileTypeFS, sharedcfg.FileTypeS3:
 		// valid
 	case "":
 		return nil, fmt.Errorf("file_client.type is required (must be \"fs\" or \"s3\")")

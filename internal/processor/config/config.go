@@ -197,10 +197,10 @@ func NewConfig() *ProcessorConfig {
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
 		DBClientCfg: sharedcfg.DBClientConfig{
-			Type: "redis",
+			Type: sharedcfg.DBTypeRedis,
 		},
 		FileClientCfg: sharedcfg.FileClientConfig{
-			Type: "mock",
+			Type: sharedcfg.FileTypeMock,
 			Retry: retry.Config{
 				MaxRetries:     3,
 				InitialBackoff: 1 * time.Second,

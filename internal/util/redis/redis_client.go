@@ -55,6 +55,15 @@ type RedisClientConfig struct {
 	ConnMaxLifetime time.Duration      `yaml:"conn_max_lifetime"`  // The maximum amount of time a connection may be reused. If <= 0, connections are not closed due to a connection's age. Default is to not close idle connections.
 }
 
+// DeepCopy returns a copy of the config with pointer fields cloned.
+func (c RedisClientConfig) DeepCopy() RedisClientConfig {
+	if c.Certificates != nil {
+		certs := *c.Certificates
+		c.Certificates = &certs
+	}
+	return c
+}
+
 func NewRedisClient(ctx context.Context, cnf *RedisClientConfig) (*gredis.Client, error) {
 	var (
 		redisOps  *gredis.Options

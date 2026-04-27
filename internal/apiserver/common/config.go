@@ -214,7 +214,7 @@ func (c *ServerConfig) applyDefaults() {
 		c.ObservabilityPort = "8081"
 	}
 	if c.DBClientCfg.Type == "" {
-		c.DBClientCfg.Type = "redis"
+		c.DBClientCfg.Type = sharedcfg.DBTypeRedis
 	}
 	if c.ReadHeaderTimeoutSeconds <= 0 {
 		c.ReadHeaderTimeoutSeconds = DefaultReadHeaderTimeoutSeconds
