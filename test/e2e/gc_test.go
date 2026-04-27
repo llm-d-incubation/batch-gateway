@@ -37,7 +37,7 @@ func testGarbageCollection(t *testing.T) {
 func expireInDB(t *testing.T, table, id string) {
 	t.Helper()
 
-	if testDBClientType == "redis" {
+	if testDBClientType == "redis" || testDBClientType == "valkey" {
 		expireInRedis(t, table, id)
 	} else {
 		expireInPostgresql(t, table, id)
