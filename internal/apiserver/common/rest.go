@@ -126,3 +126,15 @@ func GetTenantIDFromContext(ctx context.Context) string {
 	}
 	return DefaultTenantID
 }
+
+// LastHeaderValue returns the last value of the named header, or defaultVal
+// if the header is absent or empty. Taking the last entry is intentional:
+// Envoy ext_authz appends auth-injected values after client-supplied ones.
+func LastHeaderValue(r *http.Request, header, defaultVal string) string {
+	if vals := r.Header.Values(header); len(vals) > 0 {
+		if v := vals[len(vals)-1]; v != "" {
+			return v
+		}
+	}
+	return defaultVal
+}

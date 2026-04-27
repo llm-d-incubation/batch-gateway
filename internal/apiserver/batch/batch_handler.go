@@ -198,18 +198,8 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Capture configured pass-through headers into tags with "pth:" prefix
 	for _, headerName := range c.config.BatchAPI.PassThroughHeaders {
-		// The external auth service (via Envoy ext_authz) may append
-		// request headers as separate entries instead of overwriting them. If a client
-		// sends a spoofed pass-through header, the auth service appends the real value as a
-		// second entry. We take the last entry from r.Header.Values() because Envoy's
-		// ext_authz pipeline guarantees auth-injected entries come after client-supplied
-		// ones.
-		if values := r.Header.Values(headerName); len(values) > 0 {
-			// Skip empty last values to avoid persisting blank tags (e.g. when the
-			// auth service clears a spoofed header by appending an empty entry).
-			if last := values[len(values)-1]; last != "" {
-				tags[batch_types.TagPrefixPassThroughHeader+headerName] = last
-			}
+		if v := common.LastHeaderValue(r, headerName, ""); v != "" {
+			tags[batch_types.TagPrefixPassThroughHeader+headerName] = v
 		}
 	}
 
