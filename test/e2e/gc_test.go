@@ -37,7 +37,7 @@ func testGarbageCollection(t *testing.T) {
 func expireInDB(t *testing.T, table, id string) {
 	t.Helper()
 
-	if testDBClientType == "redis" {
+	if testDBClientType == "redis" || testDBClientType == "valkey" {
 		expireInRedis(t, table, id)
 	} else {
 		expireInPostgresql(t, table, id)
@@ -67,16 +67,25 @@ func expireInRedis(t *testing.T, table, id string) {
 	// table is "batch_items" or "file_items"; map to the Redis type prefix.
 	itemType := strings.TrimSuffix(table, "_items")
 	key := fmt.Sprintf("llmd_batch:store:%s:%s", itemType, id)
-	cmd := fmt.Sprintf("redis-cli HSET %s expiry 1", key)
+
+	// Valkey containers have valkey-cli instead of redis-cli.
+	cliTool := "redis-cli"
+	podSuffix := "master-0"
+	if testExchangeClientType == "valkey" {
+		cliTool = "valkey-cli"
+		podSuffix = "valkey-primary-0"
+	}
+
+	cmd := fmt.Sprintf("%s HSET %s expiry 1", cliTool, key)
 	out, err := exec.Command("kubectl", "exec",
-		fmt.Sprintf("%s-master-0", testRedisRelease),
+		fmt.Sprintf("%s-%s", testRedisRelease, podSuffix),
 		"-n", testNamespace,
 		"--", "bash", "-c", cmd,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl exec redis-cli failed: %v\n%s", err, out)
+		t.Fatalf("kubectl exec %s failed: %v\n%s", cliTool, err, out)
 	}
-	t.Logf("expired %s/%s in Redis: %s", table, id, strings.TrimSpace(string(out)))
+	t.Logf("expired %s/%s via %s: %s", table, id, cliTool, strings.TrimSpace(string(out)))
 }
 
 // doTestGCCollectsExpiredFile creates a file, force-expires it in the DB,

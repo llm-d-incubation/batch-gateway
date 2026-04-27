@@ -38,9 +38,10 @@ var (
 	testPostgresqlRelease = getEnvOrDefault("TEST_POSTGRESQL_RELEASE", "postgresql")
 	testRedisRelease      = getEnvOrDefault("TEST_REDIS_RELEASE", "redis")
 
-	// testDBClientType is detected from the Helm release at startup;
-	// see detectDBClientType in TestE2E.
-	testDBClientType string
+	// testDBClientType and testExchangeClientType are detected from Helm
+	// releases at startup; see detectDBClientType / detectExchangeClientType.
+	testDBClientType       string
+	testExchangeClientType string
 
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
@@ -92,7 +93,8 @@ func TestE2E(t *testing.T) {
 	}
 
 	testDBClientType = detectDBClientType(t)
-	t.Logf("DB client type: %s", testDBClientType)
+	testExchangeClientType = detectExchangeClientType(t)
+	t.Logf("DB client type: %s, exchange client type: %s", testDBClientType, testExchangeClientType)
 
 	waitForReady(t, testApiserverObsURL, 30*time.Second)
 

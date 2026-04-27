@@ -348,12 +348,21 @@ oc get tokenratelimitpolicy -n ${LLM_NS}
 BATCH_NS=batch-api
 oc create namespace "${BATCH_NS}" 2>/dev/null || true
 
-# Install Redis
+# Install Redis (or Valkey — see alternative below)
 helm install redis oci://registry-1.docker.io/bitnamicharts/redis \
     --namespace ${BATCH_NS} --create-namespace \
     --set architecture=standalone \
     --set auth.enabled=false
 oc rollout status statefulset/redis-master -n ${BATCH_NS} --timeout=120s
+
+# Alternative: Install Valkey (wire-protocol compatible with Redis)
+# helm install redis oci://registry-1.docker.io/bitnamicharts/valkey \
+#     --namespace ${BATCH_NS} --create-namespace \
+#     --set architecture=standalone \
+#     --set auth.enabled=false
+# oc rollout status statefulset/redis-valkey-primary -n ${BATCH_NS} --timeout=120s
+# Note: when using Valkey, update the redis-url secret below to use:
+#   redis://redis-valkey-primary.${BATCH_NS}.svc.cluster.local:6379/0
 
 # Install PostgreSQL
 helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \

@@ -125,6 +125,33 @@ file_client:
 	}
 }
 
+func TestLoad_ValkeyDatabase(t *testing.T) {
+	path := writeTempConfig(t, `
+db_client:
+  type: "valkey"
+  redis:
+    db: 2
+    enable_tls: true
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.DBClientCfg.Type != "valkey" {
+		t.Errorf("expected db_client.type valkey, got %s", cfg.DBClientCfg.Type)
+	}
+	if cfg.DBClientCfg.RedisCfg.DB != 2 {
+		t.Errorf("expected redis db 2, got %d", cfg.DBClientCfg.RedisCfg.DB)
+	}
+	if !cfg.DBClientCfg.RedisCfg.EnableTLS {
+		t.Error("expected redis enable_tls to be true")
+	}
+}
+
 func TestLoad_PostgreSQLDatabase(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:

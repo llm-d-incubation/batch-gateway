@@ -61,6 +61,31 @@ func detectDBClientType(t *testing.T) string {
 	return vals.Global.DBClient.Type
 }
 
+// detectExchangeClientType checks the chart installed for the Redis/Valkey
+// Helm release and returns "valkey" if the chart name starts with "valkey",
+// otherwise "redis".
+func detectExchangeClientType(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("helm", "get", "metadata", testRedisRelease,
+		"-n", testNamespace, "-o", "json",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("helm get metadata %s failed, defaulting to redis: %v", testRedisRelease, err)
+		return "redis"
+	}
+	var meta struct {
+		Chart string `json:"chart"`
+	}
+	if err := json.Unmarshal(out, &meta); err != nil {
+		t.Logf("failed to parse helm metadata, defaulting to redis: %v", err)
+		return "redis"
+	}
+	if strings.HasPrefix(meta.Chart, "valkey") {
+		return "valkey"
+	}
+	return "redis"
+}
+
 // ── Client helpers ───────────────────────────────────────────────────────
 
 func newClient() *openai.Client {

@@ -89,12 +89,12 @@ func run() error {
 	var batchDB db.BatchDBClient
 	var fileDB db.FileDBClient
 	switch cfg.DBClientCfg.Type {
-	case "redis":
+	case "redis", "valkey":
 		batchDB, fileDB, err = clientset.NewRedisDBClients(ctx, &cfg.DBClientCfg.RedisCfg)
 	case "postgresql":
 		batchDB, fileDB, err = clientset.NewPostgreSQLDBClients(ctx, &cfg.DBClientCfg.PostgreSQLCfg)
 	default:
-		return fmt.Errorf("unsupported db_client.type: %s", cfg.DBClientCfg.Type)
+		return fmt.Errorf("unsupported db_client.type: %s (supported: redis, valkey, postgresql)", cfg.DBClientCfg.Type)
 	}
 
 	if err != nil {

@@ -19,7 +19,7 @@ global:
   # Name of the Kubernetes Secret containing sensitive values (e.g. database URLs, API keys).
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.
   # The secret must use these exact key names (hardcoded in the application):
-  #   redis-url             — Redis connection URL (e.g. redis://host:6379/0)
+  #   redis-url             — Redis/Valkey connection URL (e.g. redis://host:6379/0)
   #   postgresql-url        — PostgreSQL connection URL (e.g. postgresql://user:pass@host/db)
   #   inference-api-key     — API key for the inference gateway (optional; omit if not required)
   #   s3-secret-access-key  — S3 secret access key (required when file_client.type is "s3")
@@ -28,9 +28,10 @@ global:
 
   # Database client configuration (shared by apiserver, processor, and gc).
   dbClient:
-    # Database backend type: "redis" or "postgresql"
+    # Database backend type: "redis", "valkey", or "postgresql".
+    # Valkey is wire-protocol compatible with Redis; both use the go-redis client.
     type: "postgresql"
-    # Redis client settings.
+    # Redis/Valkey client settings.
     # The connection URL is read from the app secret (redis-url key), not from here.
     # 0 (or "0s") means go-redis library default.
     redis:
