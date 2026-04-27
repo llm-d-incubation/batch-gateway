@@ -391,7 +391,7 @@ install_batch_redis() {
     step "Installing exchange backend (${chart})..."
     if helm status "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
         local installed_chart
-        installed_chart=$(helm get metadata "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" -o json 2>/dev/null | grep -o '"chart":"[^"]*"' | cut -d'"' -f4)
+        installed_chart=$(helm get metadata "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" -o json 2>/dev/null | jq -r '.chart')
         if [[ "${installed_chart}" == "${BATCH_EXCHANGE_CLIENT_TYPE}-"* ]]; then
             log "Exchange backend (${chart}) release '${BATCH_REDIS_RELEASE}' is already installed. Skipping."
             return
