@@ -35,7 +35,7 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   batchDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     spyQueue,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -582,7 +582,7 @@ func newRecoveryTestProcessorWithFailDB(t *testing.T, workDir string, failOn int
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   failDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -621,7 +621,7 @@ func TestRecoverJob_Cancelling_AllUpdatesFail_ReturnsError(t *testing.T) {
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   failDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -665,7 +665,7 @@ func TestRecoverJob_Validating_EnqueueFails_FallsBackToFailed(t *testing.T) {
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   batchDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -713,7 +713,7 @@ func TestRecoverJob_InProgressReEnqueue_EnqueueFails_FallsBackToFailed(t *testin
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   batchDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -848,7 +848,7 @@ func TestRecoverStaleJobs_RunsConcurrently(t *testing.T) {
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   slowDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -1024,7 +1024,7 @@ func TestRecoverJob_ExpiredWriteFails_FallbackToFailed(t *testing.T) {
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   failDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),

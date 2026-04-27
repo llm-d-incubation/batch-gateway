@@ -192,7 +192,7 @@ func TestRunJob_ReachesPreProcess(t *testing.T) {
 		FileDB:  newMockFileDBClient(),
 		Status:  statusClient,
 		Event:   eventClient,
-		File:    mockfiles.NewMockBatchFilesClient(),
+		File:    mockfiles.NewMockBatchFilesClient(t.TempDir()),
 	})
 
 	ctx := testLoggerCtx(t)
@@ -486,6 +486,7 @@ func TestRunJob_Success_CompletesAndCleansArtifacts(t *testing.T) {
 
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
+	filesRoot := t.TempDir()
 
 	// Compute where MockBatchFilesClient stores/retrieves files.
 	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
@@ -493,11 +494,10 @@ func TestRunJob_Success_CompletesAndCleansArtifacts(t *testing.T) {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
 	storageName := ucom.FileStorageName(inputFileID, "input.jsonl") // "<inputFileID>.jsonl"
-	storageDir := filepath.Join("/tmp/batch-gateway-files", folderName)
+	storageDir := filepath.Join(filesRoot, folderName)
 	if err := os.MkdirAll(storageDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll storage dir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(storageDir) })
 
 	inputContent := `{"custom_id":"req-1","body":{"model":"test-model","messages":[{"role":"user","content":"hello"}]}}` + "\n"
 	if err := os.WriteFile(filepath.Join(storageDir, storageName), []byte(inputContent), 0o644); err != nil {
@@ -531,13 +531,11 @@ func TestRunJob_Success_CompletesAndCleansArtifacts(t *testing.T) {
 		t.Fatalf("DBStore batch item: %v", err)
 	}
 
-	// Use MockBatchFilesClient so Retrieve reads from /tmp/batch-gateway-files
-	// (where we seeded the input file above) and Store writes output files there.
 	statusClient := mockdb.NewMockBatchStatusClient()
 	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
 		FileDB:    fileDBClient,
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(filesRoot),
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
@@ -627,17 +625,17 @@ func TestRunJob_FinalizeFailedOver_PreservesFileIDsAndDoesNotCallHandleFailed(t 
 
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
+	filesRoot := t.TempDir()
 
 	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
 	storageName := ucom.FileStorageName(inputFileID, "input.jsonl")
-	storageDir := filepath.Join("/tmp/batch-gateway-files", folderName)
+	storageDir := filepath.Join(filesRoot, folderName)
 	if err := os.MkdirAll(storageDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll storage dir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(storageDir) })
 
 	inputContent := `{"custom_id":"req-1","body":{"model":"test-model","messages":[{"role":"user","content":"hello"}]}}` + "\n"
 	if err := os.WriteFile(filepath.Join(storageDir, storageName), []byte(inputContent), 0o644); err != nil {
@@ -681,7 +679,7 @@ func TestRunJob_FinalizeFailedOver_PreservesFileIDsAndDoesNotCallHandleFailed(t 
 	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		BatchDB:   failDB,
 		FileDB:    fileDBClient,
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(filesRoot),
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
@@ -752,7 +750,7 @@ func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.
 	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Status:    statusClient,
 		Queue:     pqClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),

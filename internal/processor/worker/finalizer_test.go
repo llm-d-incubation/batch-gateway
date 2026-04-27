@@ -27,7 +27,7 @@ import (
 func TestResolveOutputExpiration_UserTagOverridesConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 7776000 // 90 days
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	now := int64(1000000)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "3600"}
@@ -42,7 +42,7 @@ func TestResolveOutputExpiration_UserTagOverridesConfig(t *testing.T) {
 func TestResolveOutputExpiration_FallsBackToConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	now := int64(1000000)
 	tags := db.Tags{}
@@ -57,7 +57,7 @@ func TestResolveOutputExpiration_FallsBackToConfig(t *testing.T) {
 func TestResolveOutputExpiration_ZeroWhenNeitherSet(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 0
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	now := int64(1000000)
 	tags := db.Tags{}
@@ -71,7 +71,7 @@ func TestResolveOutputExpiration_ZeroWhenNeitherSet(t *testing.T) {
 func TestResolveOutputExpiration_InvalidTagFallsBackToConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	now := int64(1000000)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "not-a-number"}
@@ -86,7 +86,7 @@ func TestResolveOutputExpiration_InvalidTagFallsBackToConfig(t *testing.T) {
 func TestResolveOutputExpiration_ZeroTagFallsBackToConfig(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	now := int64(1000000)
 	tags := db.Tags{batch_types.TagOutputExpiresAfterSeconds: "0"}
@@ -101,7 +101,7 @@ func TestResolveOutputExpiration_ZeroTagFallsBackToConfig(t *testing.T) {
 func TestResolveOutputExpiration_NilTags(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.DefaultOutputExpirationSeconds = 86400
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	now := int64(1000000)
 

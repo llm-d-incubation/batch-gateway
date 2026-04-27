@@ -34,8 +34,6 @@ import (
 // Common helpers
 // ---------------------------------------------------------------------------
 
-const mockFilesRootDir = "/tmp/batch-gateway-files"
-
 func testLogger(t testing.TB) logr.Logger {
 	return testr.NewWithInterface(t, testr.Options{})
 }
@@ -339,11 +337,12 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	return p
 }
 
-func validProcessorClients() *clientset.Clientset {
+func validProcessorClients(t testing.TB) *clientset.Clientset {
+	t.Helper()
 	return &clientset.Clientset{
 		BatchDB:   newMockBatchDBClient(),
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Status:    mockdb.NewMockBatchStatusClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -371,7 +370,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     pqClient,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -676,13 +675,6 @@ func readNonEmptyJSONLLines(t *testing.T, path string) [][]byte {
 		}
 	}
 	return lines
-}
-
-func cleanMockFilesFolder(t *testing.T, folder string) {
-	t.Helper()
-	target := filepath.Join(mockFilesRootDir, folder)
-	_ = os.RemoveAll(target)
-	t.Cleanup(func() { _ = os.RemoveAll(target) })
 }
 
 func uniqueTestFolder(t *testing.T, base string) string {

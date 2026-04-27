@@ -33,16 +33,18 @@ import (
 var _ api.BatchFilesClient = (*MockBatchFilesClient)(nil)
 
 // MockBatchFilesClient is a mock implementation of the BatchFilesClient interface.
-type MockBatchFilesClient struct{}
+type MockBatchFilesClient struct {
+	rootDir string
+}
 
-// NewMockBatchFilesClient creates a new mock client.
-func NewMockBatchFilesClient() *MockBatchFilesClient {
-	return &MockBatchFilesClient{}
+// NewMockBatchFilesClient creates a new mock client that stores files under rootDir.
+func NewMockBatchFilesClient(rootDir string) *MockBatchFilesClient {
+	return &MockBatchFilesClient{rootDir: rootDir}
 }
 
 // Store stores a file in the files storage.
 func (m *MockBatchFilesClient) Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (*api.BatchFileMetadata, error) {
-	rootDir := "/tmp/batch-gateway-files"
+	rootDir := m.rootDir
 
 	fullDir := filepath.Join(rootDir, folderName)
 	if err := os.MkdirAll(fullDir, 0755); err != nil {
@@ -117,7 +119,7 @@ func (m *MockBatchFilesClient) Store(ctx context.Context, fileName, folderName s
 // Retrieve retrieves a file from the files storage.
 func (m *MockBatchFilesClient) Retrieve(ctx context.Context, fileName, folderName string) (io.ReadCloser, *api.BatchFileMetadata, error) {
 	// Use /tmp as root folder
-	rootDir := "/tmp/batch-gateway-files"
+	rootDir := m.rootDir
 	location := filepath.Join(folderName, fileName)
 	filePath := filepath.Join(rootDir, location)
 
@@ -144,7 +146,7 @@ func (m *MockBatchFilesClient) Retrieve(ctx context.Context, fileName, folderNam
 // List lists the files in the specified location.
 func (m *MockBatchFilesClient) List(ctx context.Context, location string) ([]api.BatchFileMetadata, error) {
 	// Use /tmp as root folder
-	rootDir := "/tmp/batch-gateway-files"
+	rootDir := m.rootDir
 	dirPath := filepath.Join(rootDir, location)
 
 	// Read directory
@@ -181,7 +183,7 @@ func (m *MockBatchFilesClient) List(ctx context.Context, location string) ([]api
 // Delete deletes the file in the specified location.
 func (m *MockBatchFilesClient) Delete(ctx context.Context, fileName, folderName string) error {
 	// Use /tmp as root folder
-	rootDir := "/tmp/batch-gateway-files"
+	rootDir := m.rootDir
 	location := filepath.Join(folderName, fileName)
 	filePath := filepath.Join(rootDir, location)
 

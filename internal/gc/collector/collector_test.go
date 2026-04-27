@@ -81,23 +81,19 @@ const (
 
 	// defaultMaxConcurrency is used for tests that don't specifically test concurrency behavior.
 	defaultMaxConcurrency = 10
-
-	// mockFilesRoot must match the root used by the mock files client.
-	mockFilesRoot = "/tmp/batch-gateway-files"
 )
 
-// createPhysicalFile creates an empty file under the mock files root so that
+// createPhysicalFile creates an empty file under the given root so that
 // the mock client's Delete succeeds. It hashes the tenantID the same way the
 // collector does (via ucom.GetFolderNameByTenantID) to match the folder name
-// used at deletion time. It registers a cleanup to remove both the file and
-// the tenant directory.
-func createPhysicalFile(t *testing.T, filename, tenantID string) {
+// used at deletion time.
+func createPhysicalFile(t *testing.T, rootDir, filename, tenantID string) {
 	t.Helper()
 	folderName, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		t.Fatalf("get folder name: %v", err)
 	}
-	dir := filepath.Join(mockFilesRoot, folderName)
+	dir := filepath.Join(rootDir, folderName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("create dir: %v", err)
 	}
@@ -105,18 +101,14 @@ func createPhysicalFile(t *testing.T, filename, tenantID string) {
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatalf("create file: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = os.Remove(path)
-		_ = os.Remove(dir)
-	})
 }
 
 // createTestFileWithTenant creates a FileItem with a unique tenantID and
 // corresponding physical file on disk. This makes tests safe for parallel execution.
-func createTestFileWithTenant(t *testing.T, id, tenantID string, expiry int64) *api.FileItem {
+func createTestFileWithTenant(t *testing.T, rootDir, id, tenantID string, expiry int64) *api.FileItem {
 	t.Helper()
 	filename := fmt.Sprintf("test-%s.jsonl", id)
-	createPhysicalFile(t, filename, tenantID)
+	createPhysicalFile(t, rootDir, filename, tenantID)
 	return &api.FileItem{
 		BaseIndexes: api.BaseIndexes{
 			ID:       id,
@@ -144,8 +136,8 @@ func newTestFileDBClient() *mock.MockDBClient[api.FileItem, api.FileQuery] {
 	)
 }
 
-func newTestFilesClient() *mockfiles.MockBatchFilesClient {
-	return mockfiles.NewMockBatchFilesClient()
+func newTestFilesClient(rootDir string) *mockfiles.MockBatchFilesClient {
+	return mockfiles.NewMockBatchFilesClient(rootDir)
 }
 
 func createTestJob(id string, expiry int64) *api.BatchItem {
@@ -196,7 +188,8 @@ func TestCollector_Run_DeletesExpiredJobs(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("expired-job", expiredTime))
@@ -216,7 +209,8 @@ func TestCollector_Run_SkipsNonExpiredJobs(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("active-job", futureTime))
@@ -236,7 +230,8 @@ func TestCollector_Run_SkipsJobsWithNoExpiresAt(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	_ = batchDB.DBStore(ctx, createTestJob("no-expiry-job", 0))
 
@@ -255,7 +250,8 @@ func TestCollector_Run_DryRunDoesNotDelete(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("expired-job-dry", expiredTime))
@@ -275,7 +271,8 @@ func TestCollector_Run_MixedJobs(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
@@ -300,7 +297,8 @@ func TestCollector_Run_EmptyDatabase(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -319,7 +317,8 @@ func TestCollector_RunLoop_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	cycleDone := make(chan *Result)
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, time.Hour, defaultMaxConcurrency, func(r *Result) {
@@ -350,7 +349,8 @@ func TestCollector_RunLoop_DeletesExpiredJobsAcrossCycles(t *testing.T) {
 
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("expired-loop-1", expiredTime))
@@ -389,7 +389,8 @@ func TestCollector_RunLoop_RunsImmediatelyOnStartup(t *testing.T) {
 
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("immediate-gc", expiredTime))
@@ -420,10 +421,11 @@ func TestCollector_Run_DeletesExpiredFiles(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", t.Name(), expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file", t.Name(), expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -440,7 +442,8 @@ func TestCollector_Run_DeletesMetadataWhenPhysicalFileAlreadyGone(t *testing.T) 
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	// Create a file in the DB but NOT on disk — physical delete returns os.ErrNotExist,
 	// which should be tolerated so the DB metadata is cleaned up.
@@ -464,10 +467,11 @@ func TestCollector_Run_SkipsNonExpiredFiles(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file", t.Name(), futureTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "active-file", t.Name(), futureTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -484,7 +488,8 @@ func TestCollector_Run_SkipsFilesWithNoExpiry(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	_ = fileDB.DBStore(ctx, createTestFile("no-expiry-file", 0))
 
@@ -503,10 +508,11 @@ func TestCollector_Run_DryRunDoesNotDeleteFiles(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-dry", t.Name(), expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file-dry", t.Name(), expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, true, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -523,16 +529,17 @@ func TestCollector_Run_MixedFiles(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
 
 	tenant := t.Name()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-1", tenant, expiredTime))
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-2", tenant, expiredTime))
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file-1", tenant, futureTime))
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "no-expiry-file", tenant, 0))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file-1", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file-2", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "active-file-1", tenant, futureTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "no-expiry-file", tenant, 0))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -551,7 +558,8 @@ func TestCollector_Run_MixedJobsAndFiles(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	futureTime := time.Now().Add(1 * time.Hour).Unix()
@@ -559,8 +567,8 @@ func TestCollector_Run_MixedJobsAndFiles(t *testing.T) {
 	tenant := t.Name()
 	_ = batchDB.DBStore(ctx, createTestJob("expired-job", expiredTime))
 	_ = batchDB.DBStore(ctx, createTestJob("active-job", futureTime))
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", tenant, expiredTime))
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "active-file", tenant, futureTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "active-file", tenant, futureTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -585,11 +593,12 @@ func TestCollector_RunLoop_DeletesExpiredFilesAcrossCycles(t *testing.T) {
 
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-loop-1", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file-loop-1", tenant, expiredTime))
 
 	cycleDone := make(chan *Result)
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, 50*time.Millisecond, defaultMaxConcurrency, func(r *Result) {
@@ -607,7 +616,7 @@ func TestCollector_RunLoop_DeletesExpiredFilesAcrossCycles(t *testing.T) {
 		t.Error("Expected expired-file-loop-1 to be deleted after first cycle")
 	}
 
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file-loop-2", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file-loop-2", tenant, expiredTime))
 
 	<-cycleDone
 
@@ -623,7 +632,8 @@ func TestCollector_Run_FileWithInvalidSpec(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	file := &api.FileItem{
@@ -652,12 +662,13 @@ func TestCollector_Run_ErrorsAreCapturedNotReturned(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("expired-job", expiredTime))
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file", tenant, expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -680,7 +691,8 @@ func TestCollector_Run_BatchDBGetError(t *testing.T) {
 		getErr:        fmt.Errorf("connection refused"),
 	}
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -697,7 +709,8 @@ func TestCollector_Run_FileDBGetError(t *testing.T) {
 		FileDBClient: newTestFileDBClient(),
 		getErr:       fmt.Errorf("connection refused"),
 	}
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -714,7 +727,8 @@ func TestCollector_Run_BatchDBDeleteError(t *testing.T) {
 		deleteErr:     fmt.Errorf("write conflict"),
 	}
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	_ = batchDB.DBStore(ctx, createTestJob("expired-job", expiredTime))
@@ -737,11 +751,12 @@ func TestCollector_Run_FileDBDeleteError(t *testing.T) {
 		FileDBClient: newTestFileDBClient(),
 		deleteErr:    fmt.Errorf("write conflict"),
 	}
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file", tenant, expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -762,11 +777,12 @@ func TestCollector_Run_DBGetErrorDoesNotBlockOtherCollection(t *testing.T) {
 		getErr:        fmt.Errorf("connection refused"),
 	}
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
-	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, "expired-file", tenant, expiredTime))
+	_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, "expired-file", tenant, expiredTime))
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, defaultMaxConcurrency, nil)
 	result := gc.run(ctx)
@@ -785,7 +801,8 @@ func TestCollector_Run_PaginationExactlyPageSize(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	for i := 0; i < pageSize; i++ {
@@ -804,7 +821,8 @@ func TestCollector_Run_PaginationMultiplePages(t *testing.T) {
 	ctx := context.Background()
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	total := pageSize + 50
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
@@ -901,8 +919,9 @@ func TestCollector_Run_FilesDeletionRunsConcurrently(t *testing.T) {
 	batchDB := newTestBatchDBClient()
 	fileDB := newTestFileDBClient()
 
+	filesRoot := t.TempDir()
 	filesClient := &concurrentFilesClient{
-		BatchFilesClient: newTestFilesClient(),
+		BatchFilesClient: newTestFilesClient(filesRoot),
 		delay:            20 * time.Millisecond,
 	}
 
@@ -910,7 +929,7 @@ func TestCollector_Run_FilesDeletionRunsConcurrently(t *testing.T) {
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	for i := 0; i < numFiles; i++ {
-		_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, fmt.Sprintf("conc-file-%d", i), tenant, expiredTime))
+		_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, fmt.Sprintf("conc-file-%d", i), tenant, expiredTime))
 	}
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, numFiles, nil)
@@ -934,7 +953,8 @@ func TestCollector_Run_BatchDeletionRunsConcurrently(t *testing.T) {
 		deleteDelay:   20 * time.Millisecond,
 	}
 	fileDB := newTestFileDBClient()
-	filesClient := newTestFilesClient()
+	filesRoot := t.TempDir()
+	filesClient := newTestFilesClient(filesRoot)
 
 	numBatches := 10
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
@@ -960,8 +980,9 @@ func TestCollector_Run_ConcurrencyBoundIsRespected(t *testing.T) {
 	fileDB := newTestFileDBClient()
 
 	maxConcurrency := 2
+	filesRoot := t.TempDir()
 	filesClient := &concurrentFilesClient{
-		BatchFilesClient: newTestFilesClient(),
+		BatchFilesClient: newTestFilesClient(filesRoot),
 		delay:            20 * time.Millisecond,
 	}
 
@@ -969,7 +990,7 @@ func TestCollector_Run_ConcurrencyBoundIsRespected(t *testing.T) {
 	tenant := t.Name()
 	expiredTime := time.Now().Add(-1 * time.Hour).Unix()
 	for i := 0; i < numFiles; i++ {
-		_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, fmt.Sprintf("bound-file-%d", i), tenant, expiredTime))
+		_ = fileDB.DBStore(ctx, createTestFileWithTenant(t, filesRoot, fmt.Sprintf("bound-file-%d", i), tenant, expiredTime))
 	}
 
 	gc := NewGarbageCollector(batchDB, fileDB, filesClient, false, defaultInterval, maxConcurrency, nil)

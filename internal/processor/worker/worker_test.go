@@ -11,7 +11,7 @@ import (
 )
 
 func TestClientsetFields_Assigned(t *testing.T) {
-	cs := validProcessorClients()
+	cs := validProcessorClients(t)
 	if cs.BatchDB == nil || cs.FileDB == nil || cs.File == nil || cs.Queue == nil || cs.Status == nil || cs.Event == nil || cs.Inference == nil {
 		t.Fatalf("expected all clients to be assigned")
 	}
@@ -47,7 +47,7 @@ func TestProcessorPrepare_ReturnsValidationError(t *testing.T) {
 func TestProcessorRun_ContextCanceled_ReturnsNil(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.PollInterval = 5 * time.Millisecond
-	clients := validProcessorClients()
+	clients := validProcessorClients(t)
 	p := mustNewProcessor(t, cfg, clients)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,7 +59,7 @@ func TestProcessorRun_ContextCanceled_ReturnsNil(t *testing.T) {
 
 func TestProcessorStop_DoneAndContextPaths(t *testing.T) {
 	cfg := config.NewConfig()
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	// done path
 	p.Stop(context.Background())
@@ -118,7 +118,7 @@ func TestProcessorTokenHelpers(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 1
 	cfg.PollInterval = 5 * time.Millisecond
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	if !p.acquire(context.Background()) {
 		t.Fatalf("expected acquire true")

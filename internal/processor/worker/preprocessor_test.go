@@ -38,7 +38,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	// Build remote input in mock files store
 	tenantID := uniqueTestFolder(t, "tenantA/job-inputs")
@@ -46,7 +46,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
+
 	filename := "input.jsonl"
 	models := []string{
 		"m1", "m2", "m1", "m3",
@@ -193,14 +193,13 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := uniqueTestFolder(t, "tenantA/job-sys-prompt")
 	folder, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	specs := []inputLineSpec{
 		{Model: "m1", SystemPrompt: "You are a helpful assistant."},
@@ -420,7 +419,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	clients := &clientset.Clientset{
 		BatchDB: dbClient,
@@ -436,7 +435,6 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	models := make([]string, 0, 2000)
 	for i := 0; i < 2000; i++ {
@@ -502,7 +500,7 @@ func TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	clients := &clientset.Clientset{
 		BatchDB: dbClient,
@@ -518,7 +516,6 @@ func TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	models := make([]string, 0, 2000)
 	for i := 0; i < 2000; i++ {
@@ -576,7 +573,7 @@ func TestPreProcess_SLOExpiredDuringIngestion_ReturnsErrExpired(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	clients := &clientset.Clientset{
 		BatchDB: dbClient,
@@ -592,7 +589,6 @@ func TestPreProcess_SLOExpiredDuringIngestion_ReturnsErrExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	// A single request is enough: sloCtx is already expired, so the ingestion loop
 	// returns errExpired on the first iteration before reading any lines.
@@ -1251,14 +1247,13 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := uniqueTestFolder(t, "tenantA/stream-reject")
 	folder, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	var remoteBuf bytes.Buffer
 	remoteBuf.WriteString(`{"custom_id":"r1","body":{"model":"m1","messages":[{"role":"user","content":"ok"}]}}` + "\n")
@@ -1319,14 +1314,13 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := uniqueTestFolder(t, "tenantA/dup-custom-id")
 	folder, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	var remoteBuf bytes.Buffer
 	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
@@ -1390,14 +1384,13 @@ func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
 	cfg.WorkDir = workDir
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := uniqueTestFolder(t, "tenantA/unique-custom-id")
 	folder, err := ucom.GetFolderNameByTenantID(tenantID)
 	if err != nil {
 		t.Fatalf("GetFolderNameByTenantID: %v", err)
 	}
-	cleanMockFilesFolder(t, folder)
 
 	var remoteBuf bytes.Buffer
 	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
@@ -1455,7 +1448,7 @@ func TestPreProcess_UnregisteredModel_RejectedToErrorFile(t *testing.T) {
 
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := "tenant__tenantA"
 	folder, _ := ucom.GetFolderNameByTenantID(tenantID)
@@ -1576,7 +1569,7 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := "tenant__tenantA"
 	folder, _ := ucom.GetFolderNameByTenantID(tenantID)
@@ -1706,7 +1699,7 @@ func TestPreProcess_ReEnqueue_TruncatesStaleErrorFile(t *testing.T) {
 
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := "tenant__tenantA"
 	folder, _ := ucom.GetFolderNameByTenantID(tenantID)
@@ -1799,7 +1792,7 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 
 	dbClient := newMockBatchDBClient()
 	fileDBClient := newMockFileDBClient()
-	filesClient := mockfiles.NewMockBatchFilesClient()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
 
 	tenantID := "tenant__tenantA"
 	folder, _ := ucom.GetFolderNameByTenantID(tenantID)

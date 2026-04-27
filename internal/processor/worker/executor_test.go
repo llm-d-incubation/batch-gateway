@@ -157,7 +157,7 @@ func TestExecuteOneRequest_NilInferenceClient(t *testing.T) {
 	clients := &clientset.Clientset{
 		BatchDB:   newMockBatchDBClient(),
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Status:    mockdb.NewMockBatchStatusClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -2119,7 +2119,7 @@ func TestHandleCancelled_CancelledWriteFails_FallsBackToFailed(t *testing.T) {
 	clients := &clientset.Clientset{
 		BatchDB:   failDB,
 		FileDB:    newMockFileDBClient(),
-		File:      mockfiles.NewMockBatchFilesClient(),
+		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
 		Status:    statusClient,
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
@@ -2453,7 +2453,7 @@ func TestUploadPartialResults_OneUploadFails_OtherSurvives(t *testing.T) {
 func TestCleanupJobArtifacts_RemovesDirectory(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	p := mustNewProcessor(t, cfg, validProcessorClients())
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	jobDir, _ := p.jobRootDir("cleanup-job", "tenant-1")
 	if err := os.MkdirAll(filepath.Join(jobDir, "plans"), 0o755); err != nil {
