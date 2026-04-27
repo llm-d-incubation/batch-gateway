@@ -25,9 +25,24 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 )
 
+// Database backend types.
+const (
+	DBTypeRedis      = "redis"
+	DBTypeValkey     = "valkey"
+	DBTypePostgreSQL = "postgresql"
+	DBTypeMock       = "mock"
+)
+
+// File storage backend types.
+const (
+	FileTypeFS   = "fs"
+	FileTypeS3   = "s3"
+	FileTypeMock = "mock"
+)
+
 // DBClientConfig holds database client configuration shared by all components.
 type DBClientConfig struct {
-	// Type specifies the database backend: "mock", "redis", "valkey", or "postgresql".
+	// Type specifies the database backend: DBTypeRedis, DBTypeValkey, or DBTypePostgreSQL.
 	Type string `yaml:"type"`
 	// PostgreSQLCfg holds PostgreSQL connection settings (used when Type is "postgresql").
 	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`

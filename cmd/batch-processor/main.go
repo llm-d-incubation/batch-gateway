@@ -278,26 +278,20 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-processor"
 	cfg.DBClientCfg.RedisCfg.EnableTracing = cfg.OTelCfg.RedisTracing
+	cfg.DBClientCfg.PostgreSQLCfg.EnableTracing = cfg.OTelCfg.PostgresqlTracing
 
 	resolved, err := config.ResolveModelGateways(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
-	cfg.DBClientCfg.PostgreSQLCfg.EnableTracing = cfg.OTelCfg.PostgresqlTracing
 
-	clients, err := clientset.NewClientset(
-		ctx,
-		cfg.DBClientCfg.Type,
-		&cfg.DBClientCfg.PostgreSQLCfg,
-		&cfg.DBClientCfg.RedisCfg,
-		cfg.FileClientCfg.Type,
-		&cfg.FileClientCfg.FSConfig,
-		&cfg.FileClientCfg.S3Config,
-		&cfg.FileClientCfg.Retry,
-		resolved.Global,
-		resolved.PerModel,
-		ucom.ComponentProcessor,
-	)
+	clients, err := clientset.NewClientset(ctx, clientset.Options{
+		DBCfg:             cfg.DBClientCfg,
+		FileCfg:           cfg.FileClientCfg,
+		InferenceGlobal:   resolved.Global,
+		InferencePerModel: resolved.PerModel,
+		Component:         ucom.ComponentProcessor,
+	})
 	if err != nil {
 		logger.Error(err, "Failed to create clients")
 		return nil, err

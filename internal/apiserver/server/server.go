@@ -55,18 +55,11 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 	config.DBClientCfg.RedisCfg.EnableTracing = config.OTelCfg.RedisTracing
 	config.DBClientCfg.PostgreSQLCfg.EnableTracing = config.OTelCfg.PostgresqlTracing
 
-	clients, err := clientset.NewClientset(
-		ctx,
-		config.DBClientCfg.Type,
-		&config.DBClientCfg.PostgreSQLCfg,
-		&config.DBClientCfg.RedisCfg,
-		config.FileClientCfg.Type,
-		&config.FileClientCfg.FSConfig,
-		&config.FileClientCfg.S3Config,
-		&config.FileClientCfg.Retry,
-		nil, nil,
-		ucom.ComponentApiserver,
-	)
+	clients, err := clientset.NewClientset(ctx, clientset.Options{
+		DBCfg:     config.DBClientCfg,
+		FileCfg:   config.FileClientCfg,
+		Component: ucom.ComponentApiserver,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clients: %w", err)
 	}

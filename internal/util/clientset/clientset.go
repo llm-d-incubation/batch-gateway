@@ -33,9 +33,9 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/files_store/retryclient"
 	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
 	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
+	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
@@ -140,114 +140,106 @@ func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfi
 	return batchDB, fileDB, nil
 }
 
-// NewClientset creates all clients.
-// component identifies the caller (e.g. "processor", "apiserver") for metrics.
-// fileRetryCfg, if non-nil with MaxRetries > 0, wraps the file client with retry logic.
-//
-// TODO: refactor to accept sharedcfg.DBClientConfig and sharedcfg.FileClientConfig
-// instead of exploding them into individual parameters.
-func NewClientset(
-	ctx context.Context,
-	dbType string,
-	postgreSQLCfg *postgresql.PostgreSQLConfig,
-	redisCfg *uredis.RedisClientConfig,
-	fileClientType string,
-	fsCfg *fsclient.Config,
-	s3Cfg *s3client.Config,
-	fileRetryCfg *retry.Config,
-	globalGatewayConfig *inference.GatewayClientConfig,
-	perModelGatewayConfigs map[string]inference.GatewayClientConfig,
-	component ucom.Component,
-) (*Clientset, error) {
+// Options configures which clients NewClientset creates.
+type Options struct {
+	DBCfg             sharedcfg.DBClientConfig
+	FileCfg           sharedcfg.FileClientConfig
+	InferenceGlobal   *inference.GatewayClientConfig
+	InferencePerModel map[string]inference.GatewayClientConfig
+	Component         ucom.Component
 
+	// SkipExchangeClient skips creation of the Redis exchange client
+	// (Queue, Event, Status). Set this for components that only need
+	// database and file-store clients (e.g. the garbage collector).
+	SkipExchangeClient bool
+}
+
+// NewClientset creates all clients specified by opts.
+func NewClientset(ctx context.Context, opts Options) (*Clientset, error) {
 	logger := logr.FromContextOrDiscard(ctx)
-
-	// check required parameters
-	if redisCfg == nil {
-		return nil, fmt.Errorf("redisCfg cannot be nil")
-	}
+	redisCfg := &opts.DBCfg.RedisCfg
 
 	cs := &Clientset{}
 
-	// TODO: The exchange interfaces (priority queue, events, status) currently always use Redis.
-	// Consider adding a separate type parameter for these if we need alternative backends.
-	// See: https://github.com/llm-d-incubation/batch-gateway/pull/102#discussion_r2906181334
-
-	// build redis exchange client
-	if redisCfg.Url == "" {
-		redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
-		if err != nil {
-			return nil, err
+	// build redis exchange client (unless skipped)
+	if !opts.SkipExchangeClient {
+		// TODO: The exchange interfaces (priority queue, events, status) currently always use Redis.
+		// Consider adding a separate type parameter for these if we need alternative backends.
+		// See: https://github.com/llm-d-incubation/batch-gateway/pull/102#discussion_r2906181334
+		if redisCfg.Url == "" {
+			redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
+			if err != nil {
+				return nil, err
+			}
+			redisCfg.Url = redisURL
 		}
-		redisCfg.Url = redisURL
+		redisClient, err := dbRedis.NewExchangeDBClientRedis(ctx, nil, redisCfg, 0)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create redis exchange client: %w", err)
+		}
+		logger.Info("Redis exchange client created")
+		cs.Queue = redisClient
+		cs.Event = redisClient
+		cs.Status = redisClient
 	}
-	redisClient, err := dbRedis.NewExchangeDBClientRedis(ctx, nil, redisCfg, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create redis DS client: %w", err)
-	}
-	logger.Info("Redis client created")
-	cs.Queue = redisClient
-	cs.Event = redisClient
-	cs.Status = redisClient
 
 	// build file store client
-	switch fileClientType {
-	case "fs":
-		c, err := NewFSFileClient(ctx, fsCfg)
+	switch opts.FileCfg.Type {
+	case sharedcfg.FileTypeFS:
+		c, err := NewFSFileClient(ctx, &opts.FileCfg.FSConfig)
 		if err != nil {
 			return nil, err
 		}
-		cs.File = fstracing.Wrap(c, "fs")
-	case "s3":
-		c, err := NewS3FileClient(ctx, s3Cfg)
+		cs.File = fstracing.Wrap(c, sharedcfg.FileTypeFS)
+	case sharedcfg.FileTypeS3:
+		c, err := NewS3FileClient(ctx, &opts.FileCfg.S3Config)
 		if err != nil {
 			return nil, err
 		}
-		cs.File = fstracing.Wrap(c, "s3")
+		cs.File = fstracing.Wrap(c, sharedcfg.FileTypeS3)
 	default:
-		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", fileClientType)
+		return nil, fmt.Errorf("unsupported file_client.type: %s (supported values: fs, s3)", opts.FileCfg.Type)
 	}
-	if fileRetryCfg != nil && fileRetryCfg.MaxRetries > 0 {
-		cs.File = retryclient.New(cs.File, *fileRetryCfg, component)
-		logger.Info("File client wrapped with retry", "maxRetries", fileRetryCfg.MaxRetries)
+	if opts.FileCfg.Retry.MaxRetries > 0 {
+		cs.File = retryclient.New(cs.File, opts.FileCfg.Retry, opts.Component)
+		logger.Info("File client wrapped with retry", "maxRetries", opts.FileCfg.Retry.MaxRetries)
 	}
 
 	// build database client
-	switch dbType {
-	case "redis", "valkey":
+	switch opts.DBCfg.Type {
+	case sharedcfg.DBTypeRedis, sharedcfg.DBTypeValkey:
 		batchDB, fileDB, err := NewRedisDBClients(ctx, redisCfg)
 		if err != nil {
 			return nil, err
 		}
 		cs.BatchDB = batchDB
 		cs.FileDB = fileDB
-	case "postgresql":
-		batchDB, fileDB, err := NewPostgreSQLDBClients(ctx, postgreSQLCfg)
+	case sharedcfg.DBTypePostgreSQL:
+		batchDB, fileDB, err := NewPostgreSQLDBClients(ctx, &opts.DBCfg.PostgreSQLCfg)
 		if err != nil {
 			return nil, err
 		}
 		cs.BatchDB = batchDB
 		cs.FileDB = fileDB
 	default:
-		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, valkey, postgresql)", dbType)
+		return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, valkey, postgresql)", opts.DBCfg.Type)
 	}
 
 	// build inference client(s)
-	// Processor Validate() guarantees exactly one is set; apiserver passes nil for both.
 	switch {
-	case globalGatewayConfig != nil:
-		resolver, err := inference.NewGlobalResolver(*globalGatewayConfig, logger)
+	case opts.InferenceGlobal != nil:
+		resolver, err := inference.NewGlobalResolver(*opts.InferenceGlobal, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create global inference client: %w", err)
 		}
 		logger.Info("Global inference client created")
 		cs.Inference = resolver
-	case len(perModelGatewayConfigs) > 0:
-		resolver, err := inference.NewPerModelResolver(perModelGatewayConfigs, logger)
+	case len(opts.InferencePerModel) > 0:
+		resolver, err := inference.NewPerModelResolver(opts.InferencePerModel, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create per-model inference clients: %w", err)
 		}
-		logger.Info("Per-model inference clients created", "count", len(perModelGatewayConfigs))
+		logger.Info("Per-model inference clients created", "count", len(opts.InferencePerModel))
 		cs.Inference = resolver
 	}
 
