@@ -38,6 +38,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/testr"
+	"github.com/go-resty/resty/v2"
 )
 
 func testLogger(t testing.TB) logr.Logger {
@@ -577,75 +578,64 @@ func TestRetryAfter_429WithoutHeader(t *testing.T) {
 	}
 }
 
-// TestRetryAfter_5xxUsesFasterBackoff tests that 502/503/504 responses use a
-// faster retry with maxBackoff/2 cap (transient failures).
+// TestRetryAfter_5xxUsesFasterBackoff verifies that the retryAfter function
+// uses a lower max-backoff cap for transient 502/503/504 (maxBackoff/2) than
+// for other 5xx errors (maxBackoff).
 func TestRetryAfter_5xxUsesFasterBackoff(t *testing.T) {
-	runScenario := func(t *testing.T, firstFailureStatus int) time.Duration {
-		t.Helper()
-		var attemptCount atomic.Int32
+	const (
+		initialBackoff = 1 * time.Second
+		maxBackoff     = 60 * time.Second
+	)
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			count := attemptCount.Add(1)
-			if count <= 3 {
-				w.WriteHeader(firstFailureStatus)
-				_, _ = w.Write([]byte(`{"error": {"message": "transient failure"}}`))
-			} else {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"result": "success"}`))
-			}
-		}))
-		defer server.Close()
+	retryAfter := newRetryAfterFunc(initialBackoff, maxBackoff)
 
-		client, err := NewHTTPClient(Config{
-			BaseURL:        server.URL,
-			MaxRetries:     4,
-			InitialBackoff: 20 * time.Millisecond,
-			MaxBackoff:     80 * time.Millisecond,
-		}, testLogger(t))
-		if err != nil {
-			t.Fatalf("NewHTTPClient failed: %v", err)
+	makeResp := func(statusCode, attempt int) *resty.Response {
+		return &resty.Response{
+			Request:     &resty.Request{Attempt: attempt},
+			RawResponse: &http.Response{StatusCode: statusCode, Header: http.Header{}},
 		}
-
-		start := time.Now()
-		_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-5xx")
-		elapsed := time.Since(start)
-		if err != nil {
-			t.Fatalf("Post failed: %v", err)
-		}
-		if statusCode != http.StatusOK {
-			t.Fatalf("Expected status 200, got %d", statusCode)
-		}
-		if attemptCount.Load() != 4 {
-			t.Fatalf("Expected 4 attempts, got %d", attemptCount.Load())
-		}
-		return elapsed
 	}
 
-	const samples = 5
-	var elapsed503Samples []time.Duration
-	var elapsed500Samples []time.Duration
-	for range samples {
-		elapsed503Samples = append(elapsed503Samples, runScenario(t, http.StatusServiceUnavailable))
-		elapsed500Samples = append(elapsed500Samples, runScenario(t, http.StatusInternalServerError))
+	transientCodes := []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
 	}
 
-	median := func(values []time.Duration) time.Duration {
-		ordered := append([]time.Duration(nil), values...)
-		for i := 0; i < len(ordered); i++ {
-			for j := i + 1; j < len(ordered); j++ {
-				if ordered[j] < ordered[i] {
-					ordered[i], ordered[j] = ordered[j], ordered[i]
+	// The jitter factor is 0.5, so the max returned value for a capped
+	// interval is max * (1 + 0.5) = max * 1.5.
+	transientCeiling := maxBackoff / 2 * 3 / 2 // maxBackoff/2 with +50% jitter
+	standardCeiling := maxBackoff * 3 / 2      // maxBackoff with +50% jitter
+
+	for _, code := range transientCodes {
+		t.Run(fmt.Sprintf("status_%d_capped_at_half_max", code), func(t *testing.T) {
+			for attempt := 1; attempt <= 10; attempt++ {
+				d, _ := retryAfter(nil, makeResp(code, attempt))
+				if d > transientCeiling {
+					t.Errorf("attempt %d: %d backoff %v exceeds transient ceiling %v",
+						attempt, code, d, transientCeiling)
 				}
 			}
-		}
-		return ordered[len(ordered)/2]
+		})
 	}
 
-	median503 := median(elapsed503Samples)
-	median500 := median(elapsed500Samples)
-	if median503 >= median500 {
-		t.Errorf("Expected 503 median retry time (%v) < 500 median retry time (%v)", median503, median500)
-	}
+	t.Run("status_500_reaches_higher_cap", func(t *testing.T) {
+		// At high attempt counts, 500 should sometimes exceed the transient
+		// ceiling since its cap is maxBackoff (not maxBackoff/2).
+		// Run enough iterations to observe this with high probability.
+		var exceeded bool
+		for range 200 {
+			d, _ := retryAfter(nil, makeResp(http.StatusInternalServerError, 10))
+			if d > transientCeiling {
+				exceeded = true
+				break
+			}
+		}
+		if !exceeded {
+			t.Errorf("500 backoff at high attempt never exceeded transient ceiling %v; "+
+				"expected it to reach up to %v", transientCeiling, standardCeiling)
+		}
+	})
 }
 
 // TestParseRetryAfter tests the Retry-After header parsing function.
