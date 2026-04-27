@@ -150,8 +150,14 @@ install_exchange() {
     helm repo update || warn "Some Helm repo updates failed; continuing."
 
     if helm status "${REDIS_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
-        log "Exchange backend (${chart}) release '${REDIS_RELEASE}' is already installed. Skipping."
-        return
+        local installed_chart
+        installed_chart=$(helm get metadata "${REDIS_RELEASE}" -n "${NAMESPACE}" -o json 2>/dev/null | grep -o '"chart":"[^"]*"' | cut -d'"' -f4)
+        if [[ "${installed_chart}" == "${EXCHANGE_CLIENT_TYPE}-"* ]]; then
+            log "Exchange backend (${chart}) release '${REDIS_RELEASE}' is already installed. Skipping."
+            return
+        fi
+        warn "Installed exchange chart '${installed_chart}' does not match requested '${EXCHANGE_CLIENT_TYPE}'. Reinstalling..."
+        helm uninstall "${REDIS_RELEASE}" -n "${NAMESPACE}" --wait
     fi
 
     local persistence_key="master.persistence.enabled"

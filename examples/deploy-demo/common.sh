@@ -390,8 +390,14 @@ install_batch_redis() {
     local chart="oci://registry-1.docker.io/bitnamicharts/${BATCH_EXCHANGE_CLIENT_TYPE}"
     step "Installing exchange backend (${chart})..."
     if helm status "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
-        log "Exchange release '${BATCH_REDIS_RELEASE}' is already installed. Skipping."
-        return
+        local installed_chart
+        installed_chart=$(helm get metadata "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" -o json 2>/dev/null | grep -o '"chart":"[^"]*"' | cut -d'"' -f4)
+        if [[ "${installed_chart}" == "${BATCH_EXCHANGE_CLIENT_TYPE}-"* ]]; then
+            log "Exchange backend (${chart}) release '${BATCH_REDIS_RELEASE}' is already installed. Skipping."
+            return
+        fi
+        warn "Installed exchange chart '${installed_chart}' does not match requested '${BATCH_EXCHANGE_CLIENT_TYPE}'. Reinstalling..."
+        helm uninstall "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" --wait
     fi
     helm install "${BATCH_REDIS_RELEASE}" "${chart}" \
         --namespace "${BATCH_NAMESPACE}" --create-namespace \
