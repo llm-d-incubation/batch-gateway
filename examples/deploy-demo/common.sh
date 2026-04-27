@@ -386,7 +386,7 @@ EOF
 
 # ── Database / Storage Functions ──────────────────────────────────────────────
 
-install_batch_redis() {
+install_batch_exchange() {
     local chart="oci://registry-1.docker.io/bitnamicharts/${BATCH_EXCHANGE_CLIENT_TYPE}"
     step "Installing exchange backend (${chart})..."
     if helm status "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
@@ -640,7 +640,7 @@ do_deploy_batch_gateway() {
     kubectl get namespace "${BATCH_NAMESPACE}" &>/dev/null || kubectl create namespace "${BATCH_NAMESPACE}"
     kubectl label namespace "${BATCH_NAMESPACE}" llm-d.ai/gateway-route=true --overwrite
 
-    install_batch_redis
+    install_batch_exchange
     install_batch_postgresql
     if [ "${BATCH_STORAGE_TYPE}" = "s3" ]; then
         install_batch_minio
