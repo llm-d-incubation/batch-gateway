@@ -153,6 +153,7 @@ type clientsetConfig struct {
 
 // WithDB enables creation of batch and file database clients.
 func WithDB(cfg sharedcfg.DBClientConfig) Option {
+	cfg = cfg.DeepCopy()
 	return func(c *clientsetConfig) { c.dbCfg = &cfg }
 }
 
@@ -163,6 +164,7 @@ func WithFile(cfg sharedcfg.FileClientConfig) Option {
 
 // WithExchange enables creation of the Redis exchange client (Queue, Event, Status).
 func WithExchange(cfg uredis.RedisClientConfig) Option {
+	cfg = cfg.DeepCopy()
 	return func(c *clientsetConfig) { c.exchangeRedisCfg = &cfg }
 }
 
@@ -173,7 +175,11 @@ func WithGlobalInference(cfg inference.GatewayClientConfig) Option {
 
 // WithPerModelInference enables creation of per-model inference clients.
 func WithPerModelInference(cfgs map[string]inference.GatewayClientConfig) Option {
-	return func(c *clientsetConfig) { c.inferencePerModel = cfgs }
+	copied := make(map[string]inference.GatewayClientConfig, len(cfgs))
+	for k, v := range cfgs {
+		copied[k] = v
+	}
+	return func(c *clientsetConfig) { c.inferencePerModel = copied }
 }
 
 // NewClientset creates the clients specified by the given options.

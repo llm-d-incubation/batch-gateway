@@ -51,6 +51,12 @@ type DBClientConfig struct {
 	RedisCfg uredis.RedisClientConfig `yaml:"redis"`
 }
 
+// DeepCopy returns a copy of the config with pointer fields cloned.
+func (c DBClientConfig) DeepCopy() DBClientConfig {
+	c.RedisCfg = c.RedisCfg.DeepCopy()
+	return c
+}
+
 // FileClientConfig holds file storage client configuration shared by all components.
 type FileClientConfig struct {
 	Type     string          `yaml:"type"`
