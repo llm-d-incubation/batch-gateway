@@ -66,12 +66,10 @@ func run() error {
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-gc"
 
-	clients, err := clientset.NewClientset(ctx, clientset.Options{
-		DBCfg:              cfg.DBClientCfg,
-		FileCfg:            cfg.FileClientCfg,
-		Component:          ucom.ComponentGC,
-		SkipExchangeClient: true,
-	})
+	clients, err := clientset.NewClientset(ctx, ucom.ComponentGC,
+		clientset.WithDB(cfg.DBClientCfg),
+		clientset.WithFile(cfg.FileClientCfg),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}

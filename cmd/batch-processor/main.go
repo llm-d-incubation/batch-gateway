@@ -285,13 +285,18 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		return nil, fmt.Errorf("failed to resolve model gateways: %w", err)
 	}
 
-	clients, err := clientset.NewClientset(ctx, clientset.Options{
-		DBCfg:             cfg.DBClientCfg,
-		FileCfg:           cfg.FileClientCfg,
-		InferenceGlobal:   resolved.Global,
-		InferencePerModel: resolved.PerModel,
-		Component:         ucom.ComponentProcessor,
-	})
+	opts := []clientset.Option{
+		clientset.WithDB(cfg.DBClientCfg),
+		clientset.WithFile(cfg.FileClientCfg),
+		clientset.WithExchange(cfg.DBClientCfg.RedisCfg),
+	}
+	if resolved.Global != nil {
+		opts = append(opts, clientset.WithGlobalInference(*resolved.Global))
+	}
+	if len(resolved.PerModel) > 0 {
+		opts = append(opts, clientset.WithPerModelInference(resolved.PerModel))
+	}
+	clients, err := clientset.NewClientset(ctx, ucom.ComponentProcessor, opts...)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")
 		return nil, err
