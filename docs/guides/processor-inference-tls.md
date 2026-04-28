@@ -2,7 +2,7 @@
 
 The batch **processor** opens outbound HTTPS connections to the configured inference gateway (`globalInferenceGateway` or per-model `modelGateways`). This guide shows how to supply trust anchors and optional client certificates when the gateway uses TLS (for example vLLM or an Envoy gateway with TLS enabled).
 
-For the **batch API server** listening with TLS and cert-manager, see the deployment guides ([Kubernetes](deploy-k8s.md), [RHOAI](deploy-rhoai.md), [MaaS](deploy-maas.md)).
+For the **batch API server** listening with TLS and cert-manager, see the deployment guide ([Kubernetes](deploy-k8s.md)).
 
 ## Behavior summary
 

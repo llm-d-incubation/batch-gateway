@@ -87,11 +87,7 @@ MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
 # Example (upstream):
 #   BATCH_IMAGE_TAG=v0.1.0 BATCH_APISERVER_REPO=ghcr.io/llm-d-incubation/batch-gateway-apiserver \
 #   BATCH_PROCESSOR_REPO=ghcr.io/llm-d-incubation/batch-gateway-processor \
-#   BATCH_GC_REPO=ghcr.io/llm-d-incubation/batch-gateway-gc ./deploy-rhoai.sh
-# Example (midstream):
-#   BATCH_IMAGE_TAG=v0.1.0 BATCH_APISERVER_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-apiserver \
-#   BATCH_PROCESSOR_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-processor \
-#   BATCH_GC_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-gc ./deploy-rhoai.sh
+#   BATCH_GC_REPO=ghcr.io/llm-d-incubation/batch-gateway-gc ./deploy-k8s.sh
 BATCH_IMAGE_TAG="${BATCH_IMAGE_TAG:-}"
 BATCH_APISERVER_REPO="${BATCH_APISERVER_REPO:-}"
 BATCH_PROCESSOR_REPO="${BATCH_PROCESSOR_REPO:-}"

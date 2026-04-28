@@ -1,6 +1,6 @@
 # Batch Inference Integration with Kuadrant
 
-This doc demonstrates how to integrate batch inference with Kuadrant, GAIE, and Istio on any Kubernetes or OpenShift cluster. For the MaaS/ODH-specific integration, see [maas-integration.md](maas-integration.md).
+This doc demonstrates how to integrate batch inference with Kuadrant, GAIE, and Istio on any Kubernetes or OpenShift cluster.
 
 ## 1. Architecture
 
