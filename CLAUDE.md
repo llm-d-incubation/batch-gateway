@@ -13,7 +13,7 @@ OpenAI-compatible batch API gateway for llm-d. Three binaries: apiserver, batch-
 - **Logging**: Use `logr.Logger` — not stdlib `log` (banned in non-test code) or `klog` logging functions.
 - **Interfaces**: Verify compliance at compile time: `var _ Interface = (*Impl)(nil)`. This project uses this pattern extensively.
 - **Errors**: Wrap with `%w` (not `%v`) so callers can use `errors.Is`/`errors.As`. Handle errors once — return OR log, never both. Only wrap when adding context the caller doesn't have — keep wrap messages short (function/operation name). Exported error vars use `Err` prefix (`var ErrNotFound = errors.New(...)`).
-- **Tests**: Table-driven with subtests. Use `name` field for test case description.
+- **Tests**: Table-driven with subtests. Group tests for the same function under one `TestXxx` using `t.Run()`, not separate `TestXxx_Case1`, `TestXxx_Case2` functions. Use `name` field for test case description.
 - **Structs**: Always use field names in initialization. Use `var s T` for zero values, not `s := T{}`.
 - **Goroutines**: Never fire-and-forget. Always provide a shutdown signal mechanism. Prefer small channel buffers (0 or 1). Larger buffers need justification.
 - **Early return**: Handle errors first and return early to reduce nesting.
