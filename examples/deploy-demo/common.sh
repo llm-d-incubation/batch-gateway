@@ -556,6 +556,21 @@ EOF
     log "Secret '${BATCH_APP_SECRET_NAME}' applied."
 }
 
+get_batch_gateway_image_tag() {
+    local image_tag=""
+    if [ -n "${BATCH_IMAGE_TAG}" ]; then
+        image_tag="${BATCH_IMAGE_TAG}"
+    elif [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        image_tag="${BATCH_RELEASE_VERSION}"
+    elif [ -n "${BATCH_DEV_VERSION}" ]; then
+        if [ "${BATCH_DEV_VERSION}" != "local" ]; then
+            # BATCH_DEV_VERSION is specific commit
+            image_tag="${BATCH_DEV_VERSION}"
+        fi
+    fi
+    echo "$image_tag"
+}
+
 # install_batch_gateway [helm_args...]
 # Installs batch-gateway via helm chart. Callers pass the complete helm args array.
 install_batch_gateway() {
@@ -598,16 +613,7 @@ install_batch_gateway() {
     wait_for_deployment "${BATCH_HELM_RELEASE}-gc" "${BATCH_NAMESPACE}" 180s
 
     # Print installed versions and verify image tags
-    local expected_tag
-    if [ -n "${BATCH_IMAGE_TAG}" ]; then
-        expected_tag="${BATCH_IMAGE_TAG}"
-    elif [ -n "${BATCH_RELEASE_VERSION}" ]; then
-        expected_tag="${BATCH_RELEASE_VERSION}"
-    elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
-        expected_tag="latest"
-    else
-        expected_tag="${BATCH_DEV_VERSION}"
-    fi
+    local expected_tag=$(get_batch_gateway_image_tag)
     step "Installed batch-gateway components:"
     local mismatch=false
     for component in apiserver processor gc; do
@@ -616,7 +622,7 @@ install_batch_gateway() {
             -o jsonpath='{.spec.template.spec.containers[0].image}')
         local actual_tag="${actual_image##*:}"
         log "  ${component}: ${actual_image}"
-        if [ "${actual_tag}" != "${expected_tag}" ]; then
+        if [ -n "${expected_tag}" ] && [ "${actual_tag}" != "${expected_tag}" ]; then
             warn "  ${component} tag '${actual_tag}' does not match expected '${expected_tag}'"
             mismatch=true
         fi
@@ -657,15 +663,8 @@ do_deploy_batch_gateway() {
 
     # Image tag: explicit BATCH_IMAGE_TAG takes precedence; otherwise derive from
     # BATCH_DEV_VERSION for non-release installs (release charts have tags baked in).
-    if [ -n "${BATCH_IMAGE_TAG}" ]; then
-        helm_args+=(
-            --set "apiserver.image.tag=${BATCH_IMAGE_TAG}"
-            --set "processor.image.tag=${BATCH_IMAGE_TAG}"
-            --set "gc.image.tag=${BATCH_IMAGE_TAG}"
-        )
-    elif [ -z "${BATCH_RELEASE_VERSION}" ]; then
-        local image_tag="latest"
-        [ "${BATCH_DEV_VERSION}" != "local" ] && image_tag="${BATCH_DEV_VERSION}"
+    local image_tag=$(get_batch_gateway_image_tag)
+    if [ -n "${image_tag}" ]; then
         helm_args+=(
             --set "apiserver.image.tag=${image_tag}"
             --set "processor.image.tag=${image_tag}"
