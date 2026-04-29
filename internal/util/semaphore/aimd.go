@@ -21,6 +21,8 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
+
+	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 )
 
 // AIMDConfig holds parameters for the AIMD controller.
@@ -71,7 +73,7 @@ func NewAIMDController(cfg AIMDConfig, initialLimit int, setFn func(int), logger
 	}
 	// Ensure the semaphore matches the clamped limit from the start.
 	if limit != initialLimit {
-		logger.V(1).Info("AIMD initial clamp", "requested", initialLimit, "clamped", limit)
+		logger.V(logging.INFO).Info("AIMD initial clamp", "requested", initialLimit, "clamped", limit)
 		setFn(limit)
 	}
 	return c
@@ -96,7 +98,7 @@ func (c *AIMDController) computeSuccessLimit() int {
 		c.limit = min(c.limit+c.cfg.AdditiveIncrease, c.cfg.MaxLimit)
 		c.successCount = 0
 		if c.limit != oldLimit {
-			c.logger.V(1).Info("AIMD increase", "old", oldLimit, "new", c.limit)
+			c.logger.V(logging.INFO).Info("AIMD increase", "old", oldLimit, "new", c.limit)
 			return c.limit
 		}
 	}
@@ -120,7 +122,7 @@ func (c *AIMDController) computeBackoffLimit() int {
 	c.limit = max(c.cfg.MinLimit, int(math.Floor(float64(c.limit)*c.cfg.BackoffFactor)))
 	c.successCount = 0
 	if c.limit != oldLimit {
-		c.logger.V(1).Info("AIMD decrease", "old", oldLimit, "new", c.limit)
+		c.logger.V(logging.INFO).Info("AIMD decrease", "old", oldLimit, "new", c.limit)
 		return c.limit
 	}
 	return 0
