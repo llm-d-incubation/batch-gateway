@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cbackoff "github.com/cenkalti/backoff/v5"
@@ -44,6 +45,19 @@ const (
 	// back off harder than for transient 5xx errors.
 	rateLimitBackoffMultiplier = 3
 )
+
+type capacityRetryKeyType struct{}
+
+var capacityRetryCtxKey capacityRetryKeyType
+
+// NewCapacityRetryContext returns a child context that tracks whether any HTTP
+// retry was triggered by a capacity-related response (429 or 5xx). Call the
+// returned function after the request completes to read the result.
+// This is opt-in: if the caller does not wrap the context, retries are not tracked.
+func NewCapacityRetryContext(ctx context.Context) (context.Context, func() bool) {
+	var flag atomic.Bool
+	return context.WithValue(ctx, capacityRetryCtxKey, &flag), flag.Load
+}
 
 // HTTPClient implements HTTP client with retry, TLS, and observability support
 type HTTPClient struct {
@@ -157,12 +171,22 @@ func NewHTTPClient(config Config, logger logr.Logger) (*HTTPClient, error) {
 			return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
 		})
 
-		// Add retry hook for logging
+		// Add retry hook for logging and capacity-retry tracking
 		client.AddRetryHook(func(resp *resty.Response, err error) {
-			if reqID := resp.Request.Header.Get(HeaderNameReqID); reqID != "" {
-				logger := logr.FromContextOrDiscard(resp.Request.Context())
-				logger.V(logging.DEBUG).Info("Retrying request", "request_id", reqID,
-					"attempt", resp.Request.Attempt, "max_retries", config.MaxRetries)
+			if resp != nil && err == nil {
+				sc := resp.StatusCode()
+				if sc == http.StatusTooManyRequests || sc >= http.StatusInternalServerError {
+					if flag, ok := resp.Request.Context().Value(capacityRetryCtxKey).(*atomic.Bool); ok {
+						flag.Store(true)
+					}
+				}
+			}
+			if resp != nil {
+				if reqID := resp.Request.Header.Get(HeaderNameReqID); reqID != "" {
+					logger := logr.FromContextOrDiscard(resp.Request.Context())
+					logger.V(logging.DEBUG).Info("Retrying request", "request_id", reqID,
+						"attempt", resp.Request.Attempt, "max_retries", config.MaxRetries)
+				}
 			}
 		})
 	}

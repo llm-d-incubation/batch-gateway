@@ -306,12 +306,15 @@ processor:
     pollInterval: "5s"
     numWorkers: 20
     globalConcurrency: 100
-    # AIMD floor. AIMD adjusts the effective limit within
-    # [minConcurrency, globalConcurrency] based on 429/5xx backpressure.
-    # Set minConcurrency = globalConcurrency to disable adaptive behavior.
+    # AIMD floor per endpoint. AIMD adjusts the effective limit within
+    # [minConcurrency, perModelMaxConcurrency] based on 429/5xx backpressure.
+    # Set minConcurrency = perModelMaxConcurrency to disable adaptive behavior.
     minConcurrency: 5
     backoffFactor: 0.5
     additiveIncrease: 1
+    # Initial and maximum concurrency per inference endpoint.
+    # Despite the name, this is per-endpoint, not per-model: models sharing
+    # the same gateway endpoint share one AIMD-controlled semaphore.
     perModelMaxConcurrency: 10
     # Maximum number of concurrent job recoveries during startup
     recoveryMaxConcurrency: 5
@@ -424,11 +427,6 @@ prometheusRule:
     workersSaturated:
       enabled: true
       thresholdRatio: 0.9
-      for: "15m"
-    # Fires when the AIMD concurrency limit stays at or near the floor
-    # (processor.config.minConcurrency), indicating sustained downstream overload.
-    adaptiveConcurrencyFloored:
-      enabled: true
       for: "15m"
 
 # Garbage Collector configuration

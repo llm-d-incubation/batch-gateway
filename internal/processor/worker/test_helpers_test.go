@@ -330,22 +330,11 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	adaptiveSem, adaptiveErr := semaphore.NewAdaptive(cfg.GlobalConcurrency, nil)
-	if adaptiveErr != nil {
-		t.Fatalf("global semaphore: %v", adaptiveErr)
+	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	if err != nil {
+		t.Fatalf("global semaphore: %v", err)
 	}
-	p.globalSem = adaptiveSem
-	p.aimd = semaphore.NewAIMDController(
-		semaphore.AIMDConfig{
-			MinLimit:         cfg.MinConcurrency,
-			MaxLimit:         cfg.GlobalConcurrency,
-			BackoffFactor:    cfg.BackoffFactor,
-			AdditiveIncrease: cfg.AdditiveIncrease,
-		},
-		cfg.GlobalConcurrency,
-		func(limit int) { adaptiveSem.SetLimit(limit) },
-		logr.Discard(),
-	)
+	initTestEndpointLimits(t, p, cfg)
 	return p
 }
 
@@ -395,22 +384,11 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	adaptiveSem, adaptiveErr := semaphore.NewAdaptive(cfg.GlobalConcurrency, nil)
-	if adaptiveErr != nil {
-		t.Fatalf("global semaphore: %v", adaptiveErr)
+	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	if err != nil {
+		t.Fatalf("global semaphore: %v", err)
 	}
-	p.globalSem = adaptiveSem
-	p.aimd = semaphore.NewAIMDController(
-		semaphore.AIMDConfig{
-			MinLimit:         cfg.MinConcurrency,
-			MaxLimit:         cfg.GlobalConcurrency,
-			BackoffFactor:    cfg.BackoffFactor,
-			AdditiveIncrease: cfg.AdditiveIncrease,
-		},
-		cfg.GlobalConcurrency,
-		func(limit int) { adaptiveSem.SetLimit(limit) },
-		logr.Discard(),
-	)
+	initTestEndpointLimits(t, p, cfg)
 	p.poller = NewPoller(pqClient, dbClient)
 
 	return &testProcessorEnv{
@@ -699,6 +677,36 @@ func readNonEmptyJSONLLines(t *testing.T, path string) [][]byte {
 		}
 	}
 	return lines
+}
+
+// initTestEndpointLimits creates per-endpoint AIMD+AdaptiveSemaphore pairs for
+// each unique client in the processor's resolver.
+func initTestEndpointLimits(t *testing.T, p *Processor, cfg *config.ProcessorConfig) {
+	t.Helper()
+	if p.inference == nil {
+		p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit)
+		return
+	}
+	clients := p.inference.Clients()
+	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
+	for _, client := range clients {
+		epSem, err := semaphore.NewAdaptive(cfg.PerModelMaxConcurrency, nil)
+		if err != nil {
+			t.Fatalf("endpoint semaphore: %v", err)
+		}
+		epAIMD := semaphore.NewAIMDController(
+			semaphore.AIMDConfig{
+				MinLimit:         cfg.MinConcurrency,
+				MaxLimit:         cfg.PerModelMaxConcurrency,
+				BackoffFactor:    cfg.BackoffFactor,
+				AdditiveIncrease: cfg.AdditiveIncrease,
+			},
+			cfg.PerModelMaxConcurrency,
+			func(limit int) { epSem.SetLimit(limit) },
+			logr.Discard(),
+		)
+		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD}
+	}
 }
 
 func uniqueTestFolder(t *testing.T, base string) string {

@@ -98,7 +98,6 @@ var (
 	requestGenerationTokensTotal  *prometheus.CounterVec
 	jobE2ELatency                 *prometheus.HistogramVec
 	cancellationTotal             *prometheus.CounterVec
-	adaptiveConcurrencyLimit      prometheus.Gauge
 )
 
 // FileType labels for file upload metrics.
@@ -263,15 +262,6 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"phase"},
 	)
 
-	// Current adaptive concurrency limit. Only meaningful when adaptive concurrency is enabled.
-	// When disabled, this gauge is registered but never updated.
-	adaptiveConcurrencyLimit = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "processor_adaptive_concurrency_limit",
-			Help: "Current adaptive concurrency limit (AIMD). Only updated when adaptive concurrency is enabled.",
-		},
-	)
-
 	// Startup recovery: counts jobs discovered in workdir after a container restart.
 	// Non-zero values indicate container-level crashes (OOM, panic) occurred.
 	//
@@ -308,7 +298,6 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		requestGenerationTokensTotal,
 		jobE2ELatency,
 		cancellationTotal,
-		adaptiveConcurrencyLimit,
 	}
 
 	for _, metric := range metricsToRegister {
@@ -403,11 +392,6 @@ func RecordTokenUsage(promptTokens, generationTokens float64, model string) {
 // are recorded as E2EStatusFailed to avoid misrepresenting the actual outcome.
 func RecordJobE2ELatency(duration time.Duration, status string) {
 	jobE2ELatency.WithLabelValues(status).Observe(duration.Seconds())
-}
-
-// SetAdaptiveConcurrencyLimit sets the current adaptive concurrency limit gauge.
-func SetAdaptiveConcurrencyLimit(limit float64) {
-	adaptiveConcurrencyLimit.Set(limit)
 }
 
 // RecordCancellation increments the cancellation counter for a given phase.

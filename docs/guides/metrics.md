@@ -45,8 +45,6 @@ Processor metrics intentionally omit unbounded identifiers such as tenant IDs. P
 
 - `processor_max_inflight_concurrency` (Gauge) - Configured `GlobalConcurrency` ceiling.
 
-- `processor_adaptive_concurrency_limit` (Gauge) - Current AIMD concurrency limit (ranges between `MinConcurrency` and `GlobalConcurrency`).
-
 **Model Metrics:**
 
 - `model_inflight_requests{model}` (Gauge) - Per-model in-flight requests.

@@ -111,10 +111,6 @@
         {
           "expr": "sum(processor_max_inflight_concurrency{namespace=\"$namespace\"})",
           "legendFormat": "max"
-        },
-        {
-          "expr": "sum(processor_adaptive_concurrency_limit{namespace=\"$namespace\"})",
-          "legendFormat": "adaptive limit"
         }
       ]
     },

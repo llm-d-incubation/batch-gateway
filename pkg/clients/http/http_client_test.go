@@ -1201,6 +1201,107 @@ func containsString(s, substr string) bool {
 	return false
 }
 
+func TestCapacityRetryTracking(t *testing.T) {
+	t.Run("429 retry sets capacity flag", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if attempts.Add(1) == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     2,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, hadCapacity := NewCapacityRetryContext(context.Background())
+		_, statusCode, _, err := client.Post(ctx, "/test", nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", statusCode)
+		}
+		if !hadCapacity() {
+			t.Fatal("expected HadCapacityRetry=true after 429 retry")
+		}
+	})
+
+	t.Run("network-only retry does not set capacity flag", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     2,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, hadCapacity := NewCapacityRetryContext(context.Background())
+		_, statusCode, _, err := client.Post(ctx, "/test", nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", statusCode)
+		}
+		if hadCapacity() {
+			t.Fatal("expected HadCapacityRetry=false when no retries occurred")
+		}
+	})
+
+	t.Run("no tracking context is safe", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if attempts.Add(1) == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     2,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// No capacity tracking context — should not panic
+		_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", statusCode)
+		}
+	})
+}
+
 func pemEncodeCert(derBytes []byte) []byte {
 	return pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",

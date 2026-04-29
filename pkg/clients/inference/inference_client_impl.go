@@ -75,18 +75,21 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	}
 	logger.V(logging.TRACE).Info("Sending inference request", "endpoint", endpoint, "request_id", req.RequestID, "model", model)
 
+	// Track whether any retry was caused by capacity pressure (429/5xx)
+	// vs network errors, so the caller can make precise AIMD decisions.
+	trackingCtx, hadCapacityRetry := httpclient.NewCapacityRetryContext(ctx)
+
 	// Execute HTTP POST request using the underlying http client
-	resp, statusCode, retries, err := c.client.Post(ctx, endpoint, req.Params, req.Headers, req.RequestID)
+	resp, statusCode, _, err := c.client.Post(trackingCtx, endpoint, req.Params, req.Headers, req.RequestID)
 
 	// Handle request-level errors (network, timeout, etc.)
 	if err != nil {
-		return c.handleRequestError(ctx, err, req, retries)
+		return c.handleRequestError(ctx, err, req)
 	}
 
 	// Check for non-retryable errors after all retries exhausted
 	if statusCode != http.StatusOK {
 		clientErr := c.client.HandleErrorResponse(ctx, statusCode, resp)
-		clientErr.RetryAttempts = retries
 		return nil, clientErr
 	}
 
@@ -112,43 +115,39 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	}
 
 	return &GenerateResponse{
-		RequestID:     req.RequestID,
-		Response:      resp,
-		RawData:       rawData,
-		RetryAttempts: retries,
+		RequestID:        req.RequestID,
+		Response:         resp,
+		RawData:          rawData,
+		HadCapacityRetry: hadCapacityRetry(),
 	}, nil
 }
 
 // handleRequestError processes request-level errors (network, timeout, cancellation).
-// retries is the number of retry attempts performed by the HTTP client before failing.
-func (c *InferenceHTTPClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest, retries int) (*GenerateResponse, *ClientError) {
+func (c *InferenceHTTPClient) handleRequestError(ctx context.Context, err error, req *GenerateRequest) (*GenerateResponse, *ClientError) {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	if errors.Is(ctx.Err(), context.Canceled) {
 		logger.V(logging.DEBUG).Info("Request cancelled", "request_id", req.RequestID)
 		return nil, &ClientError{
-			Category:      httpclient.ErrCategoryUnknown,
-			Message:       "request cancelled",
-			RawError:      err,
-			RetryAttempts: retries,
+			Category: httpclient.ErrCategoryUnknown,
+			Message:  "request cancelled",
+			RawError: err,
 		}
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		logger.V(logging.DEBUG).Info("Request timeout", "request_id", req.RequestID)
 		return nil, &ClientError{
-			Category:      httpclient.ErrCategoryServer,
-			Message:       "request timeout",
-			RawError:      err,
-			RetryAttempts: retries,
+			Category: httpclient.ErrCategoryServer,
+			Message:  "request timeout",
+			RawError: err,
 		}
 	}
 
 	logger.V(logging.DEBUG).Info("Request failed with network error", "request_id", req.RequestID, "error", err)
 	return nil, &ClientError{
-		Category:      httpclient.ErrCategoryServer,
-		Message:       fmt.Sprintf("failed to execute request: %v", err),
-		RawError:      err,
-		RetryAttempts: retries,
+		Category: httpclient.ErrCategoryServer,
+		Message:  fmt.Sprintf("failed to execute request: %v", err),
+		RawError: err,
 	}
 }
 

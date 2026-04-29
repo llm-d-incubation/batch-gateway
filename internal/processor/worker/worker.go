@@ -37,16 +37,28 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
+// endpointLimit pairs an adaptive semaphore with its AIMD controller for a
+// single inference endpoint. Models sharing the same endpoint share one
+// endpointLimit, so a 429 from endpoint A only reduces concurrency for
+// models routed to A.
+type endpointLimit struct {
+	sem  *semaphore.AdaptiveSemaphore
+	aimd *semaphore.AIMDController
+}
+
 type Processor struct {
 	cfg    *config.ProcessorConfig
 	tokens semaphore.Semaphore
 	wg     sync.WaitGroup
 
 	// globalSem limits total in-flight inference requests across all workers.
+	// Fixed capacity — serves as a ceiling only.
 	globalSem semaphore.Semaphore
 
-	// aimd is the AIMD controller for adaptive concurrency. nil when disabled.
-	aimd *semaphore.AIMDController
+	// endpointLimits maps each unique InferenceClient to its per-endpoint
+	// adaptive semaphore + AIMD controller. Created in Run() from the
+	// resolver's client set.
+	endpointLimits map[inference.InferenceClient]*endpointLimit
 
 	poller  *Poller
 	updater *StatusUpdater
@@ -54,10 +66,6 @@ type Processor struct {
 	event     db.BatchEventChannelClient // cancel-event subscription
 	inference *inference.GatewayResolver // model → gateway routing
 	files     *fileManager
-
-	// guardCallback is called when any semaphore detects a double-release.
-	// Set during Run(); passed to per-model semaphores in processModel.
-	guardCallback func()
 }
 
 func NewProcessor(
@@ -121,29 +129,31 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
 	}
-	adaptiveSem, adaptiveErr := semaphore.NewAdaptive(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
-	if adaptiveErr != nil {
-		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, adaptiveErr)
+	p.globalSem, err = semaphore.New(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
+	if err != nil {
+		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, err)
 	}
-	p.globalSem = adaptiveSem
 
-	p.aimd = semaphore.NewAIMDController(
-		semaphore.AIMDConfig{
-			MinLimit:         p.cfg.MinConcurrency,
-			MaxLimit:         p.cfg.GlobalConcurrency,
-			BackoffFactor:    p.cfg.BackoffFactor,
-			AdditiveIncrease: p.cfg.AdditiveIncrease,
-		},
-		p.cfg.GlobalConcurrency,
-		func(limit int) {
-			adaptiveSem.SetLimit(limit)
-			metrics.SetAdaptiveConcurrencyLimit(float64(limit))
-		},
-		logger,
-	)
-	metrics.SetAdaptiveConcurrencyLimit(float64(p.aimd.Limit()))
-	p.guardCallback = makeGuard("per-model-concurrency")
-
+	clients := p.inference.Clients()
+	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
+	for _, client := range clients {
+		epSem, epErr := semaphore.NewAdaptive(p.cfg.PerModelMaxConcurrency, makeGuard("endpoint-concurrency"))
+		if epErr != nil {
+			return fmt.Errorf("endpoint semaphore (PerModelMaxConcurrency=%d): %w", p.cfg.PerModelMaxConcurrency, epErr)
+		}
+		epAIMD := semaphore.NewAIMDController(
+			semaphore.AIMDConfig{
+				MinLimit:         p.cfg.MinConcurrency,
+				MaxLimit:         p.cfg.PerModelMaxConcurrency,
+				BackoffFactor:    p.cfg.BackoffFactor,
+				AdditiveIncrease: p.cfg.AdditiveIncrease,
+			},
+			p.cfg.PerModelMaxConcurrency,
+			func(limit int) { epSem.SetLimit(limit) },
+			logger.WithValues("endpoint", p.inference.ClientLabel(client)),
+		)
+		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD}
+	}
 	logger.V(logging.INFO).Info(
 		"Processor run started",
 		"loopInterval", p.cfg.PollInterval,

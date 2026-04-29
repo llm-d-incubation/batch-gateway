@@ -16,13 +16,15 @@ e2e_latency_bucket:
   count: 12
 
 # Concurrency Control
-# AIMD adjusts the effective limit within [min_concurrency, global_concurrency]
-# based on 429/5xx backpressure from the inference gateway.
-# Set min_concurrency = global_concurrency to disable adaptive behavior.
+# AIMD adjusts the effective limit per endpoint within
+# [min_concurrency, per_model_max_concurrency] based on 429/5xx backpressure.
+# Set min_concurrency = per_model_max_concurrency to disable adaptive behavior.
 global_concurrency: 100
 min_concurrency: 5
 backoff_factor: 0.5       # multiplicative decrease on 429 (must be in (0,1))
 additive_increase: 1      # slots added per successful window
+# Per-endpoint initial/max concurrency (AIMD operates within [min, this value]).
+# Models sharing the same gateway endpoint share one AIMD-controlled semaphore.
 per_model_max_concurrency: 10
 # Maximum number of concurrent job recoveries during startup
 recovery_max_concurrency: 5

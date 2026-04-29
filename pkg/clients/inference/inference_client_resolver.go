@@ -76,6 +76,7 @@ const ErrCodeModelNotFound = "model_not_found"
 type GatewayResolver struct {
 	globalClient InferenceClient
 	modelClients map[string]InferenceClient
+	clientURLs   map[InferenceClient]string
 }
 
 // NewGlobalResolver creates a GatewayResolver where all models resolve to a
@@ -86,7 +87,10 @@ func NewGlobalResolver(config GatewayClientConfig, logger logr.Logger) (*Gateway
 	if err != nil {
 		return nil, fmt.Errorf("failed to create global inference client: %w", err)
 	}
-	return &GatewayResolver{globalClient: client}, nil
+	return &GatewayResolver{
+		globalClient: client,
+		clientURLs:   map[InferenceClient]string{client: config.URL},
+	}, nil
 }
 
 // NewPerModelResolver creates a GatewayResolver that routes each model to its
@@ -95,6 +99,7 @@ func NewGlobalResolver(config GatewayClientConfig, logger logr.Logger) (*Gateway
 func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Logger) (*GatewayResolver, error) {
 	pool := make(map[GatewayClientConfig]InferenceClient)
 	modelClients := make(map[string]InferenceClient, len(configs))
+	urls := make(map[InferenceClient]string)
 
 	for model, gw := range configs {
 		if client, ok := pool[gw]; ok {
@@ -106,10 +111,11 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}
 		pool[gw] = client
+		urls[client] = gw.URL
 		modelClients[model] = client
 	}
 
-	return &GatewayResolver{modelClients: modelClients}, nil
+	return &GatewayResolver{modelClients: modelClients, clientURLs: urls}, nil
 }
 
 // IsGlobal returns true if the resolver routes all models to a single global
@@ -135,6 +141,35 @@ func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
 	return nil
 }
 
+// Clients returns the deduplicated set of InferenceClient instances managed by
+// this resolver. In global mode this is a single-element slice; in per-model
+// mode it reflects the pooled clients (models sharing identical gateway configs
+// share a single InferenceClient).
+func (r *GatewayResolver) Clients() []InferenceClient {
+	if r.globalClient != nil {
+		return []InferenceClient{r.globalClient}
+	}
+	seen := make(map[InferenceClient]struct{}, len(r.modelClients))
+	clients := make([]InferenceClient, 0, len(r.modelClients))
+	for _, c := range r.modelClients {
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		clients = append(clients, c)
+	}
+	return clients
+}
+
+// ClientLabel returns a human-readable identifier (the gateway URL) for the
+// given client. Returns "unknown" if the client was not created by this resolver.
+func (r *GatewayResolver) ClientLabel(c InferenceClient) string {
+	if url, ok := r.clientURLs[c]; ok {
+		return url
+	}
+	return "unknown"
+}
+
 // NewSingleClientResolver wraps a single InferenceClient in a GatewayResolver
 // where all models resolve to that client. Used in tests to inject mock
 // inference clients into Clientset.
@@ -142,4 +177,11 @@ func (r *GatewayResolver) ClientFor(modelID string) InferenceClient {
 // with NewGlobalResolver + httptest.Server so this function can be removed.
 func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
 	return &GatewayResolver{globalClient: c}
+}
+
+// NewPerModelClientResolver creates a GatewayResolver that maps each model name
+// to a pre-built InferenceClient. Used in tests to inject per-model mock clients
+// without creating real HTTP connections.
+func NewPerModelClientResolver(clients map[string]InferenceClient) *GatewayResolver {
+	return &GatewayResolver{modelClients: clients}
 }

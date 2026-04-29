@@ -40,29 +40,29 @@ type ProcessorConfig struct {
 	// NumWorkers is the fixed number of worker goroutines spawned to process jobs
 	NumWorkers int `yaml:"num_workers"`
 
-	// GlobalConcurrency limits total in-flight inference requests across all workers.
-	// Serves as both the initial AIMD limit on startup and the ceiling — AIMD will
-	// never raise the effective limit above this value. AIMD adjusts the effective
-	// limit within [MinConcurrency, GlobalConcurrency] based on 429/5xx backpressure.
-	// To disable adaptive behavior, set MinConcurrency = GlobalConcurrency.
+	// GlobalConcurrency limits total in-flight inference requests across all
+	// workers. Acts as a fixed ceiling — the sum of all per-endpoint concurrency
+	// is bounded by this value.
 	GlobalConcurrency int `yaml:"global_concurrency"`
 
-	// MinConcurrency is the floor for total in-flight inference requests.
-	// AIMD will never reduce the effective limit below this value.
+	// MinConcurrency is the floor for per-endpoint adaptive concurrency.
+	// AIMD will never reduce a single endpoint's effective limit below this value.
 	// Default: 5.
 	MinConcurrency int `yaml:"min_concurrency"`
 
-	// BackoffFactor is the multiplicative decrease applied to the concurrency limit
-	// when the inference gateway signals overload (429/5xx). Must be in (0, 1).
-	// Default: 0.5 (halve the limit on each overload signal).
+	// BackoffFactor is the multiplicative decrease applied to the per-endpoint
+	// concurrency limit when the endpoint signals overload (429/5xx). Must be
+	// in (0, 1). Default: 0.5 (halve the limit on each overload signal).
 	BackoffFactor float64 `yaml:"backoff_factor"`
 
-	// AdditiveIncrease is the number of concurrency slots added after a full window
-	// of consecutive successes. Default: 1.
+	// AdditiveIncrease is the number of concurrency slots added after a full
+	// window of consecutive successes per endpoint. Default: 1.
 	AdditiveIncrease int `yaml:"additive_increase"`
 
-	// PerModelMaxConcurrency limits concurrent inference requests per individual model.
-	// Protects downstream inference gateway from being overwhelmed by a single model's requests.
+	// PerModelMaxConcurrency is the initial and maximum concurrency per inference
+	// endpoint. AIMD adjusts the effective limit within
+	// [MinConcurrency, PerModelMaxConcurrency] based on 429/5xx backpressure.
+	// To disable adaptive behavior, set MinConcurrency = PerModelMaxConcurrency.
 	PerModelMaxConcurrency int `yaml:"per_model_max_concurrency"`
 
 	// PollInterval defines how frequently the processor checks the database for new jobs
@@ -187,8 +187,10 @@ func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
 	return ""
 }
 
-// LoadFromYAML loads the configuration from a YAML file and applies
-// zero-value defaults for optional fields (e.g. AIMD parameters).
+// LoadFromYAML loads the configuration from a YAML file.
+// Callers should start from NewConfig() so that AIMD defaults
+// (MinConcurrency, BackoffFactor, AdditiveIncrease) are already set;
+// YAML values then override only what is explicitly specified.
 func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -197,11 +199,7 @@ func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	defer file.Close()
 
 	decoder := yaml.NewDecoder(file)
-	if err := decoder.Decode(pc); err != nil {
-		return err
-	}
-	pc.applyConcurrencyDefaults()
-	return nil
+	return decoder.Decode(pc)
 }
 
 // NewConfig returns a new ProcessorConfig with default values.
@@ -275,9 +273,6 @@ func (c *ProcessorConfig) Validate() error {
 	if c.MinConcurrency <= 0 {
 		return fmt.Errorf("min_concurrency must be > 0")
 	}
-	if c.MinConcurrency > c.GlobalConcurrency {
-		return fmt.Errorf("min_concurrency (%d) must be <= global_concurrency (%d)", c.MinConcurrency, c.GlobalConcurrency)
-	}
 	if c.BackoffFactor <= 0 || c.BackoffFactor >= 1 {
 		return fmt.Errorf("backoff_factor must be in (0, 1), got %f", c.BackoffFactor)
 	}
@@ -289,6 +284,9 @@ func (c *ProcessorConfig) Validate() error {
 	}
 	if c.PerModelMaxConcurrency > c.GlobalConcurrency {
 		return fmt.Errorf("per_model_max_concurrency (%d) must be <= global_concurrency (%d)", c.PerModelMaxConcurrency, c.GlobalConcurrency)
+	}
+	if c.MinConcurrency > c.PerModelMaxConcurrency {
+		return fmt.Errorf("min_concurrency (%d) must be <= per_model_max_concurrency (%d)", c.MinConcurrency, c.PerModelMaxConcurrency)
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
@@ -340,20 +338,6 @@ func (c *ProcessorConfig) Validate() error {
 	}
 
 	return nil
-}
-
-// applyConcurrencyDefaults fills zero-valued AIMD fields with sensible
-// defaults. Called by LoadFromYAML after decoding.
-func (c *ProcessorConfig) applyConcurrencyDefaults() {
-	if c.MinConcurrency == 0 {
-		c.MinConcurrency = 5
-	}
-	if c.BackoffFactor == 0 {
-		c.BackoffFactor = 0.5
-	}
-	if c.AdditiveIncrease == 0 {
-		c.AdditiveIncrease = 1
-	}
 }
 
 func validateGatewayConfig(prefix string, gw ModelGatewayConfig) error {

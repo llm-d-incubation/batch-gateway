@@ -38,7 +38,6 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
@@ -73,9 +72,10 @@ type outputLine struct {
 	Response *batch_types.ResponseData `json:"response"`
 	Error    *outputError              `json:"error"`
 
-	// retryAttempts tracks retries performed by the HTTP client.
-	// Not serialized to JSON — only used for AIMD signaling.
-	retryAttempts int `json:"-"`
+	// hadCapacityRetry is true when at least one retry was caused by a
+	// capacity-related response (429/5xx). Network-error retries do not
+	// set this flag. Used for AIMD signaling.
+	hadCapacityRetry bool `json:"-"`
 }
 
 type outputError struct {
@@ -374,10 +374,11 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 
 // processModel processes all plan entries for a single model concurrently.
 // Concurrency is bounded by both a global semaphore (p.globalSem, shared across
-// all models/workers) and a per-model semaphore (PerModelMaxConcurrency).
+// all models/workers) and a per-endpoint adaptive semaphore controlled by AIMD.
+// Models sharing the same inference endpoint share one AIMD controller.
 //
-// Semaphore acquisition order: local (per-model) before global (shared).
-// This prevents starving other models — blocking on global only wastes a local slot.
+// Semaphore acquisition order: endpoint-local before global (shared).
+// This prevents starving other endpoints — blocking on global only wastes a local slot.
 //
 // Error strategy in this function: when a goroutine encounters a fatal error, modelErr is captured
 // via errOnce but the context is NOT cancelled within this function. Context cancellation is
@@ -407,8 +408,20 @@ func (p *Processor) processModel(
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
-	// PerModelMaxConcurrency > 0 is enforced by config validation; this cannot fail.
-	modelSem, _ := semaphore.New(p.cfg.PerModelMaxConcurrency, p.guardCallback)
+	// Resolve the per-endpoint adaptive semaphore and AIMD controller for this
+	// model. Models sharing the same inference endpoint share the same pair.
+	// ClientFor can return nil after gateway config changes between ingestion and
+	// execution, or during recovery when model_map/plan files predate the current
+	// resolver. In that case, drain all entries as model_not_found.
+	client := p.inference.ClientFor(modelID)
+	epLimit := p.endpointLimits[client]
+	if epLimit == nil {
+		logger.V(logging.INFO).Info("No endpoint limit for model (client not in resolver), draining as model_not_found")
+		p.drainUnprocessedRequests(requestAbortCtx, inputFile, entries, writers, progress,
+			batch_types.BatchErrorCode(inference.ErrCodeModelNotFound))
+		return nil
+	}
+	endpointSem := epLimit.sem
 
 	var (
 		wg              sync.WaitGroup
@@ -426,14 +439,14 @@ dispatch:
 			break
 		}
 
-		// Acquire semaphores in order: local (per-model) before global (shared).
-		// This order prevents starving other models — blocking on global only wastes a local slot.
-		if err := modelSem.Acquire(requestAbortCtx); err != nil {
+		// Acquire semaphores in order: endpoint-local before global (shared).
+		// This order prevents starving other endpoints — blocking on global only wastes a local slot.
+		if err := endpointSem.Acquire(requestAbortCtx); err != nil {
 			break dispatch
 		}
 
 		if err := p.globalSem.Acquire(requestAbortCtx); err != nil {
-			modelSem.Release()
+			endpointSem.Release()
 			break dispatch
 		}
 
@@ -441,19 +454,21 @@ dispatch:
 		wg.Add(1)
 		go func(entry planEntry) {
 			defer wg.Done()
-			defer modelSem.Release()
+			defer endpointSem.Release()
 			defer p.globalSem.Release()
 
 			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
 			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
 
-			// AIMD signal: adjust concurrency based on inference gateway capacity.
+			// AIMD signal: adjust concurrency based on inference endpoint capacity.
 			//
 			// Signal semantics:
 			//   429          → RecordRateLimit (sustained overload after all retries)
 			//   5xx          → RecordRateLimit (server overload / unhealthy)
-			//   200 with retries → RecordRateLimit (retry layer absorbed backpressure)
+			//   200 with capacity retries → RecordRateLimit (retry absorbed 429/5xx)
+			//   200 with network-only retries → RecordSuccess (no capacity signal)
 			//   200 clean    → RecordSuccess (genuine available capacity)
+			//   4xx (not 429) → RecordSuccess (gateway had capacity, request was malformed)
 			//   non-HTTP err → skip (no capacity signal — network, timeout, etc.)
 			//   fatal execErr → skip (local I/O, not related to gateway capacity)
 			//
@@ -463,11 +478,11 @@ dispatch:
 				sc := result.Response.StatusCode
 				switch {
 				case sc == 429 || sc >= 500:
-					p.aimd.RecordRateLimit()
-				case result.retryAttempts > 0:
-					p.aimd.RecordRateLimit()
+					epLimit.aimd.RecordRateLimit()
+				case result.hadCapacityRetry:
+					epLimit.aimd.RecordRateLimit()
 				default:
-					p.aimd.RecordSuccess()
+					epLimit.aimd.RecordSuccess()
 				}
 			}
 			if execErr != nil {
@@ -826,7 +841,6 @@ func (p *Processor) executeOneRequest(
 	// callers to inspect.
 	if inferErr != nil {
 		logger.V(logging.DEBUG).Info("Inference request failed", "error", inferErr.Message)
-		result.retryAttempts = inferErr.RetryAttempts
 		if inferErr.StatusCode > 0 {
 			// HTTP error (4xx/5xx) — populate response with status code and original body
 			// per OpenAI spec, error field is only for non-HTTP errors
@@ -865,7 +879,7 @@ func (p *Processor) executeOneRequest(
 			Message: err.Error(),
 		}
 	} else {
-		result.retryAttempts = inferResp.RetryAttempts
+		result.hadCapacityRetry = inferResp.HadCapacityRetry
 		// success — unmarshal the response body
 		var body map[string]interface{}
 		if len(inferResp.Response) > 0 {

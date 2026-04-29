@@ -95,7 +95,7 @@ Unsupported features must return OpenAI-compatible error responses.
 -   GPU placement or resource allocation strategies
 -   Cross-job fairness (time-sliced or budget-based scheduling across multiple jobs) is not provided. Jobs are processed in a run-to-completion manner once assigned to a worker. Model-level fairness is achieved via bounded concurrent dispatch with global and per-model concurrency limits using semaphores.
 -   Cost-based (token-length-aware) scheduling - cost(expected total tokens: input + max output tokens, expected execution time, GPU compute usage, memory footprint, average latency history) is not considered.
--   Advanced adaptive scheduling (e.g., latency-aware scheduling, backpressure-based throttling, token-cost-aware scheduling, dynamic budget tuning) is not provided.
+-   Advanced adaptive scheduling (e.g., latency-aware scheduling, token-cost-aware scheduling, dynamic budget tuning) is not provided. Basic backpressure-based throttling is provided via per-endpoint AIMD concurrency control (429/5xx signals).
 -   Assumption (MVP): the priority queue provides exclusive dequeue semantics. Lease/heartbeat-based recovery for worker death is out of scope for MVP.
 
 -------------------------------------------------------------------
@@ -179,7 +179,7 @@ flowchart TD
 
 **Execution**
 
-1.  One goroutine per model dispatches requests concurrently, bounded by global and per-model semaphores
+1.  One goroutine per model dispatches requests concurrently, bounded by global and per-endpoint semaphores
 2.  For each plan entry: read the input line at the recorded offset, parse, send to the inference client
 3.  Write the response to `output.jsonl` (success) or `error.jsonl` (inference error)
 4.  If interrupted (SLO expiry, cancel, system error): drain undispatched entries to `error.jsonl` with the appropriate error code, flush writers, and return partial counts
@@ -388,9 +388,9 @@ Each plan file functions as a per-model execution queue.
 - Each model runs in its own goroutine, independently dispatching requests from its plan file.
 - (Updated) There is no central round-robin scheduler or model selection loop.
 - Concurrency is controlled by two levels of semaphores:
-  - **Global semaphore** (`GlobalConcurrency`): limits total in-flight requests across all workers in a processor.
-  - **Per-model semaphore** (`PerModelMaxConcurrency`): limits concurrent requests per individual model.
-- Fairness across models is achieved naturally through goroutine scheduling and the global semaphore: no single model can monopolize all slots because each model is independently bounded by `PerModelMaxConcurrency`.
+  - **Global semaphore** (`GlobalConcurrency`): fixed ceiling for total in-flight requests across all workers in a processor.
+  - **Per-endpoint semaphore** (`PerModelMaxConcurrency`): adaptive limit per inference endpoint, controlled by an AIMD controller that adjusts the effective limit within `[MinConcurrency, PerModelMaxConcurrency]` based on 429/5xx backpressure. Models sharing the same inference endpoint share one semaphore and one AIMD controller.
+- Fairness across models is achieved naturally through goroutine scheduling and the global semaphore: no single model can monopolize all slots because each endpoint is independently bounded by its AIMD-controlled limit.
 
 **Downstream-aware ordering:**
 - Plan entries are already sorted by `PrefixHash` during ingestion.
@@ -401,7 +401,7 @@ Each plan file functions as a per-model execution queue.
 sequenceDiagram
     participant Ex as Executor
     participant GS as GlobalSemaphore
-    participant MS as ModelSemaphore
+    participant ES as EndpointSemaphore
     participant E as Goroutine
     participant B as Inference Backend
     participant W as Result Writer
@@ -410,7 +410,7 @@ sequenceDiagram
 
     par Model A Goroutine
         loop For each plan entry (sorted by PrefixHash)
-            Ex->>MS: Acquire model slot
+            Ex->>ES: Acquire endpoint slot
             Ex->>GS: Acquire global slot
             Ex->>E: Dispatch request (async)
             activate E
@@ -419,12 +419,12 @@ sequenceDiagram
             B-->>E: Return response
             E->>W: Write result
             E->>GS: Release global slot
-            E->>MS: Release model slot
+            E->>ES: Release endpoint slot
             deactivate E
         end
     and Model B Goroutine
         loop For each plan entry (sorted by PrefixHash)
-            Ex->>MS: Acquire model slot
+            Ex->>ES: Acquire endpoint slot
             Ex->>GS: Acquire global slot
             Ex->>E: Dispatch request (async)
             activate E
@@ -432,7 +432,7 @@ sequenceDiagram
             B-->>E: Return response
             E->>W: Write result
             E->>GS: Release global slot
-            E->>MS: Release model slot
+            E->>ES: Release endpoint slot
             deactivate E
         end
     end
@@ -444,15 +444,15 @@ sequenceDiagram
 ###### Algorithm:
 1.  Executor launches one goroutine per model.
 2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during ingestion) and dispatches requests concurrently, subject to:
-    - `PerModelMaxConcurrency` (per-model semaphore, acquired **first**: max in-flight requests per model. Protects downstream from too many requests being dumped at once)
-    - `GlobalConcurrency` (global semaphore, acquired **second**: max in-flight requests across all workers. Protects system resources from unbounded goroutine growth)
-    - **Acquisition order: per-model before global.** This prevents starving other models — if the goroutine blocks waiting for a global slot, only a per-model slot is held, not a global one that other models could use. Release order is LIFO (global first, then per-model).
+    - `PerModelMaxConcurrency` (per-endpoint adaptive semaphore, acquired **first**: AIMD-controlled limit per inference endpoint. Models sharing the same endpoint share one semaphore. Protects downstream from too many requests being dumped at once)
+    - `GlobalConcurrency` (global semaphore, acquired **second**: fixed ceiling for in-flight requests across all workers. Protects system resources from unbounded goroutine growth)
+    - **Acquisition order: per-endpoint before global.** This prevents starving other endpoints — if the goroutine blocks waiting for a global slot, only an endpoint slot is held, not a global one that other endpoints could use. Release order is LIFO (global first, then per-endpoint).
 3.  When a model's plan is fully drained, its goroutine exits.
 4.  The executor waits for all model goroutines to complete before finalizing.
 
 Goals:
 -   Maximize downstream prefix cache efficiency via sorted dispatch order
--   Ensure fairness across models via bounded per-model concurrency
+-   Ensure fairness across models via bounded per-endpoint concurrency
 -   Prevent system overload via global concurrency cap
 
 **Limitation — PrefixHash grouping (exact match only):**
@@ -472,11 +472,11 @@ A potential improvement is to sort by the system prompt string lexicographically
 -------------------------------------------------------------------
 
 ###### Concurrency Budget Terms
-**Global Concurrency** (`GlobalConcurrency`): Ceiling and initial value for total in-flight inference calls across all workers. An AIMD (Additive Increase / Multiplicative Decrease) controller adjusts the effective limit within `[MinConcurrency, GlobalConcurrency]` based on 429/5xx backpressure from the inference gateway. To disable adaptive behavior, set `MinConcurrency = GlobalConcurrency`.
+**Global Concurrency** (`GlobalConcurrency`): Fixed ceiling for total in-flight inference calls across all workers and endpoints.
     - Default: 100
-**Min Concurrency** (`MinConcurrency`): Floor for the AIMD controller. The effective concurrency limit will never drop below this value.
+**Min Concurrency** (`MinConcurrency`): Floor for the per-endpoint AIMD controller. The effective concurrency limit for any single endpoint will never drop below this value.
     - Default: 5
-**Per-Model Concurrency** (`PerModelMaxConcurrency`): Limits concurrent execution per model. Protects downstream inference gateway from being overwhelmed by a single model's requests.
+**Per-Model Concurrency** (`PerModelMaxConcurrency`): Initial and maximum concurrency per inference endpoint. An AIMD (Additive Increase / Multiplicative Decrease) controller adjusts the effective limit within `[MinConcurrency, PerModelMaxConcurrency]` based on 429/5xx backpressure. Models sharing the same endpoint share one AIMD controller. To disable adaptive behavior, set `MinConcurrency = PerModelMaxConcurrency`.
     - Default: 10
 
 -------------------------------------------------------------------
@@ -511,7 +511,7 @@ Approaches:
 
 #### Scheduler
 -   Per-model goroutine lifecycle management
--   Global and per-model concurrency control via semaphores
+-   Global (fixed) and per-endpoint (AIMD-controlled) concurrency control via semaphores
 
 #### Executor
 -   Read request via offset/length
@@ -697,17 +697,14 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   Current number of workers actively processing jobs.
 
 - `processor_inflight_requests` (gauge)
-  Global number of in-flight inference requests across all workers (bounded by the current AIMD limit).
+  Global number of in-flight inference requests across all workers (bounded by `GlobalConcurrency`).
   Primary saturation signal for scheduler/executor health.
 
 - `processor_max_inflight_concurrency` (gauge)
   Configured `GlobalConcurrency` ceiling. Used with `processor_inflight_requests` to compute utilization.
 
-- `processor_adaptive_concurrency_limit` (gauge)
-  Current effective concurrency limit set by the AIMD controller. Ranges between `MinConcurrency` and `GlobalConcurrency`.
-
 - `model_inflight_requests{model}` (gauge)
-  Per-model in-flight request count (bounded by `PerModelMaxConcurrency`).
+  Per-model in-flight request count (bounded by per-endpoint AIMD limit).
 
 **Duration Metrics**
 
