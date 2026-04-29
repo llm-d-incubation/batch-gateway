@@ -30,11 +30,12 @@ const (
 
 // ClientError represents an HTTP client error with category and context
 type ClientError struct {
-	Category     ErrorCategory
-	Message      string
-	RawError     error  // original error message
-	StatusCode   int    // HTTP status code (0 for non-HTTP errors like network/timeout)
-	ResponseBody []byte // raw HTTP response body (nil for non-HTTP errors)
+	Category      ErrorCategory
+	Message       string
+	RawError      error  // original error message
+	StatusCode    int    // HTTP status code (0 for non-HTTP errors like network/timeout)
+	ResponseBody  []byte // raw HTTP response body (nil for non-HTTP errors)
+	RetryAttempts int    // number of retries performed before this error (0 = no retries)
 }
 
 func (e *ClientError) Error() string {

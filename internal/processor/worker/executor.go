@@ -72,6 +72,10 @@ type outputLine struct {
 	CustomID string                    `json:"custom_id"`
 	Response *batch_types.ResponseData `json:"response"`
 	Error    *outputError              `json:"error"`
+
+	// retryAttempts tracks retries performed by the HTTP client.
+	// Not serialized to JSON — only used for AIMD signaling.
+	retryAttempts int `json:"-"`
 }
 
 type outputError struct {
@@ -441,6 +445,31 @@ dispatch:
 			defer p.globalSem.Release()
 
 			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
+			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
+
+			// AIMD signal: adjust concurrency based on inference gateway capacity.
+			//
+			// Signal semantics:
+			//   429          → RecordRateLimit (sustained overload after all retries)
+			//   5xx          → RecordRateLimit (server overload / unhealthy)
+			//   200 with retries → RecordRateLimit (retry layer absorbed backpressure)
+			//   200 clean    → RecordSuccess (genuine available capacity)
+			//   non-HTTP err → skip (no capacity signal — network, timeout, etc.)
+			//   fatal execErr → skip (local I/O, not related to gateway capacity)
+			//
+			// AIMD only affects future dispatch. It does not abort in-flight
+			// requests — those continue until completion or context cancellation.
+			if execErr == nil && result != nil && result.Response != nil {
+				sc := result.Response.StatusCode
+				switch {
+				case sc == 429 || sc >= 500:
+					p.aimd.RecordRateLimit()
+				case result.retryAttempts > 0:
+					p.aimd.RecordRateLimit()
+				default:
+					p.aimd.RecordSuccess()
+				}
+			}
 			if execErr != nil {
 				// Fatal read failure: the input file is unreadable at this offset
 				// (e.g. disk corruption). We do not know the CustomID, so we cannot
@@ -797,6 +826,7 @@ func (p *Processor) executeOneRequest(
 	// callers to inspect.
 	if inferErr != nil {
 		logger.V(logging.DEBUG).Info("Inference request failed", "error", inferErr.Message)
+		result.retryAttempts = inferErr.RetryAttempts
 		if inferErr.StatusCode > 0 {
 			// HTTP error (4xx/5xx) — populate response with status code and original body
 			// per OpenAI spec, error field is only for non-HTTP errors
@@ -835,6 +865,7 @@ func (p *Processor) executeOneRequest(
 			Message: err.Error(),
 		}
 	} else {
+		result.retryAttempts = inferResp.RetryAttempts
 		// success — unmarshal the response body
 		var body map[string]interface{}
 		if len(inferResp.Response) > 0 {

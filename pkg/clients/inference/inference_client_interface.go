@@ -37,9 +37,10 @@ type GenerateRequest struct {
 
 // GenerateResponse represents an inference generation response
 type GenerateResponse struct {
-	RequestID string
-	Response  []byte
-	RawData   interface{}
+	RequestID     string
+	Response      []byte
+	RawData       interface{}
+	RetryAttempts int // number of retries performed (0 = first attempt succeeded)
 }
 
 // ClientError represents an inference client error

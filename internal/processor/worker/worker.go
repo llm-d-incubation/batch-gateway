@@ -45,6 +45,9 @@ type Processor struct {
 	// globalSem limits total in-flight inference requests across all workers.
 	globalSem semaphore.Semaphore
 
+	// aimd is the AIMD controller for adaptive concurrency. nil when disabled.
+	aimd *semaphore.AIMDController
+
 	poller  *Poller
 	updater *StatusUpdater
 
@@ -118,16 +121,35 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
 	}
-	p.globalSem, err = semaphore.New(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
-	if err != nil {
-		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, err)
+	adaptiveSem, adaptiveErr := semaphore.NewAdaptive(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
+	if adaptiveErr != nil {
+		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, adaptiveErr)
 	}
+	p.globalSem = adaptiveSem
+
+	p.aimd = semaphore.NewAIMDController(
+		semaphore.AIMDConfig{
+			MinLimit:         p.cfg.MinConcurrency,
+			MaxLimit:         p.cfg.GlobalConcurrency,
+			BackoffFactor:    p.cfg.BackoffFactor,
+			AdditiveIncrease: p.cfg.AdditiveIncrease,
+		},
+		p.cfg.GlobalConcurrency,
+		func(limit int) {
+			adaptiveSem.SetLimit(limit)
+			metrics.SetAdaptiveConcurrencyLimit(float64(limit))
+		},
+		logger,
+	)
+	metrics.SetAdaptiveConcurrencyLimit(float64(p.aimd.Limit()))
 	p.guardCallback = makeGuard("per-model-concurrency")
 
 	logger.V(logging.INFO).Info(
 		"Processor run started",
 		"loopInterval", p.cfg.PollInterval,
 		"maxWorkers", p.cfg.NumWorkers,
+		"globalConcurrency", p.cfg.GlobalConcurrency,
+		"minConcurrency", p.cfg.MinConcurrency,
 	)
 
 	return p.runPollingLoop(pollingCtx, ctx)

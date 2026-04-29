@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 7
--   **Last Updated**: 2026-04-20
+-   **Revision**: 8
+-   **Last Updated**: 2026-04-28
 
 -------------------------------------------------------------------
 
@@ -472,9 +472,11 @@ A potential improvement is to sort by the system prompt string lexicographically
 -------------------------------------------------------------------
 
 ###### Concurrency Budget Terms
-**Global Concurrency** (`GlobalConcurrency`): Limits total in-flight inference calls across all workers in a processor. Protects system resources (goroutines, sockets, memory) from unbounded growth as models and jobs scale.
+**Global Concurrency** (`GlobalConcurrency`): Ceiling and initial value for total in-flight inference calls across all workers. An AIMD (Additive Increase / Multiplicative Decrease) controller adjusts the effective limit within `[MinConcurrency, GlobalConcurrency]` based on 429/5xx backpressure from the inference gateway. To disable adaptive behavior, set `MinConcurrency = GlobalConcurrency`.
     - Default: 100
-**Per-Model Concurrency** (`PerModelMaxConcurrency`): Limits concurrent execution per model. Protects downstream llm-d Router from being overwhelmed by a single model's requests.
+**Min Concurrency** (`MinConcurrency`): Floor for the AIMD controller. The effective concurrency limit will never drop below this value.
+    - Default: 5
+**Per-Model Concurrency** (`PerModelMaxConcurrency`): Limits concurrent execution per model. Protects downstream inference gateway from being overwhelmed by a single model's requests.
     - Default: 10
 
 -------------------------------------------------------------------
@@ -695,11 +697,14 @@ Tracing is disabled when `OTEL_EXPORTER_OTLP_ENDPOINT` is not set (no-op provide
   Current number of workers actively processing jobs.
 
 - `processor_inflight_requests` (gauge)
-  Global number of in-flight inference requests across all workers (bounded by `GlobalConcurrency`).
+  Global number of in-flight inference requests across all workers (bounded by the current AIMD limit).
   Primary saturation signal for scheduler/executor health.
 
 - `processor_max_inflight_concurrency` (gauge)
-  Configured `GlobalConcurrency` value. Used with `processor_inflight_requests` to compute utilization.
+  Configured `GlobalConcurrency` ceiling. Used with `processor_inflight_requests` to compute utilization.
+
+- `processor_adaptive_concurrency_limit` (gauge)
+  Current effective concurrency limit set by the AIMD controller. Ranges between `MinConcurrency` and `GlobalConcurrency`.
 
 - `model_inflight_requests{model}` (gauge)
   Per-model in-flight request count (bounded by `PerModelMaxConcurrency`).

@@ -330,10 +330,22 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
-	if err != nil {
-		t.Fatalf("global semaphore: %v", err)
+	adaptiveSem, adaptiveErr := semaphore.NewAdaptive(cfg.GlobalConcurrency, nil)
+	if adaptiveErr != nil {
+		t.Fatalf("global semaphore: %v", adaptiveErr)
 	}
+	p.globalSem = adaptiveSem
+	p.aimd = semaphore.NewAIMDController(
+		semaphore.AIMDConfig{
+			MinLimit:         cfg.MinConcurrency,
+			MaxLimit:         cfg.GlobalConcurrency,
+			BackoffFactor:    cfg.BackoffFactor,
+			AdditiveIncrease: cfg.AdditiveIncrease,
+		},
+		cfg.GlobalConcurrency,
+		func(limit int) { adaptiveSem.SetLimit(limit) },
+		logr.Discard(),
+	)
 	return p
 }
 
@@ -383,10 +395,22 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
-	if err != nil {
-		t.Fatalf("global semaphore: %v", err)
+	adaptiveSem, adaptiveErr := semaphore.NewAdaptive(cfg.GlobalConcurrency, nil)
+	if adaptiveErr != nil {
+		t.Fatalf("global semaphore: %v", adaptiveErr)
 	}
+	p.globalSem = adaptiveSem
+	p.aimd = semaphore.NewAIMDController(
+		semaphore.AIMDConfig{
+			MinLimit:         cfg.MinConcurrency,
+			MaxLimit:         cfg.GlobalConcurrency,
+			BackoffFactor:    cfg.BackoffFactor,
+			AdditiveIncrease: cfg.AdditiveIncrease,
+		},
+		cfg.GlobalConcurrency,
+		func(limit int) { adaptiveSem.SetLimit(limit) },
+		logr.Discard(),
+	)
 	p.poller = NewPoller(pqClient, dbClient)
 
 	return &testProcessorEnv{

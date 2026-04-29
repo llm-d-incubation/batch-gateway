@@ -414,6 +414,94 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 	}
 }
 
+func TestProcessorConfig_Validate_ConcurrencyAIMD(t *testing.T) {
+	t.Run("default config passes", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate() error: %v", err)
+		}
+	})
+
+	t.Run("backoff factor out of range", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		c.BackoffFactor = 1.5
+		if err := c.Validate(); err == nil {
+			t.Fatal("expected error for backoff_factor >= 1")
+		}
+	})
+
+	t.Run("min > global concurrency", func(t *testing.T) {
+		c := NewConfig()
+		c.GlobalConcurrency = 10
+		c.PerModelMaxConcurrency = 5
+		c.MinConcurrency = 20
+		c.ModelGateways = validPerModelConfig()
+		if err := c.Validate(); err == nil {
+			t.Fatal("expected error for min_concurrency > global_concurrency")
+		}
+	})
+
+	t.Run("fixed limit when min equals max", func(t *testing.T) {
+		c := NewConfig()
+		c.GlobalConcurrency = 50
+		c.MinConcurrency = 50
+		c.PerModelMaxConcurrency = 10
+		c.ModelGateways = validPerModelConfig()
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate() error: %v", err)
+		}
+	})
+
+	t.Run("defaults applied by LoadFromYAML", func(t *testing.T) {
+		c := &ProcessorConfig{GlobalConcurrency: 100}
+		c.applyConcurrencyDefaults()
+
+		if c.MinConcurrency != 5 {
+			t.Fatalf("MinConcurrency = %d, want 5", c.MinConcurrency)
+		}
+		if c.BackoffFactor != 0.5 {
+			t.Fatalf("BackoffFactor = %f, want 0.5", c.BackoffFactor)
+		}
+		if c.AdditiveIncrease != 1 {
+			t.Fatalf("AdditiveIncrease = %d, want 1", c.AdditiveIncrease)
+		}
+	})
+
+	t.Run("zero backoff_factor gets default", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		c.BackoffFactor = 0
+		c.applyConcurrencyDefaults()
+		if c.BackoffFactor != 0.5 {
+			t.Fatalf("BackoffFactor = %f, want 0.5 (default)", c.BackoffFactor)
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate() error: %v", err)
+		}
+	})
+
+	t.Run("explicit values not overwritten by defaults", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		c.MinConcurrency = 10
+		c.BackoffFactor = 0.7
+		c.AdditiveIncrease = 3
+		c.applyConcurrencyDefaults()
+
+		if c.MinConcurrency != 10 {
+			t.Fatalf("MinConcurrency = %d, want 10", c.MinConcurrency)
+		}
+		if c.BackoffFactor != 0.7 {
+			t.Fatalf("BackoffFactor = %f, want 0.7", c.BackoffFactor)
+		}
+		if c.AdditiveIncrease != 3 {
+			t.Fatalf("AdditiveIncrease = %d, want 3", c.AdditiveIncrease)
+		}
+	})
+}
+
 func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.yaml")

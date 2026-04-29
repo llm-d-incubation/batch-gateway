@@ -3136,3 +3136,165 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 		})
 	}
 }
+
+// =====================================================================
+// Tests: AIMD signaling in processModel
+// =====================================================================
+
+func TestProcessModel_AIMDSignaling(t *testing.T) {
+	makeRequests := func(n int) []batch_types.Request {
+		reqs := make([]batch_types.Request, n)
+		for i := range reqs {
+			reqs[i] = batch_types.Request{
+				CustomID: "r" + strconv.Itoa(i),
+				Method:   "POST",
+				URL:      "/v1/chat/completions",
+				Body:     map[string]interface{}{"model": "m1"},
+			}
+		}
+		return reqs
+	}
+
+	runProcessModel := func(t *testing.T, cfg *config.ProcessorConfig, mock inference.InferenceClient, requests []batch_types.Request) *Processor {
+		t.Helper()
+		env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+		inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+		inputFile, err := os.Open(inputPath)
+		if err != nil {
+			t.Fatalf("open input: %v", err)
+		}
+		defer inputFile.Close()
+
+		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+		var outBuf, errBuf bytes.Buffer
+		writers := &outputWriters{
+			output: bufio.NewWriter(&outBuf),
+			errors: bufio.NewWriter(&errBuf),
+		}
+		progress := &executionProgress{
+			total:   int64(len(requests)),
+			updater: env.updater,
+			jobID:   jobInfo.JobID,
+		}
+
+		ctx := testLoggerCtx(t)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+		if err != nil {
+			t.Fatalf("processModel error: %v", err)
+		}
+		return env.p
+	}
+
+	t.Run("clean 200 records success", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+		cfg.GlobalConcurrency = 20
+		cfg.MinConcurrency = 5
+
+		mock := &mockInferenceClient{
+			generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+				return &inference.GenerateResponse{RequestID: "srv", Response: []byte(`{"ok":true}`)}, nil
+			},
+		}
+
+		// 20 clean successes = one full window → limit should increase to 21
+		// but GlobalConcurrency=20 is MaxLimit, so limit stays 20.
+		// Key assertion: limit did NOT decrease.
+		p := runProcessModel(t, cfg, mock, makeRequests(20))
+		if got := p.aimd.Limit(); got != 20 {
+			t.Fatalf("Limit() = %d, want 20 (no decrease for clean 200s)", got)
+		}
+	})
+
+	t.Run("429 records rate limit", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+		cfg.GlobalConcurrency = 20
+		cfg.MinConcurrency = 5
+
+		mock := &mockInferenceClient{
+			generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+				return nil, &inference.ClientError{
+					Category:     httpclient.ErrCategoryRateLimit,
+					Message:      "rate limited",
+					StatusCode:   429,
+					ResponseBody: []byte(`{"error":{"message":"rate limited"}}`),
+				}
+			},
+		}
+
+		p := runProcessModel(t, cfg, mock, makeRequests(1))
+		if got := p.aimd.Limit(); got >= 20 {
+			t.Fatalf("Limit() = %d, want < 20 (should decrease on 429)", got)
+		}
+	})
+
+	t.Run("5xx records rate limit", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+		cfg.GlobalConcurrency = 20
+		cfg.MinConcurrency = 5
+
+		mock := &mockInferenceClient{
+			generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+				return nil, &inference.ClientError{
+					Category:     httpclient.ErrCategoryServer,
+					Message:      "bad gateway",
+					StatusCode:   502,
+					ResponseBody: []byte(`{"error":{"message":"bad gateway"}}`),
+				}
+			},
+		}
+
+		p := runProcessModel(t, cfg, mock, makeRequests(1))
+		if got := p.aimd.Limit(); got >= 20 {
+			t.Fatalf("Limit() = %d, want < 20 (should decrease on 5xx)", got)
+		}
+	})
+
+	t.Run("200 with retries records rate limit", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+		cfg.GlobalConcurrency = 20
+		cfg.MinConcurrency = 5
+
+		mock := &mockInferenceClient{
+			generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+				return &inference.GenerateResponse{
+					RequestID:     "srv",
+					Response:      []byte(`{"ok":true}`),
+					RetryAttempts: 2,
+				}, nil
+			},
+		}
+
+		p := runProcessModel(t, cfg, mock, makeRequests(1))
+		if got := p.aimd.Limit(); got >= 20 {
+			t.Fatalf("Limit() = %d, want < 20 (should decrease on retried 200)", got)
+		}
+	})
+
+	t.Run("non-HTTP error skips AIMD", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+		cfg.GlobalConcurrency = 20
+		cfg.MinConcurrency = 5
+
+		mock := &mockInferenceClient{
+			generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+				return nil, &inference.ClientError{
+					Category: httpclient.ErrCategoryServer,
+					Message:  "connection refused",
+					RawError: errors.New("dial tcp: connection refused"),
+				}
+			},
+		}
+
+		p := runProcessModel(t, cfg, mock, makeRequests(1))
+		if got := p.aimd.Limit(); got != 20 {
+			t.Fatalf("Limit() = %d, want 20 (non-HTTP error should not affect AIMD)", got)
+		}
+	})
+}
