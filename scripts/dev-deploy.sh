@@ -843,8 +843,10 @@ install_batch_gateway() {
     local vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
 
     local helm_args=(
+        --set "apiserver.image.repository=${APISERVER_IMG%:*}"
         --set apiserver.image.pullPolicy=IfNotPresent
         --set "apiserver.image.tag=${IMAGE_TAG}"
+        --set "processor.image.repository=${PROCESSOR_IMG%:*}"
         --set processor.image.pullPolicy=IfNotPresent
         --set "processor.image.tag=${IMAGE_TAG}"
         --set "global.fileClient.type=${FILE_CLIENT_TYPE}"
@@ -873,6 +875,7 @@ install_batch_gateway() {
         --set "processor.config.enablePprof=true"
         --set "processor.resources.requests.memory=256Mi"
         --set "gc.enabled=true"
+        --set "gc.image.repository=${GC_IMG%:*}"
         --set "gc.image.pullPolicy=IfNotPresent"
         --set "gc.image.tag=${IMAGE_TAG}"
         --set "gc.config.interval=5s"
