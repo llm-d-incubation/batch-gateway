@@ -186,7 +186,7 @@ func TestPost_Success(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	respBody, statusCode, _, err := client.Post(context.Background(), "/test", requestBody, nil, "")
+	respBody, statusCode, err := client.Post(context.Background(), "/test", requestBody, nil, "")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestPost_WithRequestID(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, expectedRequestID)
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, expectedRequestID)
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestPost_WithCustomHeaders(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, _, err := client.Post(context.Background(), "/test", nil, customHeaders, "")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, customHeaders, "")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestPost_WithAPIKey(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestPost_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, _, _, err = client.Post(ctx, "/test", nil, nil, "")
+	_, _, err = client.Post(ctx, "/test", nil, nil, "")
 	if err == nil {
 		t.Fatal("Expected error for cancelled context, got nil")
 	}
@@ -340,7 +340,7 @@ func TestPost_ContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, _, _, err = client.Post(ctx, "/test", nil, nil, "")
+	_, _, err = client.Post(ctx, "/test", nil, nil, "")
 	if err == nil {
 		t.Fatal("Expected timeout error, got nil")
 	}
@@ -372,7 +372,7 @@ func TestPost_RetryOn500(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, retries, err := client.Post(context.Background(), "/test", nil, nil, "test-retry")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -385,10 +385,6 @@ func TestPost_RetryOn500(t *testing.T) {
 		t.Errorf("Expected 3 attempts, got %d", attemptCount.Load())
 	}
 
-	wantRetries := int(attemptCount.Load()) - 1
-	if retries != wantRetries {
-		t.Errorf("Expected %d retries, got %d", wantRetries, retries)
-	}
 }
 
 // TestPost_RetryOn429 tests that 429 (rate limit) errors are retried
@@ -417,7 +413,7 @@ func TestPost_RetryOn429(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, retries, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-429")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-429")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -430,10 +426,6 @@ func TestPost_RetryOn429(t *testing.T) {
 		t.Errorf("Expected 2 attempts, got %d", attemptCount.Load())
 	}
 
-	wantRetries := int(attemptCount.Load()) - 1
-	if retries != wantRetries {
-		t.Errorf("Expected %d retries, got %d", wantRetries, retries)
-	}
 }
 
 // TestPost_NoRetryOn400 tests that 400 errors are not retried
@@ -457,7 +449,7 @@ func TestPost_NoRetryOn400(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, retries, err := client.Post(context.Background(), "/test", nil, nil, "test-no-retry")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-no-retry")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -470,9 +462,6 @@ func TestPost_NoRetryOn400(t *testing.T) {
 		t.Errorf("Expected 1 attempt (no retry), got %d", attemptCount.Load())
 	}
 
-	if retries != 0 {
-		t.Errorf("Expected 0 retries for non-retryable error, got %d", retries)
-	}
 }
 
 // TestRetryAfter_429WithRetryAfterHeader tests that 429 responses with Retry-After header
@@ -526,7 +515,7 @@ func TestRetryAfter_429WithRetryAfterHeader(t *testing.T) {
 			}
 
 			start := time.Now()
-			_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-after")
+			_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-retry-after")
 			elapsed := time.Since(start)
 			if err != nil {
 				t.Fatalf("Post failed: %v", err)
@@ -578,7 +567,7 @@ func TestRetryAfter_429WithoutHeader(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "test-429-no-header")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "test-429-no-header")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -1050,7 +1039,7 @@ func TestNewHTTPClient_TLSInsecureSkipVerify_Integration(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -1077,7 +1066,7 @@ func TestNewHTTPClient_TLSVerifyFails(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, _, _, err = client.Post(context.Background(), "/test", nil, nil, "")
+	_, _, err = client.Post(context.Background(), "/test", nil, nil, "")
 	if err == nil {
 		t.Fatal("Expected TLS verification error, got nil")
 	}
@@ -1120,7 +1109,7 @@ func TestNewHTTPClient_WithCustomCA_Integration(t *testing.T) {
 		t.Fatalf("NewHTTPClient failed: %v", err)
 	}
 
-	_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "")
+	_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
 	if err != nil {
 		t.Fatalf("Post failed: %v", err)
 	}
@@ -1225,7 +1214,7 @@ func TestCapacityRetryTracking(t *testing.T) {
 		}
 
 		ctx, hadCapacity := NewCapacityRetryContext(context.Background())
-		_, statusCode, _, err := client.Post(ctx, "/test", nil, nil, "")
+		_, statusCode, err := client.Post(ctx, "/test", nil, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1257,7 +1246,7 @@ func TestCapacityRetryTracking(t *testing.T) {
 		}
 
 		ctx, hadCapacity := NewCapacityRetryContext(context.Background())
-		_, statusCode, _, err := client.Post(ctx, "/test", nil, nil, "")
+		_, statusCode, err := client.Post(ctx, "/test", nil, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1292,7 +1281,7 @@ func TestCapacityRetryTracking(t *testing.T) {
 		}
 
 		// No capacity tracking context — should not panic
-		_, statusCode, _, err := client.Post(context.Background(), "/test", nil, nil, "")
+		_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}

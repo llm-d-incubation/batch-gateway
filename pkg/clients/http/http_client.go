@@ -214,8 +214,8 @@ func (c *HTTPClient) Close() error {
 }
 
 // Post makes an HTTP POST request with automatic retry logic.
-// Returns the response body, status code, number of retries performed, and any error.
-func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}, headers map[string]string, requestID string) ([]byte, int, int, error) {
+// Returns the response body, status code, and any error.
+func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}, headers map[string]string, requestID string) ([]byte, int, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	// Create resty request with context
@@ -238,10 +238,8 @@ func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}
 	resp, err := restyReq.Post(endpoint)
 
 	// Handle request-level errors (network, timeout, etc.)
-	// When err is non-nil, resp is typically nil so retry count is unavailable.
-	// The third return value (retries) is 0 in this case.
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
 
 	retries := resp.Request.Attempt - 1
@@ -251,7 +249,7 @@ func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}
 		logger.V(logging.DEBUG).Info("Request succeeded after retries", "retries", retries, "request_id", requestID)
 	}
 
-	return resp.Body(), resp.StatusCode(), retries, nil
+	return resp.Body(), resp.StatusCode(), nil
 }
 
 // HandleErrorResponse parses error response and maps to Error

@@ -80,7 +80,7 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	trackingCtx, hadCapacityRetry := httpclient.NewCapacityRetryContext(ctx)
 
 	// Execute HTTP POST request using the underlying http client
-	resp, statusCode, _, err := c.client.Post(trackingCtx, endpoint, req.Params, req.Headers, req.RequestID)
+	resp, statusCode, err := c.client.Post(trackingCtx, endpoint, req.Params, req.Headers, req.RequestID)
 
 	// Handle request-level errors (network, timeout, etc.)
 	if err != nil {

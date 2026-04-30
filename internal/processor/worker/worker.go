@@ -58,6 +58,10 @@ type Processor struct {
 	// endpointLimits maps each unique InferenceClient to its per-endpoint
 	// adaptive semaphore + AIMD controller. Created in Run() from the
 	// resolver's client set.
+	//
+	// IMPORTANT: map keys rely on concrete client identity (pointer-equal
+	// InferenceClient instances). This is safe because GatewayResolver deduplicates
+	// and reuses concrete clients for identical endpoint configs.
 	endpointLimits map[inference.InferenceClient]*endpointLimit
 
 	poller  *Poller
