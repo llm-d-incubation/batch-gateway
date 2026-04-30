@@ -19,18 +19,20 @@ GIE's flow control is a sharded queuing and dispatch engine that sits between th
 
 A **saturation detector** monitors backend load and applies head-of-line blocking when saturation reaches 1.0 -- this is the mechanism that pauses batch dispatch when the backend is busy.
 
+For full details on GIE flow control, see the [Flow Control Configuration Guide](https://gateway-api-inference-extension.sigs.k8s.io/guides/flow-control/#configuration-guide) and the [EndpointPickerConfig Reference](https://gateway-api-inference-extension.sigs.k8s.io/guides/epp-configuration/config-text/#flow-control-configuration).
+
 ## Recommended Configuration
 
 ### Priority Band Design
 
-| Band | Priority | Workload | Fairness | Ordering | Rationale |
-|------|----------|----------|----------|----------|-----------|
-| Online | 100 | Interactive requests | round-robin | fcfs | Low latency, fair across tenants |
-| Batch | 0 | Batch Gateway requests | global-strict | fcfs | Maximizes throughput, dispatches in arrival order |
+| Band   | Priority | Workload               | Fairness      | Ordering     | Rationale                                       |
+| ------ | -------- | ---------------------- | ------------- | ------------ | ----------------------------------------------- |
+| Online | 100      | Interactive requests   | round-robin   | fcfs         | Low latency, fair across tenants                |
+| Batch  | 0        | Batch Gateway requests | global-strict | slo-deadline | Maximizes throughput, dispatches by SLO urgency |
 
 **Why this works:** The priority band hierarchy ensures online requests (priority 100) are always dispatched before batch requests (priority 0). When no online requests are queued, batch requests flow freely. When online traffic arrives, batch dispatch pauses until the online queue drains.
 
-**Future improvement:** When `slo-deadline-ordering-policy` becomes available in a released GIE version, replace `fcfs-ordering-policy` with it in the batch band. This will order batch requests by their SLO deadline (`x-slo-ttft-ms`), ensuring jobs closer to their completion deadline are dispatched first.
+**SLO-deadline ordering:** The batch band uses `slo-deadline-ordering-policy`, which orders requests by their SLO deadline (`ReceivedTimestamp + x-slo-ttft-ms`), ensuring jobs closer to their completion deadline are dispatched first. See [SLO Deadline Ordering Policy](https://gateway-api-inference-extension.sigs.k8s.io/guides/epp-configuration/config-text/#slodeadlineorderingpolicy).
 
 ### EndpointPickerConfig
 
@@ -43,6 +45,11 @@ featureGates:
 plugins:
   - type: round-robin-fairness-policy
   - type: global-strict-fairness-policy
+  - type: slo-deadline-ordering-policy
+  - type: utilization-detector
+    parameters:
+      queueDepthThreshold: 2
+      kvCacheUtilThreshold: 0.85
 
 flowControl:
   # Global queue capacity across all bands and shards.
@@ -61,13 +68,10 @@ flowControl:
       orderingPolicyRef: fcfs-ordering-policy
 
     # --- Batch band: low priority, throughput-optimized ---
-    # Future: replace fcfs-ordering-policy with slo-deadline-ordering-policy
-    # (once available in a released GIE version) to order batch requests by
-    # their SLO deadline (x-slo-ttft-ms), dispatching the most urgent first.
     - priority: 0
       maxBytes: 3221225472  # 3Gi
       fairnessPolicyRef: global-strict-fairness-policy
-      orderingPolicyRef: fcfs-ordering-policy
+      orderingPolicyRef: slo-deadline-ordering-policy
 
   # Template for any priority values not explicitly listed above.
   defaultPriorityBand:
@@ -76,12 +80,7 @@ flowControl:
     orderingPolicyRef: fcfs-ordering-policy
 
 saturationDetector:
-  # Utilization-based: considers a model saturated when queue depth
-  # exceeds the threshold OR KV-cache utilization exceeds the threshold.
-  # This triggers head-of-line blocking that pauses dispatch for lower
-  # priority bands first.
-  queueDepthThreshold: 2
-  kvCacheUtilThreshold: 0.85
+  pluginRef: utilization-detector
 ```
 
 ### How Requests Get Assigned to Bands
@@ -93,7 +92,7 @@ Flow control assigns requests to priority bands based on the `InferenceObjective
 1. Create `InferenceObjective` CRDs for each workload class:
 
 ```yaml
-apiVersion: inference.gateway.networking.x-k8s.io/v1alpha2
+apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferenceObjective
 metadata:
   name: online-default
@@ -101,7 +100,7 @@ spec:
   priority: 100
 
 ---
-apiVersion: inference.gateway.networking.x-k8s.io/v1alpha2
+apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferenceObjective
 metadata:
   name: batch-low-priority
@@ -228,12 +227,12 @@ Key metrics to watch when running batch and online workloads together:
 
 | Metric | Source | What to Watch |
 |--------|--------|---------------|
-| Saturation level | GIE saturation detector | Should hover below 1.0 during mixed workloads |
-| Queue depth per band | GIE flow control | Batch band queue growing = backend saturated by online traffic |
+| `inference_extension_flow_control_pool_saturation` | GIE | Should hover below 1.0 during mixed workloads |
+| `inference_extension_flow_control_queue_size` | GIE | Batch band queue growing = backend saturated by online traffic |
+| `inference_extension_flow_control_request_queue_duration_seconds` | GIE | High queue time in batch band = sustained saturation |
 | Request evictions (TTL) | GIE flow control | Batch evictions = SLO deadlines being missed |
 | 429 response rate | Batch Gateway metrics | High 429 rate = flow control is throttling batch |
 | Batch job completion rate | Batch Gateway metrics | Should meet SLO deadlines under normal load |
-| `x-slo-ttft-ms` values | Batch Gateway request headers | Decreasing values indicate jobs approaching deadline |
 
 ## Summary
 
