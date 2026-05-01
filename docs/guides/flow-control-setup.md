@@ -134,8 +134,9 @@ Batch Gateway sets the following flow-control headers on each inference request:
 
 - **`x-slo-ttft-ms`**: Remaining milliseconds until the batch job's SLO deadline. GIE's `slo-deadline-ordering-policy` reads this header to order batch requests by urgency within the batch priority band.
 - **`x-gateway-inference-objective`**: Name of the `InferenceObjective` CRD that determines the priority band. Only sent when `inference_objective` is configured (see below).
+- **`x-gateway-inference-fairness-id`**: Tenant identifier for per-tenant fairness within a priority band. Automatically set to the job's tenant ID when it is non-empty. GIE uses this header to group requests into separate flows so that a `round-robin` fairness policy can schedule them fairly.
 
-**Note on `x-gateway-inference-fairness-id`:** GIE also supports this header to group requests into separate flows within a priority band for per-flow fairness (e.g., per-tenant round-robin). Batch Gateway does not currently send this header — all batch requests share the default flow (`"default-flow"`). This is intentional: the recommended batch band configuration uses `global-strict` fairness, which ignores flow boundaries and maximizes throughput. Per-tenant batch fairness is under consideration for a future release.
+**Note:** The recommended batch band configuration above uses `global-strict` fairness, which ignores flow boundaries and maximizes throughput. The fairness header only has effect if operators switch the batch band's fairness policy to `round-robin`.
 
 ### Recommended Processor Settings
 
