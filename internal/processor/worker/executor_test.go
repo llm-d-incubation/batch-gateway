@@ -72,7 +72,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestExecuteOneRequest_NonHTTPError(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestExecuteOneRequest_NilInferenceClient(t *testing.T) {
 
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := p.executeOneRequest(ctx, sloCtx, inputFile, allEntries[0], "m1", nil)
+	result, err := p.executeOneRequest(ctx, sloCtx, inputFile, allEntries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestExecuteOneRequest_HTTPError(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestExecuteOneRequest_HTTPErrorEmptyBody(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestExecuteOneRequest_HTTPErrorNonJSONBody(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	_, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, badEntry, "m1", nil)
+	_, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, badEntry, "m1", nil, "")
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
 	}
@@ -503,7 +503,7 @@ func TestExecuteOneRequest_SLOExpiredBeforeExecution(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestExecuteOneRequest_SLOExpiredDuringExecution(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(10*time.Nanosecond))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil)
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestProcessModel_Success(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(baseCtx)
 	cancel()
 
-	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("expected errCancelled, got: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	if !errors.Is(modelErr, errCancelled) {
 		t.Fatalf("expected errCancelled from processModel, got: %v", modelErr)
 	}
@@ -809,7 +809,7 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -859,7 +859,7 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	}()
 
 	<-started
@@ -910,7 +910,7 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	requestAbortCtx, requestAbortFn := context.WithCancel(mainCtx)
 	requestAbortFn() // simulate sibling model calling requestAbortFn
 
-	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	// requestAbortCtx cancelled, but no SLO / user-cancel / SIGTERM → nil, not errShutdown
 	if err != nil {
 		t.Fatalf("expected nil when only requestAbortCtx is cancelled (sibling abort), got: %v", err)
@@ -2790,11 +2790,11 @@ func TestJsonNumericToFloat64(t *testing.T) {
 
 func TestMergeInferenceHeaders(t *testing.T) {
 	t.Run("no deadline no objective leaves headers unchanged", func(t *testing.T) {
-		if got := mergeInferenceHeaders(nil, context.Background(), ""); got != nil {
+		if got := mergeInferenceHeaders(nil, context.Background(), "", ""); got != nil {
 			t.Fatalf("nil headers: got %v, want nil", got)
 		}
 		in := map[string]string{"a": "b"}
-		got := mergeInferenceHeaders(in, context.Background(), "")
+		got := mergeInferenceHeaders(in, context.Background(), "", "")
 		if len(got) != 1 {
 			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
 		}
@@ -2810,7 +2810,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 		want := 5*time.Second + 123*time.Millisecond
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
 		defer cancel()
-		h := mergeInferenceHeaders(nil, ctx, "")
+		h := mergeInferenceHeaders(nil, ctx, "", "")
 		got, err := strconv.ParseInt(h[sloTTFTMSHeader], 10, 64)
 		if err != nil {
 			t.Fatalf("parse header: %v", err)
@@ -2826,11 +2826,11 @@ func TestMergeInferenceHeaders(t *testing.T) {
 	t.Run("deadline in the past leaves headers unchanged", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		if got := mergeInferenceHeaders(nil, ctx, ""); got != nil {
+		if got := mergeInferenceHeaders(nil, ctx, "", ""); got != nil {
 			t.Fatalf("nil headers: got %v, want nil (expired deadline => no merge)", got)
 		}
 		in := map[string]string{"a": "b"}
-		got := mergeInferenceHeaders(in, ctx, "")
+		got := mergeInferenceHeaders(in, ctx, "", "")
 		if len(got) != 1 {
 			t.Fatalf("expected no new keys, got len=%d %#v", len(got), got)
 		}
@@ -2845,7 +2845,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 	t.Run("preserves existing headers", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
 		defer cancel()
-		h := mergeInferenceHeaders(map[string]string{"a": "b"}, ctx, "")
+		h := mergeInferenceHeaders(map[string]string{"a": "b"}, ctx, "", "")
 		if h["a"] != "b" {
 			t.Fatal("lost existing header")
 		}
@@ -2860,7 +2860,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(want))
 		defer cancel()
 		in := map[string]string{}
-		h := mergeInferenceHeaders(in, ctx, "")
+		h := mergeInferenceHeaders(in, ctx, "", "")
 		got, err := strconv.ParseInt(in[sloTTFTMSHeader], 10, 64)
 		if err != nil {
 			t.Fatalf("parse: %v", err)
@@ -2877,7 +2877,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 	})
 
 	t.Run("objective header sent when configured", func(t *testing.T) {
-		h := mergeInferenceHeaders(nil, context.Background(), "batch-low-priority")
+		h := mergeInferenceHeaders(nil, context.Background(), "batch-low-priority", "")
 		if h[inferenceObjectiveHeader] != "batch-low-priority" {
 			t.Fatalf("got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
 		}
@@ -2887,7 +2887,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 	})
 
 	t.Run("objective header not sent when empty", func(t *testing.T) {
-		h := mergeInferenceHeaders(map[string]string{"a": "b"}, context.Background(), "")
+		h := mergeInferenceHeaders(map[string]string{"a": "b"}, context.Background(), "", "")
 		if _, ok := h[inferenceObjectiveHeader]; ok {
 			t.Fatal("objective header should not be set when empty")
 		}
@@ -2896,7 +2896,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 	t.Run("both SLO and objective headers", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
 		defer cancel()
-		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority")
+		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority", "")
 		if _, ok := h[sloTTFTMSHeader]; !ok {
 			t.Fatal("SLO header missing")
 		}
@@ -2908,12 +2908,72 @@ func TestMergeInferenceHeaders(t *testing.T) {
 	t.Run("objective only with expired deadline", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority")
+		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority", "")
 		if _, ok := h[sloTTFTMSHeader]; ok {
 			t.Fatal("SLO header should not be set with expired deadline")
 		}
 		if h[inferenceObjectiveHeader] != "batch-low-priority" {
 			t.Fatalf("objective header: got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
+		}
+	})
+
+	t.Run("fairness header sent when tenantID is non-empty", func(t *testing.T) {
+		h := mergeInferenceHeaders(nil, context.Background(), "", "tenant-abc")
+		if h[fairnessIDHeader] != "tenant-abc" {
+			t.Fatalf("fairness header: got %q, want %q", h[fairnessIDHeader], "tenant-abc")
+		}
+	})
+
+	t.Run("fairness header not sent when tenantID is empty", func(t *testing.T) {
+		h := mergeInferenceHeaders(map[string]string{"a": "b"}, context.Background(), "", "")
+		if _, ok := h[fairnessIDHeader]; ok {
+			t.Fatal("fairness header should not be set when tenantID is empty")
+		}
+	})
+
+	t.Run("all three headers together", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
+		defer cancel()
+		h := mergeInferenceHeaders(nil, ctx, "batch-low-priority", "tenant-xyz")
+		if _, ok := h[sloTTFTMSHeader]; !ok {
+			t.Fatal("SLO header missing")
+		}
+		if h[inferenceObjectiveHeader] != "batch-low-priority" {
+			t.Fatalf("objective header: got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
+		}
+		if h[fairnessIDHeader] != "tenant-xyz" {
+			t.Fatalf("fairness header: got %q, want %q", h[fairnessIDHeader], "tenant-xyz")
+		}
+	})
+
+	t.Run("fairness header with default tenant", func(t *testing.T) {
+		h := mergeInferenceHeaders(nil, context.Background(), "", "default")
+		if h[fairnessIDHeader] != "default" {
+			t.Fatalf("fairness header: got %q, want %q", h[fairnessIDHeader], "default")
+		}
+	})
+
+	t.Run("processor-managed headers override pass-through conflicts", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+		defer cancel()
+		passThrough := map[string]string{
+			fairnessIDHeader:         "stale-value",
+			inferenceObjectiveHeader: "stale-objective",
+			sloTTFTMSHeader:          "9999",
+			"x-custom":               "keep-me",
+		}
+		h := mergeInferenceHeaders(passThrough, ctx, "batch-low-priority", "real-tenant")
+		if h[fairnessIDHeader] != "real-tenant" {
+			t.Fatalf("fairness header: got %q, want processor-managed value %q", h[fairnessIDHeader], "real-tenant")
+		}
+		if h[inferenceObjectiveHeader] != "batch-low-priority" {
+			t.Fatalf("objective header: got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
+		}
+		if h[sloTTFTMSHeader] == "9999" {
+			t.Fatal("SLO header should be overwritten by processor-managed value")
+		}
+		if h["x-custom"] != "keep-me" {
+			t.Fatal("non-conflicting pass-through header was lost")
 		}
 	})
 }

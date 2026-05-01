@@ -267,6 +267,8 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	// from sloCtx (derived from context.Background), so SLO expiry and SIGTERM do
 	// not set it. processModel's drain phase checks sloCtx.Err() vs
 	// userCancelCtx.Err() to choose the right error code (errExpired vs errCancelled).
+	tenantID := params.jobInfo.TenantID
+
 	for safeModelID, modelID := range modelMap.SafeToModel {
 		// Ordering guarantee: processModel returns → requestAbortFn → errCh send.
 		// This ensures the first real error reaches errCh before any context.Canceled
@@ -282,6 +284,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 				writers,
 				progress,
 				passThroughHeaders,
+				tenantID,
 			)
 			// Abort all sibling models when any model hits a fatal I/O error
 			// (e.g. output file write failure). modelErr is only set for local
@@ -387,6 +390,7 @@ func (p *Processor) processModel(
 	writers *outputWriters,
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
+	tenantID string,
 ) error {
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
@@ -436,7 +440,7 @@ dispatch:
 			defer modelSem.Release()
 			defer p.globalSem.Release()
 
-			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders)
+			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
 			if execErr != nil {
 				// Fatal read failure: the input file is unreadable at this offset
 				// (e.g. disk corruption). We do not know the CustomID, so we cannot
@@ -621,17 +625,21 @@ func (p *Processor) drainUnprocessedRequests(
 const (
 	sloTTFTMSHeader          = "x-slo-ttft-ms"
 	inferenceObjectiveHeader = "x-gateway-inference-objective"
+	fairnessIDHeader         = "x-gateway-inference-fairness-id"
 )
 
 // mergeInferenceHeaders adds processor-managed headers to the outgoing inference request:
 //   - x-slo-ttft-ms: remaining milliseconds until the SLO deadline (>= 0).
 //   - x-gateway-inference-objective: name of the InferenceObjective CRD that
 //     determines the priority band for this request.
+//   - x-gateway-inference-fairness-id: tenant identifier for per-tenant fairness
+//     within a priority band.
 //
 // Headers are only added when the relevant value is available/configured.
 // If sloCtx has no deadline, is cancelled, or has an expired deadline, the SLO
 // header is not set. If inferenceObjective is empty, the objective header is not set.
-func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective string) map[string]string {
+// If fairnessID is empty, the fairness header is not set.
+func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective, fairnessID string) map[string]string {
 	hasSLO := false
 	var sloMs int64
 	if sloCtx.Err() == nil {
@@ -644,8 +652,9 @@ func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, in
 		}
 	}
 	hasObjective := inferenceObjective != ""
+	hasFairness := fairnessID != ""
 
-	if !hasSLO && !hasObjective {
+	if !hasSLO && !hasObjective && !hasFairness {
 		return headers
 	}
 	if headers == nil {
@@ -656,6 +665,9 @@ func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, in
 	}
 	if hasObjective {
 		headers[inferenceObjectiveHeader] = inferenceObjective
+	}
+	if hasFairness {
+		headers[fairnessIDHeader] = fairnessID
 	}
 	return headers
 }
@@ -669,6 +681,7 @@ func (p *Processor) executeOneRequest(
 	entry planEntry,
 	modelID string,
 	passThroughHeaders map[string]string,
+	tenantID string,
 ) (*outputLine, error) {
 	// read the request line from input.jsonl at the given offset and length
 	buf := make([]byte, entry.Length)
@@ -719,7 +732,7 @@ func (p *Processor) executeOneRequest(
 	}
 
 	headers := maps.Clone(passThroughHeaders)
-	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID))
+	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), tenantID)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
