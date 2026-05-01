@@ -333,6 +333,20 @@ tests:
           path: data["config.yaml"]
           pattern: 'global_inference_gateway:[\s\S]*inference_objective:'
 
+  - it: should not render send_fairness_header when false (default)
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'send_fairness_header:'
+
+  - it: should render send_fairness_header when enabled
+    set:
+      processor.config.sendFairnessHeader: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'send_fairness_header: true'
+
   - it: should not render ConfigMap when processor is disabled
     set:
       processor.enabled: false

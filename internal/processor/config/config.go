@@ -100,6 +100,11 @@ type ProcessorConfig struct {
 	// Each recovery can involve DB lookups, S3 uploads, and status updates.
 	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
 
+	// SendFairnessHeader controls whether the processor sends
+	// x-gateway-inference-fairness-id on inference requests.
+	// false (default) omits the fairness header.
+	SendFairnessHeader bool `yaml:"send_fairness_header"`
+
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 

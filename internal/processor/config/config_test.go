@@ -86,6 +86,9 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.GlobalInferenceGateway != nil {
 		t.Fatalf("GlobalInferenceGateway should be nil by default")
 	}
+	if c.SendFairnessHeader {
+		t.Fatalf("SendFairnessHeader = true, want false by default")
+	}
 
 	want90Days := int64(90 * 24 * 60 * 60)
 	if c.DefaultOutputExpirationSeconds != want90Days {
@@ -433,6 +436,7 @@ model_gateways:
     tls_insecure_skip_verify: true
 default_output_expiration_seconds: 86400
 progress_ttl_seconds: 3600
+send_fairness_header: true
 `)
 
 	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
@@ -494,6 +498,9 @@ progress_ttl_seconds: 3600
 	}
 	if c.ProgressTTLSeconds != 3600 {
 		t.Fatalf("ProgressTTLSeconds = %d, want %d", c.ProgressTTLSeconds, 3600)
+	}
+	if !c.SendFairnessHeader {
+		t.Fatalf("SendFairnessHeader = false, want true")
 	}
 }
 

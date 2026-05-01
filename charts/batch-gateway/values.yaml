@@ -366,6 +366,9 @@ processor:
     #     maxRetries: 1
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
+    # Whether to send x-gateway-inference-fairness-id on inference requests.
+    # false (default) omits the header entirely.
+    sendFairnessHeader: false
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)
     enablePprof: false
 

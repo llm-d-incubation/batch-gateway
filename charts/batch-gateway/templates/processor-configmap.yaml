@@ -94,6 +94,9 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- if .Values.processor.config.sendFairnessHeader }}
+    send_fairness_header: true
+    {{- end }}
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
     progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}
 

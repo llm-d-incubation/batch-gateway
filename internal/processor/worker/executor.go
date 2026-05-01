@@ -737,8 +737,13 @@ func (p *Processor) executeOneRequest(
 		return result, nil
 	}
 
+	fairnessID := ""
+	if p.cfg.SendFairnessHeader {
+		fairnessID = tenantID
+	}
+
 	headers := maps.Clone(passThroughHeaders)
-	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), tenantID)
+	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), fairnessID)
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
