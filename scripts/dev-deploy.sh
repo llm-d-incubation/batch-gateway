@@ -46,6 +46,15 @@ USE_KIND="${USE_KIND:-true}"
 ENABLE_GIE="${ENABLE_GIE:-false}"
 GIE_REPO="${GIE_REPO:-}"
 GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
+# Shared label for InferencePool pod selection when GIE is enabled.
+# Workaround: uses a common label across all sims so a single InferencePool
+# covers both models. Replace with per-model InferencePool once the processor
+# supports per-model InferenceObjective (see #406).
+if [ "${ENABLE_GIE}" = "true" ]; then
+    GIE_POOL_LABEL="true"
+else
+    GIE_POOL_LABEL=""
+fi
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -786,6 +795,7 @@ spec:
     metadata:
       labels:
         app: ${sim_name}
+        gie-pool: "${GIE_POOL_LABEL}"
     spec:
       containers:
       - name: vllm-sim
@@ -918,7 +928,7 @@ VALUESEOF
         --set inferenceExtension.sidecar.enabled=true
         --set inferenceExtension.sidecar.proxyType=envoy
         --set inferenceExtension.endpointsServer.createInferencePool=true
-        --set "inferencePool.modelServers.matchLabels.app=${VLLM_SIM_NAME}"
+        --set "inferencePool.modelServers.matchLabels.gie-pool=true"
         --set "inferencePool.targetPorts[0].number=8000"
         --set inferencePool.modelServerType=vllm
         --set inferenceExtension.pluginsConfigFile=flow-control-plugins.yaml
@@ -976,13 +986,16 @@ install_batch_gateway() {
     cd "${REPO_ROOT}"
 
     local vllm_sim_url
-    local vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+    local vllm_sim_b_url
 
     if [ "${ENABLE_GIE}" = "true" ]; then
-        vllm_sim_url="http://${GIE_RELEASE}-epp.${NAMESPACE}.svc.cluster.local:8081"
-        log "GIE enabled: routing ${VLLM_SIM_MODEL} through GIE at ${vllm_sim_url}"
+        local gie_url="http://${GIE_RELEASE}-epp.${NAMESPACE}.svc.cluster.local:8081"
+        vllm_sim_url="${gie_url}"
+        vllm_sim_b_url="${gie_url}"
+        log "GIE enabled: routing both models through GIE at ${gie_url}"
     else
         vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+        vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
     fi
 
     local helm_args=(
@@ -1047,6 +1060,8 @@ install_batch_gateway() {
             --set "processor.config.perModelMaxConcurrency=20"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=2s"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=30s"
+            --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.initialBackoff=2s"
+            --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxBackoff=30s"
         )
     fi
 
