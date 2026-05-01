@@ -638,7 +638,8 @@ const (
 // Headers are only added when the relevant value is available/configured.
 // If sloCtx has no deadline, is cancelled, or has an expired deadline, the SLO
 // header is not set. If inferenceObjective is empty, the objective header is not set.
-// If fairnessID is empty, the fairness header is not set.
+// If fairnessID is non-empty, the fairness header is only set when the outgoing
+// headers do not already include x-gateway-inference-fairness-id.
 func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective, fairnessID string) map[string]string {
 	hasSLO := false
 	var sloMs int64
@@ -653,6 +654,11 @@ func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, in
 	}
 	hasObjective := inferenceObjective != ""
 	hasFairness := fairnessID != ""
+	if hasFairness && headers != nil {
+		if _, exists := headers[fairnessIDHeader]; exists {
+			hasFairness = false
+		}
+	}
 
 	if !hasSLO && !hasObjective && !hasFairness {
 		return headers

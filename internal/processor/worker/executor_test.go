@@ -2953,7 +2953,7 @@ func TestMergeInferenceHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("processor-managed headers override pass-through conflicts", func(t *testing.T) {
+	t.Run("fairness header honors pass-through value when present", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
 		defer cancel()
 		passThrough := map[string]string{
@@ -2963,8 +2963,8 @@ func TestMergeInferenceHeaders(t *testing.T) {
 			"x-custom":               "keep-me",
 		}
 		h := mergeInferenceHeaders(passThrough, ctx, "batch-low-priority", "real-tenant")
-		if h[fairnessIDHeader] != "real-tenant" {
-			t.Fatalf("fairness header: got %q, want processor-managed value %q", h[fairnessIDHeader], "real-tenant")
+		if h[fairnessIDHeader] != "stale-value" {
+			t.Fatalf("fairness header: got %q, want pass-through value %q", h[fairnessIDHeader], "stale-value")
 		}
 		if h[inferenceObjectiveHeader] != "batch-low-priority" {
 			t.Fatalf("objective header: got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
