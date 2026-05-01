@@ -38,7 +38,7 @@ TLS is disabled by default. When enabled, the API server enforces TLS 1.2 as the
 
 See [Networking](networking.md) for configuration details.
 
-### 3.2 Processor (Outbound to Inference Gateways)
+### 3.2 Processor (Outbound to llm-d Router)
 
 The processor supports per-gateway TLS configuration:
 
@@ -98,7 +98,7 @@ Expected secret keys:
 |-----|---------|
 | `redis-url` | Redis connection URL |
 | `postgresql-url` | PostgreSQL connection URL |
-| `inference-api-key` | Global inference gateway API key |
+| `inference-api-key` | Global llm-d Router API key |
 | `s3-secret-access-key` | S3 secret access key |
 
 Per-model API keys can also be loaded from arbitrary file paths via `api_key_file` in the gateway configuration.

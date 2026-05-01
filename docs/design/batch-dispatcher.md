@@ -10,16 +10,16 @@ Related:
 
 ## Summary
 
-This document details the design of a **Batch Dispatcher** (sometimes also referred to as the [**Async Processor**](https://github.com/llm-d-incubation/llm-d-async)) to extend the existing "online batch processing agent" architecture (see [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)). While the **Inference Gateway (IGW)** acts as the primary component for scheduling and flow control, the Batch Dispatcher serves as a system-load aware gatekeeper. It ensures that batch workloads (low-priority and sheddable) are pulled from message queues and forwarded to the IGW only when the inference pool has sufficient capacity. This prevents low-priority traffic from flooding the system and competing with realtime requests.
+This document details the design of a **Batch Dispatcher** (sometimes also referred to as the [**Async Processor**](https://github.com/llm-d-incubation/llm-d-async)) to extend the existing "online batch processing agent" architecture (see [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)). While the **llm-d Router** acts as the primary component for scheduling and flow control, the Batch Dispatcher serves as a system-load aware gatekeeper. It ensures that batch workloads (low-priority and sheddable) are pulled from message queues and forwarded to the llm-d Router only when the inference pool has sufficient capacity. This prevents low-priority traffic from flooding the system and competing with realtime requests.
 
 ## Problem statement
 
-The current IGW provides flow control, but a naive approach to batch processing without considering system limits can lead to competing for resources with higher-priority, interactive requests. Batch requests should not be blindly forwarded or retried without a mechanism to honor saturation thresholds; batch workloads may cause inefficient resource utilization or interfere with realtime traffic.
+The current llm-d Router provides flow control, but a naive approach to batch processing without considering system limits can lead to competing for resources with higher-priority, interactive requests. Batch requests should not be blindly forwarded or retried without a mechanism to honor saturation thresholds; batch workloads may cause inefficient resource utilization or interfere with realtime traffic.
 
 ## Guiding Principles and Objectives
 
 * **Reactive Flow Control:** Implement a best-effort, partially proactive mechanism to protect the system from unexpected overloads.
-* **Decoupled Architecture:** Keep the IGW as an independent, shared service while the Batch Dispatcher manages the "push" rate of sheddable workloads.
+* **Decoupled Architecture:** Keep the llm-d Router as an independent, shared service while the Batch Dispatcher manages the "push" rate of sheddable workloads.
 
 #### **Goals**
 
@@ -43,14 +43,14 @@ Because there is one InferencePool and one EPP per (base) model (see [InferenceP
 #### **Key Components**
 
 * **Batch Processing Agent:** The component described in [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)
-* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the Inference Gateway
+* **Batch Dispatcher:** A component that reads flow-control metrics, determines a "Dispatch Budget", and forwards sheddable traffic to the llm-d Router
 * **Message Queue:** A persistent store (e.g., Redis, Pub/Sub, Kafka) that holds asynchronous requests. The queue is a priority queue, sorted according to some policy (e.g. an SLO, tenancy, etc: out of scope here)
 * **Metrics Store:** Provides real-time data on **Inference Pool usage**. Such data drives the **Batch Dispatcher** logic
-* **Inference Gateway (IGW):** L7 Proxy \+ Endpoint Picker (EPP) \+ any other accessory service, it handles the final routing to model servers.
+* **llm-d Router:** L7 Proxy \+ Endpoint Picker (EPP) \+ any other accessory service, it handles the final routing to model servers.
 
 ## Deployment Model and Lifecycle
 
-The dispatcher corresponds to the **batch processing agent** described [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj), effectively implementing a "strategy" to pull and forward requests from Message Queue to the IGW.
+The dispatcher corresponds to the **batch processing agent** described [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj), effectively implementing a "strategy" to pull and forward requests from Message Queue to the llm-d Router.
 
 Currently, the dispatcher is meant to be deployed stand-alone, with its own lifecycle. The dispatcher
 can read from multiple queues and dispatch to multiple inference pools. It can be also configured to dispatch
