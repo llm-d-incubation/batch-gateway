@@ -638,8 +638,12 @@ const (
 // Headers are only added when the relevant value is available/configured.
 // If sloCtx has no deadline, is cancelled, or has an expired deadline, the SLO
 // header is not set. If inferenceObjective is empty, the objective header is not set.
-// If fairnessID is non-empty, the fairness header is only set when the outgoing
-// headers do not already include x-gateway-inference-fairness-id.
+// If fairnessID is non-empty, the fairness header is set only when the outgoing
+// headers do not already include x-gateway-inference-fairness-id. Unlike SLO and
+// objective (which are processor-authoritative and always override), fairness is
+// user-overridable: callers can supply a custom flow key (e.g. API key, group ID)
+// via pass-through headers, and the processor falls back to tenantID only when no
+// override is present.
 func mergeInferenceHeaders(headers map[string]string, sloCtx context.Context, inferenceObjective, fairnessID string) map[string]string {
 	hasSLO := false
 	var sloMs int64
