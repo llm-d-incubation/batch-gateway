@@ -42,6 +42,11 @@ GC_IMG="${GC_IMG:-ghcr.io/llm-d-incubation/batch-gateway-gc:${IMAGE_TAG}}"
 # USE_KIND=false → use existing kubeconfig context (OpenShift / Kubernetes)
 USE_KIND="${USE_KIND:-true}"
 
+# GIE (Gateway API Inference Extension) flow control support
+ENABLE_GIE="${ENABLE_GIE:-false}"
+GIE_REPO="${GIE_REPO:-}"
+GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -833,14 +838,152 @@ EOF
     log "vLLM simulator installed. Service: ${sim_name}:8000"
 }
 
+# ── GIE (Gateway API Inference Extension) ────────────────────────────────────
+
+ensure_gie_repo() {
+    if [ -n "${GIE_REPO}" ] && [ -d "${GIE_REPO}" ]; then
+        log "Using GIE repo at ${GIE_REPO}"
+    else
+        local sibling_dir
+        sibling_dir="$(cd "${REPO_ROOT}/.." && pwd)/gateway-api-inference-extension"
+        if [ -d "${sibling_dir}" ]; then
+            GIE_REPO="${sibling_dir}"
+            log "Using sibling GIE repo at ${GIE_REPO}"
+        else
+            log "GIE repo not found locally. Cloning from ${GIE_UPSTREAM_REPO}..."
+            GIE_REPO="$(mktemp -d)/gateway-api-inference-extension"
+            git clone --depth 1 "${GIE_UPSTREAM_REPO}" "${GIE_REPO}"
+            log "Cloned GIE repo to ${GIE_REPO}"
+        fi
+    fi
+
+    if [ ! -f "${GIE_REPO}/config/charts/standalone/Chart.yaml" ]; then
+        die "GIE repo at ${GIE_REPO} does not contain config/charts/standalone/Chart.yaml"
+    fi
+}
+
+install_gie_crds() {
+    step "Installing GIE CRDs..."
+    kubectl apply -f "${GIE_REPO}/config/crd/bases/"
+    log "GIE CRDs installed."
+}
+
+install_gie() {
+    step "Installing GIE (EPP + Envoy sidecar) via standalone chart..."
+
+    step "Building Helm dependencies for standalone chart..."
+    helm dependency build "${GIE_REPO}/config/charts/standalone"
+
+    local values_file
+    values_file="$(mktemp)"
+    cat > "${values_file}" <<'VALUESEOF'
+inferenceExtension:
+  pluginsCustomConfig:
+    flow-control-plugins.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      featureGates:
+        - "flowControl"
+      plugins:
+        - type: round-robin-fairness-policy
+        - type: global-strict-fairness-policy
+        - type: slo-deadline-ordering-policy
+        - type: utilization-detector
+          parameters:
+            queueDepthThreshold: 5
+            kvCacheUtilThreshold: 0.8
+      flowControl:
+        maxBytes: 4294967296
+        defaultRequestTTL: 30s
+        priorityBands:
+          - priority: 100
+            maxBytes: 1073741824
+            fairnessPolicyRef: round-robin-fairness-policy
+            orderingPolicyRef: fcfs-ordering-policy
+          - priority: -1
+            maxBytes: 3221225472
+            fairnessPolicyRef: global-strict-fairness-policy
+            orderingPolicyRef: slo-deadline-ordering-policy
+        defaultPriorityBand:
+          maxBytes: 536870912
+          fairnessPolicyRef: global-strict-fairness-policy
+          orderingPolicyRef: fcfs-ordering-policy
+      saturationDetector:
+        pluginRef: utilization-detector
+VALUESEOF
+
+    local helm_args=(
+        --namespace "${NAMESPACE}"
+        --set inferenceExtension.image.tag=main
+        --set inferenceExtension.sidecar.enabled=true
+        --set inferenceExtension.sidecar.proxyType=envoy
+        --set inferenceExtension.endpointsServer.createInferencePool=true
+        --set "inferencePool.modelServers.matchLabels.app=${VLLM_SIM_NAME}"
+        --set "inferencePool.targetPorts[0].number=8000"
+        --set inferencePool.modelServerType=vllm
+        --set inferenceExtension.pluginsConfigFile=flow-control-plugins.yaml
+        --set inferenceExtension.resources.requests.cpu=100m
+        --set inferenceExtension.resources.requests.memory=256Mi
+        --set inferenceExtension.resources.limits.memory=512Mi
+        -f "${values_file}"
+    )
+
+    if helm status "${GIE_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
+        log "GIE release '${GIE_RELEASE}' already exists. Upgrading..."
+        helm upgrade "${GIE_RELEASE}" "${GIE_REPO}/config/charts/standalone" "${helm_args[@]}"
+    else
+        helm install "${GIE_RELEASE}" "${GIE_REPO}/config/charts/standalone" "${helm_args[@]}"
+    fi
+
+    rm -f "${values_file}"
+
+    wait_for_deployment "${GIE_RELEASE}-epp" "${NAMESPACE}" 180s
+    log "GIE installed. Service: ${GIE_RELEASE}-epp:8081"
+}
+
+install_inference_objectives() {
+    step "Creating InferenceObjective CRDs..."
+    kubectl apply -f - <<EOF
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: interactive-default
+  namespace: ${NAMESPACE}
+spec:
+  priority: 100
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${GIE_RELEASE}
+---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: batch-sheddable
+  namespace: ${NAMESPACE}
+spec:
+  priority: -1
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${GIE_RELEASE}
+EOF
+    log "InferenceObjectives created: interactive-default (100), batch-sheddable (-1)"
+}
+
 # ── Batch Gateway ─────────────────────────────────────────────────────────────
 
 install_batch_gateway() {
     step "Installing batch-gateway via Helm (version=${IMAGE_TAG})..."
     cd "${REPO_ROOT}"
 
-    local vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+    local vllm_sim_url
     local vllm_sim_b_url="http://${VLLM_SIM_B_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+
+    if [ "${ENABLE_GIE}" = "true" ]; then
+        vllm_sim_url="http://${GIE_RELEASE}-epp.${NAMESPACE}.svc.cluster.local:8081"
+        log "GIE enabled: routing ${VLLM_SIM_MODEL} through GIE at ${vllm_sim_url}"
+    else
+        vllm_sim_url="http://${VLLM_SIM_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+    fi
 
     local helm_args=(
         --set "apiserver.image.repository=${APISERVER_IMG%:*}"
@@ -895,6 +1038,15 @@ install_batch_gateway() {
     else
         helm_args+=(
             --set "global.fileClient.fs.pvcName=${FILES_PVC_NAME}"
+        )
+    fi
+
+    if [ "${ENABLE_GIE}" = "true" ]; then
+        helm_args+=(
+            --set "processor.config.inferenceObjective=batch-sheddable"
+            --set "processor.config.perModelMaxConcurrency=20"
+            --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=2s"
+            --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=30s"
         )
     fi
 
@@ -1183,6 +1335,12 @@ main() {
     install_grafana
     install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
     install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
+    if [ "${ENABLE_GIE}" = "true" ]; then
+        ensure_gie_repo
+        install_gie_crds
+        install_gie
+        install_inference_objectives
+    fi
     install_batch_gateway
     verify_deployment
     if [ "${USE_KIND}" = true ]; then
