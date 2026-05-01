@@ -394,7 +394,7 @@ Each plan file functions as a per-model execution queue.
 
 **Downstream-aware ordering:**
 - Plan entries are already sorted by `PrefixHash` during ingestion.
-- This groups requests with the same system prompt together, enabling the downstream inference gateway to maximize KV prefix cache hits by routing similar requests to the same backend pod.
+- This groups requests with the same system prompt together, enabling the downstream llm-d Router to maximize KV prefix cache hits by routing similar requests to the same backend pod.
 
 ###### Scheduling and Execution Sequence
 ``` mermaid
@@ -474,7 +474,7 @@ A potential improvement is to sort by the system prompt string lexicographically
 ###### Concurrency Budget Terms
 **Global Concurrency** (`GlobalConcurrency`): Limits total in-flight inference calls across all workers in a processor. Protects system resources (goroutines, sockets, memory) from unbounded growth as models and jobs scale.
     - Default: 100
-**Per-Model Concurrency** (`PerModelMaxConcurrency`): Limits concurrent execution per model. Protects downstream inference gateway from being overwhelmed by a single model's requests.
+**Per-Model Concurrency** (`PerModelMaxConcurrency`): Limits concurrent execution per model. Protects downstream llm-d Router from being overwhelmed by a single model's requests.
     - Default: 10
 
 -------------------------------------------------------------------
@@ -524,7 +524,7 @@ The processor supports two mutually exclusive gateway modes. Exactly one must be
 
 ```yaml
 global_inference_gateway:
-  url: "http://inference-gateway:8000"
+  url: "http://llm-d-router:8000"
   request_timeout: "5m"
   max_retries: 3
   initial_backoff: "1s"

@@ -1,6 +1,6 @@
 # Processor TLS for HTTPS inference backends
 
-The batch **processor** opens outbound HTTPS connections to the configured inference gateway (`globalInferenceGateway` or per-model `modelGateways`). This guide shows how to supply trust anchors and optional client certificates when the gateway uses TLS (for example vLLM or an Envoy gateway with TLS enabled).
+The batch **processor** opens outbound HTTPS connections to the configured llm-d Router (`globalInferenceGateway` or per-model `modelGateways`). This guide shows how to supply trust anchors and optional client certificates when the gateway uses TLS (for example vLLM or an Envoy gateway with TLS enabled).
 
 For the **batch API server** listening with TLS and cert-manager, see the deployment guide ([Kubernetes](deploy-k8s.md)).
 
@@ -158,7 +158,7 @@ Install the cert-manager controller if you do not already have it (for example t
 Use whatever your cluster provides: a Secret that holds the CA bundle PEM cert-manager or your platform keeps up to date, an exported CA from your `Issuer` / `ClusterIssuer`, or a dedicated bundle Secret. Mount it and set `tlsCaCertFile` to the in-container path of the CA PEM.
 
 **Client certificate (mTLS)**
-Create a cert-manager `Certificate` that requests credentials your inference gateway accepts (subject, `dnsNames`, `uris`, etc. are **gateway-specific**). The resulting TLS Secret typically contains:
+Create a cert-manager `Certificate` that requests credentials the llm-d Router accepts (subject, `dnsNames`, `uris`, etc. are **gateway-specific**). The resulting TLS Secret typically contains:
 
 - `tls.crt` — client certificate chain (map to `tlsClientCertFile`)
 - `tls.key` — private key (`tlsClientKeyFile`)

@@ -44,7 +44,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
 - **Kubernetes Native**: Helm charts with OpenShift compatibility.
 - **Observability**: Prometheus metrics and Open Telemetry integration.
 - **Health Checks**: Liveness and readiness probes for the system components.
-- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Processor connections to HTTPS inference gateways can use custom CAs and mTLS; see [Processor inference TLS](docs/guides/processor-inference-tls.md). Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-llm-route), [RHOAI](docs/guides/deploy-rhoai.md#15-security-boundary-batch-route-vs-llm-route), and [MaaS](docs/guides/deploy-maas.md#15-security-boundary-batch-route-vs-llm-route) deployment guides.
+- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Processor connections to HTTPS llm-d Routers can use custom CAs and mTLS; see [Processor inference TLS](docs/guides/processor-inference-tls.md). Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-llm-route), [RHOAI](docs/guides/deploy-rhoai.md#15-security-boundary-batch-route-vs-llm-route), and [MaaS](docs/guides/deploy-maas.md#15-security-boundary-batch-route-vs-llm-route) deployment guides.
 
 ## Architecture
 
@@ -99,7 +99,7 @@ User → API Server → PostgreSQL (metadata) + Redis/Valkey (queue) + S3 (input
                   - Launch per-model goroutines
                   - Acquire global & per-model semaphores
                   - Read requests from plan files
-                  - Send to inference gateway
+                  - Send to llm-d Router
                   - Write results to output file
                          ↓
                   Upload Results to S3
