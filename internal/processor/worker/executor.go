@@ -458,7 +458,6 @@ dispatch:
 			defer p.globalSem.Release()
 
 			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
-			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
 
 			// AIMD signal: adjust concurrency based on inference endpoint capacity.
 			//

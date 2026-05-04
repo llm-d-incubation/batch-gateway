@@ -3197,7 +3197,7 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		}
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
@@ -3415,10 +3415,10 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	}
 	progress := &executionProgress{total: 4, updater: updater, jobID: jobID}
 
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil)
+	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, tenantID)
 
 	// Process m2 (200s) — should NOT affect m2's endpoint AIMD.
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil)
+	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil, tenantID)
 
 	limitA := p.endpointLimits[clientA].aimd.Limit()
 	limitB := p.endpointLimits[clientB].aimd.Limit()
