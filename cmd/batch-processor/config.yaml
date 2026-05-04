@@ -41,6 +41,7 @@ work_dir: "/var/lib/batch-gateway/processor"
 # When set, model_gateways entries are ignored for routing.
 global_inference_gateway:
   url: "http://localhost:8000"
+  # inference_objective: ""    # InferenceObjective CRD name for x-gateway-inference-objective header
   request_timeout: "5m"
   max_retries: 3
   initial_backoff: "1s"
@@ -57,7 +58,7 @@ global_inference_gateway:
 # model_gateways:
 #   "llama-3":
 #     url: "http://gateway-a:8000"
-#     inference_objective: ""    # per-model override; falls back to global inference_objective
+#     inference_objective: ""    # InferenceObjective CRD name for x-gateway-inference-objective header
 #     request_timeout: "5m"
 #     max_retries: 3
 #     initial_backoff: "1s"

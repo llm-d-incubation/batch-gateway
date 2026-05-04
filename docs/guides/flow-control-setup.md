@@ -133,7 +133,7 @@ spec:
 Batch Gateway sets the following flow-control headers on each inference request:
 
 - **`x-slo-ttft-ms`**: Remaining milliseconds until the batch job's SLO deadline. GIE's `slo-deadline-ordering-policy` reads this header to order batch requests by urgency within the batch priority band.
-- **`x-gateway-inference-objective`**: Name of the `InferenceObjective` CRD that determines the priority band. Only sent when the resolved inference objective is non-empty (per-gateway override or processor-level default; see below).
+- **`x-gateway-inference-objective`**: Name of the `InferenceObjective` CRD that determines the priority band. Only sent when `inference_objective` is configured on the gateway (see below).
 - **`x-gateway-inference-fairness-id`**: Tenant identifier for per-tenant fairness within a priority band. Automatically set to the job's tenant ID when it is non-empty. GIE uses this header to group requests into separate flows so that a `round-robin` fairness policy can schedule them fairly.
 
 **Note:** The recommended batch band configuration above uses `global-strict` fairness, which ignores flow boundaries and maximizes throughput. The fairness header only has effect if operators switch the batch band's fairness policy to `round-robin`.
@@ -156,20 +156,14 @@ max_backoff: "30s"             # Max retry backoff
 
 #### InferenceObjective Configuration
 
-The `inference_objective` setting controls which `InferenceObjective` CRD name is sent in the `x-gateway-inference-objective` header. It can be configured at two levels:
-
-- **Per-gateway** (`model_gateways.<model>.inference_objective` or `global_inference_gateway.inference_objective`): Sets the objective for a specific gateway. Use this when different models route through separate InferencePools.
-- **Processor-level** (`inference_objective`): Applied to any model whose gateway does not set its own `inference_objective`. Use this as the default when most or all models share one InferencePool.
-
-Resolution order: per-gateway override > processor-level default > no header (when both are empty).
+The `inference_objective` setting controls which `InferenceObjective` CRD name is sent in the `x-gateway-inference-objective` header. Set it directly on each gateway entry — `global_inference_gateway.inference_objective` or `model_gateways.<model>.inference_objective`. When empty, the header is not sent.
 
 **Single-pool example** (all models share one InferencePool):
 
 ```yaml
-inference_objective: "batch-sheddable"
-
 global_inference_gateway:
   url: "http://gie-epp:8081"
+  inference_objective: "batch-sheddable"
 ```
 
 **Multi-pool example** (each model has its own InferencePool):
@@ -187,18 +181,16 @@ model_gateways:
 **Mixed example** (most models share one pool, one model has its own):
 
 ```yaml
-inference_objective: "batch-sheddable"  # default for models without override
-
 model_gateways:
   "model-a":
     url: "http://gie-shared-epp:8081"
-    # no inference_objective → uses processor-level "batch-sheddable"
+    inference_objective: "batch-sheddable"
   "model-b":
     url: "http://gie-shared-epp:8081"
-    # no inference_objective → uses processor-level "batch-sheddable"
+    inference_objective: "batch-sheddable"
   "model-c":
     url: "http://gie-c-epp:8081"
-    inference_objective: "batch-sheddable-c"  # override for model-c's own pool
+    inference_objective: "batch-sheddable-c"
 ```
 
 #### Key Considerations
@@ -216,9 +208,9 @@ processor:
   config:
     globalConcurrency: 100
     perModelMaxConcurrency: 20
-    inferenceObjective: "batch-sheddable"
     globalInferenceGateway:
       url: "http://gie-epp:8081"
+      inferenceObjective: "batch-sheddable"
       requestTimeout: "5m"
       maxRetries: 3
       initialBackoff: "2s"

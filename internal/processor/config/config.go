@@ -100,12 +100,6 @@ type ProcessorConfig struct {
 	// Each recovery can involve DB lookups, S3 uploads, and status updates.
 	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
 
-	// InferenceObjective is the name of a GIE InferenceObjective CRD to reference
-	// in the x-gateway-inference-objective header on inference requests.
-	// Used by GIE's flow control to assign batch requests to a priority band.
-	// Empty (default) means the header is not sent.
-	InferenceObjective string `yaml:"inference_objective"`
-
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
@@ -135,10 +129,10 @@ type ModelGatewayConfig struct {
 	APIKeyName string `yaml:"api_key_name"`
 	APIKeyFile string `yaml:"api_key_file"`
 
-	// InferenceObjective overrides the processor-level inference_objective
-	// for requests routed through this gateway (x-gateway-inference-objective
-	// header). Use this to target per-model InferencePools in multi-pool
-	// GIE deployments. When empty, the processor-level default is used.
+	// InferenceObjective is the name of a GIE InferenceObjective CRD sent in
+	// the x-gateway-inference-objective header on inference requests. Use this
+	// to target per-model InferencePools in multi-pool GIE deployments.
+	// When empty, the header is not sent.
 	InferenceObjective string `yaml:"inference_objective"`
 
 	RequestTimeout *time.Duration `yaml:"request_timeout"`
@@ -158,20 +152,17 @@ type BucketConfig struct {
 	BucketCount  int     `yaml:"count"`
 }
 
-// InferenceObjectiveFor returns the effective inference objective for a model.
-// Resolution: per-gateway override > processor-level default.
+// InferenceObjectiveFor returns the inference objective configured on the
+// gateway that will handle requests for modelID.
 // Returns "" when no objective is configured, which means the header is not sent.
 func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
 	if c.GlobalInferenceGateway != nil {
-		if c.GlobalInferenceGateway.InferenceObjective != "" {
-			return c.GlobalInferenceGateway.InferenceObjective
-		}
-		return c.InferenceObjective
+		return c.GlobalInferenceGateway.InferenceObjective
 	}
-	if gw, ok := c.ModelGateways[modelID]; ok && gw.InferenceObjective != "" {
+	if gw, ok := c.ModelGateways[modelID]; ok {
 		return gw.InferenceObjective
 	}
-	return c.InferenceObjective
+	return ""
 }
 
 // LoadFromYaml loads the configuration from a YAML file.

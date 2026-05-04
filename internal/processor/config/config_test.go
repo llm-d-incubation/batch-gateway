@@ -161,7 +161,6 @@ model_gateways:
     max_retries: 0
     initial_backoff: 1s
     max_backoff: 60s
-inference_objective: "batch-sheddable"
 progress_ttl_seconds: 86400
 `)
 
@@ -195,15 +194,12 @@ progress_ttl_seconds: 86400
 	if noRetry.InferenceObjective != "" {
 		t.Fatalf("no-retry-model InferenceObjective = %q, want empty", noRetry.InferenceObjective)
 	}
-	if c.InferenceObjective != "batch-sheddable" {
-		t.Fatalf("InferenceObjective = %q, want %q", c.InferenceObjective, "batch-sheddable")
-	}
 
 	if c.InferenceObjectiveFor("llama-3") != "batch-sheddable-a" {
 		t.Fatalf("InferenceObjectiveFor(llama-3) = %q, want per-model override", c.InferenceObjectiveFor("llama-3"))
 	}
-	if c.InferenceObjectiveFor("no-retry-model") != "batch-sheddable" {
-		t.Fatalf("InferenceObjectiveFor(no-retry-model) = %q, want global fallback", c.InferenceObjectiveFor("no-retry-model"))
+	if c.InferenceObjectiveFor("no-retry-model") != "" {
+		t.Fatalf("InferenceObjectiveFor(no-retry-model) = %q, want empty", c.InferenceObjectiveFor("no-retry-model"))
 	}
 
 	if err := c.Validate(); err != nil {
@@ -515,16 +511,7 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 			want:    "",
 		},
 		{
-			name: "global fallback only",
-			cfg: ProcessorConfig{
-				ModelGateways:      validPerModelConfig(),
-				InferenceObjective: "batch-sheddable",
-			},
-			modelID: "llama-3",
-			want:    "batch-sheddable",
-		},
-		{
-			name: "per-model overrides global",
+			name: "per-model objective set",
 			cfg: ProcessorConfig{
 				ModelGateways: map[string]ModelGatewayConfig{
 					"llama-3": {
@@ -536,13 +523,12 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 						MaxBackoff:         ptr.To(60 * time.Second),
 					},
 				},
-				InferenceObjective: "batch-sheddable",
 			},
 			modelID: "llama-3",
 			want:    "batch-sheddable-a",
 		},
 		{
-			name: "unlisted model falls back to global",
+			name: "unlisted model returns empty",
 			cfg: ProcessorConfig{
 				ModelGateways: map[string]ModelGatewayConfig{
 					"llama-3": {
@@ -554,13 +540,12 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 						MaxBackoff:         ptr.To(60 * time.Second),
 					},
 				},
-				InferenceObjective: "batch-sheddable",
 			},
 			modelID: "mistral",
-			want:    "batch-sheddable",
+			want:    "",
 		},
 		{
-			name: "per-model empty falls back to global",
+			name: "per-model empty returns empty",
 			cfg: ProcessorConfig{
 				ModelGateways: map[string]ModelGatewayConfig{
 					"llama-3": {
@@ -571,13 +556,12 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 						MaxBackoff:     ptr.To(60 * time.Second),
 					},
 				},
-				InferenceObjective: "batch-sheddable",
 			},
 			modelID: "llama-3",
-			want:    "batch-sheddable",
+			want:    "",
 		},
 		{
-			name: "global gateway with per-gateway objective",
+			name: "global gateway with objective",
 			cfg: ProcessorConfig{
 				GlobalInferenceGateway: &ModelGatewayConfig{
 					URL:                "http://global-gw:8000",
@@ -587,13 +571,12 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 					InitialBackoff:     ptr.To(1 * time.Second),
 					MaxBackoff:         ptr.To(60 * time.Second),
 				},
-				InferenceObjective: "fallback",
 			},
 			modelID: "any-model",
 			want:    "batch-sheddable-global",
 		},
 		{
-			name: "global gateway without per-gateway objective uses global fallback",
+			name: "global gateway without objective returns empty",
 			cfg: ProcessorConfig{
 				GlobalInferenceGateway: &ModelGatewayConfig{
 					URL:            "http://global-gw:8000",
@@ -602,10 +585,9 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 					InitialBackoff: ptr.To(1 * time.Second),
 					MaxBackoff:     ptr.To(60 * time.Second),
 				},
-				InferenceObjective: "batch-sheddable",
 			},
 			modelID: "any-model",
-			want:    "batch-sheddable",
+			want:    "",
 		},
 	}
 

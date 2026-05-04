@@ -2926,12 +2926,11 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 	tests := []struct {
 		name          string
 		modelGateways map[string]config.ModelGatewayConfig
-		globalObj     string
 		modelID       string
 		wantObjective string
 	}{
 		{
-			name: "per-model objective overrides global",
+			name: "per-model objective set",
 			modelGateways: map[string]config.ModelGatewayConfig{
 				"m1": {
 					URL:                "http://gw-a:8000",
@@ -2942,12 +2941,11 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 					MaxBackoff:         ptr.To(60 * time.Second),
 				},
 			},
-			globalObj:     "batch-sheddable",
 			modelID:       "m1",
 			wantObjective: "batch-sheddable-a",
 		},
 		{
-			name: "no per-model objective falls back to global",
+			name: "no per-model objective omits header",
 			modelGateways: map[string]config.ModelGatewayConfig{
 				"m1": {
 					URL:            "http://gw-a:8000",
@@ -2957,22 +2955,6 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 					MaxBackoff:     ptr.To(60 * time.Second),
 				},
 			},
-			globalObj:     "batch-sheddable",
-			modelID:       "m1",
-			wantObjective: "batch-sheddable",
-		},
-		{
-			name: "no objective anywhere omits header",
-			modelGateways: map[string]config.ModelGatewayConfig{
-				"m1": {
-					URL:            "http://gw-a:8000",
-					RequestTimeout: ptr.To(5 * time.Minute),
-					MaxRetries:     ptr.To(3),
-					InitialBackoff: ptr.To(1 * time.Second),
-					MaxBackoff:     ptr.To(60 * time.Second),
-				},
-			},
-			globalObj:     "",
 			modelID:       "m1",
 			wantObjective: "",
 		},
@@ -2983,7 +2965,6 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 			cfg := config.NewConfig()
 			cfg.WorkDir = t.TempDir()
 			cfg.ModelGateways = tt.modelGateways
-			cfg.InferenceObjective = tt.globalObj
 
 			var gotObjective string
 			mock := &mockInferenceClient{
