@@ -1043,7 +1043,7 @@ install_batch_gateway() {
 
     if [ "${ENABLE_GIE}" = "true" ]; then
         helm_args+=(
-            --set "processor.config.inferenceObjective=batch-sheddable"
+            --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.inferenceObjective=batch-sheddable"
             --set "processor.config.perModelMaxConcurrency=20"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=2s"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=30s"

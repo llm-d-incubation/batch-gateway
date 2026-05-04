@@ -25,6 +25,7 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
 
 	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
@@ -2915,4 +2916,113 @@ func TestMergeInferenceHeaders(t *testing.T) {
 			t.Fatalf("objective header: got %q, want %q", h[inferenceObjectiveHeader], "batch-low-priority")
 		}
 	})
+}
+
+// =====================================================================
+// Tests: per-model inference objective in executeOneRequest
+// =====================================================================
+
+func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
+	tests := []struct {
+		name          string
+		modelGateways map[string]config.ModelGatewayConfig
+		globalObj     string
+		modelID       string
+		wantObjective string
+	}{
+		{
+			name: "per-model objective overrides global",
+			modelGateways: map[string]config.ModelGatewayConfig{
+				"m1": {
+					URL:                "http://gw-a:8000",
+					InferenceObjective: "batch-sheddable-a",
+					RequestTimeout:     ptr.To(5 * time.Minute),
+					MaxRetries:         ptr.To(3),
+					InitialBackoff:     ptr.To(1 * time.Second),
+					MaxBackoff:         ptr.To(60 * time.Second),
+				},
+			},
+			globalObj:     "batch-sheddable",
+			modelID:       "m1",
+			wantObjective: "batch-sheddable-a",
+		},
+		{
+			name: "no per-model objective falls back to global",
+			modelGateways: map[string]config.ModelGatewayConfig{
+				"m1": {
+					URL:            "http://gw-a:8000",
+					RequestTimeout: ptr.To(5 * time.Minute),
+					MaxRetries:     ptr.To(3),
+					InitialBackoff: ptr.To(1 * time.Second),
+					MaxBackoff:     ptr.To(60 * time.Second),
+				},
+			},
+			globalObj:     "batch-sheddable",
+			modelID:       "m1",
+			wantObjective: "batch-sheddable",
+		},
+		{
+			name: "no objective anywhere omits header",
+			modelGateways: map[string]config.ModelGatewayConfig{
+				"m1": {
+					URL:            "http://gw-a:8000",
+					RequestTimeout: ptr.To(5 * time.Minute),
+					MaxRetries:     ptr.To(3),
+					InitialBackoff: ptr.To(1 * time.Second),
+					MaxBackoff:     ptr.To(60 * time.Second),
+				},
+			},
+			globalObj:     "",
+			modelID:       "m1",
+			wantObjective: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.NewConfig()
+			cfg.WorkDir = t.TempDir()
+			cfg.ModelGateways = tt.modelGateways
+			cfg.InferenceObjective = tt.globalObj
+
+			var gotObjective string
+			mock := &mockInferenceClient{
+				generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+					gotObjective = req.Headers[inferenceObjectiveHeader]
+					return &inference.GenerateResponse{
+						RequestID: "srv-obj",
+						Response:  []byte(`{"result":"ok"}`),
+					}, nil
+				},
+			}
+
+			requests := []batch_types.Request{
+				{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": tt.modelID, "prompt": "hi"}},
+			}
+			env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{tt.modelID: tt.modelID})
+
+			inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+			inputFile, err := os.Open(inputPath)
+			if err != nil {
+				t.Fatalf("open input: %v", err)
+			}
+			defer inputFile.Close()
+
+			jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+			entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+			ctx := testLoggerCtx(t)
+			sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(5*time.Second))
+			defer sloCancel()
+
+			_, err = env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], tt.modelID, nil)
+			if err != nil {
+				t.Fatalf("executeOneRequest error: %v", err)
+			}
+
+			if gotObjective != tt.wantObjective {
+				t.Fatalf("objective header = %q, want %q", gotObjective, tt.wantObjective)
+			}
+		})
+	}
 }

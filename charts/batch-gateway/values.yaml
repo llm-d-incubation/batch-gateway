@@ -331,6 +331,7 @@ processor:
     # Mutually exclusive with modelGateways — the processor rejects config with both set.
     # globalInferenceGateway:
     #   url: "http://inference-gateway:8000"
+    #   inferenceObjective: ""        # overrides processor-level inferenceObjective for this gateway
     #   requestTimeout: "5m"
     #   maxRetries: 3
     #   initialBackoff: "1s"
@@ -343,9 +344,13 @@ processor:
     # modelGateways maps specific model names to gateway configs.
     # Only models listed here are routed; unlisted models get a request-level error.
     # Either globalInferenceGateway or modelGateways must be configured.
+    # Each entry may set inferenceObjective to override the global value for that model's
+    # GIE InferencePool. This enables multi-pool deployments where each model routes through
+    # a separate InferencePool with its own priority band configuration.
     # modelGateways:
     #   "llama-3":
-    #     url: "http://gateway-a:8000"
+    #     url: "http://gie-a-epp:8081"
+    #     inferenceObjective: "batch-sheddable-a"   # references gie-a pool
     #     requestTimeout: "5m"
     #     maxRetries: 3
     #     initialBackoff: "1s"
@@ -355,15 +360,16 @@ processor:
     #     tlsClientCertFile: ""
     #     tlsClientKeyFile: ""
     #   "mistral":
-    #     url: "http://gateway-b:8000"
-    #     apiKeyName: "gateway-b-api-key"
+    #     url: "http://gie-b-epp:8081"
+    #     inferenceObjective: "batch-sheddable-b"   # references gie-b pool
     #     requestTimeout: "2m"
     #     maxRetries: 1
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
-    # Name of a GIE InferenceObjective CRD to reference in the
+    # Default GIE InferenceObjective CRD name for the
     # x-gateway-inference-objective header on inference requests.
     # Used by GIE flow control to assign batch requests to a priority band.
+    # Per-gateway inferenceObjective (above) takes precedence when set.
     # Empty (default) means the header is not sent.
     inferenceObjective: ""
     # Enable pprof profiling endpoints on the observability server (/debug/pprof/)

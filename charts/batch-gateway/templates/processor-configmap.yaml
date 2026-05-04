@@ -38,6 +38,9 @@ data:
     {{- with .Values.processor.config.globalInferenceGateway }}
     global_inference_gateway:
       url: {{ .url | quote }}
+      {{- if .inferenceObjective }}
+      inference_objective: {{ .inferenceObjective | quote }}
+      {{- end }}
       request_timeout: {{ .requestTimeout | quote }}
       max_retries: {{ .maxRetries }}
       initial_backoff: {{ .initialBackoff | quote }}
@@ -65,6 +68,9 @@ data:
       {{- range $model, $cfg := .Values.processor.config.modelGateways }}
       {{ $model | quote }}:
         url: {{ $cfg.url | quote }}
+        {{- if $cfg.inferenceObjective }}
+        inference_objective: {{ $cfg.inferenceObjective | quote }}
+        {{- end }}
         request_timeout: {{ $cfg.requestTimeout | quote }}
         max_retries: {{ $cfg.maxRetries }}
         initial_backoff: {{ $cfg.initialBackoff | quote }}

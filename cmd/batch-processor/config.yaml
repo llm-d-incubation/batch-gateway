@@ -57,6 +57,7 @@ global_inference_gateway:
 # model_gateways:
 #   "llama-3":
 #     url: "http://gateway-a:8000"
+#     inference_objective: ""    # per-model override; falls back to global inference_objective
 #     request_timeout: "5m"
 #     max_retries: 3
 #     initial_backoff: "1s"

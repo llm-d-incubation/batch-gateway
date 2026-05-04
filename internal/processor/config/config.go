@@ -135,6 +135,12 @@ type ModelGatewayConfig struct {
 	APIKeyName string `yaml:"api_key_name"`
 	APIKeyFile string `yaml:"api_key_file"`
 
+	// InferenceObjective overrides the processor-level inference_objective
+	// for requests routed through this gateway (x-gateway-inference-objective
+	// header). Use this to target per-model InferencePools in multi-pool
+	// GIE deployments. When empty, the processor-level default is used.
+	InferenceObjective string `yaml:"inference_objective"`
+
 	RequestTimeout *time.Duration `yaml:"request_timeout"`
 	MaxRetries     *int           `yaml:"max_retries"`
 	InitialBackoff *time.Duration `yaml:"initial_backoff"`
@@ -150,6 +156,22 @@ type BucketConfig struct {
 	BucketStart  float64 `yaml:"start"`
 	BucketFactor float64 `yaml:"factor"`
 	BucketCount  int     `yaml:"count"`
+}
+
+// InferenceObjectiveFor returns the effective inference objective for a model.
+// Resolution: per-gateway override > processor-level default.
+// Returns "" when no objective is configured, which means the header is not sent.
+func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
+	if c.GlobalInferenceGateway != nil {
+		if c.GlobalInferenceGateway.InferenceObjective != "" {
+			return c.GlobalInferenceGateway.InferenceObjective
+		}
+		return c.InferenceObjective
+	}
+	if gw, ok := c.ModelGateways[modelID]; ok && gw.InferenceObjective != "" {
+		return gw.InferenceObjective
+	}
+	return c.InferenceObjective
 }
 
 // LoadFromYaml loads the configuration from a YAML file.

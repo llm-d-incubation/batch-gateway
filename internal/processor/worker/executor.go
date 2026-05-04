@@ -719,7 +719,7 @@ func (p *Processor) executeOneRequest(
 	}
 
 	headers := maps.Clone(passThroughHeaders)
-	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjective)
+	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID))
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
