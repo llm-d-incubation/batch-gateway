@@ -3124,7 +3124,7 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 			sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(5*time.Second))
 			defer sloCancel()
 
-			_, err = env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], tt.modelID, nil)
+			_, err = env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], tt.modelID, nil, jobInfo.TenantID)
 			if err != nil {
 				t.Fatalf("executeOneRequest error: %v", err)
 			}
