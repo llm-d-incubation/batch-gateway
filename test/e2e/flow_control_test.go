@@ -28,6 +28,7 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -127,19 +128,28 @@ func doTestSLOHeader(t *testing.T) {
 	t.Logf("batch completed within 10m SLO window (x-slo-ttft-ms header propagation unit-tested)")
 }
 
-// doTestRetryOn429 submits a batch targeting a simulator with 30% failure
+// doTestRetryOn429 submits a batch targeting a simulator with 50% failure
 // injection (rate_limit → HTTP 429). The processor should retry failed
-// requests and eventually complete the batch.
+// requests and eventually complete the batch. After completion, the test
+// checks processor logs for "Retrying request" entries to verify that
+// retries actually occurred.
+//
+// Uses 10 requests at 50% failure rate so the probability of zero retries
+// is (0.5)^10 ≈ 0.1%, making the test stable in CI matrix runs.
 func doTestRetryOn429(t *testing.T) {
 	t.Helper()
 
-	jsonl := strings.Join([]string{
-		fmt.Sprintf(`{"custom_id":"r429-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 1"}]}}`, testModel429),
-		fmt.Sprintf(`{"custom_id":"r429-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 2"}]}}`, testModel429),
-		fmt.Sprintf(`{"custom_id":"r429-3","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 3"}]}}`, testModel429),
-		fmt.Sprintf(`{"custom_id":"r429-4","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 4"}]}}`, testModel429),
-		fmt.Sprintf(`{"custom_id":"r429-5","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 5"}]}}`, testModel429),
-	}, "\n")
+	const numRequests = 10
+	sinceTime := time.Now().UTC().Format(time.RFC3339Nano)
+
+	lines := make([]string, numRequests)
+	for i := range lines {
+		lines[i] = fmt.Sprintf(
+			`{"custom_id":"r429-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello %d"}]}}`,
+			i+1, testModel429, i+1,
+		)
+	}
+	jsonl := strings.Join(lines, "\n")
 
 	fileID := mustCreateFile(t, fmt.Sprintf("test-retry-429-%s.jsonl", testRunID), jsonl)
 	batchID := mustCreateBatch(t, fileID)
@@ -150,8 +160,8 @@ func doTestRetryOn429(t *testing.T) {
 	if finalBatch.Status != openai.BatchStatusCompleted {
 		t.Fatalf("expected batch to complete despite 429s, got status %s", finalBatch.Status)
 	}
-	if finalBatch.RequestCounts.Completed != 5 {
-		t.Errorf("expected 5 completed (after retries), got %d", finalBatch.RequestCounts.Completed)
+	if finalBatch.RequestCounts.Completed != int64(numRequests) {
+		t.Errorf("expected %d completed (after retries), got %d", numRequests, finalBatch.RequestCounts.Completed)
 	}
 	if finalBatch.RequestCounts.Failed != 0 {
 		t.Errorf("expected 0 failed (retries should succeed), got %d", finalBatch.RequestCounts.Failed)
@@ -161,11 +171,23 @@ func doTestRetryOn429(t *testing.T) {
 		finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
 
 	assertNoRequestErrors(t, testModel429)
+
+	procLogs := getProcessorLogsSince(t, sinceTime)
+	retries := strings.Count(procLogs, "Retrying request")
+	t.Logf("processor retried %d request(s) for %d original", retries, numRequests)
+	if retries == 0 {
+		t.Errorf("expected at least one retry (50%% failure injection on %d requests), but processor logs show 0 retries", numRequests)
+	}
 }
 
 // doTestRetryExhaustion submits a batch targeting a simulator with 100%
 // failure injection. maxRetries is set to 1 via Helm, so the processor
-// exhausts retries quickly and the batch must end in "failed" status.
+// exhausts retries quickly. The processor records 429 responses in the
+// output file and marks the batch completed with RequestCounts.Failed > 0.
+//
+// This test polls manually instead of using waitForBatchStatus because
+// validateBatchResults enforces status_code=200 on all output lines,
+// which is not valid here — 429 responses in the output file are expected.
 func doTestRetryExhaustion(t *testing.T) {
 	t.Helper()
 
@@ -177,18 +199,42 @@ func doTestRetryExhaustion(t *testing.T) {
 	fileID := mustCreateFile(t, fmt.Sprintf("test-retry-exhaust-%s.jsonl", testRunID), jsonl)
 	batchID := mustCreateBatch(t, fileID)
 
-	finalBatch, _ := waitForBatchStatus(t, batchID, 3*time.Minute,
-		openai.BatchStatusFailed, openai.BatchStatusCompleted)
+	finalBatch := waitForRetryExhaustion(t, batchID, 3*time.Minute)
 
-	if finalBatch.Status != openai.BatchStatusFailed {
-		t.Fatalf("expected batch to fail after retry exhaustion, got status %s", finalBatch.Status)
+	// The processor records 429 responses as output and marks the batch
+	// as completed (all requests were processed, even if none succeeded).
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Errorf("expected batch status %q (processor finished processing), got %q",
+			openai.BatchStatusCompleted, finalBatch.Status)
+	}
+	if finalBatch.RequestCounts.Completed != 0 {
+		t.Errorf("expected 0 successfully completed requests, got %d", finalBatch.RequestCounts.Completed)
 	}
 	if finalBatch.RequestCounts.Failed == 0 {
 		t.Errorf("expected failed request count > 0, got %d", finalBatch.RequestCounts.Failed)
 	}
 
-	t.Logf("retry exhaustion: completed=%d failed=%d total=%d",
-		finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
+	t.Logf("retry exhaustion: status=%s completed=%d failed=%d total=%d",
+		finalBatch.Status, finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
+
+	if finalBatch.OutputFileID == "" {
+		t.Fatal("expected output file with 429 responses, but OutputFileID is empty")
+	}
+	result := fetchOutputFile(t, finalBatch)
+	var found429 int
+	for _, line := range strings.Split(result, "\n") {
+		var rl batchResultLine
+		if err := json.Unmarshal([]byte(line), &rl); err != nil {
+			continue
+		}
+		if rl.Response != nil && rl.Response.StatusCode == http.StatusTooManyRequests {
+			found429++
+		}
+	}
+	if found429 == 0 {
+		t.Errorf("expected at least one 429 response in output file, found none")
+	}
+	t.Logf("output file contains %d response(s) with status 429", found429)
 
 	assertRequestErrors(t, testModelAlwaysFail)
 }
@@ -239,7 +285,7 @@ func doTestGIEHeaderPropagation(t *testing.T) {
 	t.Helper()
 
 	eppDeployment := fmt.Sprintf("%s-%s-epp", getEnvOrDefault("GIE_EPP_RELEASE", "epp"), testModel)
-	sinceTime := time.Now().UTC().Format(time.RFC3339)
+	sinceTime := time.Now().UTC().Format(time.RFC3339Nano)
 
 	fileID := mustCreateFile(t, fmt.Sprintf("flow-control-headers-%s.jsonl", testRunID), testJSONL)
 	batchID := mustCreateBatch(t, fileID)
@@ -272,7 +318,7 @@ func doTestGIEHeaderPropagation(t *testing.T) {
 func doTestBatchCompletionThroughEPP(t *testing.T) {
 	t.Helper()
 
-	sinceTime := time.Now().UTC().Format(time.RFC3339)
+	sinceTime := time.Now().UTC().Format(time.RFC3339Nano)
 	eppPrefix := getEnvOrDefault("GIE_EPP_RELEASE", "epp")
 
 	multiModelJSONL := strings.Join([]string{
@@ -307,36 +353,6 @@ func doTestBatchCompletionThroughEPP(t *testing.T) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-// getSimulatorLogsSince fetches vllm-sim container logs for the simulator
-// serving the given model, filtered to entries after sinceTime (RFC3339).
-func getSimulatorLogsSince(t *testing.T, model, sinceTime string) string {
-	t.Helper()
-
-	simDeploymentLabel := ""
-	switch model {
-	case testModel:
-		simDeploymentLabel = getEnvOrDefault("VLLM_SIM_NAME", "vllm-sim")
-	case testModelB:
-		simDeploymentLabel = getEnvOrDefault("VLLM_SIM_B_NAME", "vllm-sim-b")
-	case testModel429:
-		simDeploymentLabel = getEnvOrDefault("VLLM_SIM_429_NAME", "vllm-sim-429")
-	case testModelAlwaysFail:
-		simDeploymentLabel = getEnvOrDefault("VLLM_SIM_ALWAYS_FAIL_NAME", "vllm-sim-always-fail")
-	default:
-		t.Fatalf("unknown model %q for simulator log lookup", model)
-	}
-
-	out, err := exec.Command("kubectl", "logs",
-		fmt.Sprintf("deployment/%s", simDeploymentLabel),
-		"-n", testNamespace,
-		fmt.Sprintf("--since-time=%s", sinceTime),
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("kubectl logs for simulator %s failed: %v\n%s", simDeploymentLabel, err, out)
-	}
-	return string(out)
-}
 
 // getEPPLogsSince fetches EPP container logs from the given deployment,
 // filtered to entries after sinceTime (RFC3339).
@@ -414,6 +430,53 @@ func scrapeProcessorMetrics(t *testing.T) string {
 	return string(body)
 }
 
+// waitForRetryExhaustion polls a batch until it reaches a terminal state.
+// Unlike waitForBatchStatus, it skips validateBatchResults because retry
+// exhaustion produces 429 responses in the output file which fail the
+// standard status_code=200 check.
+func waitForRetryExhaustion(t *testing.T, batchID string, timeout time.Duration) *openai.Batch {
+	t.Helper()
+
+	client := newClient()
+	deadline := time.Now().Add(timeout)
+	if d, ok := t.Deadline(); ok && d.Before(deadline) {
+		deadline = d.Add(-5 * time.Second)
+	}
+
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(t.Context(), batchID)
+		if err != nil {
+			t.Fatalf("retrieve batch failed: %v", err)
+		}
+		t.Logf("batch %s status: %s (completed=%d, failed=%d)",
+			batchID, b.Status, b.RequestCounts.Completed, b.RequestCounts.Failed)
+
+		if terminalBatchStatuses[b.Status] {
+			return b
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("batch %s did not reach terminal status within %v", batchID, timeout)
+	return nil
+}
+
+// fetchOutputFile downloads the output file for a batch and returns its body.
+func fetchOutputFile(t *testing.T, batch *openai.Batch) string {
+	t.Helper()
+
+	client := newClient()
+	resp, err := client.Files.Content(t.Context(), batch.OutputFileID)
+	if err != nil {
+		t.Fatalf("download output file failed: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read output file body failed: %v", err)
+	}
+	return strings.TrimSpace(string(body))
+}
+
 // assertNoRequestErrors verifies that request_errors_by_model_total for the
 // given model is either absent or zero. When the HTTP client retries 429s
 // transparently and all retries succeed, the executor never records an error.
@@ -451,4 +514,21 @@ func assertRequestErrors(t *testing.T, model string) {
 		t.Errorf("expected request_errors_by_model_total{model=%q} > 0, got 0", model)
 	}
 	t.Logf("request_errors_by_model_total{model=%q} = %s", model, match[1])
+}
+
+// getProcessorLogsSince fetches batch-gateway-processor container logs
+// filtered to entries after sinceTime (RFC3339Nano).
+func getProcessorLogsSince(t *testing.T, sinceTime string) string {
+	t.Helper()
+
+	deployment := fmt.Sprintf("%s-processor", testHelmRelease)
+	out, err := exec.Command("kubectl", "logs",
+		fmt.Sprintf("deployment/%s", deployment),
+		"-n", testNamespace,
+		fmt.Sprintf("--since-time=%s", sinceTime),
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kubectl logs for %s failed: %v\n%s", deployment, err, out)
+	}
+	return string(out)
 }

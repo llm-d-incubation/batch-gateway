@@ -1040,7 +1040,7 @@ install_batch_gateway() {
         # This isolates the processor's HTTP-level retry behavior from EPP routing.
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.url=http://${VLLM_SIM_429_NAME}.${NAMESPACE}.svc.cluster.local:8000"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.requestTimeout=2m"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxRetries=5"
+        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxRetries=10"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.initialBackoff=500ms"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxBackoff=5s"
         # Always-fail model: 100% rate_limit injection, minimal retries for fast exhaustion.
@@ -1301,7 +1301,7 @@ print_usage() {
     echo "     Available models in dev environment:"
     echo "       - sim-model     (vLLM simulator at ${VLLM_SIM_NAME})"
     echo "       - sim-model-b   (vLLM simulator at ${VLLM_SIM_B_NAME})"
-    echo "       - sim-model-429 (vLLM simulator at ${VLLM_SIM_429_NAME}, 30% rate_limit failure injection)"
+    echo "       - sim-model-429 (vLLM simulator at ${VLLM_SIM_429_NAME}, 50% rate_limit failure injection)"
     echo "       - sim-model-always-fail (vLLM simulator at ${VLLM_SIM_ALWAYS_FAIL_NAME}, 100% rate_limit failure injection)"
     if [ "${ENABLE_GIE}" = "true" ]; then
     echo ""
@@ -1397,7 +1397,7 @@ main() {
     install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
     install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
     install_vllm_sim "${VLLM_SIM_429_NAME}" "${VLLM_SIM_429_MODEL}" "10ms" "10ms" \
-        "--failure-injection-rate=30" "--failure-types=rate_limit"
+        "--failure-injection-rate=50" "--failure-types=rate_limit"
     install_vllm_sim "${VLLM_SIM_ALWAYS_FAIL_NAME}" "${VLLM_SIM_ALWAYS_FAIL_MODEL}" "10ms" "10ms" \
         "--failure-injection-rate=100" "--failure-types=rate_limit"
     if [ "${ENABLE_GIE}" = "true" ]; then

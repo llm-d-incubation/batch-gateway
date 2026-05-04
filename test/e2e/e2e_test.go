@@ -46,8 +46,8 @@ var (
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
 	// testModel is the model name used in batch input; configurable via TEST_MODEL env var.
-	testModel    = getEnvOrDefault("TEST_MODEL", "sim-model")
-	testModelB   = getEnvOrDefault("TEST_MODEL_B", "sim-model-b")
+	testModel           = getEnvOrDefault("TEST_MODEL", "sim-model")
+	testModelB          = getEnvOrDefault("TEST_MODEL_B", "sim-model-b")
 	testModel429        = getEnvOrDefault("TEST_MODEL_429", "sim-model-429")
 	testModelAlwaysFail = getEnvOrDefault("TEST_MODEL_ALWAYS_FAIL", "sim-model-always-fail")
 
