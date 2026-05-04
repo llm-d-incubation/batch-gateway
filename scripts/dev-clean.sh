@@ -10,11 +10,20 @@ source "${SCRIPT_DIR}/dev-common.sh"
 cleanup_kubernetes_resources() {
     step "Cleaning up Kubernetes resources in namespace '${NAMESPACE}'..."
 
-    # Uninstall helm releases (--ignore-not-found available in Helm 3.13+, use || true as fallback)
+    # Clean up GIE EPP releases and CRDs (if any were deployed with ENABLE_GIE=true).
+    # Uses managed-by label to scope deletion to resources created by this script.
+    local epp_prefix="${GIE_EPP_RELEASE:-epp}"
+    for release in $(helm list -n "${NAMESPACE}" -q --filter "^${epp_prefix}-" 2>/dev/null); do
+        log "Uninstalling GIE EPP release '${release}'..."
+        helm uninstall "${release}" -n "${NAMESPACE}" || warn "Failed to uninstall EPP release '${release}'"
+    done
+    kubectl delete inferenceobjective -l app.kubernetes.io/managed-by=batch-gateway-dev -n "${NAMESPACE}" --ignore-not-found=true \
+        || warn "Failed to delete InferenceObjective CRDs"
+
     log "Uninstalling helm releases..."
-    helm uninstall "${HELM_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || true
-    helm uninstall "${REDIS_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || true
-    helm uninstall "${POSTGRESQL_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || true
+    helm uninstall "${HELM_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall ${HELM_RELEASE} (may not exist)"
+    helm uninstall "${REDIS_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall ${REDIS_RELEASE} (may not exist)"
+    helm uninstall "${POSTGRESQL_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall ${POSTGRESQL_RELEASE} (may not exist)"
 
     # Delete NodePort services (created outside of Helm)
     log "Deleting NodePort services..."
@@ -33,6 +42,8 @@ cleanup_kubernetes_resources() {
     kubectl delete clusterrole,clusterrolebinding "${PROMETHEUS_NAME}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_B_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete deployment,svc "${VLLM_SIM_429_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete deployment,svc "${VLLM_SIM_ALWAYS_FAIL_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${MINIO_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
 
     # Delete secrets

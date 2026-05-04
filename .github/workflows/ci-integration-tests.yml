@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   integration-tests:
-    name: Integration Tests (${{ matrix.file_client_type }}, ${{ matrix.db_client_type }}, ${{ matrix.exchange_client_type }})
+    name: Integration Tests (${{ matrix.file_client_type }}, ${{ matrix.db_client_type }}, ${{ matrix.exchange_client_type }}${{ matrix.enable_gie == 'true' && ', gie' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -41,6 +41,10 @@ jobs:
           - file_client_type: s3
             db_client_type: valkey
             exchange_client_type: valkey
+          - file_client_type: s3
+            db_client_type: postgresql
+            exchange_client_type: redis
+            enable_gie: "true"
     steps:
       - uses: actions/checkout@v6
 
@@ -60,6 +64,7 @@ jobs:
           FILE_CLIENT_TYPE: ${{ matrix.file_client_type }}
           DB_CLIENT_TYPE: ${{ matrix.db_client_type }}
           EXCHANGE_CLIENT_TYPE: ${{ matrix.exchange_client_type }}
+          ENABLE_GIE: ${{ matrix.enable_gie || 'false' }}
 
       - name: Run integration tests
         run: make test-e2e

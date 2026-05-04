@@ -327,6 +327,10 @@ KIND_CLUSTER_NAME ?= batch-gateway-dev
 dev-deploy:
 	@bash scripts/dev-deploy.sh
 
+## dev-deploy-gie: Deploy with GIE integration (per-model EPP + InferenceObjectives)
+dev-deploy-gie:
+	@ENABLE_GIE=true bash scripts/dev-deploy.sh
+
 ## dev-clean: Clean up dev deployment (removes all resources but keeps the kind cluster)
 dev-clean:
 	@bash scripts/dev-clean.sh
@@ -336,6 +340,10 @@ dev-rm-cluster:
 	@echo "Deleting kind cluster 'batch-gateway-dev'..."
 	@kind delete cluster --name batch-gateway-dev || echo "Cluster not found or already deleted"
 	@echo "✅ Kind cluster deleted"
+
+## test-e2e-gie: Run E2E tests including GIE flow control (requires dev-deploy-gie)
+test-e2e-gie:
+	@ENABLE_GIE=true $(MAKE) test-e2e
 
 ## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
 ##           Use TEST_RUN to filter tests, e.g.: make test-e2e TEST_RUN=TestE2E/Batches/Cancel/InProgress
