@@ -904,6 +904,11 @@ inferenceExtension:
       plugins:
         - type: round-robin-fairness-policy
         - type: global-strict-fairness-policy
+        - type: slo-deadline-ordering-policy
+        - type: utilization-detector
+          parameters:
+            queueDepthThreshold: 5
+            kvCacheUtilThreshold: 0.8
       flowControl:
         maxBytes: 4294967296
         defaultRequestTTL: 30s
@@ -915,11 +920,13 @@ inferenceExtension:
           - priority: -1
             maxBytes: 3221225472
             fairnessPolicyRef: global-strict-fairness-policy
-            orderingPolicyRef: fcfs-ordering-policy
+            orderingPolicyRef: slo-deadline-ordering-policy
         defaultPriorityBand:
           maxBytes: 536870912
           fairnessPolicyRef: global-strict-fairness-policy
           orderingPolicyRef: fcfs-ordering-policy
+      saturationDetector:
+        pluginRef: utilization-detector
 VALUESEOF
 
     local helm_args=(
