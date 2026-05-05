@@ -341,10 +341,6 @@ dev-rm-cluster:
 	@kind delete cluster --name batch-gateway-dev || echo "Cluster not found or already deleted"
 	@echo "✅ Kind cluster deleted"
 
-## test-e2e-gie: Run E2E tests including GIE flow control (requires dev-deploy-gie)
-test-e2e-gie:
-	@ENABLE_GIE=true $(MAKE) test-e2e
-
 ## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
 ##           Use TEST_RUN to filter tests, e.g.: make test-e2e TEST_RUN=TestE2E/Batches/Cancel/InProgress
 test-e2e:
