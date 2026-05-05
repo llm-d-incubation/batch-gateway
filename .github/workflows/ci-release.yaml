@@ -88,3 +88,52 @@ jobs:
           echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
           echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
           echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.tag }}"
+
+  helm:
+    runs-on: ubuntu-latest
+    if: github.ref_name == 'main' || github.ref_type == 'tag'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
+
+      - name: Determine chart version
+        id: chart
+        run: |
+          COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            # Semver tag — use it directly as the chart version (strip leading 'v')
+            CHART_VERSION="${{ github.ref_name }}"
+            CHART_VERSION="${CHART_VERSION#v}"
+            APP_VERSION="${{ github.ref_name }}"
+          else
+            # main branch
+            CHART_VERSION="0.0.0-main-${COMMIT_SHA}"
+            APP_VERSION="main-${COMMIT_SHA}"
+          fi
+
+          echo "chart_version=${CHART_VERSION}" >> $GITHUB_OUTPUT
+          echo "app_version=${APP_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Package and push Helm chart
+        run: |
+          helm package charts/batch-gateway \
+            --version "${{ steps.chart.outputs.chart_version }}" \
+            --app-version "${{ steps.chart.outputs.app_version }}"
+          helm push batch-gateway-${{ steps.chart.outputs.chart_version }}.tgz \
+            oci://ghcr.io/llm-d-incubation/charts
+
+      - name: Output chart reference
+        run: |
+          echo "Chart pushed:"
+          echo "  - ghcr.io/llm-d-incubation/charts/batch-gateway:${{ steps.chart.outputs.chart_version }}"
