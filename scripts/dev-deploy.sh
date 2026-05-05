@@ -861,23 +861,12 @@ EOF
 
 ensure_gie_repo() {
     if [ -n "${GIE_REPO}" ] && [ -d "${GIE_REPO}" ]; then
-        log "Using GIE repo at ${GIE_REPO}"
+        log "Using user-provided GIE repo at ${GIE_REPO}"
     else
-        local sibling_dir
-        sibling_dir="$(cd "${REPO_ROOT}/.." && pwd)/gateway-api-inference-extension"
-        if [ -d "${sibling_dir}" ] && git -C "${sibling_dir}" rev-parse "${GIE_VERSION}" &>/dev/null; then
-            GIE_REPO="${sibling_dir}"
-            log "Using sibling GIE repo at ${GIE_REPO} (checking out ${GIE_VERSION})"
-            git -C "${GIE_REPO}" checkout "${GIE_VERSION}" --quiet 2>/dev/null || true
-        elif [ -d "${sibling_dir}" ]; then
-            log "Sibling GIE repo exists but ${GIE_VERSION} tag not found; cloning pinned version"
-        fi
-        if [ -z "${GIE_REPO}" ]; then
-            log "GIE repo not found locally. Cloning ${GIE_UPSTREAM_REPO} at ${GIE_VERSION}..."
-            GIE_REPO="$(mktemp -d)/gateway-api-inference-extension"
-            git clone --depth 1 --branch "${GIE_VERSION}" "${GIE_UPSTREAM_REPO}" "${GIE_REPO}"
-            log "Cloned GIE repo to ${GIE_REPO} (${GIE_VERSION})"
-        fi
+        log "Cloning ${GIE_UPSTREAM_REPO} at ${GIE_VERSION}..."
+        GIE_REPO="$(mktemp -d)/gateway-api-inference-extension"
+        git clone --depth 1 --branch "${GIE_VERSION}" "${GIE_UPSTREAM_REPO}" "${GIE_REPO}"
+        log "Cloned GIE repo to ${GIE_REPO}"
     fi
 
     if [ ! -f "${GIE_REPO}/config/charts/standalone/Chart.yaml" ]; then
