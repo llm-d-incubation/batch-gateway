@@ -210,8 +210,8 @@ func doTestRetryExhaustion(t *testing.T) {
 	if finalBatch.RequestCounts.Completed != 0 {
 		t.Errorf("expected 0 successfully completed requests, got %d", finalBatch.RequestCounts.Completed)
 	}
-	if finalBatch.RequestCounts.Failed == 0 {
-		t.Errorf("expected failed request count > 0, got %d", finalBatch.RequestCounts.Failed)
+	if finalBatch.RequestCounts.Failed != 2 {
+		t.Errorf("expected 2 failed requests, got %d", finalBatch.RequestCounts.Failed)
 	}
 
 	t.Logf("retry exhaustion: status=%s completed=%d failed=%d total=%d",
