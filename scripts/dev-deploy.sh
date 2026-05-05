@@ -945,6 +945,7 @@ VALUESEOF
         --set inferenceExtension.resources.requests.cpu=100m
         --set inferenceExtension.resources.requests.memory=256Mi
         --set inferenceExtension.resources.limits.memory=512Mi
+        --set "inferenceExtension.flags.zap-log-level=${LOG_VERBOSITY}"
         -f "${values_file}"
     )
 

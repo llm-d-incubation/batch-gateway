@@ -277,10 +277,11 @@ func detectGIEDeployed(t *testing.T) bool {
 }
 
 // doTestGIEHeaderPropagation verifies that the processor sends requests through
-// EPP with x-gateway-inference-objective configured.
+// EPP with x-gateway-inference-objective configured and that the requests
+// pass through the flow control dispatch path.
 //
 // Verification: submit a batch, wait for completion, then check EPP logs for
-// evidence that it received and routed the requests.
+// evidence that it received, routed, and dispatched the requests via flow control.
 func doTestGIEHeaderPropagation(t *testing.T) {
 	t.Helper()
 
@@ -310,6 +311,12 @@ func doTestGIEHeaderPropagation(t *testing.T) {
 	routed := strings.Count(eppLogs, "EPP sent request body response(s) to proxy")
 	if routed < 2 {
 		t.Errorf("expected EPP to route >= 2 responses since %s, got %d", sinceTime, routed)
+	}
+
+	dispatched := strings.Count(eppLogs, "Item dispatched.")
+	if dispatched < 2 {
+		t.Errorf("expected flow control to dispatch >= 2 items since %s, got %d;\nlog sample:\n%s",
+			sinceTime, dispatched, truncateLog(eppLogs, 1000))
 	}
 }
 
