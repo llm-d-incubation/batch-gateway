@@ -59,7 +59,7 @@ USE_KIND="${USE_KIND:-true}"
 ENABLE_GIE="${ENABLE_GIE:-false}"
 GIE_REPO="${GIE_REPO:-}"
 GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
-GIE_VERSION="${GIE_VERSION:-v1.4.0}"
+GIE_VERSION="${GIE_VERSION:-v1.5.0}"
 GIE_EPP_RELEASE="${GIE_EPP_RELEASE:-epp}"
 GIE_OBJECTIVE_PREFIX="${GIE_OBJECTIVE_PREFIX:-batch-sheddable}"
 
