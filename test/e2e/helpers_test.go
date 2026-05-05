@@ -615,3 +615,20 @@ func waitForReady(t *testing.T, url string, timeout time.Duration) {
 		time.Sleep(time.Second)
 	}
 }
+
+// fetchOutputFile downloads the output file for a batch and returns its body.
+func fetchOutputFile(t *testing.T, batch *openai.Batch) string {
+	t.Helper()
+
+	client := newClient()
+	resp, err := client.Files.Content(t.Context(), batch.OutputFileID)
+	if err != nil {
+		t.Fatalf("download output file failed: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read output file body failed: %v", err)
+	}
+	return strings.TrimSpace(string(body))
+}
