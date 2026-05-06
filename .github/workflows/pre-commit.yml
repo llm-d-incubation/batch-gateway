@@ -28,6 +28,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+
       - name: Install Go tools (goimports, gosec, ruleguard)
         run: make install-pre-commit-tools
 
@@ -38,3 +41,6 @@ jobs:
 
       - name: Run pre-commit hooks
         uses: pre-commit/action@v3.0.1
+
+      - name: Lint Helm chart
+        run: helm lint charts/batch-gateway
