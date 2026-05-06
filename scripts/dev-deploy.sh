@@ -865,6 +865,7 @@ ensure_gie_repo() {
     else
         log "Cloning ${GIE_UPSTREAM_REPO} at ${GIE_VERSION}..."
         GIE_REPO="$(mktemp -d)/gateway-api-inference-extension"
+        GIE_REPO_TMPDIR="$(dirname "${GIE_REPO}")"
         git clone --depth 1 --branch "${GIE_VERSION}" "${GIE_UPSTREAM_REPO}" "${GIE_REPO}"
         log "Cloned GIE repo to ${GIE_REPO}"
     fi
@@ -1403,6 +1404,10 @@ main() {
         install_gie_epp "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}"
         install_gie_epp "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}"
         create_inference_objectives
+        if [ -n "${GIE_REPO_TMPDIR:-}" ]; then
+            rm -rf "${GIE_REPO_TMPDIR}"
+            log "Cleaned up cloned GIE repo at ${GIE_REPO_TMPDIR}"
+        fi
     fi
     install_batch_gateway
     verify_deployment
