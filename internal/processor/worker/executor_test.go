@@ -47,6 +47,9 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 			if _, ok := req.Headers[sloTTFTMSHeader]; !ok {
 				t.Fatalf("expected %s header to be set", sloTTFTMSHeader)
 			}
+			if req.Headers[batchRequestHeader] != "true" {
+				t.Fatalf("expected %s header to be \"true\", got %q", batchRequestHeader, req.Headers[batchRequestHeader])
+			}
 			return &inference.GenerateResponse{
 				RequestID: "srv-123",
 				Response:  []byte(`{"result":"ok"}`),
@@ -591,6 +594,9 @@ func TestExecuteOneRequest_FairnessHeader(t *testing.T) {
 		}
 		if gotHeaders[fairnessIDHeader] != "tenant-x" {
 			t.Fatalf("fairness header: got %q, want %q", gotHeaders[fairnessIDHeader], "tenant-x")
+		}
+		if gotHeaders[batchRequestHeader] != "true" {
+			t.Fatalf("batch request header: got %q, want \"true\"", gotHeaders[batchRequestHeader])
 		}
 	})
 

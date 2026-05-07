@@ -626,6 +626,7 @@ const (
 	sloTTFTMSHeader          = "x-slo-ttft-ms"
 	inferenceObjectiveHeader = "x-gateway-inference-objective"
 	fairnessIDHeader         = "x-gateway-inference-fairness-id"
+	batchRequestHeader       = "x-batch-request"
 )
 
 // mergeInferenceHeaders adds processor-managed headers to the outgoing inference request:
@@ -748,6 +749,10 @@ func (p *Processor) executeOneRequest(
 
 	headers := maps.Clone(passThroughHeaders)
 	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), fairnessID)
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	headers[batchRequestHeader] = "true"
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: newBatchRequestID(requestID),
