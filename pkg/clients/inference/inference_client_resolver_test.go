@@ -189,3 +189,111 @@ func TestNewPerModelResolver_SameURLDifferentKey_DifferentClients(t *testing.T) 
 		t.Fatal("expected different clients for different API keys")
 	}
 }
+
+func TestGatewayResolver_Clients(t *testing.T) {
+	t.Run("global resolver returns single element", func(t *testing.T) {
+		srv := newTestServer(t, nil)
+		defer srv.Close()
+
+		r, err := NewGlobalResolver(GatewayClientConfig{URL: srv.URL}, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewGlobalResolver: %v", err)
+		}
+
+		clients := r.Clients()
+		if len(clients) != 1 {
+			t.Fatalf("Clients() returned %d elements, want 1", len(clients))
+		}
+		if clients[0] != r.ClientFor("any") {
+			t.Fatal("Clients()[0] should be the same as ClientFor()")
+		}
+	})
+
+	t.Run("per-model resolver with shared configs returns deduplicated set", func(t *testing.T) {
+		srvA := newTestServer(t, nil)
+		defer srvA.Close()
+		srvB := newTestServer(t, nil)
+		defer srvB.Close()
+
+		perModel := map[string]GatewayClientConfig{
+			"model-a": {URL: srvA.URL},
+			"model-b": {URL: srvA.URL},
+			"model-c": {URL: srvB.URL},
+		}
+
+		r, err := NewPerModelResolver(perModel, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewPerModelResolver: %v", err)
+		}
+
+		clients := r.Clients()
+		if len(clients) != 2 {
+			t.Fatalf("Clients() returned %d elements, want 2 (deduplicated)", len(clients))
+		}
+	})
+}
+
+func TestGatewayResolver_ClientLabel(t *testing.T) {
+	t.Run("returns URL for known client", func(t *testing.T) {
+		srv := newTestServer(t, nil)
+		defer srv.Close()
+
+		r, err := NewGlobalResolver(GatewayClientConfig{URL: srv.URL}, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewGlobalResolver: %v", err)
+		}
+
+		client := r.ClientFor("any")
+		label := r.ClientLabel(client)
+		if label != srv.URL {
+			t.Fatalf("ClientLabel() = %q, want %q", label, srv.URL)
+		}
+	})
+
+	t.Run("returns unknown for unrecognized client", func(t *testing.T) {
+		srv := newTestServer(t, nil)
+		defer srv.Close()
+
+		r, err := NewGlobalResolver(GatewayClientConfig{URL: srv.URL}, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewGlobalResolver: %v", err)
+		}
+
+		unknown := &stubClient{id: "stranger"}
+		label := r.ClientLabel(unknown)
+		if label != "unknown" {
+			t.Fatalf("ClientLabel() = %q, want %q", label, "unknown")
+		}
+	})
+
+	t.Run("NewSingleClientResolver populates label", func(t *testing.T) {
+		c := &stubClient{id: "mock"}
+		r := NewSingleClientResolver(c)
+
+		label := r.ClientLabel(c)
+		if label == "unknown" {
+			t.Fatal("ClientLabel() should not return \"unknown\" for client from NewSingleClientResolver")
+		}
+	})
+
+	t.Run("NewPerModelClientResolver populates labels", func(t *testing.T) {
+		cA := &stubClient{id: "a"}
+		cB := &stubClient{id: "b"}
+		r := NewPerModelClientResolver(map[string]InferenceClient{
+			"model-a": cA,
+			"model-b": cB,
+		})
+
+		if label := r.ClientLabel(cA); label == "unknown" {
+			t.Fatal("ClientLabel(cA) should not return \"unknown\"")
+		}
+		if label := r.ClientLabel(cB); label == "unknown" {
+			t.Fatal("ClientLabel(cB) should not return \"unknown\"")
+		}
+
+		stranger := &stubClient{id: "stranger"}
+		if label := r.ClientLabel(stranger); label != "unknown" {
+			t.Fatalf("ClientLabel(stranger) = %q, want \"unknown\"", label)
+		}
+	})
+}

@@ -99,19 +99,39 @@ tests:
           path: data["config.yaml"]
           pattern: 'global_inference_gateway:'
 
-  - it: should render recoveryMaxConcurrency with default value
+  - it: should render concurrency config with default values
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'recovery_max_concurrency: 5'
+          pattern: 'concurrency:\n\s+global: 100\n\s+per_endpoint: 10\n\s+recovery: 5'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'aimd:\n\s+enabled: true\n\s+min: 5\n\s+backoff_factor: 0.5\n\s+additive_increase: 1'
 
-  - it: should render custom recoveryMaxConcurrency
+  - it: should render custom concurrency values
     set:
-      processor.config.recoveryMaxConcurrency: 10
+      processor.config.concurrency:
+        global: 200
+        perEndpoint: 20
+        recovery: 10
+        aimd:
+          enabled: false
+          min: 3
+          backoffFactor: 0.7
+          additiveIncrease: 2
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'recovery_max_concurrency: 10'
+          pattern: 'global: 200'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'per_endpoint: 20'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'recovery: 10'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'enabled: false'
 
   - it: should render per-model gateway entries
     set:

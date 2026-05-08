@@ -80,8 +80,8 @@ func NewProcessor(
 	if cfg.NumWorkers <= 0 {
 		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, semaphore.ErrCap)
 	}
-	if cfg.GlobalConcurrency <= 0 {
-		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, semaphore.ErrCap)
+	if cfg.Concurrency.Global <= 0 {
+		return nil, fmt.Errorf("global semaphore (concurrency.global=%d): %w", cfg.Concurrency.Global, semaphore.ErrCap)
 	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
@@ -133,37 +133,42 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
 	}
-	p.globalSem, err = semaphore.New(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
+	cc := &p.cfg.Concurrency
+	p.globalSem, err = semaphore.New(cc.Global, makeGuard("global-concurrency"))
 	if err != nil {
-		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, err)
+		return fmt.Errorf("global semaphore (concurrency.global=%d): %w", cc.Global, err)
 	}
 
 	clients := p.inference.Clients()
 	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
 	for _, client := range clients {
-		epSem, epErr := semaphore.NewAdaptive(p.cfg.PerModelMaxConcurrency, makeGuard("endpoint-concurrency"))
+		epSem, epErr := semaphore.NewAdaptive(cc.PerEndpoint, makeGuard("endpoint-concurrency"))
 		if epErr != nil {
-			return fmt.Errorf("endpoint semaphore (PerModelMaxConcurrency=%d): %w", p.cfg.PerModelMaxConcurrency, epErr)
+			return fmt.Errorf("endpoint semaphore (concurrency.per_endpoint=%d): %w", cc.PerEndpoint, epErr)
 		}
-		epAIMD := semaphore.NewAIMDController(
-			semaphore.AIMDConfig{
-				MinLimit:         p.cfg.MinConcurrency,
-				MaxLimit:         p.cfg.PerModelMaxConcurrency,
-				BackoffFactor:    p.cfg.BackoffFactor,
-				AdditiveIncrease: p.cfg.AdditiveIncrease,
-			},
-			p.cfg.PerModelMaxConcurrency,
-			func(limit int) { epSem.SetLimit(limit) },
-			logger.WithValues("endpoint", p.inference.ClientLabel(client)),
-		)
+		var epAIMD *semaphore.AIMDController
+		if cc.AIMD.Enabled {
+			epAIMD = semaphore.NewAIMDController(
+				semaphore.AIMDConfig{
+					MinLimit:         cc.AIMD.Min,
+					MaxLimit:         cc.PerEndpoint,
+					BackoffFactor:    cc.AIMD.BackoffFactor,
+					AdditiveIncrease: cc.AIMD.AdditiveIncrease,
+				},
+				cc.PerEndpoint,
+				func(limit int) { epSem.SetLimit(limit) },
+				logger.WithValues("endpoint", p.inference.ClientLabel(client)),
+			)
+		}
 		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD}
 	}
 	logger.V(logging.INFO).Info(
 		"Processor run started",
 		"loopInterval", p.cfg.PollInterval,
 		"maxWorkers", p.cfg.NumWorkers,
-		"globalConcurrency", p.cfg.GlobalConcurrency,
-		"minConcurrency", p.cfg.MinConcurrency,
+		"concurrency.global", cc.Global,
+		"concurrency.per_endpoint", cc.PerEndpoint,
+		"concurrency.aimd.enabled", cc.AIMD.Enabled,
 	)
 
 	return p.runPollingLoop(pollingCtx, ctx)

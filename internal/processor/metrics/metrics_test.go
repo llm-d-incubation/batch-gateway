@@ -182,8 +182,8 @@ func TestInitMetrics_AndRecorders(t *testing.T) {
 		if v := gaugeValue(f["processor_inflight_requests"]); v != 1 {
 			t.Fatalf("processor_inflight_requests=%v, want 1", v)
 		}
-		if v := gaugeValue(f["processor_max_inflight_concurrency"]); v != float64(cfg.GlobalConcurrency) {
-			t.Fatalf("processor_max_inflight_concurrency=%v, want %v", v, cfg.GlobalConcurrency)
+		if v := gaugeValue(f["processor_max_inflight_concurrency"]); v != float64(cfg.Concurrency.Global) {
+			t.Fatalf("processor_max_inflight_concurrency=%v, want %v", v, cfg.Concurrency.Global)
 		}
 
 		if v := counterWithLabels(f["jobs_processed_total"], map[string]string{"result": ResultSuccess, "reason": ReasonNone}); v != 1 {

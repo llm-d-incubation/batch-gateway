@@ -144,11 +144,15 @@ The following `batch-processor` configuration settings interact with flow contro
 
 ```yaml
 # Processor concurrency settings
-global_concurrency: 100        # Fixed ceiling for total in-flight requests
-min_concurrency: 5             # AIMD floor per endpoint
-backoff_factor: 0.5            # AIMD multiplicative decrease on 429/5xx
-additive_increase: 1           # AIMD additive increase on sustained success
-per_model_max_concurrency: 20  # Initial and max in-flight requests per endpoint
+concurrency:
+  global: 100              # Fixed ceiling for total in-flight requests
+  per_endpoint: 20         # Initial and max in-flight requests per endpoint
+  recovery: 5              # Max concurrent job recoveries during startup
+  aimd:
+    enabled: true          # Set to false to use fixed per_endpoint concurrency
+    min: 5                 # AIMD floor per endpoint
+    backoff_factor: 0.5    # AIMD multiplicative decrease on 429/5xx
+    additive_increase: 1   # AIMD additive increase on sustained success
 
 # Gateway client settings (per gateway or global)
 request_timeout: "5m"          # Generous timeout; flow control may queue or reject requests
@@ -199,9 +203,9 @@ model_gateways:
 #### Key Considerations
 
 - **`request_timeout`**: With flow control enabled, requests may spend time in the GIE queue before reaching the backend. Set this high enough to accommodate queuing time plus inference time. 5 minutes is a reasonable starting point.
-- **`max_retries` and `max_backoff`**: When the system is saturated, GIE sheds batch requests with HTTP 429. Retry backoff slows resubmission pressure, while AIMD separately lowers per-endpoint concurrency (`backoff_factor`) and later raises it gradually (`additive_increase`) as successes accumulate.
-- **AIMD with flow control**: Flow control decides queueing/shedding priority in GIE, and AIMD controls how aggressively the processor feeds each endpoint. Together they provide two layers of backpressure response: Router-side admission/shedding plus processor-side concurrency adaptation.
-- **`global_concurrency`**: This remains a hard global ceiling across endpoints. Keep it high enough to avoid becoming the first bottleneck, while per-endpoint AIMD reacts to localized overload.
+- **`max_retries` and `max_backoff`**: When the system is saturated, GIE sheds batch requests with HTTP 429. Retry backoff slows resubmission pressure, while AIMD separately lowers per-endpoint concurrency (`aimd.backoff_factor`) and later raises it gradually (`aimd.additive_increase`) as successes accumulate.
+- **AIMD with flow control**: Flow control decides queueing/shedding priority in GIE, and AIMD controls how aggressively the processor feeds each endpoint. Together they provide two layers of backpressure response: Router-side admission/shedding plus processor-side concurrency adaptation. Set `aimd.enabled: false` to use fixed concurrency without adaptive behavior.
+- **`concurrency.global`**: This remains a hard global ceiling across endpoints. Keep it high enough to avoid becoming the first bottleneck, while per-endpoint AIMD reacts to localized overload.
 
 #### Helm Values
 
@@ -210,8 +214,9 @@ Single-pool deployment:
 ```yaml
 processor:
   config:
-    globalConcurrency: 100
-    perModelMaxConcurrency: 20
+    concurrency:
+      global: 100
+      perEndpoint: 20
     globalInferenceGateway:
       url: "http://gie-epp:8081"
       inferenceObjective: "batch-sheddable"
@@ -226,8 +231,9 @@ Multi-pool deployment (per-model InferenceObjective):
 ```yaml
 processor:
   config:
-    globalConcurrency: 100
-    perModelMaxConcurrency: 20
+    concurrency:
+      global: 100
+      perEndpoint: 20
     modelGateways:
       "model-a":
         url: "http://gie-a-epp:8081"
@@ -251,7 +257,7 @@ processor:
 
 1. Saturation detector reports low utilization.
 2. Flow control dispatches from the interactive band (empty) then the batch band.
-3. Batch requests flow at full capacity, limited only by the processor's `global_concurrency`.
+3. Batch requests flow at full capacity, limited only by the processor's `concurrency.global`.
 4. Batch jobs make maximum progress toward their SLO deadlines.
 
 ### Scenario 2: Interactive Traffic Arrives

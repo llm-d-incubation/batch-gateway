@@ -305,19 +305,15 @@ processor:
     taskWaitTime: "1s"
     pollInterval: "5s"
     numWorkers: 20
-    globalConcurrency: 100
-    # AIMD floor per endpoint. AIMD adjusts the effective limit within
-    # [minConcurrency, perModelMaxConcurrency] based on 429/5xx backpressure.
-    # Set minConcurrency = perModelMaxConcurrency to disable adaptive behavior.
-    minConcurrency: 5
-    backoffFactor: 0.5
-    additiveIncrease: 1
-    # Initial and maximum concurrency per inference endpoint.
-    # Despite the name, this is per-endpoint, not per-model: models sharing
-    # the same gateway endpoint share one AIMD-controlled semaphore.
-    perModelMaxConcurrency: 10
-    # Maximum number of concurrent job recoveries during startup
-    recoveryMaxConcurrency: 5
+    concurrency:
+      global: 100            # Fixed ceiling for total in-flight requests
+      perEndpoint: 10        # Initial/max concurrency per inference endpoint
+      recovery: 5            # Max concurrent job recoveries during startup
+      aimd:
+        enabled: true        # Set to false to disable adaptive concurrency
+        min: 5               # AIMD floor per endpoint
+        backoffFactor: 0.5   # Multiplicative decrease on 429/5xx
+        additiveIncrease: 1  # Slots added per successful window
     queueTimeBucket:
       start: 0.1
       factor: 2

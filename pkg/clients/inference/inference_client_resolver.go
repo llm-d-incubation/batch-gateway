@@ -176,12 +176,21 @@ func (r *GatewayResolver) ClientLabel(c InferenceClient) string {
 // TODO: if httptest is imported for other reasons in the future, replace callers
 // with NewGlobalResolver + httptest.Server so this function can be removed.
 func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
-	return &GatewayResolver{globalClient: c}
+	return &GatewayResolver{
+		globalClient: c,
+		clientURLs:   map[InferenceClient]string{c: "test"},
+	}
 }
 
 // NewPerModelClientResolver creates a GatewayResolver that maps each model name
 // to a pre-built InferenceClient. Used in tests to inject per-model mock clients
 // without creating real HTTP connections.
 func NewPerModelClientResolver(clients map[string]InferenceClient) *GatewayResolver {
-	return &GatewayResolver{modelClients: clients}
+	urls := make(map[InferenceClient]string, len(clients))
+	for model, c := range clients {
+		if _, ok := urls[c]; !ok {
+			urls[c] = "test-" + model
+		}
+	}
+	return &GatewayResolver{modelClients: clients, clientURLs: urls}
 }

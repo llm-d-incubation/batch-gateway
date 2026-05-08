@@ -843,7 +843,7 @@ func TestRecoverStaleJobs_RunsConcurrently(t *testing.T) {
 
 	cfg := config.NewConfig()
 	cfg.WorkDir = workDir
-	cfg.RecoveryMaxConcurrency = 5
+	cfg.Concurrency.Recovery = 5
 
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   slowDB,

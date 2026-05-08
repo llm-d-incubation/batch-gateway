@@ -65,11 +65,11 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.NumWorkers != 1 {
 		t.Fatalf("NumWorkers = %d, want %d", c.NumWorkers, 1)
 	}
-	if c.GlobalConcurrency != 100 {
-		t.Fatalf("GlobalConcurrency = %d, want %d", c.GlobalConcurrency, 100)
+	if c.Concurrency.Global != 100 {
+		t.Fatalf("Concurrency.Global = %d, want %d", c.Concurrency.Global, 100)
 	}
-	if c.PerModelMaxConcurrency != 10 {
-		t.Fatalf("PerModelMaxConcurrency = %d, want %d", c.PerModelMaxConcurrency, 10)
+	if c.Concurrency.PerEndpoint != 10 {
+		t.Fatalf("Concurrency.PerEndpoint = %d, want %d", c.Concurrency.PerEndpoint, 10)
 	}
 	if c.WorkDir == "" {
 		t.Fatalf("WorkDir should not be empty")
@@ -77,8 +77,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.DBClientCfg.Type != "redis" {
 		t.Fatalf("DBClientCfg.Type = %q, want %q", c.DBClientCfg.Type, "redis")
 	}
-	if c.RecoveryMaxConcurrency != 5 {
-		t.Fatalf("RecoveryMaxConcurrency = %d, want %d", c.RecoveryMaxConcurrency, 5)
+	if c.Concurrency.Recovery != 5 {
+		t.Fatalf("Concurrency.Recovery = %d, want %d", c.Concurrency.Recovery, 5)
 	}
 	if c.ModelGateways != nil {
 		t.Fatalf("ModelGateways should be nil by default, got %v", c.ModelGateways)
@@ -132,9 +132,15 @@ func TestProcessorConfig_LoadFromYAML_ExplicitZeroMaxRetries(t *testing.T) {
 poll_interval: 5s
 task_wait_time: 1s
 num_workers: 1
-global_concurrency: 100
-per_model_max_concurrency: 10
-recovery_max_concurrency: 5
+concurrency:
+  global: 100
+  per_endpoint: 10
+  recovery: 5
+  aimd:
+    enabled: true
+    min: 5
+    backoff_factor: 0.5
+    additive_increase: 1
 work_dir: "` + dir + `/work"
 addr: ":9090"
 shutdown_timeout: 30s
@@ -373,16 +379,16 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 
 	c = NewConfig()
 	c.ModelGateways = validPerModelConfig()
-	c.GlobalConcurrency = 0
+	c.Concurrency.Global = 0
 	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error for global_concurrency <= 0, got nil")
+		t.Fatalf("Validate() expected error for concurrency.global <= 0, got nil")
 	}
 
 	c = NewConfig()
 	c.ModelGateways = validPerModelConfig()
-	c.PerModelMaxConcurrency = 0
+	c.Concurrency.PerEndpoint = 0
 	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error for per_model_max_concurrency <= 0, got nil")
+		t.Fatalf("Validate() expected error for concurrency.per_endpoint <= 0, got nil")
 	}
 
 	c = NewConfig()
@@ -394,9 +400,9 @@ func TestProcessorConfig_Validate_MinimumValueChecks(t *testing.T) {
 
 	c = NewConfig()
 	c.ModelGateways = validPerModelConfig()
-	c.RecoveryMaxConcurrency = 0
+	c.Concurrency.Recovery = 0
 	if err := c.Validate(); err == nil {
-		t.Fatalf("Validate() expected error for recovery_max_concurrency <= 0, got nil")
+		t.Fatalf("Validate() expected error for concurrency.recovery <= 0, got nil")
 	}
 
 	c = NewConfig()
@@ -426,39 +432,39 @@ func TestProcessorConfig_Validate_ConcurrencyAIMD(t *testing.T) {
 	t.Run("backoff factor out of range", func(t *testing.T) {
 		c := NewConfig()
 		c.ModelGateways = validPerModelConfig()
-		c.BackoffFactor = 1.5
+		c.Concurrency.AIMD.BackoffFactor = 1.5
 		if err := c.Validate(); err == nil {
 			t.Fatal("expected error for backoff_factor >= 1")
 		}
 	})
 
-	t.Run("min > per_model_max and global concurrency", func(t *testing.T) {
+	t.Run("min > per_endpoint", func(t *testing.T) {
 		c := NewConfig()
-		c.GlobalConcurrency = 10
-		c.PerModelMaxConcurrency = 5
-		c.MinConcurrency = 20
+		c.Concurrency.Global = 10
+		c.Concurrency.PerEndpoint = 5
+		c.Concurrency.AIMD.Min = 20
 		c.ModelGateways = validPerModelConfig()
 		if err := c.Validate(); err == nil {
-			t.Fatal("expected error for min_concurrency > per_model_max_concurrency")
+			t.Fatal("expected error for aimd.min > per_endpoint")
 		}
 	})
 
-	t.Run("min > per_model_max_concurrency", func(t *testing.T) {
+	t.Run("min > per_endpoint second case", func(t *testing.T) {
 		c := NewConfig()
-		c.GlobalConcurrency = 100
-		c.PerModelMaxConcurrency = 5
-		c.MinConcurrency = 10
+		c.Concurrency.Global = 100
+		c.Concurrency.PerEndpoint = 5
+		c.Concurrency.AIMD.Min = 10
 		c.ModelGateways = validPerModelConfig()
 		if err := c.Validate(); err == nil {
-			t.Fatal("expected error for min_concurrency > per_model_max_concurrency")
+			t.Fatal("expected error for aimd.min > per_endpoint")
 		}
 	})
 
-	t.Run("fixed limit when min equals per-model max", func(t *testing.T) {
+	t.Run("fixed limit when min equals per_endpoint", func(t *testing.T) {
 		c := NewConfig()
-		c.GlobalConcurrency = 50
-		c.PerModelMaxConcurrency = 10
-		c.MinConcurrency = 10
+		c.Concurrency.Global = 50
+		c.Concurrency.PerEndpoint = 10
+		c.Concurrency.AIMD.Min = 10
 		c.ModelGateways = validPerModelConfig()
 		if err := c.Validate(); err != nil {
 			t.Fatalf("Validate() error: %v", err)
@@ -467,23 +473,55 @@ func TestProcessorConfig_Validate_ConcurrencyAIMD(t *testing.T) {
 
 	t.Run("NewConfig provides AIMD defaults", func(t *testing.T) {
 		c := NewConfig()
-		if c.MinConcurrency != 5 {
-			t.Fatalf("MinConcurrency = %d, want 5", c.MinConcurrency)
+		if c.Concurrency.AIMD.Min != 5 {
+			t.Fatalf("AIMD.Min = %d, want 5", c.Concurrency.AIMD.Min)
 		}
-		if c.BackoffFactor != 0.5 {
-			t.Fatalf("BackoffFactor = %f, want 0.5", c.BackoffFactor)
+		if c.Concurrency.AIMD.BackoffFactor != 0.5 {
+			t.Fatalf("AIMD.BackoffFactor = %f, want 0.5", c.Concurrency.AIMD.BackoffFactor)
 		}
-		if c.AdditiveIncrease != 1 {
-			t.Fatalf("AdditiveIncrease = %d, want 1", c.AdditiveIncrease)
+		if c.Concurrency.AIMD.AdditiveIncrease != 1 {
+			t.Fatalf("AIMD.AdditiveIncrease = %d, want 1", c.Concurrency.AIMD.AdditiveIncrease)
+		}
+		if !c.Concurrency.AIMD.Enabled {
+			t.Fatal("AIMD.Enabled should be true by default")
 		}
 	})
 
 	t.Run("zero backoff_factor rejected by Validate", func(t *testing.T) {
 		c := NewConfig()
 		c.ModelGateways = validPerModelConfig()
-		c.BackoffFactor = 0
+		c.Concurrency.AIMD.BackoffFactor = 0
 		if err := c.Validate(); err == nil {
 			t.Fatal("expected error for backoff_factor = 0")
+		}
+	})
+
+	t.Run("AIMD disabled skips AIMD validation", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		c.Concurrency.AIMD.Enabled = false
+		c.Concurrency.AIMD.BackoffFactor = 0
+		c.Concurrency.AIMD.Min = 0
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate() should pass with AIMD disabled, got: %v", err)
+		}
+	})
+
+	t.Run("zero min rejected", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		c.Concurrency.AIMD.Min = 0
+		if err := c.Validate(); err == nil {
+			t.Fatal("expected error for aimd.min = 0")
+		}
+	})
+
+	t.Run("zero additive_increase rejected", func(t *testing.T) {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		c.Concurrency.AIMD.AdditiveIncrease = 0
+		if err := c.Validate(); err == nil {
+			t.Fatal("expected error for aimd.additive_increase = 0")
 		}
 	})
 }
@@ -496,8 +534,15 @@ func TestProcessorConfig_LoadFromYAML(t *testing.T) {
 poll_interval: 2s
 task_wait_time: 500ms
 num_workers: 3
-global_concurrency: 50
-per_model_max_concurrency: 5
+concurrency:
+  global: 50
+  per_endpoint: 5
+  recovery: 3
+  aimd:
+    enabled: true
+    min: 2
+    backoff_factor: 0.7
+    additive_increase: 2
 work_dir: "` + dir + `/work"
 addr: ":1234"
 model_gateways:
@@ -531,11 +576,23 @@ send_fairness_header: true
 	if c.NumWorkers != 3 {
 		t.Fatalf("NumWorkers = %d, want %d", c.NumWorkers, 3)
 	}
-	if c.GlobalConcurrency != 50 {
-		t.Fatalf("GlobalConcurrency = %d, want %d", c.GlobalConcurrency, 50)
+	if c.Concurrency.Global != 50 {
+		t.Fatalf("Concurrency.Global = %d, want %d", c.Concurrency.Global, 50)
 	}
-	if c.PerModelMaxConcurrency != 5 {
-		t.Fatalf("PerModelMaxConcurrency = %d, want %d", c.PerModelMaxConcurrency, 5)
+	if c.Concurrency.PerEndpoint != 5 {
+		t.Fatalf("Concurrency.PerEndpoint = %d, want %d", c.Concurrency.PerEndpoint, 5)
+	}
+	if c.Concurrency.Recovery != 3 {
+		t.Fatalf("Concurrency.Recovery = %d, want %d", c.Concurrency.Recovery, 3)
+	}
+	if c.Concurrency.AIMD.Min != 2 {
+		t.Fatalf("Concurrency.AIMD.Min = %d, want %d", c.Concurrency.AIMD.Min, 2)
+	}
+	if c.Concurrency.AIMD.BackoffFactor != 0.7 {
+		t.Fatalf("Concurrency.AIMD.BackoffFactor = %f, want %f", c.Concurrency.AIMD.BackoffFactor, 0.7)
+	}
+	if c.Concurrency.AIMD.AdditiveIncrease != 2 {
+		t.Fatalf("Concurrency.AIMD.AdditiveIncrease = %d, want %d", c.Concurrency.AIMD.AdditiveIncrease, 2)
 	}
 	if c.WorkDir != filepath.Join(dir, "work") {
 		t.Fatalf("WorkDir = %q, want %q", c.WorkDir, filepath.Join(dir, "work"))

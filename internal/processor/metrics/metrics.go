@@ -159,7 +159,7 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 			Help: "Configured maximum number of concurrent in-flight inference requests (GlobalConcurrency)",
 		},
 	)
-	processorMaxInflightConc.Set(float64(cfg.GlobalConcurrency))
+	processorMaxInflightConc.Set(float64(cfg.Concurrency.Global))
 
 	// ingestion plan build duration
 	planBuildDuration = prometheus.NewHistogramVec(

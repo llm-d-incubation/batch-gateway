@@ -13,12 +13,15 @@ data:
     task_wait_time: {{ .Values.processor.config.taskWaitTime | quote }}
     poll_interval: {{ .Values.processor.config.pollInterval | quote }}
     num_workers: {{ .Values.processor.config.numWorkers }}
-    global_concurrency: {{ .Values.processor.config.globalConcurrency }}
-    min_concurrency: {{ .Values.processor.config.minConcurrency }}
-    backoff_factor: {{ .Values.processor.config.backoffFactor }}
-    additive_increase: {{ .Values.processor.config.additiveIncrease }}
-    per_model_max_concurrency: {{ .Values.processor.config.perModelMaxConcurrency }}
-    recovery_max_concurrency: {{ .Values.processor.config.recoveryMaxConcurrency }}
+    concurrency:
+      global: {{ .Values.processor.config.concurrency.global }}
+      per_endpoint: {{ .Values.processor.config.concurrency.perEndpoint }}
+      recovery: {{ .Values.processor.config.concurrency.recovery }}
+      aimd:
+        enabled: {{ .Values.processor.config.concurrency.aimd.enabled }}
+        min: {{ .Values.processor.config.concurrency.aimd.min }}
+        backoff_factor: {{ .Values.processor.config.concurrency.aimd.backoffFactor }}
+        additive_increase: {{ .Values.processor.config.concurrency.aimd.additiveIncrease }}
 
     terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
     shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}

@@ -330,7 +330,7 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	p.globalSem, err = semaphore.New(cfg.Concurrency.Global, nil)
 	if err != nil {
 		t.Fatalf("global semaphore: %v", err)
 	}
@@ -384,7 +384,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	p.globalSem, err = semaphore.New(cfg.Concurrency.Global, nil)
 	if err != nil {
 		t.Fatalf("global semaphore: %v", err)
 	}
@@ -687,24 +687,28 @@ func initTestEndpointLimits(t *testing.T, p *Processor, cfg *config.ProcessorCon
 		p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit)
 		return
 	}
+	cc := &cfg.Concurrency
 	clients := p.inference.Clients()
 	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
 	for _, client := range clients {
-		epSem, err := semaphore.NewAdaptive(cfg.PerModelMaxConcurrency, nil)
+		epSem, err := semaphore.NewAdaptive(cc.PerEndpoint, nil)
 		if err != nil {
 			t.Fatalf("endpoint semaphore: %v", err)
 		}
-		epAIMD := semaphore.NewAIMDController(
-			semaphore.AIMDConfig{
-				MinLimit:         cfg.MinConcurrency,
-				MaxLimit:         cfg.PerModelMaxConcurrency,
-				BackoffFactor:    cfg.BackoffFactor,
-				AdditiveIncrease: cfg.AdditiveIncrease,
-			},
-			cfg.PerModelMaxConcurrency,
-			func(limit int) { epSem.SetLimit(limit) },
-			logr.Discard(),
-		)
+		var epAIMD *semaphore.AIMDController
+		if cc.AIMD.Enabled {
+			epAIMD = semaphore.NewAIMDController(
+				semaphore.AIMDConfig{
+					MinLimit:         cc.AIMD.Min,
+					MaxLimit:         cc.PerEndpoint,
+					BackoffFactor:    cc.AIMD.BackoffFactor,
+					AdditiveIncrease: cc.AIMD.AdditiveIncrease,
+				},
+				cc.PerEndpoint,
+				func(limit int) { epSem.SetLimit(limit) },
+				logr.Discard(),
+			)
+		}
 		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD}
 	}
 }

@@ -1092,7 +1092,7 @@ install_batch_gateway() {
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}-${VLLM_SIM_MODEL}"
             --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}-${VLLM_SIM_B_MODEL}"
             --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}-${VLLM_SIM_429_MODEL}"
-            --set "processor.config.perModelMaxConcurrency=20"
+            --set "processor.config.concurrency.perEndpoint=20"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=2s"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=30s"
             --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.initialBackoff=2s"

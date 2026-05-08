@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -473,10 +474,10 @@ dispatch:
 			//
 			// AIMD only affects future dispatch. It does not abort in-flight
 			// requests — those continue until completion or context cancellation.
-			if execErr == nil && result != nil && result.Response != nil {
+			if epLimit.aimd != nil && execErr == nil && result != nil && result.Response != nil {
 				sc := result.Response.StatusCode
 				switch {
-				case sc == 429 || sc >= 500:
+				case sc == http.StatusTooManyRequests || sc >= http.StatusInternalServerError:
 					epLimit.aimd.RecordRateLimit()
 				case result.hadCapacityRetry:
 					epLimit.aimd.RecordRateLimit()

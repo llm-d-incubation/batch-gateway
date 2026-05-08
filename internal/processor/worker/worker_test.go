@@ -28,10 +28,10 @@ func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
 
 func TestNewProcessor_InvalidGlobalConcurrency(t *testing.T) {
 	cfg := config.NewConfig()
-	cfg.GlobalConcurrency = -1
+	cfg.Concurrency.Global = -1
 	_, err := NewProcessor(cfg, &clientset.Clientset{}, testLogger(t))
 	if err == nil {
-		t.Fatalf("expected error for GlobalConcurrency=-1")
+		t.Fatalf("expected error for concurrency.global=-1")
 	}
 }
 

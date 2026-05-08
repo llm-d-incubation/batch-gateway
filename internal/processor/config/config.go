@@ -32,6 +32,47 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ConcurrencyConfig groups all dispatch-rate and concurrency control knobs.
+type ConcurrencyConfig struct {
+	// Global limits total in-flight inference requests across all workers.
+	// Acts as a fixed ceiling — the sum of all per-endpoint concurrency
+	// is bounded by this value.
+	Global int `yaml:"global"`
+
+	// PerEndpoint is the initial and maximum concurrency per inference endpoint.
+	// Models sharing the same gateway endpoint share one semaphore controlled
+	// by this value.
+	PerEndpoint int `yaml:"per_endpoint"`
+
+	// Recovery limits concurrent job recoveries during startup.
+	// Each recovery can involve DB lookups, S3 uploads, and status updates.
+	Recovery int `yaml:"recovery"`
+
+	// AIMD holds adaptive concurrency control parameters.
+	AIMD AIMDConfig `yaml:"aimd"`
+}
+
+// AIMDConfig holds parameters for Additive Increase / Multiplicative Decrease
+// concurrency control per inference endpoint.
+type AIMDConfig struct {
+	// Enabled controls whether AIMD adaptive concurrency is active.
+	// When false, per-endpoint concurrency is fixed at ConcurrencyConfig.PerEndpoint.
+	Enabled bool `yaml:"enabled"`
+
+	// Min is the floor for per-endpoint adaptive concurrency.
+	// AIMD will never reduce a single endpoint's effective limit below this value.
+	Min int `yaml:"min"`
+
+	// BackoffFactor is the multiplicative decrease applied to the per-endpoint
+	// concurrency limit when the endpoint signals overload (429/5xx). Must be
+	// in (0, 1). Default: 0.5.
+	BackoffFactor float64 `yaml:"backoff_factor"`
+
+	// AdditiveIncrease is the number of concurrency slots added after a full
+	// window of consecutive successes per endpoint. Default: 1.
+	AdditiveIncrease int `yaml:"additive_increase"`
+}
+
 type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
 	// This should be shorter than PollInterval
@@ -40,30 +81,8 @@ type ProcessorConfig struct {
 	// NumWorkers is the fixed number of worker goroutines spawned to process jobs
 	NumWorkers int `yaml:"num_workers"`
 
-	// GlobalConcurrency limits total in-flight inference requests across all
-	// workers. Acts as a fixed ceiling — the sum of all per-endpoint concurrency
-	// is bounded by this value.
-	GlobalConcurrency int `yaml:"global_concurrency"`
-
-	// MinConcurrency is the floor for per-endpoint adaptive concurrency.
-	// AIMD will never reduce a single endpoint's effective limit below this value.
-	// Default: 5.
-	MinConcurrency int `yaml:"min_concurrency"`
-
-	// BackoffFactor is the multiplicative decrease applied to the per-endpoint
-	// concurrency limit when the endpoint signals overload (429/5xx). Must be
-	// in (0, 1). Default: 0.5 (halve the limit on each overload signal).
-	BackoffFactor float64 `yaml:"backoff_factor"`
-
-	// AdditiveIncrease is the number of concurrency slots added after a full
-	// window of consecutive successes per endpoint. Default: 1.
-	AdditiveIncrease int `yaml:"additive_increase"`
-
-	// PerModelMaxConcurrency is the initial and maximum concurrency per inference
-	// endpoint. AIMD adjusts the effective limit within
-	// [MinConcurrency, PerModelMaxConcurrency] based on 429/5xx backpressure.
-	// To disable adaptive behavior, set MinConcurrency = PerModelMaxConcurrency.
-	PerModelMaxConcurrency int `yaml:"per_model_max_concurrency"`
+	// Concurrency groups all dispatch-rate and concurrency control settings.
+	Concurrency ConcurrencyConfig `yaml:"concurrency"`
 
 	// PollInterval defines how frequently the processor checks the database for new jobs
 	PollInterval time.Duration `yaml:"poll_interval"`
@@ -112,10 +131,6 @@ type ProcessorConfig struct {
 
 	// ProgressTTLSeconds is the TTL for temporary progress updates in the status store (Redis).
 	ProgressTTLSeconds int `yaml:"progress_ttl_seconds"`
-
-	// RecoveryMaxConcurrency limits concurrent job recoveries during startup.
-	// Each recovery can involve DB lookups, S3 uploads, and status updates.
-	RecoveryMaxConcurrency int `yaml:"recovery_max_concurrency"`
 
 	// SendFairnessHeader controls whether the processor sends
 	// x-gateway-inference-fairness-id on inference requests.
@@ -188,9 +203,8 @@ func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
 }
 
 // LoadFromYAML loads the configuration from a YAML file.
-// Callers should start from NewConfig() so that AIMD defaults
-// (MinConcurrency, BackoffFactor, AdditiveIncrease) are already set;
-// YAML values then override only what is explicitly specified.
+// Callers should start from NewConfig() so that concurrency/AIMD defaults
+// are already set; YAML values then override only what is explicitly specified.
 func (pc *ProcessorConfig) LoadFromYAML(filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -226,13 +240,19 @@ func NewConfig() *ProcessorConfig {
 			BucketCount:  12,
 		},
 
-		GlobalConcurrency:      100,
-		MinConcurrency:         5,
-		BackoffFactor:          0.5,
-		AdditiveIncrease:       1,
-		PerModelMaxConcurrency: 10,
-		NumWorkers:             1,
-		Addr:                   ":9090",
+		Concurrency: ConcurrencyConfig{
+			Global:      100,
+			PerEndpoint: 10,
+			Recovery:    5,
+			AIMD: AIMDConfig{
+				Enabled:          true,
+				Min:              5,
+				BackoffFactor:    0.5,
+				AdditiveIncrease: 1,
+			},
+		},
+		NumWorkers: 1,
+		Addr:       ":9090",
 		// Keep observability as best-effort by default.
 		TerminateOnObservabilityFailure: false,
 		ShutdownTimeout:                 30 * time.Second,
@@ -250,7 +270,6 @@ func NewConfig() *ProcessorConfig {
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
-		RecoveryMaxConcurrency:         5,
 	}
 }
 
@@ -267,27 +286,11 @@ func (c *ProcessorConfig) Validate() error {
 	if c.NumWorkers <= 0 {
 		return fmt.Errorf("num_workers must be > 0")
 	}
-	if c.GlobalConcurrency <= 0 {
-		return fmt.Errorf("global_concurrency must be > 0")
+
+	if err := c.Concurrency.validate(); err != nil {
+		return err
 	}
-	if c.MinConcurrency <= 0 {
-		return fmt.Errorf("min_concurrency must be > 0")
-	}
-	if c.BackoffFactor <= 0 || c.BackoffFactor >= 1 {
-		return fmt.Errorf("backoff_factor must be in (0, 1), got %f", c.BackoffFactor)
-	}
-	if c.AdditiveIncrease <= 0 {
-		return fmt.Errorf("additive_increase must be > 0")
-	}
-	if c.PerModelMaxConcurrency <= 0 {
-		return fmt.Errorf("per_model_max_concurrency must be > 0")
-	}
-	if c.PerModelMaxConcurrency > c.GlobalConcurrency {
-		return fmt.Errorf("per_model_max_concurrency (%d) must be <= global_concurrency (%d)", c.PerModelMaxConcurrency, c.GlobalConcurrency)
-	}
-	if c.MinConcurrency > c.PerModelMaxConcurrency {
-		return fmt.Errorf("min_concurrency (%d) must be <= per_model_max_concurrency (%d)", c.MinConcurrency, c.PerModelMaxConcurrency)
-	}
+
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
 	}
@@ -333,10 +336,37 @@ func (c *ProcessorConfig) Validate() error {
 	if c.ProgressTTLSeconds <= 0 {
 		return fmt.Errorf("progress_ttl_seconds must be > 0")
 	}
-	if c.RecoveryMaxConcurrency <= 0 {
-		return fmt.Errorf("recovery_max_concurrency must be > 0")
-	}
 
+	return nil
+}
+
+func (cc *ConcurrencyConfig) validate() error {
+	if cc.Global <= 0 {
+		return fmt.Errorf("concurrency.global must be > 0")
+	}
+	if cc.PerEndpoint <= 0 {
+		return fmt.Errorf("concurrency.per_endpoint must be > 0")
+	}
+	if cc.PerEndpoint > cc.Global {
+		return fmt.Errorf("concurrency.per_endpoint (%d) must be <= concurrency.global (%d)", cc.PerEndpoint, cc.Global)
+	}
+	if cc.Recovery <= 0 {
+		return fmt.Errorf("concurrency.recovery must be > 0")
+	}
+	if cc.AIMD.Enabled {
+		if cc.AIMD.Min <= 0 {
+			return fmt.Errorf("concurrency.aimd.min must be > 0")
+		}
+		if cc.AIMD.BackoffFactor <= 0 || cc.AIMD.BackoffFactor >= 1 {
+			return fmt.Errorf("concurrency.aimd.backoff_factor must be in (0, 1), got %f", cc.AIMD.BackoffFactor)
+		}
+		if cc.AIMD.AdditiveIncrease <= 0 {
+			return fmt.Errorf("concurrency.aimd.additive_increase must be > 0")
+		}
+		if cc.AIMD.Min > cc.PerEndpoint {
+			return fmt.Errorf("concurrency.aimd.min (%d) must be <= concurrency.per_endpoint (%d)", cc.AIMD.Min, cc.PerEndpoint)
+		}
+	}
 	return nil
 }
 

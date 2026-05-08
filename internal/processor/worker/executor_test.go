@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -761,8 +762,8 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.GlobalConcurrency = 10
-	cfg.PerModelMaxConcurrency = 10
+	cfg.Concurrency.Global = 10
+	cfg.Concurrency.PerEndpoint = 10
 
 	userCancelCtx, abortFn := context.WithCancel(context.Background())
 
@@ -887,8 +888,8 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.GlobalConcurrency = 1
-	cfg.PerModelMaxConcurrency = 1
+	cfg.Concurrency.Global = 1
+	cfg.Concurrency.PerEndpoint = 1
 
 	started := make(chan struct{})
 	block := make(chan struct{})
@@ -1410,8 +1411,8 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.GlobalConcurrency = 1
-	cfg.PerModelMaxConcurrency = 1
+	cfg.Concurrency.Global = 1
+	cfg.Concurrency.PerEndpoint = 1
 
 	// The mock blocks until the context is cancelled (SLO deadline fires).
 	// Concurrency = 1, so the first request holds the semaphore while blocking,
@@ -3161,9 +3162,9 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 	aimdCfg := func(t *testing.T) *config.ProcessorConfig {
 		cfg := config.NewConfig()
 		cfg.WorkDir = t.TempDir()
-		cfg.GlobalConcurrency = 100
-		cfg.PerModelMaxConcurrency = maxLimit
-		cfg.MinConcurrency = 5
+		cfg.Concurrency.Global = 100
+		cfg.Concurrency.PerEndpoint = maxLimit
+		cfg.Concurrency.AIMD.Min = 5
 		return cfg
 	}
 
@@ -3292,6 +3293,25 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		}
 	})
 
+	t.Run("4xx (not 429) records success", func(t *testing.T) {
+		cfg := aimdCfg(t)
+		mock := &mockInferenceClient{
+			generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+				return nil, &inference.ClientError{
+					Category:     httpclient.ErrCategoryInvalidReq,
+					Message:      "bad request",
+					StatusCode:   400,
+					ResponseBody: []byte(`{"error":{"message":"bad request"}}`),
+				}
+			},
+		}
+
+		p := runProcessModel(t, cfg, mock, makeRequests(maxLimit))
+		if got := endpointAIMDLimit(p, "m1"); got != maxLimit {
+			t.Fatalf("Limit() = %d, want %d (4xx should count as success for AIMD)", got, maxLimit)
+		}
+	})
+
 	t.Run("non-HTTP error skips AIMD", func(t *testing.T) {
 		cfg := aimdCfg(t)
 		mock := &mockInferenceClient{
@@ -3304,9 +3324,49 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 			},
 		}
 
-		p := runProcessModel(t, cfg, mock, makeRequests(1))
-		if got := endpointAIMDLimit(p, "m1"); got != maxLimit {
-			t.Fatalf("Limit() = %d, want %d (non-HTTP error should not affect AIMD)", got, maxLimit)
+		// Reduce limit below maxLimit first so we can distinguish
+		// "skip" (limit stays reduced) from "RecordSuccess" (limit
+		// would recover after a full window of successes).
+		reducedLimit := maxLimit / 2 // 20 * 0.5 = 10
+		requests := makeRequests(reducedLimit)
+		env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+		epLimit := env.p.endpointLimits[env.p.inference.ClientFor("m1")]
+		epLimit.aimd.RecordRateLimit()
+		if got := epLimit.aimd.Limit(); got != reducedLimit {
+			t.Fatalf("pre-condition: Limit() = %d, want %d after RecordRateLimit()", got, reducedLimit)
+		}
+
+		inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+		inputFile, err := os.Open(inputPath)
+		if err != nil {
+			t.Fatalf("open input: %v", err)
+		}
+		defer inputFile.Close()
+
+		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+		var outBuf, errBuf bytes.Buffer
+		writers := &outputWriters{
+			output: bufio.NewWriter(&outBuf),
+			errors: bufio.NewWriter(&errBuf),
+		}
+		progress := &executionProgress{
+			total:   int64(len(requests)),
+			updater: env.updater,
+			jobID:   jobInfo.JobID,
+		}
+
+		ctx := testLoggerCtx(t)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		if err != nil {
+			t.Fatalf("processModel error: %v", err)
+		}
+
+		// If non-HTTP errors were incorrectly counted as RecordSuccess,
+		// the window (size=reducedLimit) would fill and push the limit
+		// back up. Verify it stayed at reducedLimit.
+		if got := epLimit.aimd.Limit(); got != reducedLimit {
+			t.Fatalf("Limit() = %d, want %d (non-HTTP errors should not recover AIMD limit)", got, reducedLimit)
 		}
 	})
 }
@@ -3341,9 +3401,9 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.GlobalConcurrency = 100
-	cfg.PerModelMaxConcurrency = maxLimit
-	cfg.MinConcurrency = 5
+	cfg.Concurrency.Global = 100
+	cfg.Concurrency.PerEndpoint = maxLimit
+	cfg.Concurrency.AIMD.Min = 5
 
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
@@ -3364,7 +3424,7 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("worker semaphore: %v", err)
 	}
-	p.globalSem, err = semaphore.New(cfg.GlobalConcurrency, nil)
+	p.globalSem, err = semaphore.New(cfg.Concurrency.Global, nil)
 	if err != nil {
 		t.Fatalf("global semaphore: %v", err)
 	}
@@ -3428,5 +3488,79 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	}
 	if limitB != maxLimit {
 		t.Fatalf("endpoint B (200s) Limit() = %d, want %d (should be unaffected by A's 429s)", limitB, maxLimit)
+	}
+}
+
+// TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound verifies that when
+// a model's client is not present in endpointLimits (e.g. during recovery when
+// plan files predate the current resolver config), all entries are drained as
+// model_not_found errors without panicking.
+func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			t.Fatal("Generate should not be called when endpoint limit is nil")
+			return nil, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "r0", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	// Clear endpointLimits to simulate a resolver config change between
+	// ingestion and execution (plan file references a model the resolver
+	// no longer knows about).
+	env.p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit)
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer inputFile.Close()
+
+	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+	var outBuf, errBuf bytes.Buffer
+	writers := &outputWriters{
+		output: bufio.NewWriter(&outBuf),
+		errors: bufio.NewWriter(&errBuf),
+	}
+	progress := &executionProgress{
+		total:   int64(len(requests)),
+		updater: env.updater,
+		jobID:   jobInfo.JobID,
+	}
+
+	ctx := testLoggerCtx(t)
+	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+	if err != nil {
+		t.Fatalf("processModel error: %v", err)
+	}
+
+	writers.errors.Flush()
+	writers.output.Flush()
+
+	// All requests should appear in the error file as model_not_found.
+	errLines := strings.Split(strings.TrimSpace(errBuf.String()), "\n")
+	if len(errLines) != len(requests) {
+		t.Fatalf("error lines = %d, want %d", len(errLines), len(requests))
+	}
+	for i, line := range errLines {
+		if !strings.Contains(line, `"model_not_found"`) {
+			t.Fatalf("error line %d missing model_not_found code: %s", i, line)
+		}
+	}
+
+	// Output file should be empty (no successful responses).
+	if outBuf.Len() != 0 {
+		t.Fatalf("output buffer should be empty, got %d bytes", outBuf.Len())
 	}
 }
