@@ -10,4 +10,4 @@ permissions:
 
 jobs:
   auto-merge:
-    uses: llm-d/llm-d-infra/.github/workflows/reusable-prow-automerge.yml@main
+    uses: llm-d/llm-d-infra/.github/workflows/reusable-prow-automerge.yaml@main
