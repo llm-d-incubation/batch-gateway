@@ -103,6 +103,7 @@ apiserver:
     repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
     pullPolicy: Always
     tag: "latest"
+    digest: ""
 
   nameOverride: ""
   fullnameOverride: ""
@@ -240,6 +241,7 @@ processor:
     repository: ghcr.io/llm-d-incubation/batch-gateway-processor
     pullPolicy: Always
     tag: "latest"
+    digest: ""
 
   nameOverride: ""
   fullnameOverride: ""
@@ -428,6 +430,7 @@ gc:
     repository: ghcr.io/llm-d-incubation/batch-gateway-gc
     pullPolicy: IfNotPresent
     tag: "latest"
+    digest: ""
 
   serviceAccount:
     create: true

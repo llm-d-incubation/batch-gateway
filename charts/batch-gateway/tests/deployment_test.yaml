@@ -289,6 +289,60 @@ tests:
             name: POD_NAME
           any: true
 
+  # --- Image digest ---
+
+  - it: should use tag by default for all images
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^.+:.+$"
+        template: templates/apiserver-deployment.yaml
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^.+:.+$"
+        template: templates/processor-deployment.yaml
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^.+:.+$"
+        template: templates/gc-deployment.yaml
+
+  - it: should use digest when set for apiserver
+    set:
+      apiserver.image.digest: "sha256:abc123"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/llm-d-incubation/batch-gateway-apiserver@sha256:abc123"
+        template: templates/apiserver-deployment.yaml
+
+  - it: should use digest when set for processor
+    set:
+      processor.image.digest: "sha256:def456"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/llm-d-incubation/batch-gateway-processor@sha256:def456"
+        template: templates/processor-deployment.yaml
+
+  - it: should use digest when set for gc
+    set:
+      gc.image.digest: "sha256:789ghi"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/llm-d-incubation/batch-gateway-gc@sha256:789ghi"
+        template: templates/gc-deployment.yaml
+
+  - it: should prefer digest over tag when both are set
+    set:
+      apiserver.image.tag: "v1.0.0"
+      apiserver.image.digest: "sha256:abc123"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/llm-d-incubation/batch-gateway-apiserver@sha256:abc123"
+        template: templates/apiserver-deployment.yaml
+
   # --- Fail guards ---
 
   - it: should fail when fs pvcName is empty

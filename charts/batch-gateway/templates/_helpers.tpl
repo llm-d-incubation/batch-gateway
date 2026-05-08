@@ -121,8 +121,12 @@ API Server service account name
 API Server image string
 */}}
 {{- define "batch-gateway.apiserver.image" -}}
+{{- if .Values.apiserver.image.digest -}}
+{{- printf "%s@%s" .Values.apiserver.image.repository .Values.apiserver.image.digest }}
+{{- else -}}
 {{- $tag := .Values.apiserver.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" .Values.apiserver.image.repository $tag }}
+{{- end -}}
 {{- end }}
 
 {{/* ========== Processor Helpers ========== */}}
@@ -177,8 +181,12 @@ Processor service account name
 Processor image string
 */}}
 {{- define "batch-gateway.processor.image" -}}
+{{- if .Values.processor.image.digest -}}
+{{- printf "%s@%s" .Values.processor.image.repository .Values.processor.image.digest }}
+{{- else -}}
 {{- $tag := .Values.processor.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" .Values.processor.image.repository $tag }}
+{{- end -}}
 {{- end }}
 
 {{/* ========== Garbage Collector Helpers ========== */}}
@@ -228,6 +236,10 @@ GC service account name
 GC image string
 */}}
 {{- define "batch-gateway.gc.image" -}}
+{{- if .Values.gc.image.digest -}}
+{{- printf "%s@%s" .Values.gc.image.repository .Values.gc.image.digest }}
+{{- else -}}
 {{- $tag := .Values.gc.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" .Values.gc.image.repository $tag }}
+{{- end -}}
 {{- end }}
