@@ -3545,8 +3545,12 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 		t.Fatalf("processModel error: %v", err)
 	}
 
-	writers.errors.Flush()
-	writers.output.Flush()
+	if err := writers.errors.Flush(); err != nil {
+		t.Fatalf("flush errors: %v", err)
+	}
+	if err := writers.output.Flush(); err != nil {
+		t.Fatalf("flush output: %v", err)
+	}
 
 	// All requests should appear in the error file as model_not_found.
 	errLines := strings.Split(strings.TrimSpace(errBuf.String()), "\n")
