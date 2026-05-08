@@ -245,6 +245,37 @@ func waitForBatchStatus(t *testing.T, batchID string, timeout time.Duration, tar
 	return nil, nil // unreachable
 }
 
+// waitForCompletedRequests polls a batch until at least minCompleted requests
+// have completed. This is used instead of a fixed sleep to make tests
+// deterministic regardless of request-path latency.
+func waitForCompletedRequests(t *testing.T, batchID string, minCompleted int64, timeout time.Duration) {
+	t.Helper()
+
+	client := newClient()
+	const pollInterval = 500 * time.Millisecond
+
+	deadline := time.Now().Add(timeout)
+	if d, ok := t.Deadline(); ok && d.Before(deadline) {
+		deadline = d.Add(-5 * time.Second)
+	}
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(context.Background(), batchID)
+		if err != nil {
+			t.Fatalf("retrieve batch failed: %v", err)
+		}
+		if b.RequestCounts.Completed >= minCompleted {
+			t.Logf("batch %s has %d completed request(s), proceeding", batchID, b.RequestCounts.Completed)
+			return
+		}
+		if terminalBatchStatuses[b.Status] {
+			t.Fatalf("batch %s reached terminal status %q with only %d completed (need %d)",
+				batchID, b.Status, b.RequestCounts.Completed, minCompleted)
+		}
+		time.Sleep(pollInterval)
+	}
+	t.Fatalf("batch %s did not reach %d completed requests within %v", batchID, minCompleted, timeout)
+}
+
 // waitForIngestionFailure polls a batch until it reaches "failed" status.
 // Unlike waitForBatchStatus, it skips validateBatchResults (which rejects
 // Total==0 for non-cancelled batches) and result-file fetching, since

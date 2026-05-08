@@ -86,8 +86,10 @@ func doTestBatchCancel(t *testing.T) {
 	// Wait for the processor to pick up the batch and start inference.
 	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
 
-	// Give fast requests time to complete before cancelling.
-	time.Sleep(2 * time.Second)
+	// Wait for at least one fast request to complete before cancelling.
+	// This replaces a fixed sleep, making the test deterministic regardless
+	// of request-path latency (e.g. with GIE: processor → Envoy → EPP → vllm-sim).
+	waitForCompletedRequests(t, batchID, 1, 2*time.Minute)
 
 	// Cancel the batch while slow requests are still in-flight.
 	batch, err := newClient().Batches.Cancel(context.Background(), batchID)
