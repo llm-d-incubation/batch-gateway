@@ -1255,6 +1255,7 @@ func TestExecuteJob_SIGTERMAfterAllComplete(t *testing.T) {
 	}
 	if counts == nil {
 		t.Fatal("expected non-nil counts")
+		return
 	}
 	if counts.Total != 1 || counts.Completed != 1 {
 		t.Fatalf("counts = {Total:%d, Completed:%d, Failed:%d}, want {1,1,0}",
