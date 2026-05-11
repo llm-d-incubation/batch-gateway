@@ -524,7 +524,7 @@ metadata:
   namespace: ${BATCH_NAMESPACE}
 spec:
   accessModes:
-  - ReadWriteOnce
+  - ReadWriteMany
   resources:
     requests:
       storage: 1Gi
@@ -705,6 +705,54 @@ do_deploy_batch_gateway() {
     create_batch_destinationrule
 }
 
+# ── Internal Gateway ──────────────────────────────────────────────────────────
+#
+# Creates a ClusterIP-only Gateway for the batch processor to access LLM
+# inference endpoints. Preserves AuthPolicy (model access checks) but
+# bypasses TokenRateLimitPolicy applied on the external Gateway.
+# Requires BATCH_INTERNAL_GATEWAY_NAME, BATCH_INTERNAL_GATEWAY_NAMESPACE, and GATEWAY_CLASS_NAME.
+
+create_batch_internal_gateway() {
+    [ -z "${GATEWAY_CLASS_NAME:-}" ] && die "GATEWAY_CLASS_NAME is required but not set."
+    step "Creating Internal Gateway (ClusterIP) for batch processor..."
+    if kubectl get gateway "${BATCH_INTERNAL_GATEWAY_NAME}" -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" &>/dev/null; then
+        log "Internal Gateway already exists. Skipping."
+    else
+        kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${BATCH_INTERNAL_GATEWAY_NAME}
+  namespace: ${BATCH_INTERNAL_GATEWAY_NAMESPACE}
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: ${GATEWAY_CLASS_NAME}
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            llm-d.ai/gateway-route: "true"
+EOF
+    fi
+
+    wait_for_deployment "${BATCH_INTERNAL_GATEWAY_NAME}-${GATEWAY_CLASS_NAME}" "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" 300s
+
+    step "Waiting for Internal Gateway to be programmed..."
+    kubectl wait --for=condition=Programmed \
+        --timeout=300s \
+        -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" \
+        gateway/${BATCH_INTERNAL_GATEWAY_NAME} \
+        || die "Internal Gateway '${BATCH_INTERNAL_GATEWAY_NAME}' not programmed after 300s."
+
+    log "Internal Gateway created (ClusterIP, no TLS, no rate limit)."
+}
+
 # ── Test Framework ────────────────────────────────────────────────────────────
 #
 # Usage:
@@ -714,6 +762,73 @@ do_deploy_batch_gateway() {
 #   assert_http 200 "Auth -> 200" -H "Authorization: Bearer ${t}" "${url}"
 #   run_batch_tests batch_url model authorized_header unauthorized_header [extra_headers...]
 #   finish_tests                                 # print summary + wait
+
+# Verifies the internal gateway is ClusterIP-only and not exposed externally.
+# Requires BATCH_INTERNAL_GATEWAY_NAME and BATCH_INTERNAL_GATEWAY_NAMESPACE.
+# Aborts (die) on failure.
+check_batch_internal_gateway() {
+    local gw_ns="${BATCH_INTERNAL_GATEWAY_NAMESPACE}"
+    local gw_name="${BATCH_INTERNAL_GATEWAY_NAME}"
+
+    echo ""
+    echo "======================================================="
+    echo "  Internal Gateway Isolation"
+    echo "======================================================="
+
+    local _ig_passed=0 _ig_failed=0
+
+    local svc_type
+    svc_type=$(kubectl get svc -n "${gw_ns}" \
+        -l "gateway.networking.k8s.io/gateway-name=${gw_name}" \
+        -o jsonpath='{.items[0].spec.type}' 2>/dev/null || echo "")
+
+    echo ""
+    echo "── Check: Internal Gateway Service type is ClusterIP ──"
+    if [ -z "${svc_type}" ]; then
+        warn "FAILED: No service found for Internal Gateway '${gw_name}' in namespace '${gw_ns}'"
+        _ig_failed=$((_ig_failed + 1))
+    elif [ "${svc_type}" = "ClusterIP" ]; then
+        echo "  Service type: ${svc_type}"
+        log "PASSED: Internal Gateway Service is ClusterIP (no external IP)"
+        _ig_passed=$((_ig_passed + 1))
+    else
+        warn "FAILED: Expected ClusterIP, got '${svc_type}'"
+        _ig_failed=$((_ig_failed + 1))
+    fi
+
+    local gw_label="gateway.networking.k8s.io/gateway-name=${gw_name}"
+
+    echo ""
+    echo "── Check: No Route exposes Internal Gateway ──"
+    if is_openshift; then
+        if [ -n "$(kubectl get route -A -l "${gw_label}" -o name 2>/dev/null)" ]; then
+            warn "FAILED: Found Route exposing ${gw_name}"
+            _ig_failed=$((_ig_failed + 1))
+        else
+            echo "  No Route found for ${gw_name}"
+            log "PASSED: No Route exposes Internal Gateway"
+            _ig_passed=$((_ig_passed + 1))
+        fi
+    else
+        echo "  Skipping Route check (not OpenShift)."
+    fi
+
+    echo ""
+    echo "── Check: No Ingress exposes Internal Gateway ──"
+    if [ -n "$(kubectl get ingress -A -l "${gw_label}" -o name 2>/dev/null)" ]; then
+        warn "FAILED: Found Ingress exposing ${gw_name}"
+        _ig_failed=$((_ig_failed + 1))
+    else
+        echo "  No Ingress found for ${gw_name}"
+        log "PASSED: No Ingress exposes Internal Gateway"
+        _ig_passed=$((_ig_passed + 1))
+    fi
+
+    if [ "${_ig_failed}" -gt 0 ]; then
+        die "Internal Gateway isolation check failed (${_ig_failed} failures). Aborting tests."
+    fi
+    log "Internal Gateway isolation verified (${_ig_passed}/${_ig_passed} checks passed)."
+}
 
 # run_tests llm_url batch_url model_name authorized_header unauthorized_header \
 #           inference_payload [extra_headers...]
@@ -899,9 +1014,9 @@ JSONL
     assert_http 200 "Unauthorized but authenticated batch request -> 200 (no authz on batch-route)" -H "${unauthorized_header}" "${batch_url}/v1/batches"
 
     # ── 5. Batch Authz (LLM route enforces) ──────────────
-    test_group_header "Batch Authz (LLM route enforces)"
-    next_test "Unauthorized user batch -> LLM route rejects with 403"
-    echo "  Goal: Batch processor forwards unauthorized credentials to LLM route, gets 403"
+    test_group_header "Batch Authz"
+    next_test "Unauthorized user batch -> batch-llm-route rejects with 403"
+    echo "  Goal: Batch processor forwards unauthorized credentials to batch-llm-route, gets 403"
 
     if _create_batch "${batch_url}" "${unauthorized_header}" "${model_name}"; then
         _poll_batch "${batch_url}" "${_BATCH_ID}" "${unauthorized_header}"

@@ -12,7 +12,7 @@ This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or Op
 | `istio-ingress` | Gateway data plane (Istio/Envoy proxy) |
 | `cert-manager` | cert-manager controller, webhook, cainjector |
 | `kuadrant-system` | Kuadrant operator, Authorino, Limitador |
-| `batch-api` | batch-gateway (apiserver + processor), Redis, PostgreSQL |
+| `batch-api` | batch-gateway (apiserver + processor + gc), Redis, PostgreSQL |
 | `llm` | llm-d stack: InferencePool, EPP, vLLM |
 
 ### 1.2 Data Flow
@@ -20,16 +20,25 @@ This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or Op
 ![Deployment Architecture](diagrams/deploy-k8s-arch.png)
 
 **Batch inference flow**:
-1. Client sends a batch request (e.g. `POST /v1/batches`) to the Istio Gateway (`istio-gateway`) with a Kubernetes token
+1. Client sends a batch request (e.g. `POST /v1/batches`) to the External Gateway (`istio-gateway`, HTTPS :443) with a Kubernetes token
 2. Gateway matches `/v1/batches`, `/v1/files` → **batch-route** (HTTPRoute)
     - **AuthPolicy** on the batch-route performs authentication only (kubernetesTokenReview, no authorization check) — unauthenticated requests are rejected with 401
     - **RateLimitPolicy** on the batch-route enforces per-user request rate limiting (e.g. 20 req/min), keyed by Kubernetes username (user or ServiceAccount) from TokenReview — excess requests are rejected with 429
     - Authenticated request is forwarded to **batch-gateway apiserver**, which stores the batch job
-3. **Processor** dequeues the batch job and sends inference requests back through the same Istio Gateway (`istio-gateway`) with the user's original token
-4. The Gateway matches `/{ns}/{model}/v1/*` → **llm-route** (HTTPRoute, manually created with URL rewrite rules)
-    - **AuthPolicy** on the llm-route performs authentication and authorization (SubjectAccessReview — checks if the original user can `get inferencepools/<model-name>`, where `<model-name>` is extracted from the URL path, not the backend InferencePool object name) — if the user lacks permission, the request is rejected with 403
-    - **TokenRateLimitPolicy** on the llm-route enforces per-user token rate limiting, keyed by Kubernetes username from TokenReview
+3. **Processor** dequeues the batch job and sends inference requests to the **Internal Gateway** (`batch-internal-gateway`, ClusterIP HTTP :80) with the user's original token (via `passThroughHeaders: [Authorization]`)
+4. The Internal Gateway matches `/{ns}/{model}/v1/*` → **batch-llm-route** (HTTPRoute)
+    - **AuthPolicy** on the batch-llm-route performs authentication and authorization (SubjectAccessReview — checks if the original user can `get inferencepools/<model-name>`, where `<model-name>` is extracted from the URL path, not the backend InferencePool object name) — if the user lacks permission, the request is rejected with 403
+    - No **TokenRateLimitPolicy** on the batch-llm-route — batch inference requests bypass per-user token rate limiting
 5. Request is routed to **InferencePool** → **EPP** (endpoint picker) → **vLLM** model server, and the response is returned to the Processor, which adds the response to the batch job's output file
+
+**Online inference flow**:
+1. Client sends an inference request (e.g. `POST /{ns}/{model}/v1/chat/completions`) to the External Gateway with a Kubernetes token
+2. Gateway matches `/{ns}/{model}/v1/*` → **llm-route** (HTTPRoute, manually created with URL rewrite rules)
+    - **AuthPolicy** on the llm-route performs authentication and authorization (SubjectAccessReview — same model access check as the batch-llm-route)
+    - **TokenRateLimitPolicy** on the llm-route enforces per-user token rate limiting, keyed by Kubernetes username from TokenReview
+3. Request is routed to **InferencePool** → **EPP** → **vLLM** model server
+
+> **Why two gateways?** The Internal Gateway is a ClusterIP-only Envoy proxy that is not accessible from outside the cluster. The batch processor uses it to bypass the TokenRateLimitPolicy applied on the External Gateway's llm-route. This ensures batch jobs are not throttled by per-user token rate limits intended for interactive use. The Internal Gateway's batch-llm-route still enforces AuthPolicy (authentication + model authorization), so unauthorized access is always blocked.
 
 ### 1.3 Authentication
 
@@ -91,23 +100,51 @@ kubectl auth can-i get inferencepools/<model-name> -n <llm-namespace> --as=syste
 ```
 
 HTTPRoute authorization behavior:
-- **LLM route**: SubjectAccessReview checks if user can `get inferencepools/<model-name>` (extracted from URL path) — unauthorized requests are rejected with **403**
-- **Batch route**: No authorization check — authorization is enforced by the LLM route when the processor forwards inference requests with the user's original token
+- **llm-route** / **batch-llm-route**: SubjectAccessReview checks if user can `get inferencepools/<model-name>` (extracted from URL path) — unauthorized requests are rejected with **403**
+- **batch-route**: No authorization check — authorization is enforced by the **batch-llm-route** (on the Internal Gateway) when the processor forwards inference requests with the user's original token
 
-### 1.5 Security boundary: batch-route vs llm-route
+### 1.5 Security boundary: batch-route vs batch-llm-route vs llm-route
 
 For security and operations readers: **admission on the batch API is not the same as authorization for inference.**
 
-- **batch-route** proves the caller has a valid Kubernetes token and applies batch-side **RateLimitPolicy**. Invalid or missing credentials are rejected with **401**; excess batch API traffic is rejected with **429**. It does **not** evaluate whether the caller may use a specific model.
-- **llm-route** runs **authentication and authorization** (SubjectAccessReview on `inferencepools` as above) on each inference request the processor sends through the gateway. A user can create a batch job and still see **per-request failures** (often surfaced as failed lines or job errors) when the llm-route returns **403** — this is **by design**, not a bypass of model access control.
+- **batch-route** (External Gateway) proves the caller has a valid Kubernetes token and applies batch-side **RateLimitPolicy**. Invalid or missing credentials are rejected with **401**; excess batch API traffic is rejected with **429**. It does **not** evaluate whether the caller may use a specific model.
+- **batch-llm-route** (Internal Gateway) runs **authentication and authorization** (SubjectAccessReview on `inferencepools`) on each inference request the processor sends. This route does **not** have a TokenRateLimitPolicy, so batch inference is not token-rate-limited. A user can create a batch job and still see **per-request failures** (often surfaced as failed lines or job errors) when the batch-llm-route returns **403** — this is **by design**, not a bypass of model access control.
+- **llm-route** (External Gateway) runs **authentication, authorization, and token rate limiting** on each online inference request. This is the user-facing inference endpoint.
 
-The `Authorization` header is included in `passThroughHeaders` by default, so the processor forwards the end user's bearer token on inference calls automatically. Without it, the gateway cannot attribute inference traffic to the original caller and model-level checks cannot run as intended.
+The `Authorization` header is included in `passThroughHeaders`, so the processor forwards the end user's bearer token on inference calls automatically. Without it, the Internal Gateway cannot attribute inference traffic to the original caller and model-level checks cannot run as intended.
 
 ## 2. Prerequisites
 
 - Kubernetes cluster (or OpenShift 4.x)
 - CLI tools: `kubectl`, `helm`, `helmfile`, `git`, `curl`, `jq`, `yq`
 - Helm plugin: `helm-diff` (`helm plugin install https://github.com/databus23/helm-diff`)
+
+### Environment Variables
+
+Set these once before running any installation or test step. All subsequent code blocks reference these variables.
+
+```bash
+# Gateway
+export GATEWAY_NAME=istio-gateway
+export GATEWAY_NAMESPACE=istio-ingress
+export INTERNAL_GW_NAME=batch-internal-gateway
+
+# Namespaces
+export LLM_NS=llm
+export BATCH_NS=batch-api
+export KUADRANT_NS=kuadrant-system
+
+# Component versions
+export CERT_MANAGER_VERSION=v1.15.3
+export KUADRANT_VERSION=1.3.1
+export LLMD_VERSION=v0.6.0
+export LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
+
+# llm-d model
+export LLMD_RELEASE_POSTFIX=llmd
+export LLMD_POOL_NAME=gaie-llmd
+export MODEL_NAME=random
+```
 
 ## 3. Installation Steps
 
@@ -117,10 +154,8 @@ The `Authorization` header is included in `passThroughHeaders` by default, so th
 <summary>Install cert-manager via Helm</summary>
 
 ```bash
-CERT_MANAGER_VERSION=v1.15.3
-
 helm repo add jetstack https://charts.jetstack.io --force-update
-helm install cert-manager jetstack/cert-manager \
+helm upgrade --install cert-manager jetstack/cert-manager \
     --namespace cert-manager \
     --create-namespace \
     --version "${CERT_MANAGER_VERSION}" \
@@ -158,10 +193,6 @@ Install Gateway API CRDs and Istio from the [llm-d repository](https://github.co
 <summary>Clone llm-d and install CRDs + Istio</summary>
 
 ```bash
-LLMD_VERSION=main
-LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
-LLM_NS=llm
-
 git clone --depth 1 --branch "${LLMD_VERSION}" \
     https://github.com/llm-d/llm-d.git "${LLMD_GIT_DIR}"
 
@@ -203,11 +234,8 @@ horizontalpodautoscaler.autoscaling/istiod   Deployment/istiod   cpu: 0%/80%   1
 <summary>Install Kuadrant operator via Helm</summary>
 
 ```bash
-KUADRANT_NS=kuadrant-system
-KUADRANT_VERSION=1.3.1
-
 helm repo add kuadrant https://kuadrant.io/helm-charts/ --force-update
-helm install kuadrant-operator kuadrant/kuadrant-operator \
+helm upgrade --install kuadrant-operator kuadrant/kuadrant-operator \
     --version "${KUADRANT_VERSION}" \
     --create-namespace \
     --namespace "${KUADRANT_NS}"
@@ -296,9 +324,6 @@ replicaset.apps/limitador-operator-controller-manager-cb6c488bf   1         1   
 <summary>Create TLS Certificate for Gateway</summary>
 
 ```bash
-GATEWAY_NAME=istio-gateway
-GATEWAY_NAMESPACE=istio-ingress
-
 kubectl create namespace "${GATEWAY_NAMESPACE}" 2>/dev/null || true
 
 kubectl apply -f - <<EOF
@@ -408,8 +433,6 @@ Find more guides at [llm-d guides](https://llm-d.ai/docs/guide/)
 <summary>Deploy simulated-accelerators model via helmfile</summary>
 
 ```bash
-LLMD_RELEASE_POSTFIX=llmd
-
 # Deploy the stack
 RELEASE_NAME_POSTFIX="${LLMD_RELEASE_POSTFIX}" \
     helmfile apply \
@@ -461,15 +484,12 @@ replicaset.apps/ms-llmd-llm-d-modelservice-prefill-7d7b78699f   1         1     
 Label the LLM namespace so the Gateway's namespace selector allows HTTPRoute attachment:
 
 ```bash
-kubectl label namespace ${LLM_NS} llm-d.ai/gateway-route=true
+kubectl label namespace ${LLM_NS} llm-d.ai/gateway-route=true --overwrite
 ```
 
 The llm-route is manually created with URL rewrite rules that map `/{namespace}/{model}/v1/*` to the InferencePool backend.
 
 ```bash
-MODEL_NAME=random
-LLMD_POOL_NAME=gaie-llmd
-
 kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -613,23 +633,170 @@ kubectl wait tokenratelimitpolicy/inference-token-limit \
 
 ### 3.7 Install Batch Gateway
 
+The batch processor routes inference requests through a separate, ClusterIP-only Internal Gateway to bypass the TokenRateLimitPolicy on the External Gateway while still enforcing model-level authorization (AuthPolicy).
+
+<details>
+<summary>Create Internal Gateway (ClusterIP)</summary>
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${INTERNAL_GW_NAME}
+  namespace: ${GATEWAY_NAMESPACE}
+  annotations:
+    networking.istio.io/service-type: ClusterIP
+spec:
+  gatewayClassName: istio
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            llm-d.ai/gateway-route: "true"
+EOF
+
+kubectl wait --for=condition=Programmed --timeout=300s \
+    -n "${GATEWAY_NAMESPACE}" gateway/${INTERNAL_GW_NAME}
+```
+
+> **Note**: The `networking.istio.io/service-type: ClusterIP` annotation ensures the Internal Gateway's Service is ClusterIP-only (no LoadBalancer, no external IP). This prevents direct external access — all external traffic must go through the External Gateway.
+
+</details>
+
+<details>
+<summary>Create batch-llm-route (HTTPRoute on Internal Gateway)</summary>
+
+The batch-llm-route is attached to the Internal Gateway and has the same URL rewrite rules as the llm-route, but targets the Internal Gateway instead of the External Gateway.
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: batch-llm-route
+  namespace: ${LLM_NS}
+spec:
+  parentRefs:
+  - name: ${INTERNAL_GW_NAME}
+    namespace: ${GATEWAY_NAMESPACE}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /${LLM_NS}/${MODEL_NAME}/v1/completions
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /v1/completions
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${LLMD_POOL_NAME}
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /${LLM_NS}/${MODEL_NAME}/v1/chat/completions
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /v1/chat/completions
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${LLMD_POOL_NAME}
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /${LLM_NS}/${MODEL_NAME}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${LLMD_POOL_NAME}
+EOF
+```
+
+</details>
+
+<details>
+<summary>Create AuthPolicy for batch-llm-route (authentication + authorization)</summary>
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: batch-llm-route-auth
+  namespace: ${LLM_NS}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: batch-llm-route
+  rules:
+    authentication:
+      kubernetes-user:
+        kubernetesTokenReview:
+          audiences:
+          - https://kubernetes.default.svc
+    authorization:
+      model-access:
+        kubernetesSubjectAccessReview:
+          user:
+            expression: auth.identity.user.username
+          authorizationGroups:
+            expression: auth.identity.user.groups
+          resourceAttributes:
+            group:
+              value: inference.networking.k8s.io
+            resource:
+              value: inferencepools
+            namespace:
+              expression: request.path.split("/")[1]
+            name:
+              expression: request.path.split("/")[2]
+            verb:
+              value: get
+EOF
+```
+
+> **Note**: The batch-llm-route has AuthPolicy (authentication + authorization) but **no TokenRateLimitPolicy**. This is intentional — batch inference requests should not be throttled by per-user token rate limits. The External Gateway's llm-route handles token rate limiting for online (interactive) requests only.
+
+</details>
+
+Deploy batch-gateway with the model gateway URL pointing to the Internal Gateway:
+
 <details>
 <summary>Create namespace and install dependencies</summary>
 
 ```bash
-BATCH_NS=batch-api
 kubectl create namespace "${BATCH_NS}" 2>/dev/null || true
-kubectl label namespace "${BATCH_NS}" llm-d.ai/gateway-route=true
+kubectl label namespace "${BATCH_NS}" llm-d.ai/gateway-route=true --overwrite
 
 # Install Redis (or Valkey — see alternative below)
-helm install redis oci://registry-1.docker.io/bitnamicharts/redis \
+helm upgrade --install redis oci://registry-1.docker.io/bitnamicharts/redis \
     --namespace ${BATCH_NS} --create-namespace \
     --set architecture=standalone \
     --set auth.enabled=false
 kubectl rollout status statefulset/redis-master -n ${BATCH_NS} --timeout=120s
 
 # Alternative: Install Valkey (wire-protocol compatible with Redis)
-# helm install redis oci://registry-1.docker.io/bitnamicharts/valkey \
+# helm upgrade --install redis oci://registry-1.docker.io/bitnamicharts/valkey \
 #     --namespace ${BATCH_NS} --create-namespace \
 #     --set architecture=standalone \
 #     --set auth.enabled=false
@@ -638,32 +805,86 @@ kubectl rollout status statefulset/redis-master -n ${BATCH_NS} --timeout=120s
 #   redis://redis-valkey-primary.${BATCH_NS}.svc.cluster.local:6379/0
 
 # Install PostgreSQL
-helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
+helm upgrade --install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
     --namespace ${BATCH_NS} --create-namespace \
-    --set auth.postgresPassword=postgres \
+    --set auth.postgresPassword=<your-postgres-password> \
     --set auth.database=batch
 kubectl rollout status statefulset/postgresql -n ${BATCH_NS} --timeout=120s
 
+# Install MinIO (S3-compatible object storage for batch files)
+MINIO_USER=<your-minio-user>
+MINIO_PASSWORD=<your-minio-password>
+MINIO_BUCKET=batch-gateway
+
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: ${BATCH_NS}
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+        args: ["server", "/data", "--console-address", ":9001"]
+        env:
+        - name: MINIO_ROOT_USER
+          value: "${MINIO_USER}"
+        - name: MINIO_ROOT_PASSWORD
+          value: "${MINIO_PASSWORD}"
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: ${BATCH_NS}
+  labels:
+    app: minio
+spec:
+  selector:
+    app: minio
+  ports:
+  - name: api
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
+  type: ClusterIP
+EOF
+
+until kubectl get deployment minio -n ${BATCH_NS} &>/dev/null; do sleep 5; done
+kubectl rollout status deployment/minio -n ${BATCH_NS} --timeout=180s
+
 # Create application secret
-# Replace <your-password> with your actual PostgreSQL password
 kubectl create secret generic batch-gateway-secrets \
     --namespace ${BATCH_NS} \
     --from-literal=redis-url="redis://redis-master.${BATCH_NS}.svc.cluster.local:6379/0" \
-    --from-literal=postgresql-url="postgresql://postgres:<your-password>@postgresql.${BATCH_NS}.svc.cluster.local:5432/batch?sslmode=disable"
-
-# Create PVC for batch file storage (alternatively, S3-compatible storage can be used — see Helm chart values for s3 configuration)
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: batch-gateway-files
-  namespace: ${BATCH_NS}
-spec:
-  accessModes: [ReadWriteMany]
-  resources:
-    requests:
-      storage: 1Gi
-EOF
+    --from-literal=postgresql-url="postgresql://postgres:<your-postgres-password>@postgresql.${BATCH_NS}.svc.cluster.local:5432/batch?sslmode=disable" \
+    --from-literal=s3-secret-access-key="${MINIO_PASSWORD}" \
+    --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 > **Note**: Redis auth and PostgreSQL persistence are disabled for demo purposes. For production, enable Redis authentication and configure persistent storage.
@@ -681,10 +902,15 @@ GC_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-gc
 ```
 
 ```bash
-# Model gateway URL: route through the main istio-gateway (which has AuthPolicy)
-MODEL_GW_URL="https://${GATEWAY_NAME}-istio.${GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NS}/${MODEL_NAME}"
+# Discover the Internal Gateway's Service (ClusterIP, HTTP :80)
+INTERNAL_GW_SVC=$(kubectl get svc -n ${GATEWAY_NAMESPACE} \
+    -l "gateway.networking.k8s.io/gateway-name=${INTERNAL_GW_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}')
 
-helm install batch-gateway ./charts/batch-gateway \
+# Model gateway URL: route through the Internal Gateway (which has AuthPolicy but no TokenRateLimitPolicy)
+MODEL_GW_URL="http://${INTERNAL_GW_SVC}.${GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NS}/${MODEL_NAME}"
+
+helm upgrade --install batch-gateway ./charts/batch-gateway \
     --namespace ${BATCH_NS} \
     --set "apiserver.image.repository=${APISERVER_REPO}" \
     --set "apiserver.image.tag=${IMAGE_TAG}" \
@@ -694,15 +920,19 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "gc.image.tag=${IMAGE_TAG}" \
     --set "global.secretName=batch-gateway-secrets" \
     --set "global.dbClient.type=postgresql" \
-    --set "global.fileClient.type=fs" \
-    --set "global.fileClient.fs.basePath=/tmp/batch-gateway" \
-    --set "global.fileClient.fs.pvcName=batch-gateway-files" \
+    --set "global.fileClient.type=s3" \
+    --set "global.fileClient.s3.endpoint=http://minio.${BATCH_NS}.svc.cluster.local:9000" \
+    --set "global.fileClient.s3.region=us-east-1" \
+    --set "global.fileClient.s3.accessKeyId=${MINIO_USER}" \
+    --set "global.fileClient.s3.prefix=${MINIO_BUCKET}" \
+    --set "global.fileClient.s3.usePathStyle=true" \
+    --set "global.fileClient.s3.autoCreateBucket=true" \
     --set "processor.config.modelGateways.${MODEL_NAME}.url=${MODEL_GW_URL}" \
     --set "processor.config.modelGateways.${MODEL_NAME}.requestTimeout=5m" \
     --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=3" \
     --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=1s" \
     --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=60s" \
-    --set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true" \
+    --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
     --set apiserver.tls.enabled=true \
     --set apiserver.tls.certManager.enabled=true \
     --set apiserver.tls.certManager.issuerName=selfsigned-issuer \
@@ -710,21 +940,17 @@ helm install batch-gateway ./charts/batch-gateway \
     --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}"
 ```
 
-> - **Processor → inference TLS**: This demo uses `tlsInsecureSkipVerify=true` for a typical self-signed in-cluster gateway. For private CAs, mTLS, or mounting certificate Secrets, see [Processor inference TLS](processor-inference-tls.md).
-> - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It points to the Gateway's model endpoint (via in-cluster Service DNS), not directly to the model server, so that requests go through the Gateway's AuthPolicy and rate limiting.
-> - **`passThroughHeaders`**: Defaults to `[Authorization]`, so the processor forwards the end user's bearer token on inference calls without extra configuration. Override this only if you need a different set of headers.
-> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `dnsNames` should include the Service name and FQDN so the Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.8).
-> - **File storage**: This example uses `global.fileClient.type=fs` with a PVC. To use S3-compatible storage instead, replace the `fs` options with:
+> - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It points to the **Internal Gateway's** model endpoint (via in-cluster Service DNS), not the External Gateway or the model server directly. The Internal Gateway enforces AuthPolicy (model access check) but bypasses TokenRateLimitPolicy, so batch inference is not token-rate-limited.
+> - **`passThroughHeaders`**: Set to `[Authorization]` so the processor forwards the end user's bearer token on inference calls. Without this, the Internal Gateway cannot attribute inference traffic to the original caller and model-level authorization checks will fail.
+> - **No `tlsInsecureSkipVerify`**: The Internal Gateway uses plain HTTP (ClusterIP :80), so TLS verification is not needed for the processor → model gateway connection.
+> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `dnsNames` should include the Service name and FQDN so the External Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.8).
+> - **File storage**: This example uses S3-compatible storage (MinIO). To use a PVC instead, replace the `s3` options with:
 >   ```
->   --set "global.fileClient.type=s3"
->   --set "global.fileClient.s3.endpoint=http://<s3-endpoint>:9000"
->   --set "global.fileClient.s3.region=us-east-1"
->   --set "global.fileClient.s3.accessKeyId=<access-key>"
->   --set "global.fileClient.s3.prefix=<bucket-name>"
->   --set "global.fileClient.s3.usePathStyle=true"
->   --set "global.fileClient.s3.autoCreateBucket=true"
+>   --set "global.fileClient.type=fs"
+>   --set "global.fileClient.fs.basePath=/tmp/batch-gateway"
+>   --set "global.fileClient.fs.pvcName=batch-gateway-files"
 >   ```
->   and add `--from-literal=s3-secret-access-key=<secret-key>` to the application secret.
+>   and create a PVC with `ReadWriteMany` access mode. Note that `ReadWriteMany` requires a storage class that supports RWX (e.g. NFS, CephFS, EFS). Block storage (e.g. gp2, gp3) does not support RWX.
 
 </details>
 
@@ -839,17 +1065,15 @@ EOF
 ### 4.1 Setup Test Accounts
 
 ```bash
-# Get Gateway address (from status.addresses, populated by the controller)
-GW_ADDR=$(kubectl get gateway istio-gateway -n istio-ingress \
+# Get Gateway address
+GW_ADDR=$(kubectl get gateway ${GATEWAY_NAME} -n ${GATEWAY_NAMESPACE} \
     -o jsonpath='{.status.addresses[0].value}')
-GW_URL="https://${GW_ADDR}"
+export GW_URL="https://${GW_ADDR}"
+```
 
-MODEL_NAME=random
-LLM_NS=llm
-LLMD_POOL_NAME=gaie-llmd
-
+```bash
 # Create authorized SA with RBAC to access the InferencePool
-kubectl create serviceaccount test-authorized-sa -n ${LLM_NS}
+kubectl create serviceaccount test-authorized-sa -n ${LLM_NS} 2>/dev/null || true
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -881,7 +1105,7 @@ AUTH_TOKEN=$(kubectl create token test-authorized-sa -n ${LLM_NS} \
     --audience=https://kubernetes.default.svc --duration=10m)
 
 # Create unauthorized SA (no RBAC)
-kubectl create serviceaccount test-unauthorized-sa -n ${LLM_NS}
+kubectl create serviceaccount test-unauthorized-sa -n ${LLM_NS} 2>/dev/null || true
 UNAUTH_TOKEN=$(kubectl create token test-unauthorized-sa -n ${LLM_NS} \
     --audience=https://kubernetes.default.svc --duration=10m)
 ```
@@ -951,12 +1175,12 @@ curl -sk -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer ${AUTH_TOKEN}" ${GW_URL}/v1/batches
 ```
 
-### 4.6 Batch Authorization (LLM route enforcement)
+### 4.6 Batch Authorization (batch-llm-route enforcement)
 
 ```bash
 # Unauthorized user creates a batch — batch is accepted (batch route has no authz),
-# but the processor forwards requests to the LLM route with the unauthorized token,
-# and the LLM route's AuthPolicy rejects with 403.
+# but the processor forwards requests to the batch-llm-route (via Internal Gateway)
+# with the unauthorized token, and the batch-llm-route's AuthPolicy rejects with 403.
 
 # Create input file
 cat > /tmp/batch-input.jsonl <<EOF

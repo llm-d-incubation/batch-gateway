@@ -20,6 +20,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+GATEWAY_CLASS_NAME="${GATEWAY_CLASS_NAME:-istio}"
 GATEWAY_NAME="${GATEWAY_NAME:-istio-gateway}"
 GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-istio-ingress}"
 
@@ -31,9 +32,11 @@ KUADRANT_RELEASE="${KUADRANT_RELEASE:-kuadrant-operator}"
 
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.15.3}"
 
+BATCH_INTERNAL_GATEWAY_NAME="${BATCH_INTERNAL_GATEWAY_NAME:-batch-internal-gateway}"
+BATCH_INTERNAL_GATEWAY_NAMESPACE="${BATCH_INTERNAL_GATEWAY_NAMESPACE:-${GATEWAY_NAMESPACE}}"
 GATEWAY_LOCAL_PORT="${GATEWAY_LOCAL_PORT:-8080}"
 
-LLMD_VERSION="${LLMD_VERSION:-main}"
+LLMD_VERSION="${LLMD_VERSION:-v0.6.0}"
 LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
 LLMD_RELEASE_POSTFIX="${LLMD_RELEASE_POSTFIX:-llmd}"
 
@@ -101,7 +104,7 @@ metadata:
   labels:
     kuadrant.io/gateway: "true"
 spec:
-  gatewayClassName: istio
+  gatewayClassName: ${GATEWAY_CLASS_NAME}
   listeners:
   - name: http
     protocol: HTTP
@@ -127,7 +130,7 @@ spec:
             llm-d.ai/gateway-route: "true"
 EOF
 
-    wait_for_deployment "${GATEWAY_NAME}-istio" "${GATEWAY_NAMESPACE}" 300s
+    wait_for_deployment "${GATEWAY_NAME}-${GATEWAY_CLASS_NAME}" "${GATEWAY_NAMESPACE}" 300s
 
     step "Waiting for Gateway to be programmed..."
     kubectl wait --for=condition=Programmed \
@@ -264,6 +267,116 @@ EOF
     log "llm-route created."
 }
 
+create_batch_llm_route() {
+    step "Creating batch-llm-route on Internal Gateway..."
+
+    local rules=""
+    for entry in "${MODEL_ROUTES[@]}"; do
+        local model_name="${entry%%:*}"
+        local pool_name="${entry##*:}"
+        rules="${rules}
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /${LLM_NAMESPACE}/${model_name}/v1/completions
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /v1/completions
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${pool_name}
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /${LLM_NAMESPACE}/${model_name}/v1/chat/completions
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /v1/chat/completions
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${pool_name}
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /${LLM_NAMESPACE}/${model_name}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    backendRefs:
+    - group: inference.networking.k8s.io
+      kind: InferencePool
+      name: ${pool_name}"
+        log "  batch-llm-route rule: /${LLM_NAMESPACE}/${model_name}/* -> InferencePool/${pool_name}"
+    done
+
+    kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: batch-llm-route
+  namespace: ${LLM_NAMESPACE}
+spec:
+  parentRefs:
+  - name: ${BATCH_INTERNAL_GATEWAY_NAME}
+    namespace: ${BATCH_INTERNAL_GATEWAY_NAMESPACE}
+  rules:${rules}
+EOF
+
+    log "batch-llm-route created (via Internal Gateway)."
+}
+
+apply_batch_llm_auth_policy() {
+    step "Creating batch-llm-route AuthPolicy (authentication + model authorization)..."
+    kubectl apply -f - <<EOF
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: batch-llm-route-auth
+  namespace: ${LLM_NAMESPACE}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: batch-llm-route
+  rules:
+    authentication:
+      kubernetes-user:
+        kubernetesTokenReview:
+          audiences:
+          - https://kubernetes.default.svc
+    authorization:
+      model-access:
+        kubernetesSubjectAccessReview:
+          user:
+            expression: auth.identity.user.username
+          authorizationGroups:
+            expression: auth.identity.user.groups
+          resourceAttributes:
+            group:
+              value: inference.networking.k8s.io
+            resource:
+              value: inferencepools
+            namespace:
+              expression: request.path.split("/")[1]
+            name:
+              expression: request.path.split("/")[2]
+            verb:
+              value: get
+EOF
+    log "Batch LLM AuthPolicy applied (no TokenRateLimitPolicy)."
+}
+
 init_test() {
     local test_title="$1"
     banner "Testing: ${test_title}"
@@ -356,22 +469,27 @@ uninstall_llmd() {
 deploy_batch_gateway_k8s() {
     banner "Installing Batch Gateway"
 
-    # Route through the main istio-gateway (which has AuthPolicy) so that
-    # batch processor requests are subject to LLM route authorization.
-    local main_gw="https://${GATEWAY_NAME}-istio.${GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}"
+    # Route batch processor through the Internal Gateway (ClusterIP, no rate limit)
+    # instead of the external Gateway. The Internal Gateway still uses EPP and
+    # enforces AuthPolicy (model access check with user's original token).
+    local internal_gw_svc
+    internal_gw_svc=$(kubectl get svc -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" \
+        -l "gateway.networking.k8s.io/gateway-name=${BATCH_INTERNAL_GATEWAY_NAME}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    [ -z "${internal_gw_svc}" ] && die "No service found for Internal Gateway '${BATCH_INTERNAL_GATEWAY_NAME}'."
+    local model_url="http://${internal_gw_svc}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
+    log "Model URL (via Internal Gateway): ${model_url}"
+
+    local model_key="${MODEL_NAME}"
 
     local helm_args=(
-        --set "processor.config.modelGateways.${MODEL_NAME}.url=${main_gw}/${MODEL_NAME}"
-        --set "processor.config.modelGateways.${MODEL_NAME}.requestTimeout=${GW_REQUEST_TIMEOUT}"
-        --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=${GW_MAX_RETRIES}"
-        --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=${GW_INITIAL_BACKOFF}"
-        --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=${GW_MAX_BACKOFF}"
+        --set "processor.config.modelGateways.${model_key}.url=${model_url}"
+        --set "processor.config.modelGateways.${model_key}.requestTimeout=${GW_REQUEST_TIMEOUT}"
+        --set "processor.config.modelGateways.${model_key}.maxRetries=${GW_MAX_RETRIES}"
+        --set "processor.config.modelGateways.${model_key}.initialBackoff=${GW_INITIAL_BACKOFF}"
+        --set "processor.config.modelGateways.${model_key}.maxBackoff=${GW_MAX_BACKOFF}"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )
-    if [[ "${DEMO_TLS_INSECURE_SKIP_VERIFY}" == "1" ]]; then
-        helm_args+=(--set "processor.config.modelGateways.${MODEL_NAME}.tlsInsecureSkipVerify=true")
-        warn "DEMO_TLS_INSECURE_SKIP_VERIFY=1: processor TLS verify disabled for model gateway (demo/lab only)."
-    fi
 
     do_deploy_batch_gateway "${helm_args[@]}"
 }
@@ -454,7 +572,7 @@ EOF
 apply_batch_auth_policy() {
     step "Creating batch-route AuthPolicy (authentication only)..."
     # No authorization here; model-level authorization happens when batch processor
-    # forwards requests to the LLM route.
+    # forwards requests to the Internal Gateway's batch-llm-route.
     kubectl apply -f - <<EOF
 apiVersion: kuadrant.io/v1
 kind: AuthPolicy
@@ -502,7 +620,8 @@ EOF
 
 # ── Prerequisite checks ─────────────────────────────────────────────────────
 
-check_all_prerequisites() {
+check_prerequisites() {
+    step "Checking prerequisites..."
     local missing=()
     for cmd in kubectl helm helmfile git curl jq yq; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
@@ -526,7 +645,7 @@ check_all_prerequisites() {
 cmd_install() {
     banner "llm-d + Batch Gateway Setup"
 
-    check_all_prerequisites
+    check_prerequisites
 
     local namespaces=("${BATCH_NAMESPACE}" "${LLM_NAMESPACE}" "${GATEWAY_NAMESPACE}")
     for ns in "${namespaces[@]}"; do
@@ -552,17 +671,26 @@ cmd_install() {
     apply_llm_auth_policy
     apply_llm_token_rate_limit
 
+    create_batch_internal_gateway
+    create_batch_llm_route
+    apply_batch_llm_auth_policy
+    check_batch_internal_gateway
+
     deploy_batch_gateway_k8s
     apply_batch_auth_policy
     apply_batch_request_rate_limit
 
-    log "Deployment complete!"
+    log "Setup complete!"
+    log "  Batch Gateway: ${BATCH_HELM_RELEASE} (${BATCH_NAMESPACE})"
+    if [ -n "${BATCH_IMAGE_TAG}" ]; then
+        log "  Batch Gateway image tag: ${BATCH_IMAGE_TAG}"
+    fi
     if [ -n "${BATCH_RELEASE_VERSION}" ]; then
         log "  Batch Gateway version: ${BATCH_RELEASE_VERSION} (OCI chart)"
     elif [ "${BATCH_DEV_VERSION}" != "local" ]; then
-        log "  Batch Gateway image tag: ${BATCH_DEV_VERSION} (commit chart)"
+        log "  Batch Gateway version: ${BATCH_DEV_VERSION} (commit chart)"
     else
-        log "  Batch Gateway image tag: latest (local chart)"
+        log "  Batch Gateway version: latest (local chart)"
     fi
     log "Run '$0 test' to verify."
 }
@@ -622,6 +750,8 @@ EOF
     local llm_url="${GATEWAY_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions"
     local inference_payload="{\"model\":\"${MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":10}"
 
+    check_batch_internal_gateway
+
     run_tests "${llm_url}" "${GATEWAY_URL}" "${MODEL_NAME}" \
         "Authorization: Bearer ${token}" \
         "Authorization: Bearer ${unauth_token}" \
@@ -651,6 +781,10 @@ cmd_uninstall() {
     kubectl delete authpolicy llm-route-auth -n "${LLM_NAMESPACE}" 2>/dev/null || true
     kubectl delete tokenratelimitpolicy inference-token-limit -n "${LLM_NAMESPACE}" 2>/dev/null || true
 
+    step "Removing Internal Gateway resources..."
+    kubectl delete authpolicy batch-llm-route-auth -n "${LLM_NAMESPACE}" 2>/dev/null || true
+    kubectl delete httproute batch-llm-route -n "${LLM_NAMESPACE}" 2>/dev/null || true
+
     step "Removing batch resources (${BATCH_NAMESPACE})..."
     timeout_delete 30s httproute --all -n "${BATCH_NAMESPACE}" || true
     helm uninstall "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
@@ -659,7 +793,8 @@ cmd_uninstall() {
     kubectl delete deployment,svc -l app="${BATCH_MINIO_RELEASE}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
     kubectl delete pvc "${BATCH_FILES_PVC_NAME}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
 
-    step "Removing batch Gateway (${GATEWAY_NAMESPACE})..."
+    step "Removing Gateways (${GATEWAY_NAMESPACE})..."
+    timeout_delete 30s gateway "${BATCH_INTERNAL_GATEWAY_NAME}" -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" || true
     timeout_delete 30s gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" || true
     kubectl delete destinationrule "${BATCH_HELM_RELEASE}-backend-tls" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
 
@@ -730,7 +865,7 @@ usage() {
     echo ""
     echo "Environment Variables:"
     echo "  MODEL_NAME             Model name for routing (default: random)"
-    echo "  LLMD_VERSION           llm-d git ref (default: main)"
+    echo "  LLMD_VERSION           llm-d branch or tag"
     echo "  LLMD_RELEASE_POSTFIX   Release name postfix (default: llmd)"
     echo "  BATCH_HELM_RELEASE     Helm release name (default: batch-gateway)"
     echo "  GATEWAY_LOCAL_PORT     Port-forward fallback port (default: 8080)"
