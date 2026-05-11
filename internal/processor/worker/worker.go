@@ -167,7 +167,7 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	}
 	const highCardinalityThreshold = 50
 	if cc.AIMD.Enabled && len(clients) > highCardinalityThreshold {
-		logger.Error(nil, "AIMD metrics may cause high cardinality: "+
+		logger.Info("AIMD metrics may cause high cardinality: "+
 			"each endpoint creates up to 5 time series (1 gauge + 1 increase counter + 3 decrease counters by signal); "+
 			"verify your TSDB can handle the load or reduce the number of distinct gateway endpoints in config",
 			"num_endpoints", len(clients),
