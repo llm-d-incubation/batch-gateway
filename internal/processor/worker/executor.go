@@ -477,13 +477,23 @@ dispatch:
 			if epLimit.aimd != nil && execErr == nil && result != nil && result.Response != nil {
 				sc := result.Response.StatusCode
 				switch {
-				case sc == http.StatusTooManyRequests || sc >= http.StatusInternalServerError:
-					epLimit.aimd.RecordRateLimit()
+				case sc == http.StatusTooManyRequests:
+					epLimit.aimd.RecordRateLimit(metrics.AIMDSignal429)
+					metrics.RecordAIMDDecrease(epLimit.label, metrics.AIMDSignal429)
+				case sc >= http.StatusInternalServerError:
+					epLimit.aimd.RecordRateLimit(metrics.AIMDSignal5xx)
+					metrics.RecordAIMDDecrease(epLimit.label, metrics.AIMDSignal5xx)
 				case result.hadCapacityRetry:
-					epLimit.aimd.RecordRateLimit()
+					epLimit.aimd.RecordRateLimit(metrics.AIMDSignalCapacityRetry)
+					metrics.RecordAIMDDecrease(epLimit.label, metrics.AIMDSignalCapacityRetry)
 				default:
+					oldLimit := epLimit.aimd.Limit()
 					epLimit.aimd.RecordSuccess()
+					if epLimit.aimd.Limit() != oldLimit {
+						metrics.RecordAIMDIncrease(epLimit.label)
+					}
 				}
+				metrics.SetAIMDConcurrencyLimit(epLimit.label, float64(epLimit.aimd.Limit()))
 			}
 			if execErr != nil {
 				// Fatal read failure: the input file is unreadable at this offset

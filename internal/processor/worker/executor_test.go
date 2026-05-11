@@ -3331,7 +3331,7 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		requests := makeRequests(reducedLimit)
 		env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 		epLimit := env.p.endpointLimits[env.p.inference.ClientFor("m1")]
-		epLimit.aimd.RecordRateLimit()
+		epLimit.aimd.RecordRateLimit("test")
 		if got := epLimit.aimd.Limit(); got != reducedLimit {
 			t.Fatalf("pre-condition: Limit() = %d, want %d after RecordRateLimit()", got, reducedLimit)
 		}

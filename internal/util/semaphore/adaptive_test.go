@@ -413,7 +413,7 @@ func TestAdaptiveSemaphoreWithAIMD(t *testing.T) {
 		}
 
 		// Rate limit → floor(11*0.5) = 5
-		ctrl.RecordRateLimit()
+		ctrl.RecordRateLimit("429")
 		if got := sem.Limit(); got != 5 {
 			t.Fatalf("after decrease: sem.Limit() = %d, want 5", got)
 		}
@@ -493,7 +493,7 @@ func TestAdaptiveSemaphoreWithAIMD(t *testing.T) {
 		}
 
 		// Rate limit → limit drops to 5 (but 8 holders continue)
-		ctrl.RecordRateLimit()
+		ctrl.RecordRateLimit("429")
 		if got := sem.Limit(); got != 5 {
 			t.Fatalf("sem.Limit() = %d, want 5", got)
 		}

@@ -106,15 +106,16 @@ func (c *AIMDController) computeSuccessLimit() int {
 }
 
 // RecordRateLimit records a rate-limit or overload signal. The limit is cut by
-// BackoffFactor and the success counter is reset.
-func (c *AIMDController) RecordRateLimit() {
-	newLimit := c.computeBackoffLimit()
+// BackoffFactor and the success counter is reset. The reason parameter
+// (e.g. "429", "5xx", "capacity_retry") is included in the log for diagnostics.
+func (c *AIMDController) RecordRateLimit(reason string) {
+	newLimit := c.computeBackoffLimit(reason)
 	if newLimit > 0 {
 		c.setFn(newLimit)
 	}
 }
 
-func (c *AIMDController) computeBackoffLimit() int {
+func (c *AIMDController) computeBackoffLimit(reason string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -122,7 +123,7 @@ func (c *AIMDController) computeBackoffLimit() int {
 	c.limit = max(c.cfg.MinLimit, int(math.Floor(float64(c.limit)*c.cfg.BackoffFactor)))
 	c.successCount = 0
 	if c.limit != oldLimit {
-		c.logger.V(logging.INFO).Info("AIMD decrease", "old", oldLimit, "new", c.limit)
+		c.logger.V(logging.INFO).Info("AIMD decrease", "old", oldLimit, "new", c.limit, "reason", reason)
 		return c.limit
 	}
 	return 0

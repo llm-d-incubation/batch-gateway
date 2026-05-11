@@ -98,6 +98,9 @@ var (
 	requestGenerationTokensTotal  *prometheus.CounterVec
 	jobE2ELatency                 *prometheus.HistogramVec
 	cancellationTotal             *prometheus.CounterVec
+	aimdConcurrencyLimit          *prometheus.GaugeVec
+	aimdDecreasesTotal            *prometheus.CounterVec
+	aimdIncreasesTotal            *prometheus.CounterVec
 )
 
 // FileType labels for file upload metrics.
@@ -280,6 +283,31 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"status", "action"},
 	)
 
+	aimdConcurrencyLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "batch_processor_aimd_concurrency_limit",
+			Help: "Current effective AIMD concurrency limit per inference endpoint",
+		},
+		[]string{"endpoint"},
+	)
+
+	aimdDecreasesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "batch_processor_aimd_decreases_total",
+			Help: "Backpressure signals that trigger multiplicative decrease (429, 5xx, capacity_retry). " +
+				"Increments on every signal, even when the limit is already at the AIMD floor.",
+		},
+		[]string{"endpoint", "signal"},
+	)
+
+	aimdIncreasesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "batch_processor_aimd_increases_total",
+			Help: "Additive increases after sustained success windows",
+		},
+		[]string{"endpoint"},
+	)
+
 	// metrics to register
 	metricsToRegister := []prometheus.Collector{
 		jobProcessingDuration,
@@ -298,6 +326,9 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		requestGenerationTokensTotal,
 		jobE2ELatency,
 		cancellationTotal,
+		aimdConcurrencyLimit,
+		aimdDecreasesTotal,
+		aimdIncreasesTotal,
 	}
 
 	for _, metric := range metricsToRegister {
@@ -404,6 +435,28 @@ const (
 	CancelPhaseQueued     = "queued"
 	CancelPhaseInProgress = "in_progress"
 	CancelPhaseFinalizing = "finalizing"
+)
+
+// SetAIMDConcurrencyLimit sets the current effective AIMD concurrency limit for an endpoint.
+func SetAIMDConcurrencyLimit(endpoint string, limit float64) {
+	aimdConcurrencyLimit.WithLabelValues(endpoint).Set(limit)
+}
+
+// RecordAIMDDecrease increments the AIMD decrease counter for an endpoint.
+func RecordAIMDDecrease(endpoint, signal string) {
+	aimdDecreasesTotal.WithLabelValues(endpoint, signal).Inc()
+}
+
+// RecordAIMDIncrease increments the AIMD increase counter for an endpoint.
+func RecordAIMDIncrease(endpoint string) {
+	aimdIncreasesTotal.WithLabelValues(endpoint).Inc()
+}
+
+// AIMD signal labels for decrease counter.
+const (
+	AIMDSignal429           = "429"
+	AIMDSignal5xx           = "5xx"
+	AIMDSignalCapacityRetry = "capacity_retry"
 )
 
 // E2E latency status labels. Must match the terminal states used in

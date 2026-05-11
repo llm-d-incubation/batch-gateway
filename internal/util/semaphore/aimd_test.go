@@ -139,7 +139,7 @@ func TestAIMDMultiplicativeDecrease(t *testing.T) {
 	t.Run("halves on rate limit", func(t *testing.T) {
 		c, latest := newTestController(defaultCfg(), 100)
 
-		c.RecordRateLimit()
+		c.RecordRateLimit("429")
 		if got := c.Limit(); got != 50 {
 			t.Fatalf("after 1 rate limit: Limit() = %d, want 50", got)
 		}
@@ -151,9 +151,9 @@ func TestAIMDMultiplicativeDecrease(t *testing.T) {
 	t.Run("multiple decreases", func(t *testing.T) {
 		c, _ := newTestController(defaultCfg(), 100)
 
-		c.RecordRateLimit() // 100 → 50
-		c.RecordRateLimit() // 50 → 25
-		c.RecordRateLimit() // 25 → 12
+		c.RecordRateLimit("429") // 100 → 50
+		c.RecordRateLimit("5xx") // 50 → 25
+		c.RecordRateLimit("429") // 25 → 12
 		if got := c.Limit(); got != 12 {
 			t.Fatalf("Limit() = %d, want 12", got)
 		}
@@ -162,8 +162,8 @@ func TestAIMDMultiplicativeDecrease(t *testing.T) {
 	t.Run("clamps at MinLimit", func(t *testing.T) {
 		c, _ := newTestController(defaultCfg(), 10)
 
-		c.RecordRateLimit() // 10 → 5
-		c.RecordRateLimit() // 5 → stays 5 (MinLimit)
+		c.RecordRateLimit("429") // 10 → 5
+		c.RecordRateLimit("429") // 5 → stays 5 (MinLimit)
 		if got := c.Limit(); got != 5 {
 			t.Fatalf("Limit() = %d, want 5 (clamped)", got)
 		}
@@ -178,7 +178,7 @@ func TestAIMDMultiplicativeDecrease(t *testing.T) {
 		}
 
 		// rate limit resets counter
-		c.RecordRateLimit() // 10 → 5
+		c.RecordRateLimit("429") // 10 → 5
 
 		// need 5 more successes for new window (not 1)
 		for i := 0; i < 4; i++ {
@@ -211,7 +211,7 @@ func TestAIMDBackoffFactor(t *testing.T) {
 			cfg := defaultCfg()
 			cfg.BackoffFactor = tt.factor
 			c, _ := newTestController(cfg, tt.start)
-			c.RecordRateLimit()
+			c.RecordRateLimit("429")
 			if got := c.Limit(); got != tt.want {
 				t.Fatalf("Limit() = %d, want %d", got, tt.want)
 			}
@@ -235,7 +235,7 @@ func TestAIMDSawtoothPattern(t *testing.T) {
 		}
 
 		// Rate limit → 5
-		c.RecordRateLimit()
+		c.RecordRateLimit("429")
 		if got := c.Limit(); got != 5 {
 			t.Fatalf("after decrease: Limit() = %d, want 5", got)
 		}
@@ -263,7 +263,7 @@ func TestAIMDConcurrency(t *testing.T) {
 			go func(n int) {
 				defer wg.Done()
 				if n%20 == 0 {
-					c.RecordRateLimit()
+					c.RecordRateLimit("429")
 				} else {
 					c.RecordSuccess()
 				}
@@ -287,7 +287,7 @@ func TestAIMDNoCallbackWhenUnchanged(t *testing.T) {
 		}, logr.Discard())
 
 		// Already at MinLimit=5, floor(5*0.5)=2 → clamped to 5 → no change
-		c.RecordRateLimit()
+		c.RecordRateLimit("429")
 		if got := calls.Load(); got != 0 {
 			t.Fatalf("setFn called %d times, want 0", got)
 		}
@@ -322,6 +322,6 @@ func BenchmarkAIMDRecordRateLimit(b *testing.B) {
 	c, _ := newTestController(defaultCfg(), 50)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.RecordRateLimit()
+		c.RecordRateLimit("429")
 	}
 }

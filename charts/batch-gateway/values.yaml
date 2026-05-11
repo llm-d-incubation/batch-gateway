@@ -306,12 +306,28 @@ processor:
     pollInterval: "5s"
     numWorkers: 20
     concurrency:
-      global: 100            # Fixed ceiling for total in-flight requests
-      perEndpoint: 10        # Initial/max concurrency per inference endpoint
+      # Fixed ceiling for total in-flight requests across all endpoints.
+      # When AIMD is enabled, per-endpoint limits self-regulate via backpressure,
+      # so this mostly acts as a burst ceiling. Size it high enough to avoid being
+      # the first bottleneck (e.g., perEndpoint × expected_endpoint_count × 2).
+      global: 100
+      # Initial (and maximum) concurrency per inference endpoint. Sizing depends
+      # on what sits behind the endpoint URL:
+      #   - Single vLLM instance: 10–20 is reasonable
+      #   - GIE/EPP pool routing to N replicas: can be much higher (e.g., 20 × N)
+      # With AIMD enabled, starting high is safer — AIMD backs off quickly on 429s
+      # but recovers slowly at +additiveIncrease per window.
+      perEndpoint: 10
       recovery: 5            # Max concurrent job recoveries during startup
       aimd:
         enabled: true        # Set to false to disable adaptive concurrency
-        min: 5               # AIMD floor per endpoint
+        # AIMD floor per endpoint — even under sustained 429s, AIMD will never
+        # reduce concurrency below this value. The endpoint always keeps at
+        # least this many requests in flight.
+        # Too high: AIMD cannot back off enough when the backend is genuinely
+        # overloaded. Too low: a few 429s starve the endpoint and recovery is
+        # very slow at +additiveIncrease per window.
+        min: 5
         backoffFactor: 0.5   # Multiplicative decrease on 429/5xx
         additiveIncrease: 1  # Slots added per successful window
     queueTimeBucket:

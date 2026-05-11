@@ -322,6 +322,59 @@ func TestCancellationMetric(t *testing.T) {
 	})
 }
 
+func TestAIMDMetrics(t *testing.T) {
+	withIsolatedPromRegistry(t, func(reg *prometheus.Registry) {
+		cfg := *config.NewConfig()
+		if err := InitMetrics(cfg); err != nil {
+			t.Fatalf("InitMetrics: %v", err)
+		}
+
+		SetAIMDConcurrencyLimit("ep-a", 20)
+		SetAIMDConcurrencyLimit("ep-b", 10)
+
+		RecordAIMDDecrease("ep-a", AIMDSignal429)
+		RecordAIMDDecrease("ep-a", AIMDSignal429)
+		RecordAIMDDecrease("ep-a", AIMDSignal5xx)
+		RecordAIMDDecrease("ep-b", AIMDSignalCapacityRetry)
+
+		RecordAIMDIncrease("ep-a")
+		RecordAIMDIncrease("ep-b")
+		RecordAIMDIncrease("ep-b")
+
+		SetAIMDConcurrencyLimit("ep-a", 15)
+
+		f := collectFamilies(t, reg)
+
+		if v := gaugeWithLabel(f["batch_processor_aimd_concurrency_limit"], "endpoint", "ep-a"); v != 15 {
+			t.Fatalf("aimd_limit{ep-a}=%v, want 15", v)
+		}
+		if v := gaugeWithLabel(f["batch_processor_aimd_concurrency_limit"], "endpoint", "ep-b"); v != 10 {
+			t.Fatalf("aimd_limit{ep-b}=%v, want 10", v)
+		}
+
+		if v := counterWithLabels(f["batch_processor_aimd_decreases_total"], map[string]string{"endpoint": "ep-a", "signal": AIMDSignal429}); v != 2 {
+			t.Fatalf("aimd_decreases{ep-a,429}=%v, want 2", v)
+		}
+		if v := counterWithLabels(f["batch_processor_aimd_decreases_total"], map[string]string{"endpoint": "ep-a", "signal": AIMDSignal5xx}); v != 1 {
+			t.Fatalf("aimd_decreases{ep-a,5xx}=%v, want 1", v)
+		}
+		if v := counterWithLabels(f["batch_processor_aimd_decreases_total"], map[string]string{"endpoint": "ep-b", "signal": AIMDSignalCapacityRetry}); v != 1 {
+			t.Fatalf("aimd_decreases{ep-b,capacity_retry}=%v, want 1", v)
+		}
+
+		if v := counterWithLabels(f["batch_processor_aimd_increases_total"], map[string]string{"endpoint": "ep-a"}); v != 1 {
+			t.Fatalf("aimd_increases{ep-a}=%v, want 1", v)
+		}
+		if v := counterWithLabels(f["batch_processor_aimd_increases_total"], map[string]string{"endpoint": "ep-b"}); v != 2 {
+			t.Fatalf("aimd_increases{ep-b}=%v, want 2", v)
+		}
+
+		assertLabelNames(t, f["batch_processor_aimd_concurrency_limit"], []string{"endpoint"})
+		assertLabelNames(t, f["batch_processor_aimd_decreases_total"], []string{"endpoint", "signal"})
+		assertLabelNames(t, f["batch_processor_aimd_increases_total"], []string{"endpoint"})
+	})
+}
+
 func TestInitMetrics_Twice_DoesNotError(t *testing.T) {
 	withIsolatedPromRegistry(t, func(*prometheus.Registry) {
 		cfg := *config.NewConfig()

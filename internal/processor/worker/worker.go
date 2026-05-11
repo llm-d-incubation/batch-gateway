@@ -42,8 +42,9 @@ import (
 // endpointLimit, so a 429 from endpoint A only reduces concurrency for
 // models routed to A.
 type endpointLimit struct {
-	sem  *semaphore.AdaptiveSemaphore
-	aimd *semaphore.AIMDController
+	sem   *semaphore.AdaptiveSemaphore
+	aimd  *semaphore.AIMDController
+	label string // human-readable endpoint identifier for metrics/logs
 }
 
 type Processor struct {
@@ -142,6 +143,7 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	clients := p.inference.Clients()
 	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
 	for _, client := range clients {
+		epLabel := p.inference.ClientLabel(client)
 		epSem, epErr := semaphore.NewAdaptive(cc.PerEndpoint, makeGuard("endpoint-concurrency"))
 		if epErr != nil {
 			return fmt.Errorf("endpoint semaphore (concurrency.per_endpoint=%d): %w", cc.PerEndpoint, epErr)
@@ -157,10 +159,20 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 				},
 				cc.PerEndpoint,
 				func(limit int) { epSem.SetLimit(limit) },
-				logger.WithValues("endpoint", p.inference.ClientLabel(client)),
+				logger.WithValues("endpoint", epLabel),
 			)
+			metrics.SetAIMDConcurrencyLimit(epLabel, float64(cc.PerEndpoint))
 		}
-		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD}
+		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD, label: epLabel}
+	}
+	const highCardinalityThreshold = 50
+	if cc.AIMD.Enabled && len(clients) > highCardinalityThreshold {
+		logger.Error(nil, "AIMD metrics may cause high cardinality: "+
+			"each endpoint creates up to 5 time series (1 gauge + 1 increase counter + 3 decrease counters by signal); "+
+			"verify your TSDB can handle the load or reduce the number of distinct gateway endpoints in config",
+			"num_endpoints", len(clients),
+			"estimated_series", len(clients)*5,
+		)
 	}
 	logger.V(logging.INFO).Info(
 		"Processor run started",
@@ -169,6 +181,7 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 		"concurrency.global", cc.Global,
 		"concurrency.per_endpoint", cc.PerEndpoint,
 		"concurrency.aimd.enabled", cc.AIMD.Enabled,
+		"num_endpoints", len(clients),
 	)
 
 	return p.runPollingLoop(pollingCtx, ctx)

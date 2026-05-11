@@ -263,6 +263,35 @@
       "fieldConfig": {
         "defaults": { "unit": "s" }
       }
+    },
+    {
+      "title": "AIMD Concurrency Limit per Endpoint",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 64, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "batch_processor_aimd_concurrency_limit{namespace=\"$namespace\"}",
+          "legendFormat": "{{endpoint}}"
+        }
+      ]
+    },
+    {
+      "title": "AIMD Signals (decreases / increases)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 64, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_processor_aimd_decreases_total{namespace=\"$namespace\"}[5m])) by (endpoint, signal)",
+          "legendFormat": "{{endpoint}} decrease ({{signal}})"
+        },
+        {
+          "expr": "sum(rate(batch_processor_aimd_increases_total{namespace=\"$namespace\"}[5m])) by (endpoint)",
+          "legendFormat": "{{endpoint}} increase"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
     }
   ]
 }

@@ -691,6 +691,7 @@ func initTestEndpointLimits(t *testing.T, p *Processor, cfg *config.ProcessorCon
 	clients := p.inference.Clients()
 	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
 	for _, client := range clients {
+		epLabel := p.inference.ClientLabel(client)
 		epSem, err := semaphore.NewAdaptive(cc.PerEndpoint, nil)
 		if err != nil {
 			t.Fatalf("endpoint semaphore: %v", err)
@@ -709,7 +710,7 @@ func initTestEndpointLimits(t *testing.T, p *Processor, cfg *config.ProcessorCon
 				logr.Discard(),
 			)
 		}
-		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD}
+		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD, label: epLabel}
 	}
 }
 
