@@ -50,6 +50,7 @@ var (
 	testModelB          = getEnvOrDefault("TEST_MODEL_B", "sim-model-b")
 	testModel429        = getEnvOrDefault("TEST_MODEL_429", "sim-model-429")
 	testModelAlwaysFail = getEnvOrDefault("TEST_MODEL_ALWAYS_FAIL", "sim-model-always-fail")
+	testModelAIMD       = getEnvOrDefault("TEST_MODEL_AIMD", "sim-model-aimd")
 
 	// testJSONL is a valid batch input file with two requests.
 	// max_tokens is kept small so batches finish quickly. Default TEST_MODEL (sim-model)
@@ -108,5 +109,6 @@ func TestE2E(t *testing.T) {
 	t.Run("Observability", testObservability)
 	t.Run("ProcessorGracefulShutdown", testProcessorGracefulShutdown)
 	t.Run("FlowControl", testFlowControl)
+	t.Run("AIMD", testAIMD)
 	t.Run("HelmUpgrade", testHelmUpgrade)
 }
