@@ -143,15 +143,12 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 }
 
 // isHealthySimEndpoint returns true if the endpoint label refers to the
-// healthy sim-model simulator (vllm-sim) but not the 429, always-fail, aimd,
-// or sim-b variants.
+// primary vllm-sim simulator, not any variant (vllm-sim-429, vllm-sim-b, etc.).
+// Endpoint labels are gateway URLs like "http://vllm-sim.<ns>.svc.cluster.local:8000",
+// so matching "vllm-sim." (with trailing dot) excludes all hyphenated variants.
 func isHealthySimEndpoint(endpoint string) bool {
-	for _, exclude := range []string{"vllm-sim-429", "vllm-sim-always-fail", "vllm-sim-b", "vllm-sim-aimd"} {
-		if strings.Contains(endpoint, exclude) {
-			return false
-		}
-	}
-	return strings.Contains(endpoint, "vllm-sim")
+	return strings.Contains(endpoint, "vllm-sim.")  &&
+		!strings.Contains(endpoint, "vllm-sim-")
 }
 
 // parseGaugeByEndpoint extracts all {endpoint="..."} values for a gauge metric.
@@ -197,7 +194,8 @@ func parseCounterByEndpoint(t *testing.T, metrics, metricName string) map[string
 //  1. Submits requests to drive the AIMD limit to min (5).
 //  2. Patches the simulator to 0% failure rate and waits for rollout.
 //  3. Submits more requests and verifies the limit increased above min.
-//  4. Restores the simulator to 100% failure (cleanup).
+//
+// t.Cleanup restores the simulator to 100% failure for subsequent runs.
 //
 // Because AIMD increases by +1 per successful window, full recovery to
 // perEndpoint (10) requires many requests. We only assert limit > min to
@@ -263,7 +261,11 @@ func doTestAIMDRecovery(t *testing.T) {
 
 	// Phase 2: Patch simulator to 0% failure and wait for rollout.
 	t.Log("phase 2: patching simulator to 0% failure rate...")
-	patchSimulatorFailureRate(t, aimdSimDeployment, 0)
+	patchSimulatorFailureRate(t, aimdSimDeployment, testModelAIMD, 0)
+	t.Cleanup(func() {
+		patchSimulatorFailureRate(t, aimdSimDeployment, testModelAIMD, 100)
+		waitForRollout(t, aimdSimDeployment)
+	})
 	waitForRollout(t, aimdSimDeployment)
 	t.Log("phase 2: simulator rollout complete, now at 0% failure rate")
 
@@ -311,27 +313,27 @@ func doTestAIMDRecovery(t *testing.T) {
 		t.Errorf("no aimd_increases_total found for endpoint %q", aimdEndpoint)
 	}
 
-	// Cleanup: restore 100% failure rate so the simulator is back to its
-	// initial state for any subsequent test runs.
-	t.Log("cleanup: restoring simulator to 100% failure rate...")
-	patchSimulatorFailureRate(t, aimdSimDeployment, 100)
-	waitForRollout(t, aimdSimDeployment)
-	t.Log("cleanup complete")
 }
 
 // patchSimulatorFailureRate patches the vllm-sim container args in the given
 // deployment to set --failure-injection-rate to the specified value. A rate of
 // 0 removes the failure injection flags entirely.
-func patchSimulatorFailureRate(t *testing.T, deployment string, rate int) {
+//
+// The timing args (10ms/10ms) must match dev-deploy.sh's install_vllm_sim
+// invocation for the AIMD simulator; if those defaults change, update here.
+func patchSimulatorFailureRate(t *testing.T, deployment, model string, rate int) {
 	t.Helper()
 
 	var patch string
 	if rate == 0 {
-		patch = `{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","sim-model-aimd","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5"]}]}}}}`
+		patch = fmt.Sprintf(
+			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5"]}]}}}}`,
+			model,
+		)
 	} else {
 		patch = fmt.Sprintf(
-			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","sim-model-aimd","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5","--failure-injection-rate=%d","--failure-types=rate_limit"]}]}}}}`,
-			rate,
+			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5","--failure-injection-rate=%d","--failure-types=rate_limit"]}]}}}}`,
+			model, rate,
 		)
 	}
 
