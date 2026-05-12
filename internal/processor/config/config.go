@@ -73,18 +73,21 @@ type AIMDConfig struct {
 	AdditiveIncrease int `yaml:"additive_increase"`
 }
 
-// DispatchMode constants control which inference dispatch backend is used.
+// DispatchMode selects the inference dispatch backend.
+type DispatchMode string
+
 const (
-	DispatchModeSync  = "sync"
-	DispatchModeAsync = "async"
+	DispatchModeSync  DispatchMode = "sync"
+	DispatchModeAsync DispatchMode = "async"
 )
 
 // AsyncDispatchConfig holds configuration for the llm-d-async dispatch backend.
 // Only used when DispatchMode == "async".
 type AsyncDispatchConfig struct {
 	// RedisURL is the full Redis connection URL (e.g. "redis://host:6379",
-	// "rediss://user:pass@host:6379" for TLS). TLS is encoded in the URL scheme.
-	RedisURL string `yaml:"redis_url"`
+	// "rediss://user:pass@host:6379" for TLS). Read from the mounted secret
+	// at runtime (SecretKeyRedisURL)
+	RedisURL string `yaml:"-"`
 
 	// RequestQueueName is the Redis sorted-set name for request submission.
 	// Must match the llm-d-async processor's --redis.ss.request-queue-name.
@@ -97,11 +100,6 @@ type AsyncDispatchConfig struct {
 	// ResultPollTimeout is the timeout per GetResult poll cycle.
 	// Controls how long each blocking poll waits before retrying.
 	ResultPollTimeout time.Duration `yaml:"result_poll_timeout"`
-
-	// PerRequestTimeout is the maximum time to wait for a single request's
-	// result before marking it as failed. Should be significantly larger than
-	// expected inference latency to avoid false positives.
-	PerRequestTimeout time.Duration `yaml:"per_request_timeout"`
 }
 
 type ProcessorConfig struct {
@@ -180,7 +178,7 @@ type ProcessorConfig struct {
 	// DispatchMode selects the inference dispatch backend.
 	// "sync" (default): direct HTTP via InferenceClient.
 	// "async": submit via llm-d-async producer, collect from result queue.
-	DispatchMode string `yaml:"dispatch_mode"`
+	DispatchMode DispatchMode `yaml:"dispatch_mode"`
 
 	// AsyncConfig holds llm-d-async dispatch settings. Only used when DispatchMode == "async".
 	AsyncConfig AsyncDispatchConfig `yaml:"async"`
@@ -318,7 +316,6 @@ func NewConfig() *ProcessorConfig {
 		DispatchMode: DispatchModeSync,
 		AsyncConfig: AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
-			PerRequestTimeout: 60 * time.Minute,
 		},
 	}
 }
@@ -396,7 +393,7 @@ func (c *ProcessorConfig) Validate() error {
 
 func (c *ProcessorConfig) validateDispatchMode() error {
 	switch c.DispatchMode {
-	case DispatchModeSync, "":
+	case DispatchModeSync, DispatchMode(""):
 		return nil
 	case DispatchModeAsync:
 		return c.AsyncConfig.validate()
@@ -406,9 +403,6 @@ func (c *ProcessorConfig) validateDispatchMode() error {
 }
 
 func (ac *AsyncDispatchConfig) validate() error {
-	if ac.RedisURL == "" {
-		return fmt.Errorf("async.redis_url must be set when dispatch_mode is %q", DispatchModeAsync)
-	}
 	if ac.RequestQueueName == "" {
 		return fmt.Errorf("async.request_queue_name must be set when dispatch_mode is %q", DispatchModeAsync)
 	}
@@ -417,13 +411,6 @@ func (ac *AsyncDispatchConfig) validate() error {
 	}
 	if ac.ResultPollTimeout <= 0 {
 		return fmt.Errorf("async.result_poll_timeout must be > 0")
-	}
-	if ac.PerRequestTimeout <= 0 {
-		return fmt.Errorf("async.per_request_timeout must be > 0")
-	}
-	if ac.PerRequestTimeout <= ac.ResultPollTimeout {
-		return fmt.Errorf("async.per_request_timeout (%v) must be > async.result_poll_timeout (%v)",
-			ac.PerRequestTimeout, ac.ResultPollTimeout)
 	}
 	return nil
 }

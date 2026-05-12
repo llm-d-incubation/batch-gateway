@@ -103,9 +103,6 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.AsyncConfig.ResultPollTimeout != 5*time.Second {
 		t.Fatalf("AsyncConfig.ResultPollTimeout = %v, want %v", c.AsyncConfig.ResultPollTimeout, 5*time.Second)
 	}
-	if c.AsyncConfig.PerRequestTimeout != 60*time.Minute {
-		t.Fatalf("AsyncConfig.PerRequestTimeout = %v, want %v", c.AsyncConfig.PerRequestTimeout, 60*time.Minute)
-	}
 }
 
 func TestProcessorConfig_Validate_WorkDirEmpty(t *testing.T) {
@@ -650,11 +647,9 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		c.ModelGateways = validPerModelConfig()
 		c.DispatchMode = DispatchModeAsync
 		c.AsyncConfig = AsyncDispatchConfig{
-			RedisURL:          "redis://localhost:6379",
 			RequestQueueName:  "requests",
 			ResultQueueName:   "results",
 			ResultPollTimeout: 5 * time.Second,
-			PerRequestTimeout: 60 * time.Minute,
 		}
 		return c
 	}
@@ -676,17 +671,12 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		},
 		{
 			name:    "empty dispatch_mode treated as sync",
-			mutate:  func(c *ProcessorConfig) { c.DispatchMode = ""; c.AsyncConfig = AsyncDispatchConfig{} },
+			mutate:  func(c *ProcessorConfig) { c.DispatchMode = DispatchMode(""); c.AsyncConfig = AsyncDispatchConfig{} },
 			wantErr: false,
 		},
 		{
 			name:    "invalid dispatch_mode rejected",
-			mutate:  func(c *ProcessorConfig) { c.DispatchMode = "invalid" },
-			wantErr: true,
-		},
-		{
-			name:    "async missing redis_url",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.RedisURL = "" },
+			mutate:  func(c *ProcessorConfig) { c.DispatchMode = DispatchMode("invalid") },
 			wantErr: true,
 		},
 		{
@@ -703,32 +693,6 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			name:    "async zero result_poll_timeout",
 			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.ResultPollTimeout = 0 },
 			wantErr: true,
-		},
-		{
-			name:    "async zero per_request_timeout",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.PerRequestTimeout = 0 },
-			wantErr: true,
-		},
-		{
-			name: "async per_request_timeout must exceed result_poll_timeout",
-			mutate: func(c *ProcessorConfig) {
-				c.AsyncConfig.ResultPollTimeout = 10 * time.Minute
-				c.AsyncConfig.PerRequestTimeout = 5 * time.Minute
-			},
-			wantErr: true,
-		},
-		{
-			name: "async per_request_timeout equal to result_poll_timeout rejected",
-			mutate: func(c *ProcessorConfig) {
-				c.AsyncConfig.ResultPollTimeout = 5 * time.Second
-				c.AsyncConfig.PerRequestTimeout = 5 * time.Second
-			},
-			wantErr: true,
-		},
-		{
-			name:    "async with rediss URL for TLS",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.RedisURL = "rediss://user:pass@host:6380" },
-			wantErr: false,
 		},
 	}
 
