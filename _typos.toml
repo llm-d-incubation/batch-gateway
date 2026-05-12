@@ -18,5 +18,6 @@ goimports = "goimports"
 # Go linter
 golangci = "golangci"
 
-# Add repo-specific false positives here:
-# word = "word"
+# Additive Increase Multiplicative Decrease (congestion control algorithm)
+AIMD = "AIMD"
+aimd = "aimd"
