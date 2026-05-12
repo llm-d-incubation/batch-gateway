@@ -1038,7 +1038,7 @@ install_batch_gateway() {
         # This isolates the processor's HTTP-level retry behavior from EPP routing.
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.url=http://${VLLM_SIM_429_NAME}.${NAMESPACE}.svc.cluster.local:8000"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.requestTimeout=2m"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxRetries=10"
+        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxRetries=20"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.initialBackoff=500ms"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxBackoff=5s"
         # Always-fail model: 100% rate_limit injection, minimal retries for fast exhaustion.

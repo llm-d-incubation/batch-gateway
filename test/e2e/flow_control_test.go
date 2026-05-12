@@ -134,12 +134,13 @@ func doTestSLOHeader(t *testing.T) {
 // checks processor logs for "Retrying request" entries to verify that
 // retries actually occurred.
 //
-// Uses 10 requests at 50% failure rate so the probability of zero retries
-// is (0.5)^10 ≈ 0.1%, making the test stable in CI matrix runs.
+// With 5 requests at 50% failure and maxRetries=20, the probability of any
+// single request exhausting all retries is (0.5)^21 ≈ 5e-7, and the
+// probability of zero retries across all requests is (0.5)^5 ≈ 3%.
 func doTestRetryOn429(t *testing.T) {
 	t.Helper()
 
-	const numRequests = 10
+	const numRequests = 5
 	sinceTime := time.Now().UTC().Format(time.RFC3339Nano)
 
 	lines := make([]string, numRequests)
