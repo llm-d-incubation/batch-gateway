@@ -57,8 +57,6 @@ func testAIMD(t *testing.T) {
 // min=5), and the probability of avoiding two consecutive 429s across 10
 // requests is negligible ((1−0.5²)^9 ≈ 7.5%).
 func doTestAIMDDecreaseAndIsolation(t *testing.T) {
-	t.Helper()
-
 	const (
 		// 10 requests at 50% failure rate ensures at least two consecutive 429s
 		// with >99% probability, which is enough to drive AIMD from perEndpoint
@@ -201,8 +199,6 @@ func parseCounterByEndpoint(t *testing.T, metrics, metricName string) map[string
 // perEndpoint (10) requires many requests. We only assert limit > min to
 // avoid flakiness from timing variance.
 func doTestAIMDRecovery(t *testing.T) {
-	t.Helper()
-
 	if !testKubectlAvailable {
 		t.Skip("kubectl not available, skipping AIMD recovery test")
 	}
