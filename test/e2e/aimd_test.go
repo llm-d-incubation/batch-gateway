@@ -39,6 +39,11 @@ import (
 	"github.com/openai/openai-go/v3"
 )
 
+const (
+	aimdPerEndpoint = 10
+	aimdMin         = 5
+)
+
 func testAIMD(t *testing.T) {
 	t.Run("DecreaseAndIsolation", doTestAIMDDecreaseAndIsolation)
 	t.Run("Recovery", doTestAIMDRecovery)
@@ -63,7 +68,6 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 		// (10) down to min (5) via two multiplicative decreases (10→5).
 		num429Requests    = 10
 		numNormalRequests = 2
-		perEndpoint       = 10
 	)
 
 	lines := make([]string, 0, num429Requests+numNormalRequests)
@@ -110,8 +114,8 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 
 		if strings.Contains(endpoint, "vllm-sim-429") {
 			found429Endpoint = true
-			if limit >= float64(perEndpoint) {
-				t.Errorf("429 endpoint limit = %.0f, want < %d (AIMD should have decreased)", limit, perEndpoint)
+			if limit >= float64(aimdPerEndpoint) {
+				t.Errorf("429 endpoint limit = %.0f, want < %d (AIMD should have decreased)", limit, aimdPerEndpoint)
 			}
 
 			if count, ok := aimdDecreases[endpoint]; ok {
@@ -126,8 +130,8 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 
 		if isHealthySimEndpoint(endpoint) {
 			foundNormalEndpoint = true
-			if limit != float64(perEndpoint) {
-				t.Errorf("healthy endpoint limit = %.0f, want %d (should be unaffected)", limit, perEndpoint)
+			if limit != float64(aimdPerEndpoint) {
+				t.Errorf("healthy endpoint limit = %.0f, want %d (should be unaffected)", limit, aimdPerEndpoint)
 			}
 		}
 	}
@@ -154,7 +158,7 @@ func isHealthySimEndpoint(endpoint string) bool {
 func parseGaugeByEndpoint(t *testing.T, metrics, metricName string) map[string]float64 {
 	t.Helper()
 
-	pattern := regexp.MustCompile(fmt.Sprintf(`%s\{endpoint="([^"]+)"\}\s+([0-9.e+-]+)`, regexp.QuoteMeta(metricName)))
+	pattern := regexp.MustCompile(fmt.Sprintf(`%s\{[^}]*endpoint="([^"]+)"[^}]*\}\s+([0-9.e+-]+)`, regexp.QuoteMeta(metricName)))
 	result := make(map[string]float64)
 	for _, match := range pattern.FindAllStringSubmatch(metrics, -1) {
 		val, err := strconv.ParseFloat(match[2], 64)
@@ -204,8 +208,6 @@ func doTestAIMDRecovery(t *testing.T) {
 	}
 
 	const (
-		perEndpoint       = 10
-		aimdMin           = 5
 		numFailRequests   = 10
 		numRecovRequests  = 30
 		aimdSimDeployment = "vllm-sim-aimd"
@@ -242,7 +244,7 @@ func doTestAIMDRecovery(t *testing.T) {
 
 	var aimdEndpoint string
 	for endpoint, limit := range aimdLimits {
-		if strings.Contains(endpoint, "vllm-sim-aimd") {
+		if strings.Contains(endpoint, aimdSimDeployment) {
 			aimdEndpoint = endpoint
 			t.Logf("phase 1: aimd_concurrency_limit{endpoint=%q} = %.0f", endpoint, limit)
 			if limit > float64(aimdMin) {
@@ -252,15 +254,41 @@ func doTestAIMDRecovery(t *testing.T) {
 		}
 	}
 	if aimdEndpoint == "" {
-		t.Fatal("no AIMD metric found for endpoint containing 'vllm-sim-aimd'")
+		t.Fatalf("no AIMD metric found for endpoint containing %q", aimdSimDeployment)
 	}
 
 	// Phase 2: Patch simulator to 0% failure and wait for rollout.
 	t.Log("phase 2: patching simulator to 0% failure rate...")
 	patchSimulatorFailureRate(t, aimdSimDeployment, testModelAIMD, 0)
 	t.Cleanup(func() {
-		patchSimulatorFailureRate(t, aimdSimDeployment, testModelAIMD, 100)
-		waitForRollout(t, aimdSimDeployment)
+		t.Log("cleanup: restoring simulator to 100% failure rate")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Timing args (10ms/10ms) must match dev-deploy.sh's install_vllm_sim defaults.
+		patch := fmt.Sprintf(
+			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5","--failure-injection-rate=100","--failure-types=rate_limit"]}]}}}}`,
+			testModelAIMD,
+		)
+		out, err := exec.CommandContext(ctx, "kubectl", "patch", "deployment", aimdSimDeployment,
+			"-n", testNamespace,
+			"--type=strategic",
+			"-p", patch,
+		).CombinedOutput()
+		if err != nil {
+			t.Errorf("cleanup: failed to restore %s to 100%% failure: %v\n%s\nMANUAL RESTORE REQUIRED: kubectl patch deployment %s -n %s ...",
+				aimdSimDeployment, err, out, aimdSimDeployment, testNamespace)
+			return
+		}
+
+		rollCtx, rollCancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer rollCancel()
+		out, err = exec.CommandContext(rollCtx, "kubectl", "rollout", "status",
+			"deployment/"+aimdSimDeployment, "-n", testNamespace, "--timeout=90s",
+		).CombinedOutput()
+		if err != nil {
+			t.Errorf("cleanup: rollout wait failed for %s: %v\n%s", aimdSimDeployment, err, out)
+		}
 	})
 	waitForRollout(t, aimdSimDeployment)
 	t.Log("phase 2: simulator rollout complete, now at 0% failure rate")
@@ -308,7 +336,6 @@ func doTestAIMDRecovery(t *testing.T) {
 	} else {
 		t.Errorf("no aimd_increases_total found for endpoint %q", aimdEndpoint)
 	}
-
 }
 
 // patchSimulatorFailureRate patches the vllm-sim container args in the given

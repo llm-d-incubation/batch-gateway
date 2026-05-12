@@ -44,6 +44,7 @@ cleanup_kubernetes_resources() {
     kubectl delete deployment,svc "${VLLM_SIM_B_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_429_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_ALWAYS_FAIL_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete deployment,svc "${VLLM_SIM_AIMD_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${MINIO_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
 
     # Delete secrets
