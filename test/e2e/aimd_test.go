@@ -147,7 +147,7 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 // Endpoint labels are gateway URLs like "http://vllm-sim.<ns>.svc.cluster.local:8000",
 // so matching "vllm-sim." (with trailing dot) excludes all hyphenated variants.
 func isHealthySimEndpoint(endpoint string) bool {
-	return strings.Contains(endpoint, "vllm-sim.")  &&
+	return strings.Contains(endpoint, "vllm-sim.") &&
 		!strings.Contains(endpoint, "vllm-sim-")
 }
 
