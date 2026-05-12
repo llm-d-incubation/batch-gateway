@@ -73,6 +73,37 @@ type AIMDConfig struct {
 	AdditiveIncrease int `yaml:"additive_increase"`
 }
 
+// DispatchMode constants control which inference dispatch backend is used.
+const (
+	DispatchModeSync  = "sync"
+	DispatchModeAsync = "async"
+)
+
+// AsyncDispatchConfig holds configuration for the llm-d-async dispatch backend.
+// Only used when DispatchMode == "async".
+type AsyncDispatchConfig struct {
+	// RedisURL is the full Redis connection URL (e.g. "redis://host:6379",
+	// "rediss://user:pass@host:6379" for TLS). TLS is encoded in the URL scheme.
+	RedisURL string `yaml:"redis_url"`
+
+	// RequestQueueName is the Redis sorted-set name for request submission.
+	// Must match the llm-d-async processor's --redis.ss.request-queue-name.
+	RequestQueueName string `yaml:"request_queue_name"`
+
+	// ResultQueueName is the Redis list name for result collection.
+	// Must match the llm-d-async processor's --redis.ss.result-queue-name.
+	ResultQueueName string `yaml:"result_queue_name"`
+
+	// ResultPollTimeout is the timeout per GetResult poll cycle.
+	// Controls how long each blocking poll waits before retrying.
+	ResultPollTimeout time.Duration `yaml:"result_poll_timeout"`
+
+	// PerRequestTimeout is the maximum time to wait for a single request's
+	// result before marking it as failed. Should be significantly larger than
+	// expected inference latency to avoid false positives.
+	PerRequestTimeout time.Duration `yaml:"per_request_timeout"`
+}
+
 type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
 	// This should be shorter than PollInterval
@@ -145,6 +176,14 @@ type ProcessorConfig struct {
 
 	// FileClient holds configuration for the shared file storage client (fs or s3).
 	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
+
+	// DispatchMode selects the inference dispatch backend.
+	// "sync" (default): direct HTTP via InferenceClient.
+	// "async": submit via llm-d-async producer, collect from result queue.
+	DispatchMode string `yaml:"dispatch_mode"`
+
+	// AsyncConfig holds llm-d-async dispatch settings. Only used when DispatchMode == "async".
+	AsyncConfig AsyncDispatchConfig `yaml:"async"`
 }
 
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
@@ -187,6 +226,11 @@ type BucketConfig struct {
 	BucketStart  float64 `yaml:"start"`
 	BucketFactor float64 `yaml:"factor"`
 	BucketCount  int     `yaml:"count"`
+}
+
+// IsAsync returns true when the processor is configured for async dispatch.
+func (c *ProcessorConfig) IsAsync() bool {
+	return c.DispatchMode == DispatchModeAsync
 }
 
 // InferenceObjectiveFor returns the inference objective configured on the
@@ -270,6 +314,12 @@ func NewConfig() *ProcessorConfig {
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
+
+		DispatchMode: DispatchModeSync,
+		AsyncConfig: AsyncDispatchConfig{
+			ResultPollTimeout: 5 * time.Second,
+			PerRequestTimeout: 60 * time.Minute,
+		},
 	}
 }
 
@@ -337,6 +387,44 @@ func (c *ProcessorConfig) Validate() error {
 		return fmt.Errorf("progress_ttl_seconds must be > 0")
 	}
 
+	if err := c.validateDispatchMode(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *ProcessorConfig) validateDispatchMode() error {
+	switch c.DispatchMode {
+	case DispatchModeSync, "":
+		return nil
+	case DispatchModeAsync:
+		return c.AsyncConfig.validate()
+	default:
+		return fmt.Errorf("dispatch_mode must be %q or %q, got %q", DispatchModeSync, DispatchModeAsync, c.DispatchMode)
+	}
+}
+
+func (ac *AsyncDispatchConfig) validate() error {
+	if ac.RedisURL == "" {
+		return fmt.Errorf("async.redis_url must be set when dispatch_mode is %q", DispatchModeAsync)
+	}
+	if ac.RequestQueueName == "" {
+		return fmt.Errorf("async.request_queue_name must be set when dispatch_mode is %q", DispatchModeAsync)
+	}
+	if ac.ResultQueueName == "" {
+		return fmt.Errorf("async.result_queue_name must be set when dispatch_mode is %q", DispatchModeAsync)
+	}
+	if ac.ResultPollTimeout <= 0 {
+		return fmt.Errorf("async.result_poll_timeout must be > 0")
+	}
+	if ac.PerRequestTimeout <= 0 {
+		return fmt.Errorf("async.per_request_timeout must be > 0")
+	}
+	if ac.PerRequestTimeout <= ac.ResultPollTimeout {
+		return fmt.Errorf("async.per_request_timeout (%v) must be > async.result_poll_timeout (%v)",
+			ac.PerRequestTimeout, ac.ResultPollTimeout)
+	}
 	return nil
 }
 
