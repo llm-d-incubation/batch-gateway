@@ -17,8 +17,12 @@ Related:
 
 This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed. 
 
-This design document describes the integration of the batch dispatcher with the batch processor. When
-the batch dispatcher is available and properly configured, the batch-processor's executor will not dispatch inference requests directly to the inference gateway via HTTP; instead it enqueues individual requests into **the dispatcher's request queue**; **the dispatcher pulls and forwards** them to the inference gateway based on the [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md). A **result consumer** in the batch-processor reads completed responses from **the dispatcher's result queue** and routes them back to the appropriate job's output writer.
+The batch-processor supports two mutually exclusive dispatch modes, selected via `dispatch_mode`:
+
+- **`sync`** (default): The executor dispatches inference requests directly to the inference gateway via HTTP, using the existing AIMD + semaphore flow control.
+- **`async`**: The executor enqueues individual requests into **the dispatcher's request queue**; **the dispatcher pulls and forwards** them to the inference gateway based on the [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md). A **result consumer** in the batch-processor reads completed responses from **the dispatcher's result queue** and routes them back to the appropriate job's output writer.
+
+This document describes the **async** dispatch mode and its queue design.
 
 This document uses **producer** and **consumer** from the batch-processor's perspective, consistent with the batch-gateway codebase (cf. `ECProducerSendEvents`, `ECConsumerGetChannel`). The batch-processor is the **producer** of the request queue and the **consumer** of the result queue.
 
@@ -57,19 +61,19 @@ The `tenant_id` in the result queue is required by the Producer library for mult
 
 When the dispatcher is used, the inference gateway endpoint configuration lives entirely on the dispatcher side: the batch-processor does not need to know about gateway URLs, TLS settings, or routing modes. The batch-processor only needs the pool name, the connector type, and the connector endpoint.
 
-### Batch-Processor Configuration (strawman)
+### Batch-Processor Configuration
 
-The batch-processor config gains a `dispatcher` section. When present, the executor enqueues to the request queue instead of dispatching directly. The `global_inference_gateway` / `model_gateways` sections are not needed when the dispatcher is used.
+The batch-processor config uses `dispatch_mode` to select the dispatch backend. When set to `async`, the `async` section configures the queue names and poll timeout. The `global_inference_gateway` / `model_gateways` sections are not needed when `dispatch_mode` is `async`.
 
 ```yaml
-# Dispatcher integration (replaces direct inference gateway dispatch)
-dispatcher:
-   - id: identifier                        # optional section identifier
-     pool_name: "optimized-baseline"       # derives queue names: requests:{pool_name}, results:{tenant_id}:{pool_name}
-     connector:
-       type: redis                          # queue backend (currently only redis)
-       url: "redis://redis-master:6379"
+dispatch_mode: "async"    # "sync" (default) or "async"
+async:
+  request_queue_name: "requests:optimized-baseline"
+  result_queue_name: "results:$batch:optimized-baseline"
+  result_poll_timeout: "5s"
 ```
+
+The Redis URL is read from a mounted secret at runtime (not stored in the config file).
 
 ### Dispatcher Configuration
 
