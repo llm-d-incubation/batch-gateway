@@ -63,14 +63,19 @@ When the dispatcher is used, the inference gateway endpoint configuration lives 
 
 ### Batch-Processor Configuration
 
-The batch-processor config uses `dispatch_mode` to select the dispatch backend. When set to `async`, the `async` section configures the queue names and poll timeout. The `global_inference_gateway` / `model_gateways` sections are not needed when `dispatch_mode` is `async`.
+The batch-processor selects the dispatch backend via `dispatch_mode: sync | async`. In `sync` mode (default), the executor dispatches directly via HTTP using the existing AIMD + semaphore flow. In `async` mode, the executor enqueues to the dispatcher's request queue and collects results from the result queue.
+
+Each model must resolve to a `pool_name` that derives the queue pair. The exact config shape is being finalized in [#430](https://github.com/llm-d-incubation/batch-gateway/pull/430); one approach under discussion is extending `model_gateways` so each entry carries both a `url` (used in sync mode) and a `pool_name` (used in async mode to derive queue names):
 
 ```yaml
-dispatch_mode: "async"    # "sync" (default) or "async"
-async:
-  request_queue_name: "requests:optimized-baseline"
-  result_queue_name: "results:$batch:optimized-baseline"
-  result_poll_timeout: "5s"
+dispatch_mode: "async"
+model_gateways:
+  "llama-3":
+    url: "http://gateway-a:8000"         # sync mode
+    pool_name: "pool-a"                  # async mode → requests:pool-a / results:$batch:pool-a
+  "mistral":
+    url: "http://gateway-b:8000"
+    pool_name: "pool-b"
 ```
 
 The Redis URL is read from a mounted secret at runtime (not stored in the config file).
