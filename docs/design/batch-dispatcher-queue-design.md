@@ -100,7 +100,22 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 ]
 ```
 
-The result queue name is configured separately via `--redis.ss.result-queue-name`.
+The result queue name is configured separately via `--redis.ss.result-queue-name` or per-request via metadata.
+
+Note: the automatic naming via metadata could be misused, we probably want to unify the config for `queue_name` and `result-queue-name`, 
+and allow setting a shared name:
+
+```json
+[
+  {
+    "queue_name": "optimized-baseline",
+    "igw_base_url": "http://llm-d-inference-gateway-istio:80",
+    ...
+  }
+]
+```
+
+In this case `request:optimized-baseline` and `result:$batch:optimized-baseline` would be inferred automatically.
 
 The dispatcher pulls up to `batchSize × (D − B)` requests per poll cycle and forwards them to the inference gateway. Results are written to the result queue. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
@@ -166,7 +181,7 @@ The executor currently dispatches requests by acquiring semaphores and then forw
 2. Constructs a request message with the SLO deadline, request payload, correlation `metadata` (`job_id`, `request_index`), and any pass-through `headers` (e.g., fairness/SLO headers).
 3. Enqueues the request into the `requests:{pool_name}` queue with the SLO deadline.
 
-As described above, the producer does not need to throttle enqueue operations. The per-endpoint and global semaphores are no longer needed, the dispatcher's dispatch budget handles flow control downstream.
+As described above, the producer does not need to throttle enqueue operations. In async mode, the per-endpoint and global semaphores are not used — the dispatcher's dispatch budget handles flow control downstream. In sync mode, the existing AIMD + semaphore flow is retained unchanged.
 
 ### Dispatcher (reads from request queue)
 
@@ -231,14 +246,14 @@ The consumer runs as a separate goroutine (or pool of goroutines) alongside the 
 
 With the dispatcher handling flow control, the batch-processor's concurrency model simplifies:
 
-| Concern | Current (direct dispatch) | With dispatcher |
+| Concern | Sync mode (direct dispatch) | Async mode (dispatcher) |
 |---------|--------------------------|-----------------|
 | Inference pool saturation | AIMD on 429/5xx (reactive) | Dispatch budget (proactive) |
 | Per-endpoint concurrency | Adaptive semaphore | Dispatcher gates per pool |
 | Global concurrency | Fixed semaphore | Not needed — queue is a passive buffer |
 | Cross-processor coordination | None | Shared queue + single dispatcher |
 
-The AIMD controller and semaphores in the batch-processor become redundant for gating purposes, since the dispatcher gates requests before they reach the inference gateway. The batch-processor's role shifts from "rate-limited sender" to "enqueuer + result collector."
+In async mode, the AIMD controller and semaphores are not used — the dispatcher gates requests before they reach the inference gateway, and the batch-processor's role is "enqueuer + result collector." In sync mode, the existing concurrency model (AIMD + semaphores + direct HTTP dispatch) is retained unchanged. The two modes are mutually exclusive at config level (`dispatch_mode: sync | async`).
 
 ---
 
