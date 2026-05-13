@@ -15,7 +15,7 @@ Related:
 
 ## Summary
 
-This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed. Multi-model batch jobs (where a single job targets models in different inference pools) are also out of scope; the executor would need to enqueue into multiple queues and the consumer would need to read from multiple result queues, which adds complexity deferred to a future iteration.
+This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed. 
 
 This design document describes the integration of the batch dispatcher with the batch processor. When
 the batch dispatcher is available and properly configured, the batch-processor's executor will not dispatch inference requests directly to the inference gateway via HTTP; instead it enqueues individual requests into **the dispatcher's request queue**; **the dispatcher pulls and forwards** them to the inference gateway based on the [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md). A **result consumer** in the batch-processor reads completed responses from **the dispatcher's result queue** and routes them back to the appropriate job's output writer.
@@ -48,10 +48,12 @@ Queue names follow a fixed convention keyed by the inference pool name:
 
 | Queue | Redis Type | Name Pattern | Example |
 |-------|-----------|--------------|---------|
-| Request queue | Sorted Set | `request:{pool_name}` | `request:optimized-baseline` |
-| Result queue | List | `result:{pool_name}` | `result:optimized-baseline` |
+| Request queue | Sorted Set | `requests:{pool_name}` | `requests:optimized-baseline` |
+| Result queue | List | `results:{tenant_id}:{pool_name}` | `results:$batch:optimized-baseline` |
 
-The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both the batch-processor and the dispatcher are configured with the pool name they operate on, and derive queue names deterministically from it.
+The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. The llm-d-async [Producer](https://github.com/llm-d-incubation/llm-d-async/blob/main/producer/redis_sortedset_producer.go) library accepts arbitrary queue name strings; this naming convention is ours, applied when wiring the batch-processor and dispatcher together.
+
+The `tenant_id` in the result queue is required by the Producer library for multi-tenant isolation. For now, the batch-processor uses the reserved value `$batch` as its tenant ID. Per-tenant isolation (e.g., routing results to different queues per user or API key) is reserved for future use.
 
 When the dispatcher is used, the inference gateway endpoint configuration lives entirely on the dispatcher side: the batch-processor does not need to know about gateway URLs, TLS settings, or routing modes. The batch-processor only needs the pool name, the connector type, and the connector endpoint.
 
@@ -62,34 +64,34 @@ The batch-processor config gains a `dispatcher` section. When present, the execu
 ```yaml
 # Dispatcher integration (replaces direct inference gateway dispatch)
 dispatcher:
-  pool_name: "optimized-baseline"       # derives queue names: request:{pool_name}, result:{pool_name}
-  connector:
-    type: redis                          # queue backend (currently only redis)
-    url: "redis://redis-master:6379"
+   - id: identifier                        # optional section identifier
+     pool_name: "optimized-baseline"       # derives queue names: requests:{pool_name}, results:{tenant_id}:{pool_name}
+     connector:
+       type: redis                          # queue backend (currently only redis)
+       url: "redis://redis-master:6379"
 ```
 
 ### Dispatcher Configuration
 
-The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dispatch budget gating. It is deployed via Helm; the relevant values for queue names, inference gateway endpoint, and gating are:
+The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dispatch budget gating. The relevant config for queue names, inference gateway endpoint, and gating are:
 
-```yaml
-ap:
-  igwBaseURL: "http://llm-d-inference-gateway-istio:80"
-  messageQueueImpl: "redis-sortedset"
-  concurrency: 4
-  prometheusURL: "http://prometheus.monitoring.svc:9090"
-  redis:
-    url: "redis://redis-master.redis.svc:6379"
-    requestQueueName: "request:optimized-baseline"
-    resultQueueName: "result:optimized-baseline"
-    pollIntervalMs: 1000
-    batchSize: 10
-    gateType: "prometheus-budget"
-    gateParams:
-      pool: "optimized-baseline"
-      max_concurrency: "100"
-      baseline: "0.05"
+```json
+[
+  {
+    "queue_name": "requests:optimized-baseline",
+    "igw_base_url": "http://llm-d-inference-gateway-istio:80",
+    "request_path_url": "/v1/completions",
+    "gate_type": "prometheus-budget",
+    "gate_params": {
+      "pool": "optimized-baseline",
+      "max_concurrency": "100",
+      "baseline": "0.05"
+    }
+  }
+]
 ```
+
+The result queue name is configured separately via `--redis.ss.result-queue-name`.
 
 The dispatcher pulls up to `batchSize × (D − B)` requests per poll cycle and forwards them to the inference gateway. Results are written to the result queue. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
@@ -153,7 +155,7 @@ The executor currently dispatches requests by acquiring semaphores and then forw
 
 1. Reads the plan entry and the corresponding input line.
 2. Constructs a request message with the SLO deadline, request payload, correlation `metadata` (`job_id`, `request_index`), and any pass-through `headers` (e.g., fairness/SLO headers).
-3. Enqueues the request into the `request:{pool_name}` queue with the SLO deadline.
+3. Enqueues the request into the `requests:{pool_name}` queue with the SLO deadline.
 
 As described above, the producer does not need to throttle enqueue operations. The per-endpoint and global semaphores are no longer needed, the dispatcher's dispatch budget handles flow control downstream.
 
@@ -190,11 +192,11 @@ Result messages follow the format defined in the [llm-d-async README — Results
 
 ### Dispatcher (writes to result queue)
 
-After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to `result:{pool_name}`. The `metadata` from the original request is carried through so the consumer can route the result.
+After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to `results:{tenant_id}:{pool_name}`. The `metadata` from the original request is carried through so the consumer can route the result.
 
 ### Consumer (Batch-Processor)
 
-A new component in the batch-processor consumes results from `result:{pool_name}`:
+A new component in the batch-processor consumes results from `results:{tenant_id}:{pool_name}`:
 
 1. Polls the result list.
 2. For each result message, looks up the job by `job_id` to find the active job's output writer.
@@ -233,7 +235,8 @@ The AIMD controller and semaphores in the batch-processor become redundant for g
 
 ## Open Questions
 
-1. **Request cancellation**: When a job is cancelled, how do we efficiently remove its pending requests from the sorted set? Options:
+**Request cancellation**: When a job is cancelled, how do we efficiently remove its pending requests from the sorted set? Options:
    - Scan and delete by `job_id` (requires iterating the set — O(n)).
    - Let the dispatcher skip expired/cancelled requests (lazy cleanup) — simpler but wastes dispatch budget on dead requests.
    - Use a per-job cancellation flag that the dispatcher checks before forwarding.
+   
