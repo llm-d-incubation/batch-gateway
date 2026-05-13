@@ -15,7 +15,7 @@ Related:
 
 ## Summary
 
-This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed. 
+This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed.
 
 The batch-processor supports two mutually exclusive dispatch modes, selected via `dispatch_mode`:
 
@@ -102,7 +102,7 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 
 The result queue name is configured separately via `--redis.ss.result-queue-name` or per-request via metadata.
 
-Note: the automatic naming via metadata could be misused, we probably want to unify the config for `queue_name` and `result-queue-name`, 
+Note: the automatic naming via metadata could be misused, we probably want to unify the config for `queue_name` and `result-queue-name`,
 and allow setting a shared name:
 
 ```json
@@ -263,4 +263,3 @@ In async mode, the AIMD controller and semaphores are not used — the dispatche
    - Scan and delete by `job_id` (requires iterating the set — O(n)).
    - Let the dispatcher skip expired/cancelled requests (lazy cleanup) — simpler but wastes dispatch budget on dead requests.
    - Use a per-job cancellation flag that the dispatcher checks before forwarding.
-   
