@@ -358,24 +358,6 @@ func (c *ProcessorConfig) Validate() error {
 		return fmt.Errorf("e2e_latency_bucket must satisfy: start > 0, factor > 1, count > 0")
 	}
 
-	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
-		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
-	}
-	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
-		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
-	}
-
-	if c.GlobalInferenceGateway != nil {
-		if err := validateGatewayConfig("global_inference_gateway", *c.GlobalInferenceGateway); err != nil {
-			return err
-		}
-	}
-	for model, gw := range c.ModelGateways {
-		if err := validateGatewayConfig(fmt.Sprintf("model_gateways[%s]", model), gw); err != nil {
-			return err
-		}
-	}
-
 	if err := c.FileClientCfg.Retry.Validate(); err != nil {
 		return fmt.Errorf("file_client.retry: %w", err)
 	}
@@ -394,12 +376,34 @@ func (c *ProcessorConfig) Validate() error {
 func (c *ProcessorConfig) validateDispatchMode() error {
 	switch c.DispatchMode {
 	case DispatchModeSync, DispatchMode(""):
-		return nil
+		c.DispatchMode = DispatchModeSync
+		return c.validateSyncConfig()
 	case DispatchModeAsync:
 		return c.AsyncConfig.validate()
 	default:
 		return fmt.Errorf("dispatch_mode must be %q or %q, got %q", DispatchModeSync, DispatchModeAsync, c.DispatchMode)
 	}
+}
+
+func (c *ProcessorConfig) validateSyncConfig() error {
+	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
+		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
+	}
+	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
+		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
+	}
+
+	if c.GlobalInferenceGateway != nil {
+		if err := validateGatewayConfig("global_inference_gateway", *c.GlobalInferenceGateway); err != nil {
+			return err
+		}
+	}
+	for model, gw := range c.ModelGateways {
+		if err := validateGatewayConfig(fmt.Sprintf("model_gateways[%s]", model), gw); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (ac *AsyncDispatchConfig) validate() error {
