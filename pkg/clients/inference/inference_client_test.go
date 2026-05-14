@@ -46,6 +46,7 @@ func TestInferenceClient(t *testing.T) {
 	t.Run("Generate", testGenerate)
 	t.Run("ErrorHandling", testErrorHandling)
 	t.Run("RetryLogic", testRetryLogic)
+	t.Run("DroppedReason", testDroppedReason)
 	t.Run("TLSConfiguration", testTLSConfiguration)
 	t.Run("Authentication", testAuthentication)
 	t.Run("NetworkErrors", testNetworkErrors)
@@ -818,6 +819,71 @@ func testRetryLogic(t *testing.T) {
 			t.Errorf("got attemptCount %v, want %v", attemptCount, 1)
 		}
 	})
+}
+
+func testDroppedReason(t *testing.T) {
+	tests := []struct {
+		name              string
+		headerValue       string
+		wantDroppedReason string
+	}{
+		{
+			name:              "should populate DroppedReason from response header",
+			headerValue:       httpclient.DroppedReasonTTLExpired,
+			wantDroppedReason: httpclient.DroppedReasonTTLExpired,
+		},
+		{
+			name:              "should capture non-TTL dropped reason",
+			headerValue:       "rejected-saturated",
+			wantDroppedReason: "rejected-saturated",
+		},
+		{
+			name:              "should leave DroppedReason empty when header is absent",
+			headerValue:       "",
+			wantDroppedReason: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.headerValue != "" {
+					w.Header().Set(httpclient.HeaderDroppedReason, tt.headerValue)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":    429,
+						"message": "Rate limit exceeded",
+					},
+				})
+			}))
+			t.Cleanup(testServer.Close)
+
+			client, err := NewInferenceClient(&HTTPClientConfig{
+				BaseURL:        testServer.URL,
+				MaxRetries:     1,
+				InitialBackoff: 10 * time.Millisecond,
+			}, testLogger(t))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			req := &GenerateRequest{
+				RequestID: "test-dropped",
+				Endpoint:  "/v1/chat/completions",
+				Params:    map[string]interface{}{"model": "gpt-4"},
+			}
+
+			_, genErr := client.Generate(context.Background(), req)
+			if genErr == nil {
+				t.Fatal("expected non-nil error for 429 response")
+			}
+			if genErr.DroppedReason != tt.wantDroppedReason {
+				t.Errorf("DroppedReason = %q, want %q", genErr.DroppedReason, tt.wantDroppedReason)
+			}
+		})
+	}
 }
 
 // generateTestCerts creates test certificates in a temporary directory
