@@ -17,12 +17,12 @@
 // isolation holds.
 //
 // Coverage:
-//   - Decrease: 429s from sim-model-429 drive the AIMD limit below perEndpoint.
-//   - Isolation: sim-model (0% failure) stays at perEndpoint while
+//   - Decrease: 429s from sim-model-429 drive the AIMD limit below the configured perEndpoint limit.
+//   - Isolation: sim-model (0% failure) stays at the configured perEndpoint limit while
 //     sim-model-429 decreases independently.
 //   - Recovery: a dedicated sim-model-aimd starts at 100% failure (driving
 //     limit to min), then is patched to 0% failure; subsequent requests
-//     drive the limit back toward perEndpoint.
+//     drive the limit back toward the configured perEndpoint limit.
 
 package e2e_test
 
@@ -37,11 +37,11 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/v3"
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	aimdPerEndpoint = 10
-	aimdMin         = 5
+	aimdMin = 5
 )
 
 func testAIMD(t *testing.T) {
@@ -52,8 +52,8 @@ func testAIMD(t *testing.T) {
 // doTestAIMDDecreaseAndIsolation submits a multi-model batch targeting both
 // sim-model-429 (50% failure injection) and sim-model (0% failure). After
 // completion it scrapes processor metrics and asserts:
-//   - The 429 endpoint's AIMD concurrency limit dropped below perEndpoint.
-//   - The healthy endpoint's AIMD concurrency limit stayed at perEndpoint.
+//   - The 429 endpoint's AIMD concurrency limit dropped below the configured perEndpoint limit.
+//   - The healthy endpoint's AIMD concurrency limit stayed at the configured perEndpoint limit.
 //   - The 429 endpoint accumulated AIMD decrease signals.
 //
 // With 50% failure rate and maxRetries=10, all requests eventually succeed,
@@ -64,8 +64,8 @@ func testAIMD(t *testing.T) {
 func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 	const (
 		// 10 requests at 50% failure rate ensures at least two consecutive 429s
-		// with >99% probability, which is enough to drive AIMD from perEndpoint
-		// (10) down to min (5) via two multiplicative decreases (10→5).
+		// with >99% probability, which is enough to drive AIMD from the
+		// configured perEndpoint limit down to min (5) via multiplicative decreases.
 		num429Requests    = 10
 		numNormalRequests = 2
 	)
@@ -101,6 +101,7 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 	}
 
 	metrics := scrapeProcessorMetrics(t)
+	expectedPerEndpoint := getProcessorPerEndpointConcurrency(t)
 
 	aimdLimits := parseGaugeByEndpoint(t, metrics, "batch_processor_aimd_concurrency_limit")
 	aimdDecreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_decreases_total")
@@ -114,8 +115,8 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 
 		if strings.Contains(endpoint, "vllm-sim-429") {
 			found429Endpoint = true
-			if limit >= float64(aimdPerEndpoint) {
-				t.Errorf("429 endpoint limit = %.0f, want < %d (AIMD should have decreased)", limit, aimdPerEndpoint)
+			if limit >= float64(expectedPerEndpoint) {
+				t.Errorf("429 endpoint limit = %.0f, want < %d (AIMD should have decreased)", limit, expectedPerEndpoint)
 			}
 
 			if count, ok := aimdDecreases[endpoint]; ok {
@@ -130,8 +131,8 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 
 		if isHealthySimEndpoint(endpoint) {
 			foundNormalEndpoint = true
-			if limit != float64(aimdPerEndpoint) {
-				t.Errorf("healthy endpoint limit = %.0f, want %d (should be unaffected)", limit, aimdPerEndpoint)
+			if limit != float64(expectedPerEndpoint) {
+				t.Errorf("healthy endpoint limit = %.0f, want %d (should be unaffected)", limit, expectedPerEndpoint)
 			}
 		}
 	}
@@ -144,13 +145,38 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 	}
 }
 
+// getProcessorPerEndpointConcurrency reads the deployed processor ConfigMap and
+// returns the configured concurrency.per_endpoint value.
+func getProcessorPerEndpointConcurrency(t *testing.T) int {
+	t.Helper()
+
+	cmName := fmt.Sprintf("%s-processor-config", testHelmRelease)
+	configYAML := kubectlGetConfigMap(t, cmName)
+
+	var root struct {
+		Concurrency struct {
+			PerEndpoint *int `yaml:"per_endpoint"`
+		} `yaml:"concurrency"`
+	}
+	if err := yaml.Unmarshal([]byte(configYAML), &root); err != nil {
+		t.Fatalf("parse processor config.yaml: %v", err)
+	}
+	if root.Concurrency.PerEndpoint == nil {
+		t.Fatalf("concurrency.per_endpoint missing in config:\n%s", configYAML)
+	}
+
+	return *root.Concurrency.PerEndpoint
+}
+
 // isHealthySimEndpoint returns true if the endpoint label refers to the
-// primary vllm-sim simulator, not any variant (vllm-sim-429, vllm-sim-b, etc.).
-// Endpoint labels are gateway URLs like "http://vllm-sim.<ns>.svc.cluster.local:8000",
-// so matching "vllm-sim." (with trailing dot) excludes all hyphenated variants.
+// healthy primary model used by this test.
+//
+// In non-GIE mode the processor talks directly to the simulator service
+// (vllm-sim.<ns>...), while in GIE mode it routes the same model through the
+// per-model EPP service (epp-<model>-epp.<ns>...).
 func isHealthySimEndpoint(endpoint string) bool {
-	return strings.Contains(endpoint, "vllm-sim.") &&
-		!strings.Contains(endpoint, "vllm-sim-")
+	return strings.Contains(endpoint, "vllm-sim.") ||
+		strings.Contains(endpoint, fmt.Sprintf("epp-%s-epp.", testModel))
 }
 
 // parseGaugeByEndpoint extracts all {endpoint="..."} values for a gauge metric.
@@ -199,8 +225,8 @@ func parseCounterByEndpoint(t *testing.T, metrics, metricName string) map[string
 //
 // t.Cleanup restores the simulator to 100% failure for subsequent runs.
 //
-// Because AIMD increases by +1 per successful window, full recovery to
-// perEndpoint (10) requires many requests. We only assert limit > min to
+// Because AIMD increases by +1 per successful window, full recovery to the
+// configured perEndpoint limit requires many requests. We only assert limit > min to
 // avoid flakiness from timing variance.
 func doTestAIMDRecovery(t *testing.T) {
 	if !testKubectlAvailable {
