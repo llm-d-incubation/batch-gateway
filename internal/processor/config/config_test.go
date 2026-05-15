@@ -644,11 +644,18 @@ send_fairness_header: true
 func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 	validAsyncConfig := func() *ProcessorConfig {
 		c := NewConfig()
-		c.ModelGateways = validPerModelConfig()
+		c.ModelGateways = map[string]ModelGatewayConfig{
+			"llama-3": {
+				URL:            "http://llama-gw:8000",
+				RequestTimeout: ptr.To(5 * time.Minute),
+				MaxRetries:     ptr.To(3),
+				InitialBackoff: ptr.To(1 * time.Second),
+				MaxBackoff:     ptr.To(60 * time.Second),
+				PoolName:       "pool-a",
+			},
+		}
 		c.DispatchMode = DispatchModeAsync
 		c.AsyncConfig = AsyncDispatchConfig{
-			RequestQueueName:  "requests",
-			ResultQueueName:   "results",
 			ResultPollTimeout: 5 * time.Second,
 		}
 		return c
@@ -680,18 +687,81 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "async missing request_queue_name",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.RequestQueueName = "" },
-			wantErr: true,
-		},
-		{
-			name:    "async missing result_queue_name",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.ResultQueueName = "" },
-			wantErr: true,
-		},
-		{
 			name:    "async zero result_poll_timeout",
 			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.ResultPollTimeout = 0 },
+			wantErr: true,
+		},
+		{
+			name: "async missing pool_name on model gateway",
+			mutate: func(c *ProcessorConfig) {
+				c.ModelGateways = map[string]ModelGatewayConfig{
+					"llama-3": {URL: "http://llama-gw:8000"},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "async missing pool_name on global gateway",
+			mutate: func(c *ProcessorConfig) {
+				c.ModelGateways = nil
+				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "async valid global gateway with pool_name",
+			mutate: func(c *ProcessorConfig) {
+				c.ModelGateways = nil
+				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", PoolName: "default-pool"}
+			},
+			wantErr: false,
+		},
+		{
+			name: "async no gateways configured",
+			mutate: func(c *ProcessorConfig) {
+				c.ModelGateways = nil
+				c.GlobalInferenceGateway = nil
+			},
+			wantErr: true,
+		},
+		{
+			name: "async global and per-model mutually exclusive",
+			mutate: func(c *ProcessorConfig) {
+				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", PoolName: "default-pool"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "pool_name ignored in sync mode",
+			mutate: func(c *ProcessorConfig) {
+				c.DispatchMode = DispatchModeSync
+				c.ModelGateways = validPerModelConfig()
+			},
+			wantErr: false,
+		},
+		{
+			name:    "async negative result_poll_timeout",
+			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.ResultPollTimeout = -1 * time.Second },
+			wantErr: true,
+		},
+		{
+			name: "async multiple models all valid",
+			mutate: func(c *ProcessorConfig) {
+				c.ModelGateways = map[string]ModelGatewayConfig{
+					"llama-3": {URL: "http://gw-a:8000", PoolName: "pool-a"},
+					"mistral": {URL: "http://gw-b:8000", PoolName: "pool-b"},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "async one model missing pool_name among multiple",
+			mutate: func(c *ProcessorConfig) {
+				c.ModelGateways = map[string]ModelGatewayConfig{
+					"llama-3": {URL: "http://gw-a:8000", PoolName: "pool-a"},
+					"mistral": {URL: "http://gw-b:8000"},
+				}
+			},
 			wantErr: true,
 		},
 	}
@@ -705,6 +775,27 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestQueueNameHelpers(t *testing.T) {
+	if got := RequestQueueName("pool-a"); got != "request:pool-a" {
+		t.Fatalf("RequestQueueName(\"pool-a\") = %q, want %q", got, "request:pool-a")
+	}
+	if got := ResultQueueName("pool-a"); got != "result:batch-gateway:pool-a" {
+		t.Fatalf("ResultQueueName(\"pool-a\") = %q, want %q", got, "result:batch-gateway:pool-a")
+	}
+}
+
+func TestValidate_NormalizesEmptyDispatchMode(t *testing.T) {
+	c := NewConfig()
+	c.ModelGateways = validPerModelConfig()
+	c.DispatchMode = DispatchMode("")
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+	if c.DispatchMode != DispatchModeSync {
+		t.Fatalf("DispatchMode = %q after Validate(), want %q", c.DispatchMode, DispatchModeSync)
 	}
 }
 

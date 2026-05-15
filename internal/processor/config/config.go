@@ -89,14 +89,6 @@ type AsyncDispatchConfig struct {
 	// at runtime (SecretKeyRedisURL)
 	RedisURL string `yaml:"-"`
 
-	// RequestQueueName is the Redis sorted-set name for request submission.
-	// Must match the llm-d-async processor's --redis.ss.request-queue-name.
-	RequestQueueName string `yaml:"request_queue_name"`
-
-	// ResultQueueName is the Redis list name for result collection.
-	// Must match the llm-d-async processor's --redis.ss.result-queue-name.
-	ResultQueueName string `yaml:"result_queue_name"`
-
 	// ResultPollTimeout is the timeout per GetResult poll cycle.
 	// Controls how long each blocking poll waits before retrying.
 	ResultPollTimeout time.Duration `yaml:"result_poll_timeout"`
@@ -218,12 +210,29 @@ type ModelGatewayConfig struct {
 	TLSCACertFile         string `yaml:"tls_ca_cert_file,omitempty"`
 	TLSClientCertFile     string `yaml:"tls_client_cert_file,omitempty"`
 	TLSClientKeyFile      string `yaml:"tls_client_key_file,omitempty"`
+
+	// PoolName identifies the async dispatch pool for this model/gateway.
+	// Queue names are derived as "request:{PoolName}" / "result:{PoolName}".
+	// Required when dispatch_mode is "async". Ignored in sync mode.
+	PoolName string `yaml:"pool_name"`
 }
 
 type BucketConfig struct {
 	BucketStart  float64 `yaml:"start"`
 	BucketFactor float64 `yaml:"factor"`
 	BucketCount  int     `yaml:"count"`
+}
+
+const asyncTenantID = "batch-gateway"
+
+// RequestQueueName returns the Redis sorted-set name for submitting async requests to the given pool.
+func RequestQueueName(poolName string) string {
+	return "request:" + poolName
+}
+
+// ResultQueueName returns the Redis list name for collecting async results from the given pool.
+func ResultQueueName(poolName string) string {
+	return "result:" + asyncTenantID + ":" + poolName
 }
 
 // IsAsync returns true when the processor is configured for async dispatch.
@@ -379,18 +388,25 @@ func (c *ProcessorConfig) validateDispatchMode() error {
 		c.DispatchMode = DispatchModeSync
 		return c.validateSyncConfig()
 	case DispatchModeAsync:
-		return c.AsyncConfig.validate()
+		return c.validateAsyncConfig()
 	default:
 		return fmt.Errorf("dispatch_mode must be %q or %q, got %q", DispatchModeSync, DispatchModeAsync, c.DispatchMode)
 	}
 }
 
-func (c *ProcessorConfig) validateSyncConfig() error {
+func (c *ProcessorConfig) validateGateways() error {
 	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
 		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
 	}
 	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
 		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
+	}
+	return nil
+}
+
+func (c *ProcessorConfig) validateSyncConfig() error {
+	if err := c.validateGateways(); err != nil {
+		return err
 	}
 
 	if c.GlobalInferenceGateway != nil {
@@ -406,15 +422,22 @@ func (c *ProcessorConfig) validateSyncConfig() error {
 	return nil
 }
 
-func (ac *AsyncDispatchConfig) validate() error {
-	if ac.RequestQueueName == "" {
-		return fmt.Errorf("async.request_queue_name must be set when dispatch_mode is %q", DispatchModeAsync)
-	}
-	if ac.ResultQueueName == "" {
-		return fmt.Errorf("async.result_queue_name must be set when dispatch_mode is %q", DispatchModeAsync)
-	}
-	if ac.ResultPollTimeout <= 0 {
+func (c *ProcessorConfig) validateAsyncConfig() error {
+	if c.AsyncConfig.ResultPollTimeout <= 0 {
 		return fmt.Errorf("async.result_poll_timeout must be > 0")
+	}
+	if err := c.validateGateways(); err != nil {
+		return err
+	}
+	if c.GlobalInferenceGateway != nil {
+		if c.GlobalInferenceGateway.PoolName == "" {
+			return fmt.Errorf("global_inference_gateway.pool_name must be set when dispatch_mode is %q", DispatchModeAsync)
+		}
+	}
+	for model, gw := range c.ModelGateways {
+		if gw.PoolName == "" {
+			return fmt.Errorf("model_gateways[%s].pool_name must be set when dispatch_mode is %q", model, DispatchModeAsync)
+		}
 	}
 	return nil
 }
