@@ -6,7 +6,6 @@
 
 Related:
 - [Batch Dispatcher](batch-dispatcher.md)
-- [Batch Dispatcher — Gating Logic and Flow Control](batch-dispatcher-detailed-ASYNC-REPO.md)
 - [Dispatch Budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) (llm-d-async)
 - [Batch Processor Design](batch_processor_architecture.md)
 - [Batch Inference Architecture](batch_inference_architecture.md)
@@ -42,7 +41,7 @@ The dispatcher solves these by acting as a system-load-aware gatekeeper that met
 
 ## Architecture
 
-<img src="diagrams/dispatcher-queues.png" width=50% alt="dispatch queue diagram" />
+<img src="diagrams/dispatcher-queues.png" width="50%" alt="dispatch queue diagram" />
 
 ---
 
