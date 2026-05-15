@@ -217,6 +217,9 @@ func (s *spyPQ) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) 
 func (s *spyPQ) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parentCtx, timeLimit)
 }
+func (s *spyPQ) PQGetIDs(ctx context.Context) (map[string]bool, error) {
+	return s.inner.PQGetIDs(ctx)
+}
 func (s *spyPQ) Close() error { return s.inner.Close() }
 
 func (s *spyPQ) DeleteCalls() int {
@@ -252,7 +255,7 @@ func (s *spyBatchDB) DBGet(ctx context.Context, query *db.BatchQuery, includeSta
 	return s.inner.DBGet(ctx, query, includeStatic, start, limit)
 }
 
-func (s *spyBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem) error {
+func (s *spyBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem, expectedStatus []byte) error {
 	if len(item.Status) > 0 {
 		var st openai.BatchStatusInfo
 		if err := json.Unmarshal(item.Status, &st); err == nil {
@@ -261,7 +264,7 @@ func (s *spyBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem) error {
 			s.mu.Unlock()
 		}
 	}
-	return s.inner.DBUpdate(ctx, item)
+	return s.inner.DBUpdate(ctx, item, expectedStatus)
 }
 
 func (s *spyBatchDB) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
@@ -296,14 +299,14 @@ func (f *failOnStatusDB) DBStore(ctx context.Context, item *db.BatchItem) error 
 func (f *failOnStatusDB) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
 	return f.inner.DBGet(ctx, query, includeStatic, start, limit)
 }
-func (f *failOnStatusDB) DBUpdate(ctx context.Context, item *db.BatchItem) error {
+func (f *failOnStatusDB) DBUpdate(ctx context.Context, item *db.BatchItem, expectedStatus []byte) error {
 	if len(item.Status) > 0 {
 		var st openai.BatchStatusInfo
 		if err := json.Unmarshal(item.Status, &st); err == nil && st.Status == f.failStatus {
 			return f.failErr
 		}
 	}
-	return f.inner.DBUpdate(ctx, item)
+	return f.inner.DBUpdate(ctx, item, expectedStatus)
 }
 func (f *failOnStatusDB) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
 	return f.inner.DBDelete(ctx, IDs)
@@ -319,7 +322,10 @@ func (f *failOnStatusDB) Close() error { return f.inner.Close() }
 
 func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *clientset.Clientset) *Processor {
 	t.Helper()
-	p, err := NewProcessor(cfg, clients, testLogger(t))
+	if clients.InFlight == nil {
+		clients.InFlight = mockdb.NewMockInFlightClient()
+	}
+	p, err := NewProcessor(cfg, clients, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -347,6 +353,7 @@ func validProcessorClients(t testing.TB) *clientset.Clientset {
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Status:    mockdb.NewMockBatchStatusClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}
 }
@@ -375,8 +382,9 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Queue:     pqClient,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(inferClient),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}

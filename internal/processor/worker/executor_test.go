@@ -3415,8 +3415,9 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: resolver,
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}

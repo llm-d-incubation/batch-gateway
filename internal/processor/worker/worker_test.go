@@ -20,7 +20,7 @@ func TestClientsetFields_Assigned(t *testing.T) {
 func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.NumWorkers = 0
-	_, err := NewProcessor(cfg, &clientset.Clientset{}, testLogger(t))
+	_, err := NewProcessor(cfg, &clientset.Clientset{}, "test-pod", testLogger(t))
 	if err == nil {
 		t.Fatalf("expected error for NumWorkers=0")
 	}
@@ -29,7 +29,7 @@ func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
 func TestNewProcessor_InvalidGlobalConcurrency(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.Concurrency.Global = -1
-	_, err := NewProcessor(cfg, &clientset.Clientset{}, testLogger(t))
+	_, err := NewProcessor(cfg, &clientset.Clientset{}, "test-pod", testLogger(t))
 	if err == nil {
 		t.Fatalf("expected error for concurrency.global=-1")
 	}

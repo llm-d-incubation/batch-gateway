@@ -57,6 +57,10 @@ func (p *pqSpy) GetContext(parentCtx context.Context, timeLimit time.Duration) (
 	return context.WithTimeout(parentCtx, timeLimit)
 }
 
+func (p *pqSpy) PQGetIDs(ctx context.Context) (map[string]bool, error) {
+	return p.inner.PQGetIDs(ctx)
+}
+
 func (p *pqSpy) Close() error {
 	return p.inner.Close()
 }
@@ -78,8 +82,8 @@ func (d *dbGetErrWrapper) DBGet(ctx context.Context, query *db.BatchQuery, inclu
 	return nil, 0, false, d.err
 }
 
-func (d *dbGetErrWrapper) DBUpdate(ctx context.Context, job *db.BatchItem) error {
-	return d.inner.DBUpdate(ctx, job)
+func (d *dbGetErrWrapper) DBUpdate(ctx context.Context, job *db.BatchItem, expectedStatus []byte) error {
+	return d.inner.DBUpdate(ctx, job, expectedStatus)
 }
 
 func (d *dbGetErrWrapper) DBDelete(ctx context.Context, IDs []string) ([]string, error) {

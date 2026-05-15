@@ -106,7 +106,7 @@ func (m *MockDBClient[T, Q]) DBGet(
 	return
 }
 
-func (m *MockDBClient[T, Q]) DBUpdate(ctx context.Context, item *T) (err error) {
+func (m *MockDBClient[T, Q]) DBUpdate(ctx context.Context, item *T, expectedStatus []byte) (err error) {
 	if item == nil {
 		return fmt.Errorf("item is nil")
 	}

@@ -316,7 +316,7 @@ func TestRedisDSClient(t *testing.T) {
 		updId := batchesIDs[0]
 		updBatch := batches[updId]
 		updBatch.Status = []byte("statusUpdated")
-		err := batchClient.DBUpdate(context.Background(), updBatch)
+		err := batchClient.DBUpdate(context.Background(), updBatch, nil)
 		if err != nil {
 			t.Fatalf("Failed to update item: %v", err)
 		}
@@ -558,7 +558,7 @@ func TestRedisDSClient(t *testing.T) {
 		updId := filesIDs[0]
 		updFile := files[updId]
 		updFile.Status = []byte("statusUpdated")
-		err := fileClient.DBUpdate(context.Background(), updFile)
+		err := fileClient.DBUpdate(context.Background(), updFile, nil)
 		if err != nil {
 			t.Fatalf("Failed to update item: %v", err)
 		}
@@ -1581,7 +1581,7 @@ func TestRedisDSClient(t *testing.T) {
 				Status: []byte("updated"),
 			},
 		}
-		err = batchClient.DBUpdate(context.Background(), nonExistentBatch)
+		err = batchClient.DBUpdate(context.Background(), nonExistentBatch, nil)
 		if err != nil {
 			t.Fatalf("Update of non-existent item should not error: %v", err)
 		}
@@ -1594,7 +1594,7 @@ func TestRedisDSClient(t *testing.T) {
 				ID: "",
 			},
 		}
-		err = batchClient.DBUpdate(context.Background(), invalidUpdate)
+		err = batchClient.DBUpdate(context.Background(), invalidUpdate, nil)
 		if err == nil {
 			t.Fatalf("Expected error when updating batch with empty ID")
 		}
@@ -1735,7 +1735,7 @@ func TestRedisDSClient(t *testing.T) {
 				Status: []byte{},
 			},
 		}
-		err = batchClient.DBUpdate(context.Background(), updateBatch)
+		err = batchClient.DBUpdate(context.Background(), updateBatch, nil)
 		if err != nil {
 			t.Fatalf("Failed to update batch: %v", err)
 		}

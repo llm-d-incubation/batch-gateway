@@ -192,7 +192,7 @@ func TestFileUpdate(t *testing.T) {
 			WithArgs(pgxmock.AnyArg(), "file-1").
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-		if err := client.DBUpdate(ctx, item); err != nil {
+		if err := client.DBUpdate(ctx, item, nil); err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
 
@@ -205,7 +205,7 @@ func TestFileUpdate(t *testing.T) {
 		client, mock := newTestFileClient(t)
 		defer mock.Close()
 
-		if err := client.DBUpdate(ctx, nil); err == nil {
+		if err := client.DBUpdate(ctx, nil, nil); err == nil {
 			t.Fatal("expected error for nil item")
 		}
 	})
@@ -220,7 +220,7 @@ func TestFileUpdate(t *testing.T) {
 			WithArgs(pgxmock.AnyArg(), "nonexistent").
 			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
-		if err := client.DBUpdate(ctx, item); err == nil {
+		if err := client.DBUpdate(ctx, item, nil); err == nil {
 			t.Fatal("expected error for non-existent ID")
 		}
 

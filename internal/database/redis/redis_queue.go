@@ -184,6 +184,26 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 	return
 }
 
+func (c *ExchangeDBClientRedis) PQGetIDs(ctx context.Context) (map[string]bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
+	raw, err := redisScriptPQGetIDs.Run(cctx, c.redisClient,
+		[]string{priorityQueueKeyName}).StringSlice()
+	if err != nil {
+		return nil, fmt.Errorf("PQGetIDs: %w", err)
+	}
+
+	ids := make(map[string]bool, len(raw))
+	for _, id := range raw {
+		ids[id] = true
+	}
+	return ids, nil
+}
+
 func unrecognizedBlockingError(err error) bool {
 	errStr := err.Error()
 	unrecognized :=

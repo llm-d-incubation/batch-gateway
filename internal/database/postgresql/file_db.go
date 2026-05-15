@@ -113,12 +113,12 @@ func (c *PostgresFileDBClient) DBGet(
 	return
 }
 
-func (c *PostgresFileDBClient) DBUpdate(ctx context.Context, item *api.FileItem) (err error) {
+func (c *PostgresFileDBClient) DBUpdate(ctx context.Context, item *api.FileItem, expectedStatus []byte) (err error) {
 	if item == nil {
 		err = fmt.Errorf("item is nil")
 		return
 	}
-	if err = c.update(ctx, &item.BaseIndexes, &item.BaseContents); err != nil {
+	if err = c.update(ctx, &item.BaseIndexes, &item.BaseContents, expectedStatus); err != nil {
 		return
 	}
 	return

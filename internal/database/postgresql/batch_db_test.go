@@ -292,7 +292,7 @@ func TestBatchUpdate(t *testing.T) {
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "batch-1").
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-		if err := client.DBUpdate(ctx, item); err != nil {
+		if err := client.DBUpdate(ctx, item, nil); err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
 
@@ -305,7 +305,7 @@ func TestBatchUpdate(t *testing.T) {
 		client, mock := newTestBatchClient(t)
 		defer mock.Close()
 
-		if err := client.DBUpdate(ctx, nil); err == nil {
+		if err := client.DBUpdate(ctx, nil, nil); err == nil {
 			t.Fatal("expected error for nil item")
 		}
 	})

@@ -48,9 +48,10 @@ type endpointLimit struct {
 }
 
 type Processor struct {
-	cfg    *config.ProcessorConfig
-	tokens semaphore.Semaphore
-	wg     sync.WaitGroup
+	cfg         *config.ProcessorConfig
+	processorID string
+	tokens      semaphore.Semaphore
+	wg          sync.WaitGroup
 
 	// globalSem limits total in-flight inference requests across all workers.
 	// Fixed capacity — serves as a ceiling only.
@@ -69,6 +70,7 @@ type Processor struct {
 	updater *StatusUpdater
 
 	event     db.BatchEventChannelClient // cancel-event subscription
+	inflight  db.InFlightClient          // in-flight job tracking for orphan recovery
 	inference *inference.GatewayResolver // model → gateway routing
 	files     *fileManager
 }
@@ -76,6 +78,7 @@ type Processor struct {
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
+	processorID string,
 	logger logr.Logger,
 ) (*Processor, error) {
 	if cfg.NumWorkers <= 0 {
@@ -87,12 +90,14 @@ func NewProcessor(
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
-		cfg:       cfg,
-		poller:    poller,
-		updater:   updater,
-		event:     clients.Event,
-		inference: clients.Inference,
-		files:     newFileManager(clients.File, clients.FileDB),
+		cfg:         cfg,
+		processorID: processorID,
+		poller:      poller,
+		updater:     updater,
+		event:       clients.Event,
+		inflight:    clients.InFlight,
+		inference:   clients.Inference,
+		files:       newFileManager(clients.File, clients.FileDB),
 	}, nil
 }
 
@@ -225,11 +230,19 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		// when there's no waiting tasks in the queue or poller returned an error
 		if task == nil || err != nil {
+
 			// wait for poll interval to protect db from frequent queueing
 			if !p.releaseAndWaitPollInterval(pollingCtx) {
 				return nil
 			}
 			continue
+		}
+
+		// Record in-flight entry immediately after dequeue so the orphan
+		// reconciler can track this job. Non-fatal on error: the reconciler
+		// can still detect orphans via DB + queue cross-reference.
+		if err := p.inflight.InFlightSet(pollingCtx, task.ID, p.processorID); err != nil {
+			logr.FromContextOrDiscard(pollingCtx).Error(err, "Failed to set in-flight entry", "jobId", task.ID)
 		}
 
 		// Pre-launch: use pollingCtx so guard cancel / SIGTERM interrupts
@@ -251,6 +264,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
+				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
 				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue")
 			}
@@ -262,6 +276,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 		if jobItem == nil {
 			pollLogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
 			p.releaseForNextPoll()
+			p.deleteInFlight(pollCtx, task.ID)
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonDBInconsistency)
 			continue
 		}
@@ -285,6 +300,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil, nil); failErr != nil {
 				pollLogger.Error(failErr, "Failed to mark malformed job as failed")
 			}
+			p.deleteInFlight(pollCtx, task.ID)
 			continue
 		}
 
@@ -305,6 +321,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			}
 
 			p.releaseForNextPoll()
+			p.deleteInFlight(pollCtx, task.ID)
 			recordE2ELatency(jobInfo, metrics.E2EStatusExpired)
 			metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredDequeue)
 			continue
@@ -322,6 +339,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 					continue
 				}
 				p.releaseForNextPoll()
+				p.deleteInFlight(pollCtx, task.ID)
 				recordE2ELatency(jobInfo, metrics.E2EStatusCancelled)
 				metrics.RecordCancellation(metrics.CancelPhaseQueued)
 				metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
@@ -331,6 +349,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			pollLogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
 
 			p.releaseForNextPoll()
+			p.deleteInFlight(pollCtx, task.ID)
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonNotRunnableState)
 			continue
 		}
@@ -349,8 +368,10 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil, jobInfo); failErr != nil {
 					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
 				}
+				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
 			} else {
+				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
 				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue during graceful shutdown")
 			}
@@ -397,6 +418,29 @@ func (p *Processor) releaseForNextPoll() {
 	p.release()
 }
 
+func (p *Processor) deleteInFlight(ctx context.Context, jobID string) {
+	if err := p.inflight.InFlightDelete(ctx, jobID); err != nil {
+		logr.FromContextOrDiscard(ctx).Error(err, "Failed to delete in-flight entry", "jobId", jobID)
+	}
+}
+
+func (p *Processor) heartbeat(ctx context.Context, jobID string) {
+	logger := logr.FromContextOrDiscard(ctx)
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := p.inflight.InFlightSet(ctx, jobID, p.processorID); err != nil {
+				logger.Error(err, "Failed to refresh in-flight heartbeat", "jobId", jobID)
+			}
+		}
+	}
+}
+
 // pre-flight check
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := logr.FromContextOrDiscard(ctx)
@@ -424,6 +468,9 @@ func (p *Processor) validate() error {
 	}
 	if p.event == nil {
 		return fmt.Errorf("event channel client is missing")
+	}
+	if p.inflight == nil {
+		return fmt.Errorf("in-flight client is missing")
 	}
 	if p.inference == nil {
 		return fmt.Errorf("inference client is missing")

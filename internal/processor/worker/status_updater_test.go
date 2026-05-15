@@ -33,7 +33,7 @@ func (d *dbUpdateErrWrapper) DBStore(ctx context.Context, item *db.BatchItem) er
 func (d *dbUpdateErrWrapper) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
 	return d.inner.DBGet(ctx, query, includeStatic, start, limit)
 }
-func (d *dbUpdateErrWrapper) DBUpdate(ctx context.Context, item *db.BatchItem) error {
+func (d *dbUpdateErrWrapper) DBUpdate(ctx context.Context, item *db.BatchItem, expectedStatus []byte) error {
 	return d.err
 }
 func (d *dbUpdateErrWrapper) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
@@ -59,12 +59,12 @@ func (d *dbUpdateFailOnceWrapper) DBStore(ctx context.Context, item *db.BatchIte
 func (d *dbUpdateFailOnceWrapper) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
 	return d.inner.DBGet(ctx, query, includeStatic, start, limit)
 }
-func (d *dbUpdateFailOnceWrapper) DBUpdate(ctx context.Context, item *db.BatchItem) error {
+func (d *dbUpdateFailOnceWrapper) DBUpdate(ctx context.Context, item *db.BatchItem, expectedStatus []byte) error {
 	d.calls++
 	if d.calls <= d.failCount {
 		return fmt.Errorf("simulated DB update failure (call %d)", d.calls)
 	}
-	return d.inner.DBUpdate(ctx, item)
+	return d.inner.DBUpdate(ctx, item, expectedStatus)
 }
 func (d *dbUpdateFailOnceWrapper) DBDelete(ctx context.Context, IDs []string) ([]string, error) {
 	return d.inner.DBDelete(ctx, IDs)

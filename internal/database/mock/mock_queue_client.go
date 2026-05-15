@@ -116,6 +116,17 @@ func (m *MockBatchPriorityQueueClient) PQDelete(ctx context.Context, jobPriority
 	return 0, nil
 }
 
+func (m *MockBatchPriorityQueueClient) PQGetIDs(ctx context.Context) (map[string]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ids := make(map[string]bool, len(m.queue))
+	for _, jp := range m.queue {
+		ids[jp.ID] = true
+	}
+	return ids, nil
+}
+
 func (m *MockBatchPriorityQueueClient) GetContext(parentCtx context.Context, timeLimit time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parentCtx, timeLimit)
 }

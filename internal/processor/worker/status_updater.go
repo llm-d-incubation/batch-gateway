@@ -122,7 +122,7 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		BaseContents: db.BaseContents{
 			Status: statusBytes,
 		},
-	}); err != nil {
+	}, nil); err != nil {
 		return err
 	}
 	logger := logr.FromContextOrDiscard(ctx)

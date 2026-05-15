@@ -110,7 +110,7 @@ func getUpdateFields(status []byte, tags db_api.Tags) (
 	return
 }
 
-func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem) (err error) {
+func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchItem, expectedStatus []byte) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -118,10 +118,10 @@ func (c *BatchDBClientRedis) DBUpdate(ctx context.Context, item *db_api.BatchIte
 	if err = item.Validate(); err != nil {
 		return
 	}
-	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeBatch, "DBUpdate[Batch]")
+	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeBatch, "DBUpdate[Batch]", expectedStatus)
 }
 
-func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem) (err error) {
+func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem, expectedStatus []byte) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -129,12 +129,12 @@ func (c *FileDBClientRedis) DBUpdate(ctx context.Context, item *db_api.FileItem)
 	if err = item.Validate(); err != nil {
 		return
 	}
-	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeFile, "DBUpdate[File]")
+	return c.dbUpdate(ctx, &item.BaseIndexes, &item.BaseContents, itemTypeFile, "DBUpdate[File]", expectedStatus)
 }
 
 func (c *DSClientRedis) dbUpdate(ctx context.Context,
 	indexes *db_api.BaseIndexes, contents *db_api.BaseContents,
-	itemType, logPref string) (err error) {
+	itemType, logPref string, expectedStatus []byte) (err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -150,11 +150,24 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 		return nil
 	}
 
+	key := getKeyForStore(indexes.ID, itemType)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	err = c.redisClient.HSet(cctx, getKeyForStore(indexes.ID, itemType), fields...).Err()
-	if err != nil {
-		return
+
+	if len(expectedStatus) > 0 {
+		result, casErr := redisScriptCASUpdate.Run(cctx, c.redisClient,
+			[]string{key}, expectedStatus, fields).Text()
+		if casErr != nil {
+			return casErr
+		}
+		if result == "CONFLICT" {
+			return fmt.Errorf("%w: status changed since read", db_api.ErrConflict)
+		}
+	} else {
+		err = c.redisClient.HSet(cctx, key, fields...).Err()
+		if err != nil {
+			return
+		}
 	}
 
 	logger.Info(logPref+": succeeded", "updatedStatus", updatedStatus, "updatedTags", updatedTags)

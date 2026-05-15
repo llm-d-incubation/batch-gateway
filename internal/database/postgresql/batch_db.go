@@ -100,12 +100,12 @@ func (c *PostgresBatchDBClient) DBGet(
 	return
 }
 
-func (c *PostgresBatchDBClient) DBUpdate(ctx context.Context, item *api.BatchItem) (err error) {
+func (c *PostgresBatchDBClient) DBUpdate(ctx context.Context, item *api.BatchItem, expectedStatus []byte) (err error) {
 	if item == nil {
 		err = fmt.Errorf("item is nil")
 		return
 	}
-	if err = c.update(ctx, &item.BaseIndexes, &item.BaseContents); err != nil {
+	if err = c.update(ctx, &item.BaseIndexes, &item.BaseContents, expectedStatus); err != nil {
 		return
 	}
 	return

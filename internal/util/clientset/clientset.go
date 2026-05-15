@@ -47,6 +47,7 @@ type Clientset struct {
 	Queue     dbapi.BatchPriorityQueueClient
 	Event     dbapi.BatchEventChannelClient
 	Status    dbapi.BatchStatusClient
+	InFlight  dbapi.InFlightClient
 	Inference *inference.GatewayResolver
 }
 
@@ -213,6 +214,7 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 		cs.Queue = redisClient
 		cs.Event = redisClient
 		cs.Status = redisClient
+		cs.InFlight = redisClient
 	}
 
 	// build file store client

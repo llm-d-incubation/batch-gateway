@@ -569,7 +569,7 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := c.clients.BatchDB.DBUpdate(ctx, dbItem); err != nil {
+	if err := c.clients.BatchDB.DBUpdate(ctx, dbItem, nil); err != nil {
 		logger.Error(err, "failed to update batch in database")
 		common.WriteInternalServerError(w, r)
 		return

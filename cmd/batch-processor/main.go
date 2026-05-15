@@ -117,7 +117,7 @@ func run() error {
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc, err := worker.NewProcessor(cfg, procClients, logger)
+	proc, err := worker.NewProcessor(cfg, procClients, hostname, logger)
 	if err != nil {
 		logger.Error(err, "Failed to create processor")
 		return err

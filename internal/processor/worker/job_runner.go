@@ -47,7 +47,16 @@ import (
 // Declared as var (not const) so tests can shorten it.
 var panicRecoveryTimeout = time.Minute
 
+// heartbeatInterval controls how often the processor refreshes its in-flight
+// entry for a running job. The orphan reconciler uses staleness (no heartbeat
+// for > reconciler interval) to detect abandoned jobs.
+const heartbeatInterval = 5 * time.Minute
+
 func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
+	// Clean up in-flight entry on exit (first defer = last to run via LIFO),
+	// ensuring the entry is removed regardless of how runJob terminates.
+	defer p.deleteInFlight(context.Background(), params.jobItem.ID)
+
 	// Restore parent trace context propagated from the apiserver via Redis tags
 	if len(params.jobInfo.TraceContext) > 0 {
 		propagator := otel.GetTextMapPropagator()
@@ -148,6 +157,11 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// watch for cancel event
 	params.eventWatcher = eventWatcher
 	go p.watchCancel(ctx, params)
+
+	// Start heartbeat: periodically refreshes the in-flight entry so the
+	// orphan reconciler knows this job is still being actively processed.
+	// Stops when ctx is cancelled (SIGTERM) or the job finishes.
+	go p.heartbeat(ctx, params.jobItem.ID)
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
 	if err := p.preProcessJob(ctx, sloCtx, userCancelCtx, params.jobInfo); err != nil {

@@ -39,8 +39,9 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 		Queue:     spyQueue,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -543,7 +544,7 @@ type failOnNthBatchDB struct {
 	failErr error
 }
 
-func (f *failOnNthBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem) error {
+func (f *failOnNthBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem, expectedStatus []byte) error {
 	f.mu.Lock()
 	f.callN++
 	n := f.callN
@@ -551,7 +552,7 @@ func (f *failOnNthBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem) err
 	if n == f.failOn {
 		return f.failErr
 	}
-	return f.BatchDBClient.DBUpdate(ctx, item)
+	return f.BatchDBClient.DBUpdate(ctx, item, expectedStatus)
 }
 
 // failPQ wraps a BatchPriorityQueueClient and always fails PQEnqueue.
@@ -586,8 +587,9 @@ func newRecoveryTestProcessorWithFailDB(t *testing.T, workDir string, failOn int
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -603,7 +605,7 @@ type alwaysFailUpdateDB struct {
 	err error
 }
 
-func (f *alwaysFailUpdateDB) DBUpdate(_ context.Context, _ *db.BatchItem) error {
+func (f *alwaysFailUpdateDB) DBUpdate(_ context.Context, _ *db.BatchItem, _ []byte) error {
 	return f.err
 }
 
@@ -625,8 +627,9 @@ func TestRecoverJob_Cancelling_AllUpdatesFail_ReturnsError(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -669,8 +672,9 @@ func TestRecoverJob_Validating_EnqueueFails_FallsBackToFailed(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -717,8 +721,9 @@ func TestRecoverJob_InProgressReEnqueue_EnqueueFails_FallsBackToFailed(t *testin
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -852,8 +857,9 @@ func TestRecoverStaleJobs_RunsConcurrently(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
@@ -1028,8 +1034,9 @@ func TestRecoverJob_ExpiredWriteFails_FallbackToFailed(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
+		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
-	}, testLogger(t))
+	}, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}

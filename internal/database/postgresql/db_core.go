@@ -352,7 +352,10 @@ func (c *pgCore) get(
 }
 
 // update updates the dynamic fields of an existing item.
-func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api.BaseContents) error {
+// When expectedStatus is non-nil, the update is conditional (CAS): it only
+// succeeds if the current status column matches expectedStatus exactly.
+// Returns api.ErrConflict on mismatch.
+func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api.BaseContents, expectedStatus []byte) error {
 	if err := idx.Validate(); err != nil {
 		return err
 	}
@@ -383,9 +386,17 @@ func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api
 	}
 
 	args = append(args, idx.ID)
+	whereClause := fmt.Sprintf(colID+" = $%d", argIdx)
+	argIdx++
+
+	if len(expectedStatus) > 0 {
+		args = append(args, expectedStatus)
+		whereClause += fmt.Sprintf(" AND "+colStatus+" = $%d", argIdx)
+	}
+
 	sql := fmt.Sprintf(
-		"UPDATE %s SET %s WHERE "+colID+" = $%d",
-		c.desc.TableName(), strings.Join(setClauses, ", "), argIdx,
+		"UPDATE %s SET %s WHERE %s",
+		c.desc.TableName(), strings.Join(setClauses, ", "), whereClause,
 	)
 
 	result, err := c.pool.Exec(ctx, sql, args...)
@@ -394,6 +405,9 @@ func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api
 	}
 
 	if result.RowsAffected() == 0 {
+		if len(expectedStatus) > 0 {
+			return fmt.Errorf("%w: status changed since read", api.ErrConflict)
+		}
 		return fmt.Errorf("DBUpdate: item %s not found", idx.ID)
 	}
 

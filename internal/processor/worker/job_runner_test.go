@@ -412,7 +412,7 @@ func (d *dbBlockingUpdateWrapper) DBStore(ctx context.Context, item *db.BatchIte
 func (d *dbBlockingUpdateWrapper) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
 	return d.inner.DBGet(ctx, query, includeStatic, start, limit)
 }
-func (d *dbBlockingUpdateWrapper) DBUpdate(ctx context.Context, _ *db.BatchItem) error {
+func (d *dbBlockingUpdateWrapper) DBUpdate(ctx context.Context, _ *db.BatchItem, _ []byte) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
