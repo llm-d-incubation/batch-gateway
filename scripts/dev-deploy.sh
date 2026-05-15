@@ -25,6 +25,7 @@ VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_429_MODEL="${VLLM_SIM_429_MODEL:-sim-model-429}"
 VLLM_SIM_ALWAYS_FAIL_MODEL="${VLLM_SIM_ALWAYS_FAIL_MODEL:-sim-model-always-fail}"
+VLLM_SIM_AIMD_MODEL="${VLLM_SIM_AIMD_MODEL:-sim-model-aimd}"
 VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 JAEGER_IMAGE="${JAEGER_IMAGE:-${IMAGE_REGISTRY}/jaegertracing/all-in-one:latest}"
 PROMETHEUS_IMAGE="${PROMETHEUS_IMAGE:-${IMAGE_REGISTRY}/prom/prometheus:latest}"
@@ -1047,6 +1048,12 @@ install_batch_gateway() {
         --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.maxRetries=1"
         --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.initialBackoff=500ms"
         --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.maxBackoff=1s"
+        # AIMD recovery test model: starts at 100% rate_limit, patched to 0% mid-test.
+        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.url=http://${VLLM_SIM_AIMD_NAME}.${NAMESPACE}.svc.cluster.local:8000"
+        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.requestTimeout=2m"
+        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.maxRetries=10"
+        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.initialBackoff=500ms"
+        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.maxBackoff=5s"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}"
         --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}"
         --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}"
@@ -1301,6 +1308,7 @@ print_usage() {
     echo "       - sim-model-b   (vLLM simulator at ${VLLM_SIM_B_NAME})"
     echo "       - sim-model-429 (vLLM simulator at ${VLLM_SIM_429_NAME}, 50% rate_limit failure injection)"
     echo "       - sim-model-always-fail (vLLM simulator at ${VLLM_SIM_ALWAYS_FAIL_NAME}, 100% rate_limit failure injection)"
+    echo "       - sim-model-aimd (vLLM simulator at ${VLLM_SIM_AIMD_NAME}, AIMD recovery test — starts 100% rate_limit, patched to 0% mid-test)"
     if [ "${ENABLE_GIE}" = "true" ]; then
     echo ""
     echo "     GIE (flow control) is enabled:"
@@ -1397,6 +1405,8 @@ main() {
     install_vllm_sim "${VLLM_SIM_429_NAME}" "${VLLM_SIM_429_MODEL}" "10ms" "10ms" \
         "--failure-injection-rate=50" "--failure-types=rate_limit"
     install_vllm_sim "${VLLM_SIM_ALWAYS_FAIL_NAME}" "${VLLM_SIM_ALWAYS_FAIL_MODEL}" "10ms" "10ms" \
+        "--failure-injection-rate=100" "--failure-types=rate_limit"
+    install_vllm_sim "${VLLM_SIM_AIMD_NAME}" "${VLLM_SIM_AIMD_MODEL}" "10ms" "10ms" \
         "--failure-injection-rate=100" "--failure-types=rate_limit"
     if [ "${ENABLE_GIE}" = "true" ]; then
         ensure_gie_repo

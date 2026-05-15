@@ -39,6 +39,7 @@ VLLM_SIM_NAME="${VLLM_SIM_NAME:-vllm-sim}"
 VLLM_SIM_B_NAME="${VLLM_SIM_B_NAME:-vllm-sim-b}"
 VLLM_SIM_429_NAME="${VLLM_SIM_429_NAME:-vllm-sim-429}"
 VLLM_SIM_ALWAYS_FAIL_NAME="${VLLM_SIM_ALWAYS_FAIL_NAME:-vllm-sim-always-fail}"
+VLLM_SIM_AIMD_NAME="${VLLM_SIM_AIMD_NAME:-vllm-sim-aimd}"
 MINIO_NAME="${MINIO_NAME:-minio}"
 
 # Secret and PVC names
