@@ -114,9 +114,9 @@ and allow setting a shared name:
 ]
 ```
 
-In this case `request:optimized-baseline` and `result:$batch:optimized-baseline` would be inferred automatically.
+In this case `requests:optimized-baseline` and `results:$batch:optimized-baseline` would be inferred automatically.
 
-The dispatcher pulls up to `batchSize × (D − B)` requests per poll cycle and forwards them to the inference gateway. Results are written to the result queue. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
+The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. Results are written to the result queue. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
 ### Future Extension: Queue Registry
 
@@ -139,7 +139,7 @@ Note: The request queue is currently implemented by a **Redis SortedSet** that h
 
 Unlike direct dispatch to the inference gateway — where the EPP's flow control limits how many requests can be in-flight and excess requests are rejected with HTTP 429 — **the request queue is a passive buffer with no backpressure on writes**. The producer can enqueue requests as fast as it can read plan entries, without throttling or semaphore gating. This is safe because:
 
-1. **Flow control is deferred to the dispatcher.** The [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) gates how many requests leave the queue per cycle (`N = max_SYS × (D − B)`). Enqueuing more requests than the dispatcher can immediately process simply means they wait in the queue until capacity opens up — they do not reach the inference gateway or compete with online traffic.
+1. **Flow control is deferred to the dispatcher.** The [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) gates how many requests leave the queue per poll cycle. The gate returns a `budget` value in [0, 1] representing remaining system capacity (generally `budget = D − B`, where `D` is the dispatch budget and `B` is the reserved baseline). The dispatcher pops up to `max_SYS × budget` requests per cycle, where `max_SYS` is a configurable measure of total system capacity. Enqueuing more requests than the dispatcher can immediately process simply means they wait in the queue until capacity opens up — they do not reach the inference gateway or compete with online traffic.
 
 2. **The queue is cheap storage.** Redis sorted sets are memory-efficient for this workload. Each request message is a few KB; even a full 50,000-request batch job at ~2 KB per message is ~100 MB — well within Redis capacity and far cheaper than holding in-flight HTTP connections.
 
@@ -184,7 +184,7 @@ As described above, the producer does not need to throttle enqueue operations. I
 
 ### Dispatcher (reads from request queue)
 
-The dispatcher ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)) periodically polls the sorted set. On each cycle, it computes the budget on its "Dispatch Gate" to determine the current dispatch budget $D$. If $D > B$ (the reserved baseline), it pops up to `batchSize × (D − B)` requests (lowest score = earliest deadline first) and forwards them to the inference gateway via HTTP. See [Dispatch Budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) for the full gating logic.
+The dispatcher ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)) periodically polls the sorted set. On each cycle, it computes the budget on its "Dispatch Gate" to determine the current dispatch budget $D$. If $D > B$ (the reserved baseline), it pops up to `max_SYS × budget` requests (lowest score = earliest deadline first) and forwards them to the inference gateway via HTTP. See [Dispatch Budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) for the full gating logic.
 
 The dispatcher requires no changes to support this integration, it already implements the Redis sorted-set flow with dispatch budget gating. Only the queue names need to match the naming convention.
 
