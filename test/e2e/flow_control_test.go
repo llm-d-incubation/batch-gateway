@@ -328,6 +328,10 @@ func doTestGIEHeaderPropagation(t *testing.T) {
 func doTestBatchCompletionThroughEPP(t *testing.T) {
 	t.Helper()
 
+	t.Cleanup(func() {
+		deleteEPPMetricsCurlPod(t)
+	})
+
 	eppPrefix := getEnvOrDefault("GIE_EPP_RELEASE", "epp")
 	eppDeployments := []string{
 		fmt.Sprintf("%s-%s-epp", eppPrefix, testModel),
@@ -532,6 +536,19 @@ spec:
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("failed to create EPP metrics scrape pod: %v\n%s", err, out)
+	}
+}
+
+func deleteEPPMetricsCurlPod(t *testing.T) {
+	t.Helper()
+
+	out, err := exec.Command("kubectl", "delete", "pod",
+		eppMetricsCurlPod,
+		"-n", testNamespace,
+		"--ignore-not-found",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to delete EPP metrics scrape pod: %v\n%s", err, out)
 	}
 }
 
