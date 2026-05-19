@@ -226,12 +226,12 @@ const asyncTenantID = "$batch"
 
 // RequestQueueName returns the Redis sorted-set name for submitting async requests to the given pool.
 func RequestQueueName(poolName string) string {
-	return "requests:" + poolName
+	return "llm-d-async:requests:" + poolName
 }
 
 // ResultQueueName returns the Redis list name for collecting async results from the given pool.
 func ResultQueueName(poolName string) string {
-	return "results:" + asyncTenantID + ":" + poolName
+	return "llm-d-async:results:" + asyncTenantID + ":" + poolName
 }
 
 // IsAsync returns true when the processor is configured for async dispatch.
