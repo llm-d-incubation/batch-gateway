@@ -212,7 +212,7 @@ type ModelGatewayConfig struct {
 	TLSClientKeyFile      string `yaml:"tls_client_key_file,omitempty"`
 
 	// PoolName identifies the async dispatch pool for this model/gateway.
-	// Queue names are derived as "request:{PoolName}" / "result:{PoolName}".
+	// Queue names are derived as "requests:{PoolName}" / "results:{tenant}:{PoolName}".
 	// Required when dispatch_mode is "async". Ignored in sync mode.
 	PoolName string `yaml:"pool_name"`
 }
@@ -223,16 +223,16 @@ type BucketConfig struct {
 	BucketCount  int     `yaml:"count"`
 }
 
-const asyncTenantID = "batch-gateway"
+const asyncTenantID = "$batch"
 
 // RequestQueueName returns the Redis sorted-set name for submitting async requests to the given pool.
 func RequestQueueName(poolName string) string {
-	return "request:" + poolName
+	return "requests:" + poolName
 }
 
 // ResultQueueName returns the Redis list name for collecting async results from the given pool.
 func ResultQueueName(poolName string) string {
-	return "result:" + asyncTenantID + ":" + poolName
+	return "results:" + asyncTenantID + ":" + poolName
 }
 
 // IsAsync returns true when the processor is configured for async dispatch.

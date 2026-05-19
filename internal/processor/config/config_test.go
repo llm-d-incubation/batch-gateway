@@ -779,11 +779,11 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 }
 
 func TestQueueNameHelpers(t *testing.T) {
-	if got := RequestQueueName("pool-a"); got != "request:pool-a" {
-		t.Fatalf("RequestQueueName(\"pool-a\") = %q, want %q", got, "request:pool-a")
+	if got := RequestQueueName("pool-a"); got != "requests:pool-a" {
+		t.Fatalf("RequestQueueName(\"pool-a\") = %q, want %q", got, "requests:pool-a")
 	}
-	if got := ResultQueueName("pool-a"); got != "result:batch-gateway:pool-a" {
-		t.Fatalf("ResultQueueName(\"pool-a\") = %q, want %q", got, "result:batch-gateway:pool-a")
+	if got := ResultQueueName("pool-a"); got != "results:$batch:pool-a" {
+		t.Fatalf("ResultQueueName(\"pool-a\") = %q, want %q", got, "results:$batch:pool-a")
 	}
 }
 
