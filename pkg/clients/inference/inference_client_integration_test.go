@@ -140,9 +140,15 @@ func testHTTPClientBasicInference(t *testing.T) {
 	})
 
 	t.Run("should handle concurrent requests correctly", func(t *testing.T) {
-		// Verifies connection pooling and thread safety
+		// Verifies connection pooling and thread safety.
+		//
+		// Channel is typed *ClientError (the concrete return type of Generate)
+		// rather than the error interface: assigning a nil concrete pointer
+		// (*ClientError)(nil) into an interface produces a non-nil interface
+		// value with a nil underlying pointer, so `inferr != nil` on the
+		// receiving side would always be true. See #438.
 		const numRequests = 10
-		results := make(chan error, numRequests)
+		results := make(chan *ClientError, numRequests)
 
 		for i := 0; i < numRequests; i++ {
 			go func(id int) {

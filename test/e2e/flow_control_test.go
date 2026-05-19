@@ -34,6 +34,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -322,12 +323,24 @@ func doTestGIEHeaderPropagation(t *testing.T) {
 }
 
 // doTestBatchCompletionThroughEPP verifies multi-model batch completion through
-// separate EPP instances, confirming each EPP received requests.
+// separate EPP instances by checking each EPP's dispatched-request metric.
+// We prefer metrics here because log sampling via --since-time proved flaky.
 func doTestBatchCompletionThroughEPP(t *testing.T) {
 	t.Helper()
 
-	sinceTime := time.Now().UTC().Format(time.RFC3339Nano)
+	t.Cleanup(func() {
+		deleteEPPMetricsCurlPod(t)
+	})
+
 	eppPrefix := getEnvOrDefault("GIE_EPP_RELEASE", "epp")
+	eppDeployments := []string{
+		fmt.Sprintf("%s-%s-epp", eppPrefix, testModel),
+		fmt.Sprintf("%s-%s-epp", eppPrefix, testModelB),
+	}
+	beforeCounts := make(map[string]float64, len(eppDeployments))
+	for _, deployment := range eppDeployments {
+		beforeCounts[deployment] = getEPPDispatchedCount(t, deployment)
+	}
 
 	multiModelJSONL := strings.Join([]string{
 		fmt.Sprintf(`{"custom_id":"fc-req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello from model A"}]}}`, testModel),
@@ -349,14 +362,8 @@ func doTestBatchCompletionThroughEPP(t *testing.T) {
 	validateTerminalBatch(t, batch)
 	validateBatchResults(t, batch, *result)
 
-	for _, model := range []string{testModel, testModelB} {
-		eppDeployment := fmt.Sprintf("%s-%s-epp", eppPrefix, model)
-		eppLogs := getEPPLogsSince(t, eppDeployment, sinceTime)
-
-		if !strings.Contains(eppLogs, "EPP received request") {
-			t.Errorf("EPP %s did not receive requests since %s;\nlog sample:\n%s",
-				eppDeployment, sinceTime, truncateLog(eppLogs, 500))
-		}
+	for _, deployment := range eppDeployments {
+		assertEPPDispatchedDelta(t, deployment, beforeCounts[deployment], 1, 15*time.Second)
 	}
 }
 
@@ -384,6 +391,165 @@ func truncateLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+const (
+	eppMetricsCurlPod = "batch-gateway-epp-metrics-curl"
+)
+
+var eppDispatchedCountPattern = regexp.MustCompile(`(?m)^inference_extension_flow_control_request_queue_duration_seconds_count\{([^}]*)\}\s+([0-9.e+-]+)$`)
+
+func assertEPPDispatchedDelta(
+	t *testing.T,
+	deployment string,
+	before float64,
+	minDelta float64,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var lastCount float64
+	var lastSample string
+	for time.Now().Before(deadline) {
+		lastCount, lastSample = getEPPDispatchedCountAndSample(t, deployment)
+		if lastCount-before >= minDelta {
+			t.Logf("EPP %s dispatched count advanced from %.0f to %.0f", deployment, before, lastCount)
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	t.Errorf("EPP %s did not dispatch >= %.0f request(s); before=%.0f after=%.0f\nmetric sample:\n%s",
+		deployment, minDelta, before, lastCount, lastSample)
+}
+
+func getEPPDispatchedCount(t *testing.T, deployment string) float64 {
+	t.Helper()
+
+	count, _ := getEPPDispatchedCountAndSample(t, deployment)
+	return count
+}
+
+func getEPPDispatchedCountAndSample(t *testing.T, deployment string) (float64, string) {
+	t.Helper()
+
+	metrics := scrapeEPPMetrics(t, deployment)
+	matches := eppDispatchedCountPattern.FindAllStringSubmatch(metrics, -1)
+	if len(matches) == 0 {
+		return 0, truncateLog(metrics, 1000)
+	}
+
+	var total float64
+	lines := make([]string, 0, len(matches))
+	for _, match := range matches {
+		labels := match[1]
+		if !strings.Contains(labels, `outcome="Dispatched"`) {
+			continue
+		}
+		value, err := strconv.ParseFloat(match[2], 64)
+		if err != nil {
+			t.Fatalf("failed to parse dispatched count for %s: %v", deployment, err)
+		}
+		total += value
+		lines = append(lines,
+			fmt.Sprintf("inference_extension_flow_control_request_queue_duration_seconds_count{%s} %s", labels, match[2]))
+	}
+	if len(lines) == 0 {
+		return 0, truncateLog(metrics, 1000)
+	}
+	return total, strings.Join(lines, "\n")
+}
+
+func scrapeEPPMetrics(t *testing.T, deployment string) string {
+	t.Helper()
+
+	ensureEPPMetricsCurlPod(t)
+
+	out, err := exec.Command("kubectl", "exec",
+		"-n", testNamespace,
+		eppMetricsCurlPod,
+		"--",
+		"curl",
+		"-sS",
+		fmt.Sprintf("http://%s.%s.svc.cluster.local:9090/metrics", deployment, testNamespace),
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to scrape metrics for %s: %v\n%s", deployment, err, out)
+	}
+	return string(out)
+}
+
+func ensureEPPMetricsCurlPod(t *testing.T) {
+	t.Helper()
+
+	if phaseOut, err := exec.Command("kubectl", "get", "pod",
+		eppMetricsCurlPod,
+		"-n", testNamespace,
+		"-o", "jsonpath={.status.phase}",
+	).CombinedOutput(); err != nil || strings.TrimSpace(string(phaseOut)) == "" {
+		createEPPMetricsCurlPod(t)
+	} else {
+		phase := strings.TrimSpace(string(phaseOut))
+		if phase != "Running" && phase != "Pending" {
+			out, deleteErr := exec.Command("kubectl", "delete", "pod",
+				eppMetricsCurlPod,
+				"-n", testNamespace,
+				"--ignore-not-found",
+			).CombinedOutput()
+			if deleteErr != nil {
+				t.Fatalf("failed to delete stale EPP metrics scrape pod: %v\n%s", deleteErr, out)
+			}
+			createEPPMetricsCurlPod(t)
+		}
+	}
+
+	waitOut, err := exec.Command("kubectl", "wait",
+		"--for=condition=Ready",
+		fmt.Sprintf("pod/%s", eppMetricsCurlPod),
+		"-n", testNamespace,
+		"--timeout=90s",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to wait for EPP metrics curl pod: %v\n%s", err, waitOut)
+	}
+}
+
+func createEPPMetricsCurlPod(t *testing.T) {
+	t.Helper()
+
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:8.8.0
+    command: ["sleep", "3600"]
+`, eppMetricsCurlPod, testNamespace)
+
+	cmd := exec.Command("kubectl", "create", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create EPP metrics scrape pod: %v\n%s", err, out)
+	}
+}
+
+func deleteEPPMetricsCurlPod(t *testing.T) {
+	t.Helper()
+
+	out, err := exec.Command("kubectl", "delete", "pod",
+		eppMetricsCurlPod,
+		"-n", testNamespace,
+		"--ignore-not-found",
+	).CombinedOutput()
+	if err != nil {
+		t.Errorf("cleanup: failed to delete EPP metrics scrape pod: %v\n%s", err, out)
+	}
 }
 
 // getProcessorConfigObjective reads the deployed processor ConfigMap and
