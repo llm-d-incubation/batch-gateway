@@ -934,6 +934,7 @@ VALUESEOF
     local helm_args=(
         --namespace "${NAMESPACE}"
         --set "inferenceExtension.image.tag=${GIE_VERSION}"
+        --set inferenceExtension.monitoring.prometheus.auth.enabled=false
         --set inferenceExtension.sidecar.enabled=true
         --set "inferenceExtension.sidecar.configMap.name=envoy-${sim_model}"
         --set "inferenceExtension.sidecar.volumes[0].name=config"
