@@ -51,8 +51,10 @@ Queue names follow a fixed convention keyed by the inference pool name:
 
 | Queue | Redis Type | Name Pattern | Example |
 |-------|-----------|--------------|---------|
-| Request queue | Sorted Set | `requests:{pool_name}` | `requests:optimized-baseline` |
-| Result queue | List | `results:{tenant_id}:{pool_name}` | `results:$batch:optimized-baseline` |
+| Request queue | Sorted Set | `{prefix}:requests:{pool_name}` | `my-install:requests:optimized-baseline` |
+| Result queue | List | `{prefix}:results:{tenant_id}:{pool_name}` | `my-install:results:$batch:optimized-baseline` |
+
+The `prefix` is a configurable namespace that allows multiple installations to share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier).
 
 The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. The llm-d-async [Producer](https://github.com/llm-d-incubation/llm-d-async/blob/main/producer/redis_sortedset_producer.go) library accepts arbitrary queue name strings; this naming convention is ours, applied when wiring the batch-processor and dispatcher together.
 
@@ -71,10 +73,12 @@ dispatch_mode: "async"
 model_gateways:
   "llama-3":
     url: "http://gateway-a:8000"         # sync mode
-    pool_name: "pool-a"                  # async mode → requests:pool-a / results:$batch:pool-a
+    pool_name: "pool-a"                  # async mode: derives queue names
+    queue_prefix: "my-install"           # → my-install:requests:pool-a / my-install:results:$batch:pool-a
   "mistral":
     url: "http://gateway-b:8000"
     pool_name: "pool-b"
+    queue_prefix: "my-install"
 ```
 
 The Redis URL is read from a mounted secret at runtime (not stored in the config file).
@@ -86,7 +90,7 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 ```json
 [
   {
-    "queue_name": "requests:optimized-baseline",
+    "queue_name": "my-install:requests:optimized-baseline",
     "igw_base_url": "http://llm-d-inference-gateway-istio:80",
     "request_path_url": "/v1/completions",
     "gate_type": "prometheus-budget",
@@ -114,7 +118,7 @@ and allow setting a shared name:
 ]
 ```
 
-In this case `requests:optimized-baseline` and `results:$batch:optimized-baseline` would be inferred automatically.
+In this case `{prefix}:requests:optimized-baseline` and `{prefix}:results:$batch:optimized-baseline` would be inferred automatically.
 
 The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. Results are written to the result queue. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
@@ -178,7 +182,7 @@ The executor currently dispatches requests by acquiring semaphores and then forw
 
 1. Reads the plan entry and the corresponding input line.
 2. Constructs a request message with the SLO deadline, request payload, correlation `metadata` (`job_id`, `request_index`), and any pass-through `headers` (e.g., fairness/SLO headers).
-3. Enqueues the request into the `requests:{pool_name}` queue with the SLO deadline.
+3. Enqueues the request into the `{prefix}:requests:{pool_name}` queue with the SLO deadline.
 
 As described above, the producer does not need to throttle enqueue operations. In async mode, the per-endpoint and global semaphores are not used — the dispatcher's dispatch budget handles flow control downstream. In sync mode, the existing AIMD + semaphore flow is retained unchanged.
 
@@ -215,11 +219,11 @@ Result messages follow the format defined in the [llm-d-async README — Results
 
 ### Dispatcher (writes to result queue)
 
-After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to `results:{tenant_id}:{pool_name}`. The `metadata` from the original request is carried through so the consumer can route the result.
+After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to `{prefix}:results:{tenant_id}:{pool_name}`. The `metadata` from the original request is carried through so the consumer can route the result.
 
 ### Consumer (Batch-Processor)
 
-A new component in the batch-processor consumes results from `results:{tenant_id}:{pool_name}`:
+A new component in the batch-processor consumes results from `{prefix}:results:{tenant_id}:{pool_name}`:
 
 1. Polls the result list.
 2. For each result message, looks up the job by `job_id` to find the active job's output writer.
