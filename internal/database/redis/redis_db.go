@@ -161,8 +161,15 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 		if casErr != nil {
 			return casErr
 		}
-		if result == "CONFLICT" {
+		switch result {
+		case "OK":
+			// success
+		case "CONFLICT":
 			return fmt.Errorf("%w: status changed since read", db_api.ErrConflict)
+		case "NOT_FOUND":
+			return fmt.Errorf("%w: item does not exist", db_api.ErrConflict)
+		default:
+			return fmt.Errorf("CAS update: unexpected script result %q", result)
 		}
 	} else {
 		err = c.redisClient.HSet(cctx, key, fields...).Err()

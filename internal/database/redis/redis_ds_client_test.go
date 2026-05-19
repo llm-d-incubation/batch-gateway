@@ -2233,7 +2233,8 @@ func TestRedisDSClient(t *testing.T) {
 			initialStatus  []byte
 			expectedStatus []byte
 			newStatus      []byte
-			wantConflict   bool
+			skipStore      bool
+			wantErr        bool
 		}{
 			{
 				name:           "matching expected status succeeds",
@@ -2246,7 +2247,14 @@ func TestRedisDSClient(t *testing.T) {
 				initialStatus:  []byte("in_progress"),
 				expectedStatus: []byte("validating"),
 				newStatus:      []byte("failed"),
-				wantConflict:   true,
+				wantErr:        true,
+			},
+			{
+				name:           "non-existent key returns ErrConflict",
+				expectedStatus: []byte("validating"),
+				newStatus:      []byte("in_progress"),
+				skipStore:      true,
+				wantErr:        true,
 			},
 			{
 				name:           "nil expected status bypasses CAS",
@@ -2263,25 +2271,29 @@ func TestRedisDSClient(t *testing.T) {
 					BaseIndexes:  db_api.BaseIndexes{ID: id, TenantID: "Tnt1"},
 					BaseContents: db_api.BaseContents{Status: tt.initialStatus},
 				}
-				if err := batchClient.DBStore(context.Background(), batch); err != nil {
-					t.Fatalf("Failed to store: %v", err)
+				if !tt.skipStore {
+					if err := batchClient.DBStore(context.Background(), batch); err != nil {
+						t.Fatalf("Failed to store: %v", err)
+					}
 				}
 
 				batch.Status = tt.newStatus
 				err := batchClient.DBUpdate(context.Background(), batch, tt.expectedStatus)
 
-				if tt.wantConflict {
+				if tt.wantErr {
 					if !errors.Is(err, db_api.ErrConflict) {
 						t.Fatalf("expected ErrConflict, got %v", err)
 					}
-					// Verify status unchanged.
-					items, _, _, err := batchClient.DBGet(context.Background(),
-						&db_api.BatchQuery{BaseQuery: db_api.BaseQuery{IDs: []string{id}}}, true, 0, 1)
-					if err != nil {
-						t.Fatalf("Failed to get: %v", err)
-					}
-					if !bytes.Equal(items[0].Status, tt.initialStatus) {
-						t.Fatalf("status should be unchanged: got %s, want %s", items[0].Status, tt.initialStatus)
+					if !tt.skipStore {
+						// Verify status unchanged.
+						items, _, _, err := batchClient.DBGet(context.Background(),
+							&db_api.BatchQuery{BaseQuery: db_api.BaseQuery{IDs: []string{id}}}, true, 0, 1)
+						if err != nil {
+							t.Fatalf("Failed to get: %v", err)
+						}
+						if !bytes.Equal(items[0].Status, tt.initialStatus) {
+							t.Fatalf("status should be unchanged: got %s, want %s", items[0].Status, tt.initialStatus)
+						}
 					}
 				} else {
 					if err != nil {
@@ -2301,6 +2313,102 @@ func TestRedisDSClient(t *testing.T) {
 				_, _ = batchClient.DBDelete(context.Background(), []string{id})
 			})
 		}
+	})
+
+	t.Run("InFlight operations", func(t *testing.T) {
+		t.Parallel()
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		t.Run("set and get round-trip", func(t *testing.T) {
+			err := exchClient.InFlightSet(context.Background(), "job-1", "pod-a")
+			if err != nil {
+				t.Fatalf("InFlightSet failed: %v", err)
+			}
+
+			all, err := exchClient.InFlightGetAll(context.Background())
+			if err != nil {
+				t.Fatalf("InFlightGetAll failed: %v", err)
+			}
+			entry, ok := all["job-1"]
+			if !ok {
+				t.Fatal("expected job-1 in in-flight entries")
+			}
+			if entry.ProcessorID != "pod-a" {
+				t.Fatalf("expected ProcessorID pod-a, got %s", entry.ProcessorID)
+			}
+			if entry.LastSeen <= 0 {
+				t.Fatalf("expected positive LastSeen, got %d", entry.LastSeen)
+			}
+
+			// Cleanup.
+			_ = exchClient.InFlightDelete(context.Background(), "job-1")
+		})
+
+		t.Run("set overwrites existing entry", func(t *testing.T) {
+			_ = exchClient.InFlightSet(context.Background(), "job-2", "pod-a")
+			_ = exchClient.InFlightSet(context.Background(), "job-2", "pod-b")
+
+			all, err := exchClient.InFlightGetAll(context.Background())
+			if err != nil {
+				t.Fatalf("InFlightGetAll failed: %v", err)
+			}
+			if all["job-2"].ProcessorID != "pod-b" {
+				t.Fatalf("expected overwritten ProcessorID pod-b, got %s", all["job-2"].ProcessorID)
+			}
+
+			_ = exchClient.InFlightDelete(context.Background(), "job-2")
+		})
+
+		t.Run("delete removes entry", func(t *testing.T) {
+			_ = exchClient.InFlightSet(context.Background(), "job-3", "pod-a")
+			err := exchClient.InFlightDelete(context.Background(), "job-3")
+			if err != nil {
+				t.Fatalf("InFlightDelete failed: %v", err)
+			}
+
+			all, err := exchClient.InFlightGetAll(context.Background())
+			if err != nil {
+				t.Fatalf("InFlightGetAll failed: %v", err)
+			}
+			if _, ok := all["job-3"]; ok {
+				t.Fatal("expected job-3 to be deleted")
+			}
+		})
+
+		t.Run("delete non-existent key is idempotent", func(t *testing.T) {
+			err := exchClient.InFlightDelete(context.Background(), "non-existent")
+			if err != nil {
+				t.Fatalf("InFlightDelete of non-existent key should not error: %v", err)
+			}
+		})
+
+		t.Run("get all on empty hash returns empty map", func(t *testing.T) {
+			all, err := exchClient.InFlightGetAll(context.Background())
+			if err != nil {
+				t.Fatalf("InFlightGetAll failed: %v", err)
+			}
+			if len(all) != 0 {
+				t.Fatalf("expected empty map, got %d entries", len(all))
+			}
+		})
+
+		t.Run("validation rejects empty jobID", func(t *testing.T) {
+			if err := exchClient.InFlightSet(context.Background(), "", "pod-a"); err == nil {
+				t.Fatal("expected error for empty jobID")
+			}
+			if err := exchClient.InFlightDelete(context.Background(), ""); err == nil {
+				t.Fatal("expected error for empty jobID")
+			}
+		})
+
+		t.Run("validation rejects empty processorID", func(t *testing.T) {
+			if err := exchClient.InFlightSet(context.Background(), "job-x", ""); err == nil {
+				t.Fatal("expected error for empty processorID")
+			}
+		})
 	})
 
 	t.Run("PQGetIDs", func(t *testing.T) {

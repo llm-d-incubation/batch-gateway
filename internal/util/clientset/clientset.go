@@ -317,5 +317,10 @@ func (cs *Clientset) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	if cs.InFlight != nil {
+		if err := cs.InFlight.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }

@@ -262,6 +262,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-fetch-failure")
 			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
+				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
 				p.deleteInFlight(bgCtx, task.ID)
