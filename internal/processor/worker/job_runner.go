@@ -50,7 +50,8 @@ var panicRecoveryTimeout = time.Minute
 // heartbeatInterval controls how often the processor refreshes its in-flight
 // entry for a running job. The orphan reconciler uses staleness (no heartbeat
 // for > reconciler interval) to detect abandoned jobs.
-const heartbeatInterval = 5 * time.Minute
+// Declared as var (not const) so tests can shorten it.
+var heartbeatInterval = 5 * time.Minute
 
 func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Clean up in-flight entry on exit (first defer = last to run via LIFO),
@@ -160,8 +161,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// Start heartbeat: periodically refreshes the in-flight entry so the
 	// orphan reconciler knows this job is still being actively processed.
-	// Stops when ctx is cancelled (SIGTERM) or the job finishes.
-	go p.heartbeat(ctx, params.jobItem.ID)
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	defer heartbeatCancel()
+	go p.heartbeat(heartbeatCtx, params.jobItem.ID)
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
 	if err := p.preProcessJob(ctx, sloCtx, userCancelCtx, params.jobInfo); err != nil {

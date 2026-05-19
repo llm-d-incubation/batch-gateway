@@ -21,6 +21,7 @@ package redis_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -2218,6 +2219,177 @@ func TestRedisDSClient(t *testing.T) {
 
 		// Cleanup.
 		_, _ = batchClient.DBDelete(context.Background(), []string{batch1ID, batch2ID})
+	})
+
+	t.Run("CAS update", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		tests := []struct {
+			name           string
+			initialStatus  []byte
+			expectedStatus []byte
+			newStatus      []byte
+			wantConflict   bool
+		}{
+			{
+				name:           "matching expected status succeeds",
+				initialStatus:  []byte("validating"),
+				expectedStatus: []byte("validating"),
+				newStatus:      []byte("in_progress"),
+			},
+			{
+				name:           "mismatched expected status returns ErrConflict",
+				initialStatus:  []byte("in_progress"),
+				expectedStatus: []byte("validating"),
+				newStatus:      []byte("failed"),
+				wantConflict:   true,
+			},
+			{
+				name:           "nil expected status bypasses CAS",
+				initialStatus:  []byte("validating"),
+				expectedStatus: nil,
+				newStatus:      []byte("in_progress"),
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				id := uuid.New().String()
+				batch := &db_api.BatchItem{
+					BaseIndexes:  db_api.BaseIndexes{ID: id, TenantID: "Tnt1"},
+					BaseContents: db_api.BaseContents{Status: tt.initialStatus},
+				}
+				if err := batchClient.DBStore(context.Background(), batch); err != nil {
+					t.Fatalf("Failed to store: %v", err)
+				}
+
+				batch.Status = tt.newStatus
+				err := batchClient.DBUpdate(context.Background(), batch, tt.expectedStatus)
+
+				if tt.wantConflict {
+					if !errors.Is(err, db_api.ErrConflict) {
+						t.Fatalf("expected ErrConflict, got %v", err)
+					}
+					// Verify status unchanged.
+					items, _, _, err := batchClient.DBGet(context.Background(),
+						&db_api.BatchQuery{BaseQuery: db_api.BaseQuery{IDs: []string{id}}}, true, 0, 1)
+					if err != nil {
+						t.Fatalf("Failed to get: %v", err)
+					}
+					if !bytes.Equal(items[0].Status, tt.initialStatus) {
+						t.Fatalf("status should be unchanged: got %s, want %s", items[0].Status, tt.initialStatus)
+					}
+				} else {
+					if err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					// Verify status updated.
+					items, _, _, err := batchClient.DBGet(context.Background(),
+						&db_api.BatchQuery{BaseQuery: db_api.BaseQuery{IDs: []string{id}}}, true, 0, 1)
+					if err != nil {
+						t.Fatalf("Failed to get: %v", err)
+					}
+					if !bytes.Equal(items[0].Status, tt.newStatus) {
+						t.Fatalf("status mismatch: got %s, want %s", items[0].Status, tt.newStatus)
+					}
+				}
+
+				_, _ = batchClient.DBDelete(context.Background(), []string{id})
+			})
+		}
+	})
+
+	t.Run("PQGetIDs", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		tests := []struct {
+			name     string
+			enqueue  int
+			dequeue  int
+			wantSize int
+		}{
+			{
+				name:     "empty queue returns empty map",
+				enqueue:  0,
+				wantSize: 0,
+			},
+			{
+				name:     "returns all enqueued IDs",
+				enqueue:  5,
+				wantSize: 5,
+			},
+			{
+				name:     "excludes dequeued IDs",
+				enqueue:  5,
+				dequeue:  2,
+				wantSize: 3,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var enqueuedIDs []string
+				for range tt.enqueue {
+					item := &db_api.BatchJobPriority{
+						ID:   uuid.New().String(),
+						SLO:  time.Now().Add(time.Hour),
+						TTL:  1000,
+						Data: []byte("test"),
+					}
+					if err := exchClient.PQEnqueue(context.Background(), item); err != nil {
+						t.Fatalf("Failed to enqueue: %v", err)
+					}
+					enqueuedIDs = append(enqueuedIDs, item.ID)
+				}
+
+				if tt.dequeue > 0 {
+					items, err := exchClient.PQDequeue(context.Background(), 1*time.Second, tt.dequeue)
+					if err != nil {
+						t.Fatalf("Failed to dequeue: %v", err)
+					}
+					if len(items) != tt.dequeue {
+						t.Fatalf("expected %d dequeued, got %d", tt.dequeue, len(items))
+					}
+				}
+
+				ids, err := exchClient.PQGetIDs(context.Background())
+				if err != nil {
+					t.Fatalf("PQGetIDs failed: %v", err)
+				}
+				if len(ids) != tt.wantSize {
+					t.Fatalf("expected %d IDs, got %d", tt.wantSize, len(ids))
+				}
+
+				// Verify returned IDs are from the enqueued set.
+				for id := range ids {
+					found := false
+					for _, eid := range enqueuedIDs {
+						if id == eid {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Fatalf("unexpected ID %s in PQGetIDs result", id)
+					}
+				}
+
+				// Cleanup: drain remaining items.
+				if tt.wantSize > 0 {
+					_, _ = exchClient.PQDequeue(context.Background(), 1*time.Second, tt.wantSize)
+				}
+			})
+		}
 	})
 }
 

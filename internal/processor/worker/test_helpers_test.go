@@ -727,3 +727,29 @@ func uniqueTestFolder(t *testing.T, base string) string {
 	testName := strings.ReplaceAll(t.Name(), "/", "_")
 	return filepath.Join(base, testName, fmt.Sprintf("%d", time.Now().UnixNano()))
 }
+
+type countingInFlightClient struct {
+	inner    *mockdb.MockInFlightClient
+	setCount atomic.Int32
+}
+
+func newCountingInFlightClient() *countingInFlightClient {
+	return &countingInFlightClient{inner: mockdb.NewMockInFlightClient()}
+}
+
+func (c *countingInFlightClient) InFlightSet(ctx context.Context, jobID, processorID string) error {
+	c.setCount.Add(1)
+	return c.inner.InFlightSet(ctx, jobID, processorID)
+}
+
+func (c *countingInFlightClient) InFlightDelete(ctx context.Context, jobID string) error {
+	return c.inner.InFlightDelete(ctx, jobID)
+}
+
+func (c *countingInFlightClient) InFlightGetAll(ctx context.Context) (map[string]*db.InFlightEntry, error) {
+	return c.inner.InFlightGetAll(ctx)
+}
+
+func (c *countingInFlightClient) Close() error {
+	return c.inner.Close()
+}

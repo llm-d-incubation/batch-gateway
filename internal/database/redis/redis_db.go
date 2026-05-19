@@ -155,8 +155,9 @@ func (c *DSClientRedis) dbUpdate(ctx context.Context,
 	defer ccancel()
 
 	if len(expectedStatus) > 0 {
+		args := append([]any{expectedStatus}, fields...)
 		result, casErr := redisScriptCASUpdate.Run(cctx, c.redisClient,
-			[]string{key}, expectedStatus, fields).Text()
+			[]string{key}, args...).Text()
 		if casErr != nil {
 			return casErr
 		}
