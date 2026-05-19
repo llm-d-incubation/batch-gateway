@@ -788,8 +788,8 @@ func TestQueueNameHelpers(t *testing.T) {
 	if got := RequestQueueName("pool-a"); got != "llm-d-async:requests:pool-a" {
 		t.Fatalf("RequestQueueName(\"pool-a\") = %q, want %q", got, "llm-d-async:requests:pool-a")
 	}
-	if got := ResultQueueName("pool-a"); got != "llm-d-async:results:$batch:pool-a" {
-		t.Fatalf("ResultQueueName(\"pool-a\") = %q, want %q", got, "llm-d-async:results:$batch:pool-a")
+	if got := ResultQueueName("pool-a"); got != "llm-d-async:results:pool-a:$batch" {
+		t.Fatalf("ResultQueueName(\"pool-a\") = %q, want %q", got, "llm-d-async:results:pool-a:$batch")
 	}
 }
 

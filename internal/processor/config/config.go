@@ -231,7 +231,7 @@ func RequestQueueName(poolName string) string {
 
 // ResultQueueName returns the Redis list name for collecting async results from the given pool.
 func ResultQueueName(poolName string) string {
-	return "llm-d-async:results:" + asyncTenantID + ":" + poolName
+	return "llm-d-async:results:" + poolName + ":" + asyncTenantID
 }
 
 // IsAsync returns true when the processor is configured for async dispatch.
