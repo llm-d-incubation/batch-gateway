@@ -1327,6 +1327,38 @@ func TestCapacityRetryTracking(t *testing.T) {
 }
 
 func TestDroppedReasonHandling(t *testing.T) {
+	t.Run("503 with rejected-ttl-expired is not retried", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts.Add(1)
+			w.Header().Set(HeaderDroppedReason, DroppedReasonTTLExpired)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"ttl expired"}`))
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     3,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503", statusCode)
+		}
+		if attempts.Load() != 1 {
+			t.Fatalf("expected 1 attempt (no retries), got %d", attempts.Load())
+		}
+	})
+
 	t.Run("429 with rejected-ttl-expired is not retried", func(t *testing.T) {
 		var attempts atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1366,6 +1398,42 @@ func TestDroppedReasonHandling(t *testing.T) {
 			if count < 3 {
 				w.Header().Set(HeaderDroppedReason, "rejected-saturated")
 				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		defer server.Close()
+
+		client, err := NewHTTPClient(Config{
+			BaseURL:        server.URL,
+			MaxRetries:     3,
+			InitialBackoff: time.Millisecond,
+			MaxBackoff:     10 * time.Millisecond,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, statusCode, err := client.Post(context.Background(), "/test", nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", statusCode)
+		}
+		if attempts.Load() != 3 {
+			t.Fatalf("expected 3 attempts, got %d", attempts.Load())
+		}
+	})
+
+	t.Run("503 with other dropped reason is retried", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			count := attempts.Add(1)
+			if count < 3 {
+				w.Header().Set(HeaderDroppedReason, "rejected-saturated")
+				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
 			w.WriteHeader(http.StatusOK)

@@ -179,7 +179,7 @@ func NewHTTPClient(config Config, logger logr.Logger) (*HTTPClient, error) {
 			SetRetryAfter(newRetryAfterFunc(config.InitialBackoff, config.MaxBackoff)) // Status-code-aware backoff
 
 		// Retry condition: retry on server errors, rate limits, and network errors.
-		// Exception: 429 with x-llm-d-request-dropped-reason: rejected-ttl-expired
+		// Exception: 429/503 with x-llm-d-request-dropped-reason: rejected-ttl-expired
 		// is not retried because the SLO already expired on the server side.
 		client.AddRetryCondition(func(r *resty.Response, err error) bool {
 			if err != nil {
@@ -187,7 +187,7 @@ func NewHTTPClient(config Config, logger logr.Logger) (*HTTPClient, error) {
 			}
 
 			statusCode := r.StatusCode()
-			if statusCode == http.StatusTooManyRequests {
+			if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 				return r.Header().Get(HeaderDroppedReason) != DroppedReasonTTLExpired
 			}
 			return statusCode >= http.StatusInternalServerError
