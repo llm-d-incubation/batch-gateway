@@ -548,7 +548,7 @@ func deleteEPPMetricsCurlPod(t *testing.T) {
 		"--ignore-not-found",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("failed to delete EPP metrics scrape pod: %v\n%s", err, out)
+		t.Errorf("cleanup: failed to delete EPP metrics scrape pod: %v\n%s", err, out)
 	}
 }
 
