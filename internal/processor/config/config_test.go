@@ -100,8 +100,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.DispatchMode != DispatchModeSync {
 		t.Fatalf("DispatchMode = %q, want %q", c.DispatchMode, DispatchModeSync)
 	}
-	if c.AsyncConfig.ResultPollTimeout != 5*time.Second {
-		t.Fatalf("AsyncConfig.ResultPollTimeout = %v, want %v", c.AsyncConfig.ResultPollTimeout, 5*time.Second)
+	if c.AsyncDispatchConfig.ResultPollTimeout != 5*time.Second {
+		t.Fatalf("AsyncDispatchConfig.ResultPollTimeout = %v, want %v", c.AsyncDispatchConfig.ResultPollTimeout, 5*time.Second)
 	}
 }
 
@@ -646,16 +646,16 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		c := NewConfig()
 		c.ModelGateways = map[string]ModelGatewayConfig{
 			"llama-3": {
-				URL:            "http://llama-gw:8000",
-				RequestTimeout: ptr.To(5 * time.Minute),
-				MaxRetries:     ptr.To(3),
-				InitialBackoff: ptr.To(1 * time.Second),
-				MaxBackoff:     ptr.To(60 * time.Second),
-				PoolName:       "pool-a",
+				URL:               "http://llama-gw:8000",
+				RequestTimeout:    ptr.To(5 * time.Minute),
+				MaxRetries:        ptr.To(3),
+				InitialBackoff:    ptr.To(1 * time.Second),
+				MaxBackoff:        ptr.To(60 * time.Second),
+				InferencePoolName: "pool-a",
 			},
 		}
 		c.DispatchMode = DispatchModeAsync
-		c.AsyncConfig = AsyncDispatchConfig{
+		c.AsyncDispatchConfig = AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
 		}
 		return c
@@ -672,13 +672,19 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "sync mode ignores async fields",
-			mutate:  func(c *ProcessorConfig) { c.DispatchMode = DispatchModeSync; c.AsyncConfig = AsyncDispatchConfig{} },
+			name: "sync mode ignores async fields",
+			mutate: func(c *ProcessorConfig) {
+				c.DispatchMode = DispatchModeSync
+				c.AsyncDispatchConfig = AsyncDispatchConfig{}
+			},
 			wantErr: false,
 		},
 		{
-			name:    "empty dispatch_mode treated as sync",
-			mutate:  func(c *ProcessorConfig) { c.DispatchMode = DispatchMode(""); c.AsyncConfig = AsyncDispatchConfig{} },
+			name: "empty dispatch_mode treated as sync",
+			mutate: func(c *ProcessorConfig) {
+				c.DispatchMode = DispatchMode("")
+				c.AsyncDispatchConfig = AsyncDispatchConfig{}
+			},
 			wantErr: false,
 		},
 		{
@@ -688,11 +694,11 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		},
 		{
 			name:    "async zero result_poll_timeout",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.ResultPollTimeout = 0 },
+			mutate:  func(c *ProcessorConfig) { c.AsyncDispatchConfig.ResultPollTimeout = 0 },
 			wantErr: true,
 		},
 		{
-			name: "async missing pool_name on model gateway",
+			name: "async missing inference_pool_name on model gateway",
 			mutate: func(c *ProcessorConfig) {
 				c.ModelGateways = map[string]ModelGatewayConfig{
 					"llama-3": {URL: "http://llama-gw:8000"},
@@ -701,7 +707,7 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "async missing pool_name on global gateway",
+			name: "async missing inference_pool_name on global gateway",
 			mutate: func(c *ProcessorConfig) {
 				c.ModelGateways = nil
 				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000"}
@@ -709,10 +715,10 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "async valid global gateway with pool_name",
+			name: "async valid global gateway with inference_pool_name",
 			mutate: func(c *ProcessorConfig) {
 				c.ModelGateways = nil
-				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", PoolName: "default-pool"}
+				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", InferencePoolName: "default-pool"}
 			},
 			wantErr: false,
 		},
@@ -727,12 +733,12 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		{
 			name: "async global and per-model mutually exclusive",
 			mutate: func(c *ProcessorConfig) {
-				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", PoolName: "default-pool"}
+				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", InferencePoolName: "default-pool"}
 			},
 			wantErr: true,
 		},
 		{
-			name: "pool_name ignored in sync mode",
+			name: "inference_pool_name ignored in sync mode",
 			mutate: func(c *ProcessorConfig) {
 				c.DispatchMode = DispatchModeSync
 				c.ModelGateways = validPerModelConfig()
@@ -741,24 +747,24 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		},
 		{
 			name:    "async negative result_poll_timeout",
-			mutate:  func(c *ProcessorConfig) { c.AsyncConfig.ResultPollTimeout = -1 * time.Second },
+			mutate:  func(c *ProcessorConfig) { c.AsyncDispatchConfig.ResultPollTimeout = -1 * time.Second },
 			wantErr: true,
 		},
 		{
 			name: "async multiple models all valid",
 			mutate: func(c *ProcessorConfig) {
 				c.ModelGateways = map[string]ModelGatewayConfig{
-					"llama-3": {URL: "http://gw-a:8000", PoolName: "pool-a"},
-					"mistral": {URL: "http://gw-b:8000", PoolName: "pool-b"},
+					"llama-3": {URL: "http://gw-a:8000", InferencePoolName: "pool-a"},
+					"mistral": {URL: "http://gw-b:8000", InferencePoolName: "pool-b"},
 				}
 			},
 			wantErr: false,
 		},
 		{
-			name: "async one model missing pool_name among multiple",
+			name: "async one model missing inference_pool_name among multiple",
 			mutate: func(c *ProcessorConfig) {
 				c.ModelGateways = map[string]ModelGatewayConfig{
-					"llama-3": {URL: "http://gw-a:8000", PoolName: "pool-a"},
+					"llama-3": {URL: "http://gw-a:8000", InferencePoolName: "pool-a"},
 					"mistral": {URL: "http://gw-b:8000"},
 				}
 			},

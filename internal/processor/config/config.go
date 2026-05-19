@@ -172,8 +172,8 @@ type ProcessorConfig struct {
 	// "async": submit via llm-d-async producer, collect from result queue.
 	DispatchMode DispatchMode `yaml:"dispatch_mode"`
 
-	// AsyncConfig holds llm-d-async dispatch settings. Only used when DispatchMode == "async".
-	AsyncConfig AsyncDispatchConfig `yaml:"async"`
+	// AsyncDispatchConfig holds llm-d-async dispatch settings. Only used when DispatchMode == "async".
+	AsyncDispatchConfig AsyncDispatchConfig `yaml:"async_dispatch"`
 }
 
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
@@ -211,10 +211,9 @@ type ModelGatewayConfig struct {
 	TLSClientCertFile     string `yaml:"tls_client_cert_file,omitempty"`
 	TLSClientKeyFile      string `yaml:"tls_client_key_file,omitempty"`
 
-	// PoolName identifies the async dispatch pool for this model/gateway.
-	// Queue names are derived as "requests:{PoolName}" / "results:{tenant}:{PoolName}".
+	// InferencePoolName identifies the async dispatch pool for this model/gateway.
 	// Required when dispatch_mode is "async". Ignored in sync mode.
-	PoolName string `yaml:"pool_name"`
+	InferencePoolName string `yaml:"inference_pool_name"`
 }
 
 type BucketConfig struct {
@@ -323,7 +322,7 @@ func NewConfig() *ProcessorConfig {
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 
 		DispatchMode: DispatchModeSync,
-		AsyncConfig: AsyncDispatchConfig{
+		AsyncDispatchConfig: AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
 		},
 	}
@@ -386,9 +385,9 @@ func (c *ProcessorConfig) validateDispatchMode() error {
 	switch c.DispatchMode {
 	case DispatchModeSync, DispatchMode(""):
 		c.DispatchMode = DispatchModeSync
-		return c.validateSyncConfig()
+		return c.validateSyncDispatchConfig()
 	case DispatchModeAsync:
-		return c.validateAsyncConfig()
+		return c.validateAsyncDispatchConfig()
 	default:
 		return fmt.Errorf("dispatch_mode must be %q or %q, got %q", DispatchModeSync, DispatchModeAsync, c.DispatchMode)
 	}
@@ -404,7 +403,7 @@ func (c *ProcessorConfig) validateGateways() error {
 	return nil
 }
 
-func (c *ProcessorConfig) validateSyncConfig() error {
+func (c *ProcessorConfig) validateSyncDispatchConfig() error {
 	if err := c.validateGateways(); err != nil {
 		return err
 	}
@@ -422,21 +421,21 @@ func (c *ProcessorConfig) validateSyncConfig() error {
 	return nil
 }
 
-func (c *ProcessorConfig) validateAsyncConfig() error {
-	if c.AsyncConfig.ResultPollTimeout <= 0 {
+func (c *ProcessorConfig) validateAsyncDispatchConfig() error {
+	if c.AsyncDispatchConfig.ResultPollTimeout <= 0 {
 		return fmt.Errorf("async.result_poll_timeout must be > 0")
 	}
 	if err := c.validateGateways(); err != nil {
 		return err
 	}
 	if c.GlobalInferenceGateway != nil {
-		if c.GlobalInferenceGateway.PoolName == "" {
-			return fmt.Errorf("global_inference_gateway.pool_name must be set when dispatch_mode is %q", DispatchModeAsync)
+		if c.GlobalInferenceGateway.InferencePoolName == "" {
+			return fmt.Errorf("global_inference_gateway.inference_pool_name must be set when dispatch_mode is %q", DispatchModeAsync)
 		}
 	}
 	for model, gw := range c.ModelGateways {
-		if gw.PoolName == "" {
-			return fmt.Errorf("model_gateways[%s].pool_name must be set when dispatch_mode is %q", model, DispatchModeAsync)
+		if gw.InferencePoolName == "" {
+			return fmt.Errorf("model_gateways[%s].inference_pool_name must be set when dispatch_mode is %q", model, DispatchModeAsync)
 		}
 	}
 	return nil
