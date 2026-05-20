@@ -51,14 +51,12 @@ Queue names follow a fixed convention keyed by the inference pool name:
 
 | Queue | Redis Type | Name Pattern | Example |
 |-------|-----------|--------------|---------|
-| Request queue | Sorted Set | `{prefix}:requests:{pool_name}` | `my-install:requests:optimized-baseline` |
-| Result queue | List | `{prefix}:results:{tenant_id}:{pool_name}` | `my-install:results:$batch:optimized-baseline` |
+| Request queue | Sorted Set | `llm-d-async:requests:{pool_name}` | `llm-d-async:requests:optimized-baseline` |
+| Result queue | List | `llm-d-async:results:{pool_name}:{tenant_id}` | `llm-d-async:results:optimized-baseline:$batch` |
 
-The `prefix` is a configurable namespace that allows multiple installations to share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier).
+The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. Queue names are computed by the batch-processor's [`RequestQueueName` and `ResultQueueName` functions](https://github.com/llm-d-incubation/batch-gateway/blob/main/internal/processor/config/config.go).
 
-The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. The llm-d-async [Producer](https://github.com/llm-d-incubation/llm-d-async/blob/main/producer/redis_sortedset_producer.go) library accepts arbitrary queue name strings; this naming convention is ours, applied when wiring the batch-processor and dispatcher together.
-
-The `tenant_id` in the result queue is required by the Producer library for multi-tenant isolation. For now, the batch-processor uses the reserved value `$batch` as its tenant ID. Per-tenant isolation (e.g., routing results to different queues per user or API key) is reserved for future use.
+The prefix `llm-d-async` is currently hardcoded but can be made configurable, so that multiple installations can share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier). The `tenant_id` suffix on the result queue uses the reserved value `$batch`. Per-tenant isolation (e.g., routing results to different queues per user or API key) is reserved for future use.
 
 When the dispatcher is used, the inference gateway endpoint configuration lives entirely on the dispatcher side: the batch-processor does not need to know about gateway URLs, TLS settings, or routing modes. The batch-processor only needs the pool name, the connector type, and the connector endpoint.
 
@@ -66,31 +64,31 @@ When the dispatcher is used, the inference gateway endpoint configuration lives 
 
 The batch-processor selects the dispatch backend via `dispatch_mode: sync | async`. In `sync` mode (default), the executor dispatches directly via HTTP using the existing AIMD + semaphore flow. In `async` mode, the executor enqueues to the dispatcher's request queue and collects results from the result queue.
 
-Each model must resolve to a `pool_name` that derives the queue pair. The exact config shape is being finalized in [#430](https://github.com/llm-d-incubation/batch-gateway/pull/430); one approach under discussion is extending `model_gateways` so each entry carries both a `url` (used in sync mode) and a `pool_name` (used in async mode to derive queue names):
+Each model resolves to an `inference_pool_name` that derives the queue pair. The config uses `dispatch_mode` on `ProcessorConfig` and `inference_pool_name` on each `ModelGatewayConfig` entry (see [#430](https://github.com/llm-d-incubation/batch-gateway/pull/430)):
 
 ```yaml
 dispatch_mode: "async"
+async_dispatch:
+  result_poll_timeout: "5s"
 model_gateways:
   "llama-3":
-    url: "http://gateway-a:8000"         # sync mode
-    pool_name: "pool-a"                  # async mode: derives queue names
-    queue_prefix: "my-install"           # → my-install:requests:pool-a / my-install:results:$batch:pool-a
+    url: "http://gateway-a:8000"              # used in sync mode
+    inference_pool_name: "pool-a"             # used in async mode → llm-d-async:requests:pool-a
   "mistral":
     url: "http://gateway-b:8000"
-    pool_name: "pool-b"
-    queue_prefix: "my-install"
+    inference_pool_name: "pool-b"
 ```
 
-The Redis URL is read from a mounted secret at runtime (not stored in the config file).
+The Redis URL is read from a mounted secret at runtime (not stored in the config file). Queue names are derived from `inference_pool_name` via `RequestQueueName()` and `ResultQueueName()` — they are not configured directly.
 
 ### Dispatcher Configuration
 
-The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dispatch budget gating. The relevant config for queue names, inference gateway endpoint, and gating are:
+The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dispatch budget gating. The request queue is configured via the [JSON queues config file](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md#redis-sorted-set-persisted) (`--redis.ss.queues-config-file`); the result queue is configured via `--redis.ss.result-queue-name`:
 
 ```json
 [
   {
-    "queue_name": "my-install:requests:optimized-baseline",
+    "queue_name": "llm-d-async:requests:optimized-baseline",
     "igw_base_url": "http://llm-d-inference-gateway-istio:80",
     "request_path_url": "/v1/completions",
     "gate_type": "prometheus-budget",
@@ -103,24 +101,13 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 ]
 ```
 
-The result queue name is configured separately via `--redis.ss.result-queue-name` or per-request via metadata.
-
-Note: the automatic naming via metadata could be misused, we probably want to unify the config for `queue_name` and `result-queue-name`,
-and allow setting a shared name:
-
-```json
-[
-  {
-    "queue_name": "optimized-baseline",
-    "igw_base_url": "http://llm-d-inference-gateway-istio:80",
-    ...
-  }
-]
+```
+--redis.ss.result-queue-name llm-d-async:results:optimized-baseline:$batch
 ```
 
-In this case `{prefix}:requests:optimized-baseline` and `{prefix}:results:$batch:optimized-baseline` would be inferred automatically.
+The queue names must match those derived by the batch-processor's `RequestQueueName()` and `ResultQueueName()` functions.
 
-The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. Results are written to the result queue. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
+The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
 ### Future Extension: Queue Registry
 
@@ -182,7 +169,7 @@ The executor currently dispatches requests by acquiring semaphores and then forw
 
 1. Reads the plan entry and the corresponding input line.
 2. Constructs a request message with the SLO deadline, request payload, correlation `metadata` (`job_id`, `request_index`), and any pass-through `headers` (e.g., fairness/SLO headers).
-3. Enqueues the request into the `{prefix}:requests:{pool_name}` queue with the SLO deadline.
+3. Enqueues the request into the request queue (e.g., `llm-d-async:requests:{pool_name}`) with the SLO deadline.
 
 As described above, the producer does not need to throttle enqueue operations. In async mode, the per-endpoint and global semaphores are not used — the dispatcher's dispatch budget handles flow control downstream. In sync mode, the existing AIMD + semaphore flow is retained unchanged.
 
@@ -219,11 +206,11 @@ Result messages follow the format defined in the [llm-d-async README — Results
 
 ### Dispatcher (writes to result queue)
 
-After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to `{prefix}:results:{tenant_id}:{pool_name}`. The `metadata` from the original request is carried through so the consumer can route the result.
+After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to the result queue (e.g., `llm-d-async:results:{pool_name}:$batch`). The `metadata` from the original request is carried through so the consumer can route the result.
 
 ### Consumer (Batch-Processor)
 
-A new component in the batch-processor consumes results from `{prefix}:results:{tenant_id}:{pool_name}`:
+A new component in the batch-processor consumes results from the result queue (e.g., `llm-d-async:results:{pool_name}:$batch`):
 
 1. Polls the result list.
 2. For each result message, looks up the job by `job_id` to find the active job's output writer.
