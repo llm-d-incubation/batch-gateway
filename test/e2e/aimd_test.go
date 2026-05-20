@@ -221,13 +221,15 @@ func parseCounterByEndpoint(t *testing.T, metrics, metricName string) map[string
 // starts at 100% failure rate. The test:
 //  1. Submits requests to drive the AIMD limit to min (5).
 //  2. Patches the simulator to 0% failure rate and waits for rollout.
-//  3. Submits more requests and verifies the limit increased above min.
+//  3. Submits more requests and verifies the limit eventually increases above
+//     its phase-1 baseline.
 //
 // t.Cleanup restores the simulator to 100% failure for subsequent runs.
 //
 // Because AIMD increases by +1 per successful window, full recovery to the
-// configured perEndpoint limit requires many requests. We only assert limit > min to
-// avoid flakiness from timing variance.
+// configured perEndpoint limit requires many requests. We only assert that the
+// limit eventually increases beyond the phase-1 floor, since the exported gauge
+// can lag the recovery batch completion by a scrape interval.
 func doTestAIMDRecovery(t *testing.T) {
 	if !testKubectlAvailable {
 		t.Skip("kubectl not available, skipping AIMD recovery test")
@@ -268,10 +270,14 @@ func doTestAIMDRecovery(t *testing.T) {
 	metrics := scrapeProcessorMetrics(t)
 	aimdLimits := parseGaugeByEndpoint(t, metrics, "batch_processor_aimd_concurrency_limit")
 
-	var aimdEndpoint string
+	var (
+		aimdEndpoint  string
+		baselineLimit float64
+	)
 	for endpoint, limit := range aimdLimits {
 		if strings.Contains(endpoint, aimdSimDeployment) {
 			aimdEndpoint = endpoint
+			baselineLimit = limit
 			t.Logf("phase 1: aimd_concurrency_limit{endpoint=%q} = %.0f", endpoint, limit)
 			if limit > float64(aimdMin) {
 				t.Fatalf("expected AIMD limit <= %d after 100%% failure, got %.0f", aimdMin, limit)
@@ -339,28 +345,39 @@ func doTestAIMDRecovery(t *testing.T) {
 			numRecovRequests, recovBatch.RequestCounts.Completed, recovBatch.RequestCounts.Failed)
 	}
 
-	// Verify AIMD limit increased above min.
-	metrics = scrapeProcessorMetrics(t)
-	aimdLimits = parseGaugeByEndpoint(t, metrics, "batch_processor_aimd_concurrency_limit")
+	limit, increases := waitForAIMDLimitIncrease(t, aimdEndpoint, baselineLimit, 15*time.Second, 500*time.Millisecond)
+	t.Logf("phase 3: aimd_concurrency_limit{endpoint=%q} = %.0f", aimdEndpoint, limit)
+	t.Logf("aimd_increases_total{endpoint=%q} = %.0f", aimdEndpoint, increases)
+}
 
-	if limit, ok := aimdLimits[aimdEndpoint]; ok {
-		t.Logf("phase 3: aimd_concurrency_limit{endpoint=%q} = %.0f", aimdEndpoint, limit)
-		if limit <= float64(aimdMin) {
-			t.Errorf("expected AIMD limit > %d after recovery, got %.0f", aimdMin, limit)
-		}
-	} else {
-		t.Errorf("no AIMD metric found for endpoint %q after recovery", aimdEndpoint)
-	}
+func waitForAIMDLimitIncrease(t *testing.T, endpoint string, baselineLimit float64, timeout, interval time.Duration) (float64, float64) {
+	t.Helper()
 
-	// Verify increase counter registered.
-	aimdIncreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_increases_total")
-	if count, ok := aimdIncreases[aimdEndpoint]; ok {
-		t.Logf("aimd_increases_total{endpoint=%q} = %.0f", aimdEndpoint, count)
-		if count == 0 {
-			t.Errorf("expected AIMD increase signals > 0 for recovered endpoint")
+	deadline := time.Now().Add(timeout)
+	lastLimit := baselineLimit
+	var lastIncreases float64
+
+	for {
+		metrics := scrapeProcessorMetrics(t)
+		aimdLimits := parseGaugeByEndpoint(t, metrics, "batch_processor_aimd_concurrency_limit")
+		if limit, ok := aimdLimits[endpoint]; ok {
+			lastLimit = limit
 		}
-	} else {
-		t.Errorf("no aimd_increases_total found for endpoint %q", aimdEndpoint)
+
+		aimdIncreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_increases_total")
+		if increases, ok := aimdIncreases[endpoint]; ok {
+			lastIncreases = increases
+		}
+
+		if lastLimit > baselineLimit {
+			return lastLimit, lastIncreases
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected AIMD limit to increase above %.0f after recovery, last limit=%.0f, increases_total=%.0f",
+				baselineLimit, lastLimit, lastIncreases)
+		}
+
+		time.Sleep(interval)
 	}
 }
 
