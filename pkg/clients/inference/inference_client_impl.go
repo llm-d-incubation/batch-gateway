@@ -78,6 +78,7 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	// Track whether any retry was caused by capacity pressure (429/5xx)
 	// vs network errors, so the caller can make precise AIMD decisions.
 	trackingCtx, hadCapacityRetry := httpclient.NewCapacityRetryContext(ctx)
+	trackingCtx, droppedReason := httpclient.NewDroppedReasonContext(trackingCtx)
 
 	// Execute HTTP POST request using the underlying http client
 	resp, statusCode, err := c.client.Post(trackingCtx, endpoint, req.Params, req.Headers, req.RequestID)
@@ -90,6 +91,7 @@ func (c *InferenceHTTPClient) Generate(ctx context.Context, req *GenerateRequest
 	// Check for non-retryable errors after all retries exhausted
 	if statusCode != http.StatusOK {
 		clientErr := c.client.HandleErrorResponse(ctx, statusCode, resp)
+		clientErr.DroppedReason = droppedReason()
 		return nil, clientErr
 	}
 

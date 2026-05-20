@@ -39,6 +39,9 @@ import (
 const (
 	HeaderNameReqID       string = "X-Request-ID"
 	HeaderNameContentType string = "Content-Type"
+	HeaderDroppedReason   string = "x-llm-d-request-dropped-reason"
+
+	DroppedReasonTTLExpired = "rejected-ttl-expired"
 
 	// rateLimitBackoffMultiplier scales the initial backoff for 429 responses.
 	// A 429 means the server explicitly asks the client to slow down, so we
@@ -57,6 +60,21 @@ var capacityRetryCtxKey capacityRetryKeyType
 func NewCapacityRetryContext(ctx context.Context) (context.Context, func() bool) {
 	var flag atomic.Bool
 	return context.WithValue(ctx, capacityRetryCtxKey, &flag), flag.Load
+}
+
+type droppedReasonKeyType struct{}
+
+var droppedReasonCtxKey droppedReasonKeyType
+
+// NewDroppedReasonContext returns a child context that captures the value of the
+// x-llm-d-request-dropped-reason response header from the final HTTP response.
+// Call the returned function after the request completes to read the result.
+func NewDroppedReasonContext(ctx context.Context) (context.Context, func() string) {
+	var reason atomic.Value
+	return context.WithValue(ctx, droppedReasonCtxKey, &reason), func() string {
+		v, _ := reason.Load().(string)
+		return v
+	}
 }
 
 // HTTPClient implements HTTP client with retry, TLS, and observability support
@@ -160,15 +178,19 @@ func NewHTTPClient(config Config, logger logr.Logger) (*HTTPClient, error) {
 			SetRetryMaxWaitTime(config.MaxBackoff).                                    // Max wait time between retries
 			SetRetryAfter(newRetryAfterFunc(config.InitialBackoff, config.MaxBackoff)) // Status-code-aware backoff
 
-		// Retry condition: retry on server errors, rate limits, and network errors
+		// Retry condition: retry on server errors, rate limits, and network errors.
+		// Exception: 429/503 with x-llm-d-request-dropped-reason: rejected-ttl-expired
+		// is not retried because the SLO already expired on the server side.
 		client.AddRetryCondition(func(r *resty.Response, err error) bool {
 			if err != nil {
 				return true // Retry on network errors
 			}
 
 			statusCode := r.StatusCode()
-			// Retry on 429 (rate limit) and 5xx (server errors)
-			return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+			if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
+				return r.Header().Get(HeaderDroppedReason) != DroppedReasonTTLExpired
+			}
+			return statusCode >= http.StatusInternalServerError
 		})
 
 		// Add retry hook for logging and capacity-retry tracking
@@ -240,6 +262,12 @@ func (c *HTTPClient) Post(ctx context.Context, endpoint string, body interface{}
 	// Handle request-level errors (network, timeout, etc.)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	if reason := resp.Header().Get(HeaderDroppedReason); reason != "" {
+		if ptr, ok := ctx.Value(droppedReasonCtxKey).(*atomic.Value); ok {
+			ptr.Store(reason)
+		}
 	}
 
 	retries := resp.Request.Attempt - 1

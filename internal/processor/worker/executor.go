@@ -852,6 +852,14 @@ func (p *Processor) executeOneRequest(
 	if inferErr != nil {
 		logger.V(logging.DEBUG).Info("Inference request failed", "error", inferErr.Message)
 		if inferErr.StatusCode > 0 {
+			if inferErr.DroppedReason == httpclient.DroppedReasonTTLExpired {
+				result.Error = &outputError{
+					Code:    string(batch_types.ErrCodeBatchExpired),
+					Message: batch_types.ErrCodeBatchExpired.Message(),
+				}
+				metrics.RecordRequestError(modelID)
+				return result, nil
+			}
 			// HTTP error (4xx/5xx) — populate response with status code and original body
 			// per OpenAI spec, error field is only for non-HTTP errors
 			// Ensure body is always a non-nil object to satisfy the OpenAI schema (type: object).

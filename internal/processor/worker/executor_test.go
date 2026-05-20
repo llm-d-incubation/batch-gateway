@@ -560,6 +560,101 @@ func TestExecuteOneRequest_SLOExpiredDuringExecution(t *testing.T) {
 	}
 }
 
+func TestExecuteOneRequest_DroppedReasonTTLExpired(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return nil, &inference.ClientError{
+				Category:      httpclient.ErrCategoryRateLimit,
+				Message:       "HTTP 429: Rate limit exceeded",
+				StatusCode:    429,
+				ResponseBody:  []byte(`{"error":{"message":"Rate limit exceeded"}}`),
+				DroppedReason: httpclient.DroppedReasonTTLExpired,
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-ttl", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	if err != nil {
+		t.Fatalf("executeOneRequest error: %v", err)
+	}
+	if result.Error == nil {
+		t.Fatalf("expected error for TTL-expired dropped reason")
+	}
+	if result.Error.Code != string(batch_types.ErrCodeBatchExpired) {
+		t.Fatalf("error code = %q, want %q", result.Error.Code, batch_types.ErrCodeBatchExpired)
+	}
+	if result.Error.Message != batch_types.ErrCodeBatchExpired.Message() {
+		t.Fatalf("error message = %q, want %q", result.Error.Message, batch_types.ErrCodeBatchExpired.Message())
+	}
+	if result.Response != nil {
+		t.Fatalf("expected nil response for TTL-expired, got: %+v", result.Response)
+	}
+}
+
+func TestExecuteOneRequest_DroppedReasonOther(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return nil, &inference.ClientError{
+				Category:      httpclient.ErrCategoryRateLimit,
+				Message:       "HTTP 429: Rate limit exceeded",
+				StatusCode:    429,
+				ResponseBody:  []byte(`{"error":{"message":"Rate limit exceeded"}}`),
+				DroppedReason: "rejected-saturated",
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-saturated", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	if err != nil {
+		t.Fatalf("executeOneRequest error: %v", err)
+	}
+	if result.Error != nil {
+		t.Fatalf("expected nil error field for non-TTL dropped reason (HTTP error goes to response), got: %+v", result.Error)
+	}
+	if result.Response == nil {
+		t.Fatalf("expected response field for HTTP 429 with non-TTL dropped reason")
+	}
+	if result.Response.StatusCode != 429 {
+		t.Fatalf("status_code = %d, want 429", result.Response.StatusCode)
+	}
+}
+
 func TestExecuteOneRequest_FairnessHeader(t *testing.T) {
 	requests := []batch_types.Request{
 		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},

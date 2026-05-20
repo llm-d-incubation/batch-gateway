@@ -73,6 +73,27 @@ type AIMDConfig struct {
 	AdditiveIncrease int `yaml:"additive_increase"`
 }
 
+// DispatchMode selects the inference dispatch backend.
+type DispatchMode string
+
+const (
+	DispatchModeSync  DispatchMode = "sync"
+	DispatchModeAsync DispatchMode = "async"
+)
+
+// AsyncDispatchConfig holds configuration for the llm-d-async dispatch backend.
+// Only used when DispatchMode == "async".
+type AsyncDispatchConfig struct {
+	// RedisURL is the full Redis connection URL (e.g. "redis://host:6379",
+	// "rediss://user:pass@host:6379" for TLS). Read from the mounted secret
+	// at runtime (SecretKeyRedisURL)
+	RedisURL string `yaml:"-"`
+
+	// ResultPollTimeout is the timeout per GetResult poll cycle.
+	// Controls how long each blocking poll waits before retrying.
+	ResultPollTimeout time.Duration `yaml:"result_poll_timeout"`
+}
+
 type ProcessorConfig struct {
 	// TaskWaitTime is the timeout parameter used when dequeueing from the priority queue
 	// This should be shorter than PollInterval
@@ -145,6 +166,14 @@ type ProcessorConfig struct {
 
 	// FileClient holds configuration for the shared file storage client (fs or s3).
 	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
+
+	// DispatchMode selects the inference dispatch backend.
+	// "sync" (default): direct HTTP via InferenceClient.
+	// "async": submit via llm-d-async producer, collect from result queue.
+	DispatchMode DispatchMode `yaml:"dispatch_mode"`
+
+	// AsyncDispatchConfig holds llm-d-async dispatch settings. Only used when DispatchMode == "async".
+	AsyncDispatchConfig AsyncDispatchConfig `yaml:"async_dispatch"`
 }
 
 // ModelGatewayConfig describes the full gateway and HTTP/TLS settings for one
@@ -181,12 +210,33 @@ type ModelGatewayConfig struct {
 	TLSCACertFile         string `yaml:"tls_ca_cert_file,omitempty"`
 	TLSClientCertFile     string `yaml:"tls_client_cert_file,omitempty"`
 	TLSClientKeyFile      string `yaml:"tls_client_key_file,omitempty"`
+
+	// InferencePoolName identifies the async dispatch pool for this model/gateway.
+	// Required when dispatch_mode is "async". Ignored in sync mode.
+	InferencePoolName string `yaml:"inference_pool_name"`
 }
 
 type BucketConfig struct {
 	BucketStart  float64 `yaml:"start"`
 	BucketFactor float64 `yaml:"factor"`
 	BucketCount  int     `yaml:"count"`
+}
+
+const asyncTenantID = "$batch"
+
+// RequestQueueName returns the Redis sorted-set name for submitting async requests to the given pool.
+func RequestQueueName(poolName string) string {
+	return "llm-d-async:requests:" + poolName
+}
+
+// ResultQueueName returns the Redis list name for collecting async results from the given pool.
+func ResultQueueName(poolName string) string {
+	return "llm-d-async:results:" + poolName + ":" + asyncTenantID
+}
+
+// IsAsync returns true when the processor is configured for async dispatch.
+func (c *ProcessorConfig) IsAsync() bool {
+	return c.DispatchMode == DispatchModeAsync
 }
 
 // InferenceObjectiveFor returns the inference objective configured on the
@@ -270,6 +320,11 @@ func NewConfig() *ProcessorConfig {
 		},
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
+
+		DispatchMode: DispatchModeSync,
+		AsyncDispatchConfig: AsyncDispatchConfig{
+			ResultPollTimeout: 5 * time.Second,
+		},
 	}
 }
 
@@ -311,11 +366,46 @@ func (c *ProcessorConfig) Validate() error {
 		return fmt.Errorf("e2e_latency_bucket must satisfy: start > 0, factor > 1, count > 0")
 	}
 
+	if err := c.FileClientCfg.Retry.Validate(); err != nil {
+		return fmt.Errorf("file_client.retry: %w", err)
+	}
+
+	if c.ProgressTTLSeconds <= 0 {
+		return fmt.Errorf("progress_ttl_seconds must be > 0")
+	}
+
+	if err := c.validateDispatchMode(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *ProcessorConfig) validateDispatchMode() error {
+	switch c.DispatchMode {
+	case DispatchModeSync, DispatchMode(""):
+		c.DispatchMode = DispatchModeSync
+		return c.validateSyncDispatchConfig()
+	case DispatchModeAsync:
+		return c.validateAsyncDispatchConfig()
+	default:
+		return fmt.Errorf("dispatch_mode must be %q or %q, got %q", DispatchModeSync, DispatchModeAsync, c.DispatchMode)
+	}
+}
+
+func (c *ProcessorConfig) validateGateways() error {
 	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
 		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
 	}
 	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
 		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
+	}
+	return nil
+}
+
+func (c *ProcessorConfig) validateSyncDispatchConfig() error {
+	if err := c.validateGateways(); err != nil {
+		return err
 	}
 
 	if c.GlobalInferenceGateway != nil {
@@ -328,15 +418,26 @@ func (c *ProcessorConfig) Validate() error {
 			return err
 		}
 	}
+	return nil
+}
 
-	if err := c.FileClientCfg.Retry.Validate(); err != nil {
-		return fmt.Errorf("file_client.retry: %w", err)
+func (c *ProcessorConfig) validateAsyncDispatchConfig() error {
+	if c.AsyncDispatchConfig.ResultPollTimeout <= 0 {
+		return fmt.Errorf("async.result_poll_timeout must be > 0")
 	}
-
-	if c.ProgressTTLSeconds <= 0 {
-		return fmt.Errorf("progress_ttl_seconds must be > 0")
+	if err := c.validateGateways(); err != nil {
+		return err
 	}
-
+	if c.GlobalInferenceGateway != nil {
+		if c.GlobalInferenceGateway.InferencePoolName == "" {
+			return fmt.Errorf("global_inference_gateway.inference_pool_name must be set when dispatch_mode is %q", DispatchModeAsync)
+		}
+	}
+	for model, gw := range c.ModelGateways {
+		if gw.InferencePoolName == "" {
+			return fmt.Errorf("model_gateways[%s].inference_pool_name must be set when dispatch_mode is %q", model, DispatchModeAsync)
+		}
+	}
 	return nil
 }
 
