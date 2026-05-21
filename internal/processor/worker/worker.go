@@ -230,7 +230,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		// when there's no waiting tasks in the queue or poller returned an error
 		if task == nil || err != nil {
-
 			// wait for poll interval to protect db from frequent queueing
 			if !p.releaseAndWaitPollInterval(pollingCtx) {
 				return nil

@@ -25,8 +25,6 @@ import (
 	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 )
 
-const inFlightKeyName = keysPrefix + "inflight"
-
 func (c *ExchangeDBClientRedis) InFlightSet(ctx context.Context, jobID, processorID string) error {
 	if ctx == nil {
 		ctx = context.Background()

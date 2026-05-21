@@ -48,6 +48,7 @@ const (
 	eventKeysPrefix      = keysPrefix + "event:"
 	statusKeysPrefix     = keysPrefix + "status:"
 	priorityQueueKeyName = queueKeysPrefix + "priority"
+	inFlightKeyName      = keysPrefix + "inflight"
 	eventChanSize        = 100
 	eventReadCount       = 4
 	eventReadTimeout     = 20 * time.Second
