@@ -95,6 +95,56 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	}
 }
 
+func TestExecuteOneRequest_SuccessWithCapacityRetry(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	mock := &mockInferenceClient{
+		generateFn: func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			return &inference.GenerateResponse{
+				RequestID:        "srv-123",
+				Response:         []byte(`{"result":"ok"}`),
+				HadCapacityRetry: true,
+			}, nil
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "req-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1", "prompt": "hi"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatalf("open input: %v", err)
+	}
+	defer inputFile.Close()
+
+	jobRootDir, _ := env.p.jobRootDir(jobInfo.JobID, jobInfo.TenantID)
+	entries := planEntriesFromLines(mustReadFile(t, filepath.Join(jobRootDir, "input.jsonl")))
+
+	ctx := testLoggerCtx(t)
+	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
+	defer sloCancel()
+	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	if err != nil {
+		t.Fatalf("executeOneRequest error: %v", err)
+	}
+	if result.Error != nil {
+		t.Fatalf("expected no error in output line, got %+v", result.Error)
+	}
+	if result.Response == nil {
+		t.Fatal("expected response in output line")
+	}
+	if result.Response.StatusCode != 200 {
+		t.Fatalf("StatusCode = %d, want 200", result.Response.StatusCode)
+	}
+	if !result.hadCapacityRetry {
+		t.Fatal("expected hadCapacityRetry=true on successful retried response")
+	}
+}
+
 func TestExecuteOneRequest_NonHTTPError(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()

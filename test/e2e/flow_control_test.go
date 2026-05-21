@@ -49,7 +49,9 @@ func testFlowControl(t *testing.T) {
 		}
 		t.Run("InferenceObjectiveHeader", doTestInferenceObjectiveHeader)
 		t.Run("SLOHeader", doTestSLOHeader)
-		t.Run("RetryOn429", doTestRetryOn429)
+		t.Run("RetryOn429", func(t *testing.T) {
+			t.Skip("#445: disabled until llm-d-inference-sim supports deterministic 429 injection; retry coverage lives in lower-level deterministic tests")
+		})
 		t.Run("RetryExhaustion", doTestRetryExhaustion)
 	})
 
@@ -127,59 +129,6 @@ func doTestSLOHeader(t *testing.T) {
 	}
 
 	t.Logf("batch completed within 10m SLO window (x-slo-ttft-ms header propagation unit-tested)")
-}
-
-// doTestRetryOn429 submits a batch targeting a simulator with 50% failure
-// injection (rate_limit → HTTP 429). The processor should retry failed
-// requests and eventually complete the batch. After completion, the test
-// checks processor logs for "Retrying request" entries to verify that
-// retries actually occurred.
-//
-// With 5 requests at 50% failure and maxRetries=20, the probability of any
-// single request exhausting all retries is (0.5)^21 ≈ 5e-7, and the
-// probability of zero retries across all requests is (0.5)^5 ≈ 3%.
-func doTestRetryOn429(t *testing.T) {
-	t.Helper()
-
-	const numRequests = 5
-	sinceTime := time.Now().UTC().Format(time.RFC3339Nano)
-
-	lines := make([]string, numRequests)
-	for i := range lines {
-		lines[i] = fmt.Sprintf(
-			`{"custom_id":"r429-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello %d"}]}}`,
-			i+1, testModel429, i+1,
-		)
-	}
-	jsonl := strings.Join(lines, "\n")
-
-	fileID := mustCreateFile(t, fmt.Sprintf("test-retry-429-%s.jsonl", testRunID), jsonl)
-	batchID := mustCreateBatch(t, fileID)
-
-	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute,
-		openai.BatchStatusCompleted, openai.BatchStatusFailed)
-
-	if finalBatch.Status != openai.BatchStatusCompleted {
-		t.Fatalf("expected batch to complete despite 429s, got status %s", finalBatch.Status)
-	}
-	if finalBatch.RequestCounts.Completed != int64(numRequests) {
-		t.Errorf("expected %d completed (after retries), got %d", numRequests, finalBatch.RequestCounts.Completed)
-	}
-	if finalBatch.RequestCounts.Failed != 0 {
-		t.Errorf("expected 0 failed (retries should succeed), got %d", finalBatch.RequestCounts.Failed)
-	}
-
-	t.Logf("429 retry test: completed=%d failed=%d total=%d",
-		finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
-
-	assertNoRequestErrors(t, testModel429)
-
-	procLogs := getProcessorLogsSince(t, sinceTime)
-	retries := strings.Count(procLogs, "Retrying request")
-	t.Logf("processor retried %d request(s) for %d original", retries, numRequests)
-	if retries == 0 {
-		t.Errorf("expected at least one retry (50%% failure injection on %d requests), but processor logs show 0 retries", numRequests)
-	}
 }
 
 // doTestRetryExhaustion submits a batch targeting a simulator with 100%
