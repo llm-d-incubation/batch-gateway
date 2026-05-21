@@ -18,6 +18,7 @@ package postgresql
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -298,6 +299,43 @@ func TestBatchUpdate(t *testing.T) {
 
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("CAS succeeds when status matches", func(t *testing.T) {
+		client, mock := newTestBatchClient(t)
+		defer mock.Close()
+
+		item := newTestBatchItem("batch-1", testTenantID)
+		expectedStatus := []byte(`{"status":"validating"}`)
+
+		mock.ExpectExec("UPDATE "+testTable+" SET").
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "batch-1", expectedStatus).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+		if err := client.DBUpdate(ctx, item, expectedStatus); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("CAS returns ErrConflict when status differs", func(t *testing.T) {
+		client, mock := newTestBatchClient(t)
+		defer mock.Close()
+
+		item := newTestBatchItem("batch-1", testTenantID)
+		expectedStatus := []byte(`{"status":"validating"}`)
+
+		mock.ExpectExec("UPDATE "+testTable+" SET").
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "batch-1", expectedStatus).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+		err := client.DBUpdate(ctx, item, expectedStatus)
+		if !errors.Is(err, api.ErrConflict) {
+			t.Fatalf("expected ErrConflict, got %v", err)
 		}
 	})
 

@@ -32,6 +32,8 @@ import (
 // errors.Is(err, ErrConflict) to detect CAS failures.
 var ErrConflict = errors.New("status conflict")
 
+// -- Metadata storage --
+
 // DBClient is a generic interface for managing database items in persistent storage.
 //
 // Each domain type (e.g., BatchItem, FileItem) gets its own typed DBClient implementation.
@@ -144,7 +146,6 @@ type BatchPriorityQueueClient interface {
 	PQDelete(ctx context.Context, jobPriority *BatchJobPriority) (nDeleted int, err error)
 
 	// PQGetIDs returns the set of all job IDs currently in the priority queue.
-	// Used by the orphan reconciler to distinguish queued jobs from orphans.
 	PQGetIDs(ctx context.Context) (map[string]bool, error)
 }
 
@@ -218,24 +219,22 @@ type BatchStatusClient interface {
 // -- In-flight job tracking --
 
 // InFlightEntry records which processor owns a dequeued job and when it last
-// reported liveness. Used by the orphan reconciler to distinguish actively
-// processed jobs from abandoned ones.
+// reported liveness.
 type InFlightEntry struct {
 	ProcessorID string `json:"pid"`
-	LastSeen    int64  `json:"ts"`
+	LastSeen    int64  `json:"ls"`
 }
 
 // InFlightClient tracks jobs that have been dequeued and are being processed.
-// The processor calls InFlightSet after dequeue and periodically as a heartbeat,
-// then InFlightDelete when the job reaches a terminal state.
-// The reconciler uses InFlightGetAll to detect stale entries.
 type InFlightClient interface {
 	store.BatchClientAdmin
 
 	// InFlightSet records or refreshes the in-flight entry for a job.
+	// Called after dequeue and periodically as a heartbeat.
 	InFlightSet(ctx context.Context, jobID, processorID string) error
 
 	// InFlightDelete removes the in-flight entry for a job.
+	// Called when the job reaches a terminal state.
 	InFlightDelete(ctx context.Context, jobID string) error
 
 	// InFlightGetAll returns all in-flight entries keyed by job ID.

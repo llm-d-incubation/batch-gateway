@@ -406,7 +406,7 @@ func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api
 
 	if result.RowsAffected() == 0 {
 		if len(expectedStatus) > 0 {
-			return fmt.Errorf("%w: status changed since read", api.ErrConflict)
+			return fmt.Errorf("DBUpdate: %w", api.ErrConflict)
 		}
 		return fmt.Errorf("DBUpdate: item %s not found", idx.ID)
 	}

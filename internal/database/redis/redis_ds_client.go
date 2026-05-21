@@ -87,9 +87,9 @@ var (
 	getByTenantLua         string
 	redisScriptGetByTenant = goredis.NewScript(commonLua + "\n" + getByTenantLua)
 
-	//go:embed redis_cas_update.lua
-	casUpdateLua         string
-	redisScriptCASUpdate = goredis.NewScript(casUpdateLua)
+	//go:embed redis_update_cas.lua
+	updateCASLua         string
+	redisScriptUpdateCAS = goredis.NewScript(updateCASLua)
 
 	//go:embed redis_pq_get_ids.lua
 	pqGetIDsLua         string
