@@ -83,8 +83,14 @@ func (c *PostgresBatchDBClient) DBGet(
 		return
 	}
 
+	var rawConditions []string
+	if query.NonTerminal {
+		rawConditions = append(rawConditions,
+			colStatus+`::jsonb->>'status' NOT IN ('completed','failed','expired','cancelled')`)
+	}
+
 	indexes, contents, _, cursor, expectMore, err := c.get(
-		ctx, &query.BaseQuery, includeStatic, start, limit, nil)
+		ctx, &query.BaseQuery, includeStatic, start, limit, nil, rawConditions)
 	if err != nil {
 		return
 	}

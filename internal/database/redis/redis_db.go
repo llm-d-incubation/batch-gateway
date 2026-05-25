@@ -324,8 +324,17 @@ func (c *BatchDBClientRedis) DBGet(
 	}
 
 	var res []any
-	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit, includeStatic,
-		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
+	if query.NonTerminal {
+		includeSpec := strconv.FormatBool(includeStatic)
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetNonTerminal.Run(cctx, c.redisClient,
+			[]string{}, getKeyPatternForStore(itemTypeBatch),
+			start, limit, query.TenantID, includeSpec).Slice()
+	} else {
+		res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit, includeStatic,
+			query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
+	}
 	if err != nil {
 		return
 	}

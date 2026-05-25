@@ -160,7 +160,7 @@ func TestCoreGet_EmptyQuery(t *testing.T) {
 	defer mock.Close()
 
 	indexes, contents, _, cursor, expectMore, err := core.get(
-		context.Background(), &api.BaseQuery{}, true, 0, 10, nil)
+		context.Background(), &api.BaseQuery{}, true, 0, 10, nil, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -183,7 +183,7 @@ func TestCoreGet_DBFailure(t *testing.T) {
 		WillReturnError(fmt.Errorf("connection refused"))
 
 	_, _, _, _, _, err := core.get(
-		context.Background(), &api.BaseQuery{TenantID: "t1"}, true, 0, 10, nil)
+		context.Background(), &api.BaseQuery{TenantID: "t1"}, true, 0, 10, nil, nil)
 	if err == nil {
 		t.Fatal("expected error on DB failure")
 	}
@@ -202,7 +202,7 @@ func TestCoreGet_Expired(t *testing.T) {
 		WillReturnRows(rows)
 
 	indexes, _, _, _, _, err := core.get(
-		context.Background(), &api.BaseQuery{Expired: true}, true, 0, 10, nil)
+		context.Background(), &api.BaseQuery{Expired: true}, true, 0, 10, nil, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -232,7 +232,7 @@ func TestCoreGet_Pagination(t *testing.T) {
 			WillReturnRows(rows)
 
 		indexes, _, _, cursor, expectMore, err := core.get(
-			context.Background(), &api.BaseQuery{TenantID: "t1"}, false, 0, 2, nil)
+			context.Background(), &api.BaseQuery{TenantID: "t1"}, false, 0, 2, nil, nil)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -265,7 +265,7 @@ func TestCoreGet_Pagination(t *testing.T) {
 			WillReturnRows(rows)
 
 		indexes, _, _, cursor, expectMore, err := core.get(
-			context.Background(), &api.BaseQuery{TenantID: "t1"}, false, 0, 2, nil)
+			context.Background(), &api.BaseQuery{TenantID: "t1"}, false, 0, 2, nil, nil)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}

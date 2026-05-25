@@ -426,16 +426,21 @@ func (p *Processor) deleteInFlight(ctx context.Context, jobID string) {
 
 func (p *Processor) heartbeat(ctx context.Context, jobID string) {
 	logger := logr.FromContextOrDiscard(ctx)
+	logger.V(logging.INFO).Info("Heartbeat started", "jobId", jobID)
+
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			logger.V(logging.INFO).Info("Heartbeat stopped", "jobId", jobID)
 			return
 		case <-ticker.C:
 			if err := p.inflight.InFlightSet(ctx, jobID, p.processorID); err != nil {
 				logger.Error(err, "Failed to refresh in-flight heartbeat", "jobId", jobID)
+			} else {
+				logger.V(logging.INFO).Info("Heartbeat refreshed", "jobId", jobID)
 			}
 		}
 	}

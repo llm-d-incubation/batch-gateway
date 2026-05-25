@@ -30,13 +30,27 @@ import (
 const (
 	// DefaultMaxConcurrency is the default number of concurrent item deletions per GC cycle.
 	DefaultMaxConcurrency = 10
+
+	// DefaultReconcilerInterval is the default interval between orphan reconciler cycles.
+	// It also serves as the staleness threshold for in-flight entries.
+	DefaultReconcilerInterval = 60 * time.Minute
 )
+
+// ReconcilerConfig holds the orphan reconciler configuration.
+type ReconcilerConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"`
+}
 
 // Config holds the garbage collector configuration.
 type Config struct {
 	DryRun         bool          `yaml:"dry_run"`
 	Interval       time.Duration `yaml:"interval"`
 	MaxConcurrency int           `yaml:"max_concurrency"`
+
+	// Reconciler configures the orphan reconciler that detects and recovers
+	// batch jobs stuck in non-terminal states.
+	Reconciler ReconcilerConfig `yaml:"reconciler"`
 
 	// DB client configuration
 	DBClientCfg sharedcfg.DBClientConfig `yaml:"db_client"`
@@ -55,6 +69,10 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Interval:       1 * time.Hour,
 		MaxConcurrency: DefaultMaxConcurrency,
+		Reconciler: ReconcilerConfig{
+			Enabled:  true,
+			Interval: DefaultReconcilerInterval,
+		},
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
@@ -66,6 +84,10 @@ func Load(path string) (*Config, error) {
 
 	if cfg.Interval <= 0 {
 		return nil, fmt.Errorf("interval must be positive, got %v", cfg.Interval)
+	}
+
+	if cfg.Reconciler.Enabled && cfg.Reconciler.Interval <= 0 {
+		return nil, fmt.Errorf("reconciler.interval must be positive when enabled, got %v", cfg.Reconciler.Interval)
 	}
 
 	switch cfg.DBClientCfg.Type {
