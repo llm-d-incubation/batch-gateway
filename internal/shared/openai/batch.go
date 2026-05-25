@@ -58,19 +58,28 @@ func (s BatchStatus) String() string {
 	return string(s)
 }
 
-func (s BatchStatus) IsTerminal() bool {
-	return s == BatchStatusCompleted || s == BatchStatusFailed || s == BatchStatusExpired || s == BatchStatusCancelled
+// terminalStatuses is the single source of truth for terminal batch statuses.
+// Declared as an array (not slice) so it cannot be appended to or resliced.
+var terminalStatuses = [4]BatchStatus{
+	BatchStatusCompleted,
+	BatchStatusFailed,
+	BatchStatusExpired,
+	BatchStatusCancelled,
 }
 
-// TerminalStatuses returns all statuses considered final/terminal.
-// Allocates per call; Go has no const/frozen slices and a shared slice would be mutable.
-func TerminalStatuses() []BatchStatus {
-	return []BatchStatus{
-		BatchStatusCompleted,
-		BatchStatusFailed,
-		BatchStatusExpired,
-		BatchStatusCancelled,
+func (s BatchStatus) IsTerminal() bool {
+	for _, ts := range terminalStatuses {
+		if s == ts {
+			return true
+		}
 	}
+	return false
+}
+
+// TerminalStatuses returns a copy so callers cannot mutate the canonical list.
+func TerminalStatuses() []BatchStatus {
+	result := terminalStatuses
+	return result[:]
 }
 
 func (s BatchStatus) IsCancellable() bool {
