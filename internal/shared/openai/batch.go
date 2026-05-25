@@ -62,6 +62,17 @@ func (s BatchStatus) IsFinal() bool {
 	return s == BatchStatusCompleted || s == BatchStatusFailed || s == BatchStatusExpired || s == BatchStatusCancelled
 }
 
+// TerminalStatuses returns all statuses considered final/terminal.
+// Used by database query implementations to filter non-terminal jobs.
+func TerminalStatuses() []BatchStatus {
+	return []BatchStatus{
+		BatchStatusCompleted,
+		BatchStatusFailed,
+		BatchStatusExpired,
+		BatchStatusCancelled,
+	}
+}
+
 func (s BatchStatus) IsCancellable() bool {
 	return s == BatchStatusValidating || s == BatchStatusInProgress || s == BatchStatusCancelling
 }

@@ -352,6 +352,79 @@ func TestRedisDSClient(t *testing.T) {
 
 	})
 
+	t.Run("Batch NonTerminal query", func(t *testing.T) {
+		t.Parallel()
+		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		ctx := context.Background()
+
+		// Store items with different statuses.
+		statuses := map[string]string{
+			"nt-validating": `{"status":"validating"}`,
+			"nt-inprogress": `{"status":"in_progress"}`,
+			"nt-completed":  `{"status":"completed"}`,
+			"nt-failed":     `{"status":"failed"}`,
+			"nt-expired":    `{"status":"expired"}`,
+			"nt-cancelled":  `{"status":"cancelled"}`,
+		}
+		var allIDs []string
+		for id, status := range statuses {
+			item := &db_api.BatchItem{
+				BaseIndexes: db_api.BaseIndexes{
+					ID:       id,
+					TenantID: "tenant-nt",
+					Expiry:   time.Now().Add(time.Hour).Unix(),
+					Tags:     map[string]string{"test": "nonterminal"},
+				},
+				BaseContents: db_api.BaseContents{
+					Spec:   []byte(`{"endpoint":"/v1/chat/completions"}`),
+					Status: []byte(status),
+				},
+			}
+			if err := batchClient.DBStore(ctx, item); err != nil {
+				t.Fatalf("failed to store item %s: %v", id, err)
+			}
+			allIDs = append(allIDs, id)
+		}
+
+		// Query non-terminal items filtered by tenant (required for test isolation
+		// since parallel subtests share the same miniredis instance).
+		items, _, _, err := batchClient.DBGet(ctx,
+			&db_api.BatchQuery{
+				BaseQuery:   db_api.BaseQuery{TenantID: "tenant-nt"},
+				NonTerminal: true,
+			}, false, 0, 100)
+		if err != nil {
+			t.Fatalf("NonTerminal query failed: %v", err)
+		}
+
+		// Should return only the 2 non-terminal items (validating, in_progress).
+		if len(items) != 2 {
+			var gotIDs []string
+			for _, item := range items {
+				gotIDs = append(gotIDs, item.ID)
+			}
+			t.Fatalf("expected 2 non-terminal items, got %d: %v", len(items), gotIDs)
+		}
+
+		gotIDs := make(map[string]bool)
+		for _, item := range items {
+			gotIDs[item.ID] = true
+		}
+		if !gotIDs["nt-validating"] || !gotIDs["nt-inprogress"] {
+			t.Errorf("expected validating and in_progress, got %v", gotIDs)
+		}
+
+		// Cleanup.
+		_, err = batchClient.DBDelete(ctx, allIDs)
+		if err != nil {
+			t.Fatalf("failed to delete items: %v", err)
+		}
+	})
+
 	t.Run("File db operations", func(t *testing.T) {
 		t.Parallel()
 		baseClient, _, fileClient, _ := setupRedisDSClients(t, redisUrl, redisCaCert)

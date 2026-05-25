@@ -78,6 +78,15 @@ func (m *MockInFlightClient) InFlightGetAll(_ context.Context) (map[string]*api.
 	return result, nil
 }
 
+// SetLastSeen overrides the LastSeen timestamp for a specific entry (test helper).
+func (m *MockInFlightClient) SetLastSeen(jobID string, lastSeen int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if entry, ok := m.entries[jobID]; ok {
+		entry.LastSeen = lastSeen
+	}
+}
+
 func (m *MockInFlightClient) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

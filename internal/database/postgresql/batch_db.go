@@ -20,9 +20,12 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 )
 
 //go:embed batch_schema.sql
@@ -85,8 +88,12 @@ func (c *PostgresBatchDBClient) DBGet(
 
 	var rawConditions []string
 	if query.NonTerminal {
+		quoted := make([]string, len(openai.TerminalStatuses()))
+		for i, s := range openai.TerminalStatuses() {
+			quoted[i] = "'" + string(s) + "'"
+		}
 		rawConditions = append(rawConditions,
-			colStatus+`::jsonb->>'status' NOT IN ('completed','failed','expired','cancelled')`)
+			colStatus+`::jsonb->>'status' NOT IN (`+strings.Join(quoted, ",")+`)`)
 	}
 
 	indexes, contents, _, cursor, expectMore, err := c.get(

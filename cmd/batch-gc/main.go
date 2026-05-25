@@ -93,7 +93,10 @@ func run() error {
 		return nil
 	}
 
-	rec := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, nil)
+	rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create reconciler: %w", err)
+	}
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error { return gc.RunLoop(gCtx) })

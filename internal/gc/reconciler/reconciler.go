@@ -43,6 +43,7 @@ type Result struct {
 	ReEnqueued   int
 	Failed       int
 	StaleCleanup int
+	Conflicts    int
 	Errors       int
 }
 
@@ -64,14 +65,26 @@ func NewReconciler(
 	inflight db.InFlightClient,
 	interval time.Duration,
 	onCycleComplete func(*Result),
-) *Reconciler {
+) (*Reconciler, error) {
+	if batchDB == nil {
+		return nil, fmt.Errorf("batchDB client is required")
+	}
+	if queue == nil {
+		return nil, fmt.Errorf("queue client is required")
+	}
+	if inflight == nil {
+		return nil, fmt.Errorf("in-flight client is required")
+	}
+	if interval <= 0 {
+		return nil, fmt.Errorf("interval must be positive, got %v", interval)
+	}
 	return &Reconciler{
 		batchDB:         batchDB,
 		queue:           queue,
 		inflight:        inflight,
 		interval:        interval,
 		onCycleComplete: onCycleComplete,
-	}
+	}, nil
 }
 
 // RunLoop runs the reconciler in a continuous loop at the configured interval.
@@ -154,6 +167,7 @@ func (r *Reconciler) run(ctx context.Context) *Result {
 		"reEnqueued", result.ReEnqueued,
 		"failed", result.Failed,
 		"staleCleanup", result.StaleCleanup,
+		"conflicts", result.Conflicts,
 		"errors", result.Errors,
 	)
 
@@ -207,7 +221,7 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 		return
 	}
 
-	sloExpired := r.isSLOExpired(job)
+	sloExpired := isSLOExpired(job)
 
 	switch statusInfo.Status {
 	case openai.BatchStatusCancelling:
@@ -230,10 +244,12 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 	default:
 		logger.Info("Orphan in unexpected status, skipping", "status", statusInfo.Status)
 		result.Errors++
+		return
 	}
 
 	if err := r.inflight.InFlightDelete(ctx, job.ID); err != nil {
 		logger.Error(err, "Failed to delete in-flight entry for orphan")
+		result.Errors++
 	}
 }
 
@@ -246,13 +262,7 @@ func (r *Reconciler) transitionOrphan(
 	result *Result,
 	logger logr.Logger,
 ) {
-	var slo *time.Time
-	if newStatus == openai.BatchStatusValidating {
-		s := r.extractSLO(job)
-		slo = s
-	}
-
-	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(currentStatus, newStatus, nil, slo)
+	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(currentStatus, newStatus, nil, nil)
 	if err != nil {
 		logger.Error(err, "Failed to build updated status", "newStatus", newStatus)
 		result.Errors++
@@ -273,10 +283,11 @@ func (r *Reconciler) transitionOrphan(
 	if err := r.batchDB.DBUpdate(ctx, updateItem, job.Status); err != nil {
 		if errors.Is(err, db.ErrConflict) {
 			logger.Info("CAS conflict during orphan transition (another actor won the race)", "newStatus", newStatus)
+			result.Conflicts++
 		} else {
 			logger.Error(err, "Failed to transition orphan", "newStatus", newStatus)
+			result.Errors++
 		}
-		result.Errors++
 		return
 	}
 
@@ -294,7 +305,12 @@ func (r *Reconciler) transitionOrphan(
 
 // reEnqueueOrphan re-enqueues an orphaned validating job with its original SLO.
 func (r *Reconciler) reEnqueueOrphan(ctx context.Context, job *db.BatchItem, result *Result, logger logr.Logger) {
-	slo := r.extractSLO(job)
+	slo, err := extractSLO(job)
+	if err != nil {
+		logger.Error(err, "Cannot re-enqueue orphan with corrupt SLO")
+		result.Errors++
+		return
+	}
 	if slo == nil {
 		logger.Error(fmt.Errorf("missing SLO tag"), "Cannot re-enqueue orphan without SLO")
 		result.Errors++
@@ -340,8 +356,9 @@ func (r *Reconciler) cleanupStaleInflight(
 }
 
 // isSLOExpired checks whether the job's SLO deadline has passed.
-func (r *Reconciler) isSLOExpired(job *db.BatchItem) bool {
-	slo := r.extractSLO(job)
+// Returns false if the SLO tag is missing or corrupt (caller should check extractSLO separately).
+func isSLOExpired(job *db.BatchItem) bool {
+	slo, _ := extractSLO(job)
 	if slo == nil {
 		return false
 	}
@@ -349,15 +366,16 @@ func (r *Reconciler) isSLOExpired(job *db.BatchItem) bool {
 }
 
 // extractSLO parses the SLO tag from the job's tags.
-func (r *Reconciler) extractSLO(job *db.BatchItem) *time.Time {
+// Returns (nil, nil) if the tag is missing, or (nil, error) if the tag value is corrupt.
+func extractSLO(job *db.BatchItem) (*time.Time, error) {
 	sloStr, ok := job.Tags[batch_types.TagSLO]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	sloMicro, err := strconv.ParseInt(sloStr, 10, 64)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("corrupt SLO tag %q: %w", sloStr, err)
 	}
 	slo := time.UnixMicro(sloMicro).UTC()
-	return &slo
+	return &slo, nil
 }

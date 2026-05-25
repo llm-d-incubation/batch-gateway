@@ -57,14 +57,19 @@ func newTestBatchItem(id string, status openai.BatchStatus, tags db.Tags) *db.Ba
 }
 
 func newTestReconciler(
+	t *testing.T,
 	batchDB db.BatchDBClient,
 	queue db.BatchPriorityQueueClient,
 	inflight db.InFlightClient,
 ) (*Reconciler, chan *Result) {
+	t.Helper()
 	resultCh := make(chan *Result, 1)
-	r := NewReconciler(batchDB, queue, inflight, testInterval, func(res *Result) {
+	r, err := NewReconciler(batchDB, queue, inflight, testInterval, func(res *Result) {
 		resultCh <- res
 	})
+	if err != nil {
+		t.Fatalf("failed to create reconciler: %v", err)
+	}
 	return r, resultCh
 }
 
@@ -89,7 +94,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusCancelling, sloTag(futureSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -107,7 +112,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(expiredSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -125,7 +130,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(futureSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -147,7 +152,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(expiredSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -165,7 +170,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(futureSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -183,7 +188,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusFinalizing, sloTag(expiredSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -200,7 +205,7 @@ func TestTriageOrphan(t *testing.T) {
 		item := newTestBatchItem("job-1", openai.BatchStatusFinalizing, sloTag(futureSLO()))
 		storeItems(t, batchDB, item)
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -224,7 +229,7 @@ func TestSkipNonOrphans(t *testing.T) {
 
 		_ = queue.PQEnqueue(ctx, &db.BatchJobPriority{ID: "job-1", SLO: slo})
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -243,7 +248,7 @@ func TestSkipNonOrphans(t *testing.T) {
 
 		_ = inflight.InFlightSet(ctx, "job-1", "processor-1")
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -266,7 +271,7 @@ func TestStaleInflightCleanup(t *testing.T) {
 		// or was deleted, but its in-flight entry was not cleaned up).
 		_ = inflight.InFlightSet(ctx, "job-stale", "processor-1")
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -292,7 +297,7 @@ func TestStaleInflightCleanup(t *testing.T) {
 		// and recently seen, so it's treated as actively processing).
 		_ = inflight.InFlightSet(ctx, "job-active", "processor-1")
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
@@ -310,17 +315,20 @@ func TestStaleInflightCleanup(t *testing.T) {
 func TestCASConflict(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("CAS conflict is counted as error", func(t *testing.T) {
+	t.Run("CAS conflict is counted as conflict not error", func(t *testing.T) {
 		batchDB := &casConflictBatchDB{}
 		queue := mock.NewMockBatchPriorityQueueClient()
 		inflight := mock.NewMockInFlightClient()
 
-		r, resultCh := newTestReconciler(batchDB, queue, inflight)
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
 		r.run(ctx)
 
 		result := <-resultCh
-		if result.Errors != 1 {
-			t.Errorf("expected 1 error from CAS conflict, got %d", result.Errors)
+		if result.Conflicts != 1 {
+			t.Errorf("expected 1 conflict from CAS, got %d", result.Conflicts)
+		}
+		if result.Errors != 0 {
+			t.Errorf("expected 0 errors (CAS is a conflict, not an error), got %d", result.Errors)
 		}
 		if result.Cancelled != 0 {
 			t.Errorf("expected 0 cancelled (CAS failed), got %d", result.Cancelled)
@@ -335,12 +343,15 @@ func TestRunLoop(t *testing.T) {
 		inflight := mock.NewMockInFlightClient()
 
 		ran := make(chan struct{}, 1)
-		r := NewReconciler(batchDB, queue, inflight, testInterval, func(*Result) {
+		r, err := NewReconciler(batchDB, queue, inflight, testInterval, func(*Result) {
 			select {
 			case ran <- struct{}{}:
 			default:
 			}
 		})
+		if err != nil {
+			t.Fatalf("failed to create reconciler: %v", err)
+		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 
@@ -354,6 +365,162 @@ func TestRunLoop(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestTriageEdgeCases(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("validating orphan without SLO tag errors", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		item := newTestBatchItem("job-1", openai.BatchStatusValidating, db.Tags{})
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Errors != 1 {
+			t.Errorf("expected 1 error for missing SLO, got %d", result.Errors)
+		}
+		if result.ReEnqueued != 0 {
+			t.Errorf("expected 0 re-enqueued, got %d", result.ReEnqueued)
+		}
+	})
+
+	t.Run("validating orphan with corrupt SLO tag errors", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		item := newTestBatchItem("job-1", openai.BatchStatusValidating, db.Tags{batch_types.TagSLO: "not-a-number"})
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Errors != 1 {
+			t.Errorf("expected 1 error for corrupt SLO, got %d", result.Errors)
+		}
+		if result.ReEnqueued != 0 {
+			t.Errorf("expected 0 re-enqueued, got %d", result.ReEnqueued)
+		}
+	})
+
+	t.Run("malformed status JSON errors", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		item := &db.BatchItem{
+			BaseIndexes:  db.BaseIndexes{ID: "job-1", Tags: sloTag(futureSLO())},
+			BaseContents: db.BaseContents{Status: []byte(`{{invalid json`)},
+		}
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Errors != 1 {
+			t.Errorf("expected 1 error for malformed status, got %d", result.Errors)
+		}
+	})
+
+	t.Run("stale in-flight entry triggers triage", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(futureSLO()))
+		storeItems(t, batchDB, item)
+
+		_ = inflight.InFlightSet(ctx, "job-1", "processor-1")
+		// Backdate the LastSeen to make it stale (older than the reconciler interval).
+		staleTime := time.Now().Add(-2 * testInterval).Unix()
+		inflight.SetLastSeen("job-1", staleTime)
+
+		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Failed != 1 {
+			t.Errorf("expected 1 failed for stale in-flight job, got %d", result.Failed)
+		}
+		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusFailed)
+	})
+}
+
+func TestNewReconcilerValidation(t *testing.T) {
+	batchDB := newMockBatchDB()
+	queue := mock.NewMockBatchPriorityQueueClient()
+	inflight := mock.NewMockInFlightClient()
+
+	t.Run("nil batchDB", func(t *testing.T) {
+		_, err := NewReconciler(nil, queue, inflight, testInterval, nil)
+		if err == nil {
+			t.Fatal("expected error for nil batchDB")
+		}
+	})
+
+	t.Run("nil queue", func(t *testing.T) {
+		_, err := NewReconciler(batchDB, nil, inflight, testInterval, nil)
+		if err == nil {
+			t.Fatal("expected error for nil queue")
+		}
+	})
+
+	t.Run("nil inflight", func(t *testing.T) {
+		_, err := NewReconciler(batchDB, queue, nil, testInterval, nil)
+		if err == nil {
+			t.Fatal("expected error for nil inflight")
+		}
+	})
+
+	t.Run("zero interval", func(t *testing.T) {
+		_, err := NewReconciler(batchDB, queue, inflight, 0, nil)
+		if err == nil {
+			t.Fatal("expected error for zero interval")
+		}
+	})
+
+	t.Run("negative interval", func(t *testing.T) {
+		_, err := NewReconciler(batchDB, queue, inflight, -time.Minute, nil)
+		if err == nil {
+			t.Fatal("expected error for negative interval")
+		}
+	})
+}
+
+func TestTerminalStatusesSync(t *testing.T) {
+	// Verify that every status returned by TerminalStatuses() is actually final,
+	// and every final status is included in TerminalStatuses().
+	terminalSet := make(map[openai.BatchStatus]bool)
+	for _, s := range openai.TerminalStatuses() {
+		if !s.IsFinal() {
+			t.Errorf("TerminalStatuses() contains %q which is not IsFinal()", s)
+		}
+		terminalSet[s] = true
+	}
+
+	allStatuses := []openai.BatchStatus{
+		openai.BatchStatusValidating,
+		openai.BatchStatusFailed,
+		openai.BatchStatusInProgress,
+		openai.BatchStatusFinalizing,
+		openai.BatchStatusCompleted,
+		openai.BatchStatusExpired,
+		openai.BatchStatusCancelling,
+		openai.BatchStatusCancelled,
+	}
+	for _, s := range allStatuses {
+		if s.IsFinal() && !terminalSet[s] {
+			t.Errorf("status %q is IsFinal() but missing from TerminalStatuses()", s)
+		}
+	}
 }
 
 // --- Helpers ---
