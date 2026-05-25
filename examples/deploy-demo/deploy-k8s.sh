@@ -36,11 +36,14 @@ BATCH_INTERNAL_GATEWAY_NAME="${BATCH_INTERNAL_GATEWAY_NAME:-batch-internal-gatew
 BATCH_INTERNAL_GATEWAY_NAMESPACE="${BATCH_INTERNAL_GATEWAY_NAMESPACE:-${GATEWAY_NAMESPACE}}"
 GATEWAY_LOCAL_PORT="${GATEWAY_LOCAL_PORT:-8080}"
 
-LLMD_VERSION="${LLMD_VERSION:-v0.6.0}"
+LLMD_VERSION="${LLMD_VERSION:-v0.7.0}"
 LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
 LLMD_RELEASE_POSTFIX="${LLMD_RELEASE_POSTFIX:-llmd}"
 
-# Model name matches the simulated-accelerators helmfile default ("random")
+GAIE_CHART_VERSION="${GAIE_CHART_VERSION:-v1.5.0}"
+MODELSERVICE_CHART_VERSION="${MODELSERVICE_CHART_VERSION:-v0.4.12}"
+
+# Model name matches the simulated model default ("random")
 MODEL_NAME="${MODEL_NAME:-random}"
 LLMD_POOL_NAME="gaie-${LLMD_RELEASE_POSTFIX}"
 
@@ -429,20 +432,29 @@ install_llmd_deps() {
 deploy_llmd_model() {
     step "Deploying model with llm-d..."
 
-    local llmd_dir="${LLMD_GIT_DIR}"
-    local sim_dir="${llmd_dir}/guides/simulated-accelerators"
+    local sim_dir="${SCRIPT_DIR}/llmd-sim"
+    local pool_name="${LLMD_POOL_NAME}"
+    local epp_host="${pool_name}-epp.${LLM_NAMESPACE}.svc.cluster.local"
 
-    # Reduce resource requests — defaults (4 CPU) exceed demo/CI cluster capacity.
-    local istio_config="${llmd_dir}/guides/prereq/gateway-provider/common-configurations/istio.yaml"
-    # Disable llm-d's own gateway — we use our own istio-gateway with AuthPolicy
-    yq -i '.gateway.enabled = false' "${istio_config}"
-    yq -i '.inferenceExtension.resources = {"requests": {"cpu": "500m", "memory": "512Mi"}, "limits": {"cpu": "2", "memory": "1Gi"}}' \
-        "${sim_dir}/gaie-sim/values.yaml"
-    RELEASE_NAME_POSTFIX="${LLMD_RELEASE_POSTFIX}" \
-        helmfile apply -f "${sim_dir}/helmfile.yaml.gotmpl" -e istio -n "${LLM_NAMESPACE}"
+    # Install InferencePool (GAIE EPP)
+    step "Installing InferencePool chart ${GAIE_CHART_VERSION}..."
+    helm upgrade --install "${pool_name}" \
+        oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
+        --version "${GAIE_CHART_VERSION}" \
+        --namespace "${LLM_NAMESPACE}" \
+        -f "${sim_dir}/gaie-sim-values.yaml" \
+        --set "provider.istio.destinationRule.host=${epp_host}"
+
+    # Install ModelService (vllm-sim)
+    step "Installing ModelService chart ${MODELSERVICE_CHART_VERSION}..."
+    helm repo add llm-d-modelservice https://llm-d-incubation.github.io/llm-d-modelservice/ --force-update
+    helm upgrade --install "ms-${LLMD_RELEASE_POSTFIX}" llm-d-modelservice/llm-d-modelservice \
+        --version "${MODELSERVICE_CHART_VERSION}" \
+        --namespace "${LLM_NAMESPACE}" \
+        -f "${sim_dir}/ms-sim-values.yaml"
 
     # Wait for llm-d deployments
-    wait_for_deployment "${LLMD_POOL_NAME}-epp" "${LLM_NAMESPACE}" 300s
+    wait_for_deployment "${pool_name}-epp" "${LLM_NAMESPACE}" 300s
     wait_for_deployment "ms-${LLMD_RELEASE_POSTFIX}-llm-d-modelservice-decode" "${LLM_NAMESPACE}" 300s
 
     log "llm-d model deployed."
@@ -451,16 +463,8 @@ deploy_llmd_model() {
 uninstall_llmd() {
     step "Removing llm-d stack (${LLM_NAMESPACE})..."
     timeout_delete 30s httproute --all -n "${LLM_NAMESPACE}" || true
-    local sim_helmfile="${LLMD_GIT_DIR}/guides/simulated-accelerators/helmfile.yaml.gotmpl"
-    if [ -f "${sim_helmfile}" ]; then
-        RELEASE_NAME_POSTFIX="${LLMD_RELEASE_POSTFIX}" \
-            helmfile destroy -f "${sim_helmfile}" -e istio -n "${LLM_NAMESPACE}" 2>/dev/null \
-            || warn "helmfile destroy failed"
-    else
-        helm uninstall "ms-${LLMD_RELEASE_POSTFIX}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
-        helm uninstall "${LLMD_POOL_NAME}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
-        helm uninstall "infra-${LLMD_RELEASE_POSTFIX}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
-    fi
+    helm uninstall "ms-${LLMD_RELEASE_POSTFIX}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    helm uninstall "${LLMD_POOL_NAME}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
     timeout_delete 30s inferencepool --all -n "${LLM_NAMESPACE}" || true
 }
 
@@ -875,7 +879,7 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0 install"
-    echo "  MODEL_NAME=my-model LLMD_VERSION=v0.5.0 $0 install"
+    echo "  MODEL_NAME=my-model LLMD_VERSION=v0.7.0 $0 install"
     exit "${1:-0}"
 }
 

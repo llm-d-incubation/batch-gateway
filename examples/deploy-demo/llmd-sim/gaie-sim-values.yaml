@@ -1,0 +1,59 @@
+# InferencePool chart values for simulated-accelerators demo.
+# Used with: oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool v1.5.0
+#
+# Equivalent to the former guides/simulated-accelerators/gaie-sim/values.yaml
+# in the llm-d repo, which was removed after v0.6.0.
+
+inferenceExtension:
+  replicas: 1
+  image:
+    registry: ghcr.io
+    repository: llm-d/llm-d-inference-scheduler
+    tag: v0.8.0
+    pullPolicy: Always
+  extProcPort: 9002
+  pluginsConfigFile: "default-plugins.yaml"
+  tracing:
+    enabled: false
+  monitoring:
+    interval: "10s"
+    prometheus:
+      enabled: true
+      auth:
+        enabled: true
+        secretName: sim-gateway-sa-metrics-reader-secret
+  # Reduced for demo — defaults (4 CPU) exceed demo/CI cluster capacity.
+  resources:
+    requests:
+      cpu: "500m"
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+inferencePool:
+  targetPorts:
+    - number: 8000
+  modelServerType: vllm
+  modelServers:
+    matchLabels:
+      llm-d.ai/inference-serving: "true"
+      llm-d.ai/guide: "simulated-accelerators"
+      llm-d.ai/accelerator-variant: "cpu"
+      llm-d.ai/model: "random"
+
+provider:
+  name: istio
+  istio:
+    destinationRule:
+      trafficPolicy:
+        connectionPool:
+          http:
+            http1MaxPendingRequests: 256000
+            maxRequestsPerConnection: 256000
+            http2MaxRequests: 256000
+            idleTimeout: "900s"
+          tcp:
+            maxConnections: 256000
+            maxConnectionDuration: "1800s"
+            connectTimeout: "900s"
