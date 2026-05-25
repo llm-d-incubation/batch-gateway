@@ -161,9 +161,13 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	// Start heartbeat: periodically refreshes the in-flight entry so the
 	// orphan reconciler knows this job is still being actively processed.
+	// On each tick it also checks the DB status — if the reconciler acted
+	// (terminal status or reverted to validating), it calls requestAbortFn
+	// to stop all in-flight requests. The processor's terminal CAS write
+	// will then fail with ErrConflict, and the processor yields.
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
-	go p.heartbeat(heartbeatCtx, params.jobItem.ID)
+	go p.heartbeat(heartbeatCtx, params.jobItem.ID, requestAbortFn)
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
 	if err := p.preProcessJob(ctx, sloCtx, userCancelCtx, params.jobInfo); err != nil {

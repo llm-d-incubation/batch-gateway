@@ -19,6 +19,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -69,6 +70,7 @@ type Processor struct {
 	poller  *Poller
 	updater *StatusUpdater
 
+	batchDB   db.BatchDBClient           // job status lookups (heartbeat DB check)
 	event     db.BatchEventChannelClient // cancel-event subscription
 	inflight  db.InFlightClient          // in-flight job tracking for orphan recovery
 	inference *inference.GatewayResolver // model → gateway routing
@@ -94,6 +96,7 @@ func NewProcessor(
 		processorID: processorID,
 		poller:      poller,
 		updater:     updater,
+		batchDB:     clients.BatchDB,
 		event:       clients.Event,
 		inflight:    clients.InFlight,
 		inference:   clients.Inference,
@@ -424,7 +427,7 @@ func (p *Processor) deleteInFlight(ctx context.Context, jobID string) {
 	}
 }
 
-func (p *Processor) heartbeat(ctx context.Context, jobID string) {
+func (p *Processor) heartbeat(ctx context.Context, jobID string, abortFn context.CancelFunc) {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Heartbeat started", "jobId", jobID)
 
@@ -442,8 +445,42 @@ func (p *Processor) heartbeat(ctx context.Context, jobID string) {
 			} else {
 				logger.V(logging.INFO).Info("Heartbeat refreshed", "jobId", jobID)
 			}
+
+			if p.checkReconcilerActed(ctx, jobID) {
+				logger.Info("Reconciler acted on job, aborting", "jobId", jobID)
+				abortFn()
+				return
+			}
 		}
 	}
+}
+
+func (p *Processor) checkReconcilerActed(ctx context.Context, jobID string) bool {
+	logger := logr.FromContextOrDiscard(ctx)
+	query := &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}
+	items, _, _, err := p.batchDB.DBGet(ctx, query, false, 0, 1)
+	if err != nil {
+		logger.Error(err, "Heartbeat DB status check failed", "jobId", jobID)
+		return false
+	}
+	if len(items) == 0 {
+		logger.Info("Heartbeat: job not found in DB, reconciler may have acted", "jobId", jobID)
+		return true
+	}
+
+	var statusInfo openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &statusInfo); err != nil {
+		logger.Error(err, "Heartbeat: failed to unmarshal job status", "jobId", jobID)
+		return false
+	}
+
+	if statusInfo.Status.IsFinal() || statusInfo.Status == openai.BatchStatusValidating {
+		logger.Info("Heartbeat: unexpected DB status, reconciler acted",
+			"jobId", jobID, "dbStatus", statusInfo.Status)
+		return true
+	}
+
+	return false
 }
 
 // pre-flight check
