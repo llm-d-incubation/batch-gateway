@@ -42,23 +42,19 @@ repeat
 		local contents = redis.call('HGETALL', key)
 		local hash = contents_to_hash(contents)
 
-		-- Filter by tenant if specified.
-		if tenantID ~= '' and hash["tenantID"] ~= tenantID then
-			goto continue
-		end
-
-		-- Parse the status JSON to extract the status string.
-		local statusJSON = hash["status"]
-		if statusJSON then
-			local statusVal = string.match(statusJSON, '"status"%s*:%s*"([^"]+)"')
-			if statusVal and terminal[statusVal] then
-				goto continue
+		if tenantID == '' or hash["tenantID"] == tenantID then
+			local skip = false
+			local statusJSON = hash["status"]
+			if statusJSON then
+				local statusVal = string.match(statusJSON, '"status"%s*:%s*"([^"]+)"')
+				if statusVal and terminal[statusVal] then
+					skip = true
+				end
+			end
+			if not skip then
+				table.insert(matched, {key, contents})
 			end
 		end
-
-		table.insert(matched, {key, contents})
-
-		::continue::
 	end
 until scan_cursor == "0"
 
