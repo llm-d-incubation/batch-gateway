@@ -29,8 +29,11 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/llm-d-incubation/batch-gateway/internal/gc/collector"
 	gcconfig "github.com/llm-d-incubation/batch-gateway/internal/gc/config"
+	"github.com/llm-d-incubation/batch-gateway/internal/gc/reconciler"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
@@ -66,10 +69,15 @@ func run() error {
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-gc"
 
-	clients, err := clientset.NewClientset(ctx, ucom.ComponentGC,
+	clientOpts := []clientset.Option{
 		clientset.WithDB(cfg.DBClientCfg),
 		clientset.WithFile(cfg.FileClientCfg),
-	)
+	}
+	if cfg.Reconciler.Enabled {
+		clientOpts = append(clientOpts, clientset.WithExchange(cfg.DBClientCfg.RedisCfg))
+	}
+
+	clients, err := clientset.NewClientset(ctx, ucom.ComponentGC, clientOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}
@@ -77,8 +85,19 @@ func run() error {
 
 	gc := collector.NewGarbageCollector(clients.BatchDB, clients.FileDB, clients.File, cfg.DryRun, cfg.Interval, cfg.MaxConcurrency, nil)
 
-	if err := gc.RunLoop(ctx); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("garbage collector failed: %w", err)
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error { return gc.RunLoop(gCtx) })
+
+	if cfg.Reconciler.Enabled {
+		rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, cfg.DryRun, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create reconciler: %w", err)
+		}
+		g.Go(func() error { return rec.RunLoop(gCtx) })
+	}
+
+	if err := g.Wait(); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("gc/reconciler failed: %w", err)
 	}
 
 	logger.Info("Garbage collector shut down gracefully")

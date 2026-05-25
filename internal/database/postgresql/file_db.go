@@ -96,7 +96,7 @@ func (c *PostgresFileDBClient) DBGet(
 	}
 
 	indexes, contents, extras, cursor, expectMore, err := c.get(
-		ctx, &query.BaseQuery, includeStatic, start, limit, extraFilters)
+		ctx, &query.BaseQuery, includeStatic, start, limit, extraFilters, nil)
 	if err != nil {
 		return
 	}

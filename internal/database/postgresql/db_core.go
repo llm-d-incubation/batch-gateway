@@ -173,9 +173,10 @@ func (c *pgCore) store(ctx context.Context, idx *api.BaseIndexes, contents *api.
 
 // buildGetQuery constructs the SELECT SQL and args from the given query parameters.
 // extraFilters is keyed by column name and adds equality conditions for each entry.
+// rawConditions are appended verbatim to the WHERE clause (no parameterization).
 func (c *pgCore) buildGetQuery(
 	bq *api.BaseQuery, includeStatic bool, start, limit int,
-	extraFilters map[string]any,
+	extraFilters map[string]any, rawConditions []string,
 ) (string, []any) {
 	cols := c.selectColumns(includeStatic)
 
@@ -222,6 +223,8 @@ func (c *pgCore) buildGetQuery(
 		args = append(args, val)
 		argIdx++
 	}
+
+	conditions = append(conditions, rawConditions...)
 
 	if len(conditions) == 0 {
 		return "", nil
@@ -301,15 +304,16 @@ func (c *pgCore) scanRow(rows pgx.Rows, includeStatic bool) (*api.BaseIndexes, *
 
 // get retrieves items from the database.
 // extraFilters adds type-specific equality conditions (e.g., purpose = "batch").
+// rawConditions are appended verbatim to the WHERE clause.
 func (c *pgCore) get(
 	ctx context.Context, bq *api.BaseQuery, includeStatic bool, start, limit int,
-	extraFilters map[string]any,
+	extraFilters map[string]any, rawConditions []string,
 ) (
 	indexes []*api.BaseIndexes, contents []*api.BaseContents, extras []map[string]string,
 	cursor int, expectMore bool, err error,
 ) {
 	// Request one extra row beyond the limit to determine if more results exist.
-	sql, args := c.buildGetQuery(bq, includeStatic, start, limit+1, extraFilters)
+	sql, args := c.buildGetQuery(bq, includeStatic, start, limit+1, extraFilters, rawConditions)
 	if sql == "" {
 		return nil, nil, nil, 0, false, nil
 	}

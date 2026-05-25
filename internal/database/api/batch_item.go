@@ -25,6 +25,7 @@ type BatchItem struct {
 // BatchQuery specifies parameters for retrieving batches from the database.
 type BatchQuery struct {
 	BaseQuery
+	NonTerminal bool
 }
 
 // BatchDBClient is the typed database client for batch objects.

@@ -233,7 +233,7 @@ func (c *DSClientRedis) dBDelete(ctx context.Context, IDs []string, itemType, lo
 func (c *DSClientRedis) dbGet(
 	ctx context.Context, itemType, logPref string, start, limit int, includeStatic bool,
 	IDs []string, tagSelectors db_api.Tags, tagsLogicalCond db_api.LogicalCond,
-	expired bool, tenantID, purpose string) (res []any, err error) {
+	expired bool, tenantID, purpose string, nonTerminal bool) (res []any, err error) {
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -293,6 +293,17 @@ func (c *DSClientRedis) dbGet(
 			return
 		}
 
+	} else if nonTerminal {
+
+		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+		defer ccancel()
+		res, err = redisScriptGetByNonTerminal.Run(cctx, c.redisClient,
+			[]string{}, getKeyPatternForStore(itemType),
+			start, limit, tenantID, includeSpec).Slice()
+		if err != nil {
+			return
+		}
+
 	} else if len(tenantID) > 0 {
 
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
@@ -325,7 +336,7 @@ func (c *BatchDBClientRedis) DBGet(
 
 	var res []any
 	res, err = c.dbGet(ctx, itemTypeBatch, "DBGet[Batch]", start, limit, includeStatic,
-		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "")
+		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, "", query.NonTerminal)
 	if err != nil {
 		return
 	}
@@ -356,7 +367,7 @@ func (c *FileDBClientRedis) DBGet(
 
 	var res []any
 	res, err = c.dbGet(ctx, itemTypeFile, "DBGet[File]", start, limit, includeStatic,
-		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, query.Purpose)
+		query.IDs, query.TagSelectors, query.TagsLogicalCond, query.Expired, query.TenantID, query.Purpose, false)
 	if err != nil {
 		return
 	}

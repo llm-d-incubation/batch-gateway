@@ -19,6 +19,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -69,6 +70,7 @@ type Processor struct {
 	poller  *Poller
 	updater *StatusUpdater
 
+	batchDB   db.BatchDBClient           // job status lookups (heartbeat DB check)
 	event     db.BatchEventChannelClient // cancel-event subscription
 	inflight  db.InFlightClient          // in-flight job tracking for orphan recovery
 	inference *inference.GatewayResolver // model → gateway routing
@@ -94,6 +96,7 @@ func NewProcessor(
 		processorID: processorID,
 		poller:      poller,
 		updater:     updater,
+		batchDB:     clients.BatchDB,
 		event:       clients.Event,
 		inflight:    clients.InFlight,
 		inference:   clients.Inference,
@@ -424,21 +427,58 @@ func (p *Processor) deleteInFlight(ctx context.Context, jobID string) {
 	}
 }
 
-func (p *Processor) heartbeat(ctx context.Context, jobID string) {
-	logger := logr.FromContextOrDiscard(ctx)
+func (p *Processor) heartbeat(ctx context.Context, jobID string, abortFn context.CancelFunc) {
+	logger := logr.FromContextOrDiscard(ctx).WithValues("jobId", jobID)
+	logger.V(logging.INFO).Info("Heartbeat: started")
+
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			logger.V(logging.INFO).Info("Heartbeat: stopped")
 			return
 		case <-ticker.C:
 			if err := p.inflight.InFlightSet(ctx, jobID, p.processorID); err != nil {
-				logger.Error(err, "Failed to refresh in-flight heartbeat", "jobId", jobID)
+				logger.Error(err, "Heartbeat: failed to refresh in-flight entry")
+			} else {
+				logger.V(logging.INFO).Info("Heartbeat: refreshed")
+			}
+
+			if p.checkReconcilerActed(ctx, jobID, logger) {
+				logger.Info("Heartbeat: reconciler acted on job, aborting")
+				abortFn()
+				return
 			}
 		}
 	}
+}
+
+func (p *Processor) checkReconcilerActed(ctx context.Context, jobID string, logger logr.Logger) bool {
+	query := &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}
+	items, _, _, err := p.batchDB.DBGet(ctx, query, false, 0, 1)
+	if err != nil {
+		logger.Error(err, "Heartbeat: DB status check failed")
+		return false
+	}
+	if len(items) == 0 {
+		logger.Info("Heartbeat: job not found in DB, reconciler may have acted")
+		return true
+	}
+
+	var statusInfo openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &statusInfo); err != nil {
+		logger.Error(err, "Heartbeat: failed to unmarshal job status")
+		return false
+	}
+
+	if statusInfo.Status.IsTerminal() || statusInfo.Status == openai.BatchStatusValidating {
+		logger.Info("Heartbeat: unexpected DB status, reconciler acted", "dbStatus", statusInfo.Status)
+		return true
+	}
+
+	return false
 }
 
 // pre-flight check
@@ -465,6 +505,9 @@ func (p *Processor) validate() error {
 	}
 	if err := p.updater.validate(); err != nil {
 		return err
+	}
+	if p.batchDB == nil {
+		return fmt.Errorf("batch DB client is missing")
 	}
 	if p.event == nil {
 		return fmt.Errorf("event channel client is missing")

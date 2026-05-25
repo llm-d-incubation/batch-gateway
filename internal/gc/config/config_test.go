@@ -371,6 +371,108 @@ file_client:
 	}
 }
 
+func TestLoad_ReconcilerDefaults(t *testing.T) {
+	path := writeTempConfig(t, `
+db_client:
+  type: "postgresql"
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Reconciler.Enabled {
+		t.Error("expected reconciler to be enabled by default")
+	}
+	if cfg.Reconciler.Interval != DefaultReconcilerInterval {
+		t.Errorf("expected default reconciler interval %v, got %v", DefaultReconcilerInterval, cfg.Reconciler.Interval)
+	}
+}
+
+func TestLoad_ReconcilerCustomInterval(t *testing.T) {
+	path := writeTempConfig(t, `
+db_client:
+  type: "postgresql"
+reconciler:
+  enabled: true
+  interval: 30m
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Reconciler.Enabled {
+		t.Error("expected reconciler to be enabled")
+	}
+	if cfg.Reconciler.Interval != 30*time.Minute {
+		t.Errorf("expected reconciler interval 30m, got %v", cfg.Reconciler.Interval)
+	}
+}
+
+func TestLoad_ReconcilerDisabled(t *testing.T) {
+	path := writeTempConfig(t, `
+db_client:
+  type: "postgresql"
+reconciler:
+  enabled: false
+  interval: 0s
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Reconciler.Enabled {
+		t.Error("expected reconciler to be disabled")
+	}
+}
+
+func TestLoad_ErrorReconcilerZeroInterval(t *testing.T) {
+	path := writeTempConfig(t, `
+db_client:
+  type: "postgresql"
+reconciler:
+  enabled: true
+  interval: 0s
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for zero reconciler interval when enabled")
+	}
+}
+
+func TestLoad_ErrorReconcilerNegativeInterval(t *testing.T) {
+	path := writeTempConfig(t, `
+db_client:
+  type: "postgresql"
+reconciler:
+  enabled: true
+  interval: -10m
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative reconciler interval when enabled")
+	}
+}
+
 func TestLoad_RedisConfigTuning(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:

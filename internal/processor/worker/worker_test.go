@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
 )
@@ -124,10 +127,16 @@ func TestHeartbeat_StopsOnContextCancel(t *testing.T) {
 	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 	p.inflight = mock
 
+	statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})
+	_ = p.batchDB.DBStore(context.Background(), &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-1"},
+		BaseContents: db.BaseContents{Status: statusBytes},
+	})
+
 	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	done := make(chan struct{})
 	go func() {
-		p.heartbeat(ctx, "job-1")
+		p.heartbeat(ctx, "job-1", func() {})
 		close(done)
 	}()
 
@@ -150,6 +159,35 @@ func TestHeartbeat_StopsOnContextCancel(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if mock.setCount.Load() != countAtStop {
 		t.Fatal("InFlightSet called after context was cancelled")
+	}
+}
+
+func TestHeartbeat_AbortsWhenReconcilerActs(t *testing.T) {
+	origInterval := heartbeatInterval
+	heartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = origInterval })
+
+	cfg := config.NewConfig()
+	p := mustNewProcessor(t, cfg, validProcessorClients(t))
+
+	statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusFailed})
+	_ = p.batchDB.DBStore(context.Background(), &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: "job-reconciled"},
+		BaseContents: db.BaseContents{Status: statusBytes},
+	})
+
+	aborted := make(chan struct{})
+	abortFn := func() { close(aborted) }
+
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
+	defer cancel()
+
+	go p.heartbeat(ctx, "job-reconciled", abortFn)
+
+	select {
+	case <-aborted:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not call abortFn when DB status was terminal")
 	}
 }
 

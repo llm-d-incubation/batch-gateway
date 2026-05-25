@@ -159,7 +159,7 @@ func (p *Processor) recoverJob(ctx context.Context, jobID string) error {
 		result, err = p.recoverReEnqueue(ctx, dbItem, jobInfo, false)
 
 	default:
-		if status.IsFinal() {
+		if status.IsTerminal() {
 			logger.V(logging.INFO).Info("Startup recovery: job already terminal, cleaning up")
 			metrics.RecordStartupRecovery(string(status), recoveryActionCleanedUp)
 			p.cleanupJobArtifacts(ctx, dbItem.ID, dbItem.TenantID)

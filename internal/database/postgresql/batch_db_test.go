@@ -247,6 +247,67 @@ func TestBatchGet(t *testing.T) {
 		}
 	})
 
+	t.Run("gets non-terminal items", func(t *testing.T) {
+		client, mock := newTestBatchClient(t)
+		defer mock.Close()
+
+		item := newTestBatchItem("batch-1", testTenantID)
+		tags, _ := packTags(item.Tags)
+
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+
+		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE .+NOT IN").
+			WithArgs(0, 11).
+			WillReturnRows(rows)
+
+		items, _, _, err := client.DBGet(ctx,
+			&api.BatchQuery{NonTerminal: true},
+			true, 0, 10)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected 1 item, got %d", len(items))
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("gets non-terminal items filtered by tenant", func(t *testing.T) {
+		client, mock := newTestBatchClient(t)
+		defer mock.Close()
+
+		item := newTestBatchItem("batch-1", testTenantID)
+		tags, _ := packTags(item.Tags)
+
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+
+		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE .+NOT IN").
+			WithArgs(testTenantID, 0, 11).
+			WillReturnRows(rows)
+
+		items, _, _, err := client.DBGet(ctx,
+			&api.BatchQuery{
+				BaseQuery:   api.BaseQuery{TenantID: testTenantID},
+				NonTerminal: true,
+			},
+			true, 0, 10)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected 1 item, got %d", len(items))
+		}
+
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
 	t.Run("gets items by tag selectors with OR", func(t *testing.T) {
 		client, mock := newTestBatchClient(t)
 		defer mock.Close()
