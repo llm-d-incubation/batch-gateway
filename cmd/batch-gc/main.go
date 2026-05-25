@@ -85,22 +85,16 @@ func run() error {
 
 	gc := collector.NewGarbageCollector(clients.BatchDB, clients.FileDB, clients.File, cfg.DryRun, cfg.Interval, cfg.MaxConcurrency, nil)
 
-	if !cfg.Reconciler.Enabled {
-		if err := gc.RunLoop(ctx); err != nil && ctx.Err() == nil {
-			return fmt.Errorf("garbage collector failed: %w", err)
-		}
-		logger.Info("Garbage collector shut down gracefully")
-		return nil
-	}
-
-	rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, cfg.DryRun, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create reconciler: %w", err)
-	}
-
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error { return gc.RunLoop(gCtx) })
-	g.Go(func() error { return rec.RunLoop(gCtx) })
+
+	if cfg.Reconciler.Enabled {
+		rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, cfg.DryRun, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create reconciler: %w", err)
+		}
+		g.Go(func() error { return rec.RunLoop(gCtx) })
+	}
 
 	if err := g.Wait(); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("gc/reconciler failed: %w", err)
