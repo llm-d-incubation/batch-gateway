@@ -63,7 +63,7 @@ func (s BatchStatus) IsFinal() bool {
 }
 
 // TerminalStatuses returns all statuses considered final/terminal.
-// Used by database query implementations to filter non-terminal jobs.
+// Allocates per call; Go has no const/frozen slices and a shared slice would be mutable.
 func TerminalStatuses() []BatchStatus {
 	return []BatchStatus{
 		BatchStatusCompleted,
