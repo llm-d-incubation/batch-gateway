@@ -1,4 +1,5 @@
 bin/
-.vscode
-.claude
-.cursor
+.vscode/
+.claude/
+.cursor/
+.codegraph/
