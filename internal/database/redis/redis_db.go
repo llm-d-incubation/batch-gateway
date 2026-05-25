@@ -297,7 +297,7 @@ func (c *DSClientRedis) dbGet(
 
 		cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 		defer ccancel()
-		res, err = redisScriptGetNonTerminal.Run(cctx, c.redisClient,
+		res, err = redisScriptGetByNonTerminal.Run(cctx, c.redisClient,
 			[]string{}, getKeyPatternForStore(itemType),
 			start, limit, tenantID, includeSpec).Slice()
 		if err != nil {
