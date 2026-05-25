@@ -225,22 +225,24 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 
 	sloExpired := isSLOExpired(job)
 
+	var ok bool
+
 	switch statusInfo.Status {
 	case openai.BatchStatusCancelling:
-		r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusCancelled, result, logger)
+		ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusCancelled, result, logger)
 
 	case openai.BatchStatusValidating:
 		if sloExpired {
-			r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusExpired, result, logger)
+			ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusExpired, result, logger)
 		} else {
-			r.reEnqueueOrphan(ctx, job, result, logger)
+			ok = r.reEnqueueOrphan(ctx, job, result, logger)
 		}
 
 	case openai.BatchStatusInProgress, openai.BatchStatusFinalizing:
 		if sloExpired {
-			r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusExpired, result, logger)
+			ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusExpired, result, logger)
 		} else {
-			r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusFailed, result, logger)
+			ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusFailed, result, logger)
 		}
 
 	default:
@@ -249,7 +251,7 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 		return
 	}
 
-	if !r.dryRun {
+	if ok && !r.dryRun {
 		if err := r.inflight.InFlightDelete(ctx, job.ID); err != nil {
 			logger.Error(err, "Reconciler: failed to delete in-flight entry for orphan")
 			result.Errors++
@@ -258,6 +260,7 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 }
 
 // transitionOrphan performs a CAS status transition on the orphaned job.
+// Returns true if the transition succeeded (or dry-run logged it).
 func (r *Reconciler) transitionOrphan(
 	ctx context.Context,
 	job *db.BatchItem,
@@ -265,19 +268,19 @@ func (r *Reconciler) transitionOrphan(
 	newStatus openai.BatchStatus,
 	result *Result,
 	logger logr.Logger,
-) {
+) bool {
 	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(currentStatus, newStatus, nil, nil)
 	if err != nil {
 		logger.Error(err, "Reconciler: failed to build updated status", "newStatus", newStatus)
 		result.Errors++
-		return
+		return false
 	}
 
 	updatedBytes, err := json.Marshal(updatedStatus)
 	if err != nil {
 		logger.Error(err, "Reconciler: failed to marshal updated status")
 		result.Errors++
-		return
+		return false
 	}
 
 	if !r.dryRun {
@@ -293,7 +296,7 @@ func (r *Reconciler) transitionOrphan(
 				logger.Error(err, "Reconciler: failed to transition orphan", "newStatus", newStatus)
 				result.Errors++
 			}
-			return
+			return false
 		}
 		logger.Info("Reconciler: orphan transitioned", "from", currentStatus.Status, "to", newStatus)
 	} else {
@@ -308,31 +311,33 @@ func (r *Reconciler) transitionOrphan(
 	case openai.BatchStatusFailed:
 		result.Failed++
 	}
+	return true
 }
 
 // reEnqueueOrphan re-enqueues an orphaned validating job with its original SLO.
+// Returns true if the re-enqueue succeeded (or dry-run logged it).
 func (r *Reconciler) reEnqueueOrphan(
 	ctx context.Context,
 	job *db.BatchItem,
 	result *Result,
 	logger logr.Logger,
-) {
+) bool {
 	slo, err := extractSLO(job)
 	if err != nil {
 		logger.Error(err, "Reconciler: cannot re-enqueue orphan with corrupt SLO")
 		result.Errors++
-		return
+		return false
 	}
 	if slo == nil {
 		logger.Error(fmt.Errorf("missing SLO tag"), "Reconciler: cannot re-enqueue orphan without SLO")
 		result.Errors++
-		return
+		return false
 	}
 
 	if r.dryRun {
 		logger.Info("Reconciler: dry-run: would re-enqueue orphan", "slo", slo)
 		result.ReEnqueued++
-		return
+		return true
 	}
 
 	task := &db.BatchJobPriority{
@@ -342,11 +347,12 @@ func (r *Reconciler) reEnqueueOrphan(
 	if err := r.queue.PQEnqueue(ctx, task); err != nil {
 		logger.Error(err, "Reconciler: failed to re-enqueue orphan")
 		result.Errors++
-		return
+		return false
 	}
 
 	logger.Info("Reconciler: orphan re-enqueued", "slo", slo)
 	result.ReEnqueued++
+	return true
 }
 
 // cleanupStaleInflight removes in-flight entries for jobs that are no longer

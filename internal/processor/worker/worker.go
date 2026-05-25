@@ -506,6 +506,9 @@ func (p *Processor) validate() error {
 	if err := p.updater.validate(); err != nil {
 		return err
 	}
+	if p.batchDB == nil {
+		return fmt.Errorf("batch DB client is missing")
+	}
 	if p.event == nil {
 		return fmt.Errorf("event channel client is missing")
 	}
