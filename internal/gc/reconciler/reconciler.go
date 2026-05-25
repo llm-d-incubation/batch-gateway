@@ -125,14 +125,6 @@ func (r *Reconciler) run(ctx context.Context) {
 		return
 	}
 
-	queuedIDs, err := r.queue.PQGetIDs(ctx)
-	if err != nil {
-		logger.Error(err, "Reconciler: failed to get queued job IDs")
-		result.Errors++
-		r.notifyCycle(result)
-		return
-	}
-
 	inflightEntries, err := r.inflight.InFlightGetAll(ctx)
 	if err != nil {
 		logger.Error(err, "Reconciler: failed to get in-flight entries")
@@ -142,24 +134,35 @@ func (r *Reconciler) run(ctx context.Context) {
 	}
 
 	nonTerminalIDs := make(map[string]bool, len(jobs))
-	now := time.Now()
-	stalenessThreshold := now.Add(-r.interval)
 
-	for _, job := range jobs {
-		nonTerminalIDs[job.ID] = true
-
-		if queuedIDs[job.ID] {
-			continue
+	if len(jobs) > 0 {
+		queuedIDs, err := r.queue.PQGetIDs(ctx)
+		if err != nil {
+			logger.Error(err, "Reconciler: failed to get queued job IDs")
+			result.Errors++
+			r.notifyCycle(result)
+			return
 		}
 
-		if entry, ok := inflightEntries[job.ID]; ok {
-			lastSeen := time.Unix(entry.LastSeen, 0)
-			if lastSeen.After(stalenessThreshold) {
+		now := time.Now()
+		stalenessThreshold := now.Add(-r.interval)
+
+		for _, job := range jobs {
+			nonTerminalIDs[job.ID] = true
+
+			if queuedIDs[job.ID] {
 				continue
 			}
-		}
 
-		r.triageOrphan(ctx, job, result)
+			if entry, ok := inflightEntries[job.ID]; ok {
+				lastSeen := time.Unix(entry.LastSeen, 0)
+				if lastSeen.After(stalenessThreshold) {
+					continue
+				}
+			}
+
+			r.triageOrphan(ctx, job, result)
+		}
 	}
 
 	r.cleanupStaleInflight(ctx, inflightEntries, nonTerminalIDs, result)
