@@ -58,7 +58,7 @@ func (s BatchStatus) String() string {
 	return string(s)
 }
 
-func (s BatchStatus) IsFinal() bool {
+func (s BatchStatus) IsTerminal() bool {
 	return s == BatchStatusCompleted || s == BatchStatusFailed || s == BatchStatusExpired || s == BatchStatusCancelled
 }
 

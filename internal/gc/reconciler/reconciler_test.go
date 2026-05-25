@@ -582,8 +582,8 @@ func TestTerminalStatusesSync(t *testing.T) {
 	// and every final status is included in TerminalStatuses().
 	terminalSet := make(map[openai.BatchStatus]bool)
 	for _, s := range openai.TerminalStatuses() {
-		if !s.IsFinal() {
-			t.Errorf("TerminalStatuses() contains %q which is not IsFinal()", s)
+		if !s.IsTerminal() {
+			t.Errorf("TerminalStatuses() contains %q which is not IsTerminal()", s)
 		}
 		terminalSet[s] = true
 	}
@@ -599,8 +599,8 @@ func TestTerminalStatusesSync(t *testing.T) {
 		openai.BatchStatusCancelled,
 	}
 	for _, s := range allStatuses {
-		if s.IsFinal() && !terminalSet[s] {
-			t.Errorf("status %q is IsFinal() but missing from TerminalStatuses()", s)
+		if s.IsTerminal() && !terminalSet[s] {
+			t.Errorf("status %q is IsTerminal() but missing from TerminalStatuses()", s)
 		}
 	}
 }
