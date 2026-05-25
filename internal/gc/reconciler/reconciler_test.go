@@ -64,7 +64,7 @@ func newTestReconciler(
 ) (*Reconciler, chan *Result) {
 	t.Helper()
 	resultCh := make(chan *Result, 1)
-	r, err := NewReconciler(batchDB, queue, inflight, testInterval, func(res *Result) {
+	r, err := NewReconciler(batchDB, queue, inflight, testInterval, false, func(res *Result) {
 		resultCh <- res
 	})
 	if err != nil {
@@ -343,7 +343,7 @@ func TestRunLoop(t *testing.T) {
 		inflight := mock.NewMockInFlightClient()
 
 		ran := make(chan struct{}, 1)
-		r, err := NewReconciler(batchDB, queue, inflight, testInterval, func(*Result) {
+		r, err := NewReconciler(batchDB, queue, inflight, testInterval, false, func(*Result) {
 			select {
 			case ran <- struct{}{}:
 			default:
@@ -460,37 +460,119 @@ func TestNewReconcilerValidation(t *testing.T) {
 	inflight := mock.NewMockInFlightClient()
 
 	t.Run("nil batchDB", func(t *testing.T) {
-		_, err := NewReconciler(nil, queue, inflight, testInterval, nil)
+		_, err := NewReconciler(nil, queue, inflight, testInterval, false, nil)
 		if err == nil {
 			t.Fatal("expected error for nil batchDB")
 		}
 	})
 
 	t.Run("nil queue", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, nil, inflight, testInterval, nil)
+		_, err := NewReconciler(batchDB, nil, inflight, testInterval, false, nil)
 		if err == nil {
 			t.Fatal("expected error for nil queue")
 		}
 	})
 
 	t.Run("nil inflight", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, queue, nil, testInterval, nil)
+		_, err := NewReconciler(batchDB, queue, nil, testInterval, false, nil)
 		if err == nil {
 			t.Fatal("expected error for nil inflight")
 		}
 	})
 
 	t.Run("zero interval", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, queue, inflight, 0, nil)
+		_, err := NewReconciler(batchDB, queue, inflight, 0, false, nil)
 		if err == nil {
 			t.Fatal("expected error for zero interval")
 		}
 	})
 
 	t.Run("negative interval", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, queue, inflight, -time.Minute, nil)
+		_, err := NewReconciler(batchDB, queue, inflight, -time.Minute, false, nil)
 		if err == nil {
 			t.Fatal("expected error for negative interval")
+		}
+	})
+}
+
+func newTestDryRunReconciler(
+	t *testing.T,
+	batchDB db.BatchDBClient,
+	queue db.BatchPriorityQueueClient,
+	inflight db.InFlightClient,
+) (*Reconciler, chan *Result) {
+	t.Helper()
+	resultCh := make(chan *Result, 1)
+	r, err := NewReconciler(batchDB, queue, inflight, testInterval, true, func(res *Result) {
+		resultCh <- res
+	})
+	if err != nil {
+		t.Fatalf("failed to create dry-run reconciler: %v", err)
+	}
+	return r, resultCh
+}
+
+func TestDryRun(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("transition is counted but DB is not mutated", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		item := newTestBatchItem("job-1", openai.BatchStatusCancelling, sloTag(futureSLO()))
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestDryRunReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Cancelled != 1 {
+			t.Errorf("expected 1 cancelled, got %d", result.Cancelled)
+		}
+		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusCancelling)
+	})
+
+	t.Run("re-enqueue is counted but queue is not mutated", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(futureSLO()))
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestDryRunReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.ReEnqueued != 1 {
+			t.Errorf("expected 1 re-enqueued, got %d", result.ReEnqueued)
+		}
+
+		queuedIDs, _ := queue.PQGetIDs(ctx)
+		if queuedIDs["job-1"] {
+			t.Error("expected job-1 NOT to be in queue in dry-run mode")
+		}
+	})
+
+	t.Run("stale cleanup is counted but in-flight entry is preserved", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+		inflight := mock.NewMockInFlightClient()
+
+		_ = inflight.InFlightSet(ctx, "job-stale", "processor-1")
+
+		r, resultCh := newTestDryRunReconciler(t, batchDB, queue, inflight)
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.StaleCleanup != 1 {
+			t.Errorf("expected 1 stale cleanup, got %d", result.StaleCleanup)
+		}
+
+		entries, _ := inflight.InFlightGetAll(ctx)
+		if _, ok := entries["job-stale"]; !ok {
+			t.Error("expected stale in-flight entry to be preserved in dry-run mode")
 		}
 	})
 }

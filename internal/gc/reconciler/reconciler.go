@@ -53,6 +53,7 @@ type Reconciler struct {
 	queue           db.BatchPriorityQueueClient
 	inflight        db.InFlightClient
 	interval        time.Duration
+	dryRun          bool
 	onCycleComplete func(*Result)
 }
 
@@ -64,6 +65,7 @@ func NewReconciler(
 	queue db.BatchPriorityQueueClient,
 	inflight db.InFlightClient,
 	interval time.Duration,
+	dryRun bool,
 	onCycleComplete func(*Result),
 ) (*Reconciler, error) {
 	if batchDB == nil {
@@ -83,6 +85,7 @@ func NewReconciler(
 		queue:           queue,
 		inflight:        inflight,
 		interval:        interval,
+		dryRun:          dryRun,
 		onCycleComplete: onCycleComplete,
 	}, nil
 }
@@ -247,9 +250,11 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 		return
 	}
 
-	if err := r.inflight.InFlightDelete(ctx, job.ID); err != nil {
-		logger.Error(err, "Failed to delete in-flight entry for orphan")
-		result.Errors++
+	if !r.dryRun {
+		if err := r.inflight.InFlightDelete(ctx, job.ID); err != nil {
+			logger.Error(err, "Failed to delete in-flight entry for orphan")
+			result.Errors++
+		}
 	}
 }
 
@@ -276,22 +281,25 @@ func (r *Reconciler) transitionOrphan(
 		return
 	}
 
-	updateItem := &db.BatchItem{
-		BaseIndexes:  db.BaseIndexes{ID: job.ID},
-		BaseContents: db.BaseContents{Status: updatedBytes},
-	}
-	if err := r.batchDB.DBUpdate(ctx, updateItem, job.Status); err != nil {
-		if errors.Is(err, db.ErrConflict) {
-			logger.Info("CAS conflict during orphan transition (another actor won the race)", "newStatus", newStatus)
-			result.Conflicts++
-		} else {
-			logger.Error(err, "Failed to transition orphan", "newStatus", newStatus)
-			result.Errors++
+	if r.dryRun {
+		logger.Info("Dry-run: would transition orphan", "from", currentStatus.Status, "to", newStatus)
+	} else {
+		updateItem := &db.BatchItem{
+			BaseIndexes:  db.BaseIndexes{ID: job.ID},
+			BaseContents: db.BaseContents{Status: updatedBytes},
 		}
-		return
+		if err := r.batchDB.DBUpdate(ctx, updateItem, job.Status); err != nil {
+			if errors.Is(err, db.ErrConflict) {
+				logger.Info("CAS conflict during orphan transition (another actor won the race)", "newStatus", newStatus)
+				result.Conflicts++
+			} else {
+				logger.Error(err, "Failed to transition orphan", "newStatus", newStatus)
+				result.Errors++
+			}
+			return
+		}
+		logger.Info("Orphan transitioned", "from", currentStatus.Status, "to", newStatus)
 	}
-
-	logger.Info("Orphan transitioned", "from", currentStatus.Status, "to", newStatus)
 
 	switch newStatus {
 	case openai.BatchStatusCancelled:
@@ -314,6 +322,12 @@ func (r *Reconciler) reEnqueueOrphan(ctx context.Context, job *db.BatchItem, res
 	if slo == nil {
 		logger.Error(fmt.Errorf("missing SLO tag"), "Cannot re-enqueue orphan without SLO")
 		result.Errors++
+		return
+	}
+
+	if r.dryRun {
+		logger.Info("Dry-run: would re-enqueue orphan", "slo", slo)
+		result.ReEnqueued++
 		return
 	}
 
@@ -343,6 +357,11 @@ func (r *Reconciler) cleanupStaleInflight(
 
 	for jobID := range inflightEntries {
 		if nonTerminalIDs[jobID] {
+			continue
+		}
+		if r.dryRun {
+			logger.Info("Dry-run: would clean up stale in-flight entry", "jobId", jobID)
+			result.StaleCleanup++
 			continue
 		}
 		if err := r.inflight.InFlightDelete(ctx, jobID); err != nil {

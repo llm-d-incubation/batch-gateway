@@ -93,7 +93,7 @@ func run() error {
 		return nil
 	}
 
-	rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, nil)
+	rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, cfg.DryRun, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create reconciler: %w", err)
 	}
