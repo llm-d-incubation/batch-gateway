@@ -21,6 +21,20 @@ cleanup_kubernetes_resources() {
         || warn "Failed to delete InferenceObjective CRDs"
 
     log "Uninstalling helm releases..."
+    # Clean up dispatcher port-forward
+    for pid_file in "${SCRIPT_DIR}/../.dispatcher-port-forward.pid" "${SCRIPT_DIR}/../.dispatcher-sim-port-forward.pid"; do
+        if [[ -f "${pid_file}" ]]; then
+            local pf_pid
+            pf_pid=$(cat "${pid_file}")
+            kill "${pf_pid}" 2>/dev/null || true
+            rm -f "${pid_file}"
+            log "Stopped port-forward (PID: ${pf_pid})"
+        fi
+    done
+
+    helm uninstall "${DISPATCHER_RELEASE:-dispatcher}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall dispatcher (may not exist)"
+    helm uninstall "${DISPATCHER_SCRAPE_RELEASE:-dispatcher-scrape}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall dispatcher-scrape (may not exist)"
+    helm uninstall "${DISPATCHER_PROM_RELEASE:-dispatcher-prom}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall dispatcher-prom (may not exist)"
     helm uninstall "${HELM_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall ${HELM_RELEASE} (may not exist)"
     helm uninstall "${REDIS_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall ${REDIS_RELEASE} (may not exist)"
     helm uninstall "${POSTGRESQL_RELEASE}" -n "${NAMESPACE}" 2>/dev/null || warn "Failed to uninstall ${POSTGRESQL_RELEASE} (may not exist)"
