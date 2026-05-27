@@ -17,7 +17,9 @@ limitations under the License.
 package inference
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -77,6 +79,7 @@ type GatewayResolver struct {
 	globalClient InferenceClient
 	modelClients map[string]InferenceClient
 	clientURLs   map[InferenceClient]string
+	closers      []io.Closer
 }
 
 // NewGlobalResolver creates a GatewayResolver where all models resolve to a
@@ -168,6 +171,18 @@ func (r *GatewayResolver) ClientLabel(c InferenceClient) string {
 		return url
 	}
 	return "unknown"
+}
+
+// Close releases resources held by the resolver (e.g. Redis connections for
+// async dispatch). Safe to call on resolvers that hold no closeable resources.
+func (r *GatewayResolver) Close() error {
+	var errs []error
+	for _, c := range r.closers {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // NewSingleClientResolver wraps a single InferenceClient in a GatewayResolver

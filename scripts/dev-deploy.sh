@@ -136,6 +136,9 @@ nodes:
   - containerPort: ${MINIO_NODE_PORT}
     hostPort: ${MINIO_PORT}
     protocol: TCP
+  - containerPort: ${REDIS_NODE_PORT:-30479}
+    hostPort: ${REDIS_PORT:-6399}
+    protocol: TCP
 EOF
         fi
 

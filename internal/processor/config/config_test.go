@@ -715,12 +715,12 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "async valid global gateway with inference_pool_name",
+			name: "async global gateway rejected",
 			mutate: func(c *ProcessorConfig) {
 				c.ModelGateways = nil
 				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", InferencePoolName: "default-pool"}
 			},
-			wantErr: false,
+			wantErr: true,
 		},
 		{
 			name: "async no gateways configured",
@@ -781,15 +781,6 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 				t.Fatalf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestQueueNameHelpers(t *testing.T) {
-	if got := RequestQueueName("pool-a"); got != "llm-d-async:requests:pool-a" {
-		t.Fatalf("RequestQueueName(\"pool-a\") = %q, want %q", got, "llm-d-async:requests:pool-a")
-	}
-	if got := ResultQueueName("pool-a"); got != "llm-d-async:results:pool-a:$batch" {
-		t.Fatalf("ResultQueueName(\"pool-a\") = %q, want %q", got, "llm-d-async:results:pool-a:$batch")
 	}
 }
 
@@ -918,4 +909,59 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveModelGateways_Async(t *testing.T) {
+	t.Run("populates Async field", func(t *testing.T) {
+		cfg := NewConfig()
+		cfg.DispatchMode = DispatchModeAsync
+		cfg.AsyncDispatchConfig = AsyncDispatchConfig{
+			ResultPollTimeout: 10 * time.Second,
+		}
+		cfg.ModelGateways = map[string]ModelGatewayConfig{
+			"model-a": {InferencePoolName: "pool-a"},
+			"model-b": {InferencePoolName: "pool-b"},
+		}
+
+		resolved, err := ResolveModelGateways(cfg)
+		if err != nil {
+			t.Fatalf("ResolveModelGateways() error: %v", err)
+		}
+
+		if resolved.Async == nil {
+			t.Fatal("expected Async to be set")
+		}
+		if resolved.Global != nil {
+			t.Error("expected Global to be nil in async mode")
+		}
+		if resolved.PerModel != nil {
+			t.Error("expected PerModel to be nil in async mode")
+		}
+		if len(resolved.Async.Models) != 2 {
+			t.Fatalf("Models count = %d, want 2", len(resolved.Async.Models))
+		}
+		if resolved.Async.Models["model-a"] != "pool-a" {
+			t.Errorf("Models[model-a] = %q, want %q", resolved.Async.Models["model-a"], "pool-a")
+		}
+		if resolved.Async.Models["model-b"] != "pool-b" {
+			t.Errorf("Models[model-b] = %q, want %q", resolved.Async.Models["model-b"], "pool-b")
+		}
+	})
+
+	t.Run("sync mode does not populate Async", func(t *testing.T) {
+		cfg := NewConfig()
+		cfg.ModelGateways = validPerModelConfig()
+
+		resolved, err := ResolveModelGateways(cfg)
+		if err != nil {
+			t.Fatalf("ResolveModelGateways() error: %v", err)
+		}
+
+		if resolved.Async != nil {
+			t.Error("expected Async to be nil in sync mode")
+		}
+		if len(resolved.PerModel) == 0 {
+			t.Error("expected PerModel to be populated in sync mode")
+		}
+	})
 }

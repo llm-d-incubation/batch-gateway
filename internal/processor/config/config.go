@@ -230,18 +230,6 @@ type BucketConfig struct {
 	BucketCount  int     `yaml:"count"`
 }
 
-const asyncTenantID = "$batch"
-
-// RequestQueueName returns the Redis sorted-set name for submitting async requests to the given pool.
-func RequestQueueName(poolName string) string {
-	return "llm-d-async:requests:" + poolName
-}
-
-// ResultQueueName returns the Redis list name for collecting async results from the given pool.
-func ResultQueueName(poolName string) string {
-	return "llm-d-async:results:" + poolName + ":" + asyncTenantID
-}
-
 // IsAsync returns true when the processor is configured for async dispatch.
 func (c *ProcessorConfig) IsAsync() bool {
 	return c.DispatchMode == DispatchModeAsync
@@ -386,14 +374,21 @@ func (c *ProcessorConfig) Validate() error {
 		return fmt.Errorf("progress_ttl_seconds must be > 0")
 	}
 
-	if err := c.validateDispatchMode(); err != nil {
+	if err := c.validateGateways(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (c *ProcessorConfig) validateDispatchMode() error {
+func (c *ProcessorConfig) validateGateways() error {
+	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
+		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
+	}
+	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
+		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
+	}
+
 	switch c.DispatchMode {
 	case DispatchModeSync, DispatchMode(""):
 		c.DispatchMode = DispatchModeSync
@@ -405,21 +400,7 @@ func (c *ProcessorConfig) validateDispatchMode() error {
 	}
 }
 
-func (c *ProcessorConfig) validateGateways() error {
-	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
-		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
-	}
-	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
-		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
-	}
-	return nil
-}
-
 func (c *ProcessorConfig) validateSyncDispatchConfig() error {
-	if err := c.validateGateways(); err != nil {
-		return err
-	}
-
 	if c.GlobalInferenceGateway != nil {
 		if err := validateGatewayConfig("global_inference_gateway", *c.GlobalInferenceGateway); err != nil {
 			return err
@@ -435,15 +416,13 @@ func (c *ProcessorConfig) validateSyncDispatchConfig() error {
 
 func (c *ProcessorConfig) validateAsyncDispatchConfig() error {
 	if c.AsyncDispatchConfig.ResultPollTimeout <= 0 {
-		return fmt.Errorf("async.result_poll_timeout must be > 0")
-	}
-	if err := c.validateGateways(); err != nil {
-		return err
+		return fmt.Errorf("async_dispatch.result_poll_timeout must be > 0")
 	}
 	if c.GlobalInferenceGateway != nil {
-		if c.GlobalInferenceGateway.InferencePoolName == "" {
-			return fmt.Errorf("global_inference_gateway.inference_pool_name must be set when dispatch_mode is %q", DispatchModeAsync)
-		}
+		return fmt.Errorf("global_inference_gateway is not supported with dispatch_mode %q; use model_gateways with inference_pool_name", DispatchModeAsync)
+	}
+	if len(c.ModelGateways) == 0 {
+		return fmt.Errorf("model_gateways must be configured when dispatch_mode is %q", DispatchModeAsync)
 	}
 	for model, gw := range c.ModelGateways {
 		if gw.InferencePoolName == "" {
@@ -580,6 +559,7 @@ func toGatewayClientConfig(gw ModelGatewayConfig, apiKey string) inference.Gatew
 type ResolvedGateways struct {
 	Global   *inference.GatewayClientConfig
 	PerModel map[string]inference.GatewayClientConfig
+	Async    *inference.AsyncClientConfig
 }
 
 // ResolveModelGateways resolves API keys for all configured gateways and returns
@@ -587,6 +567,17 @@ type ResolvedGateways struct {
 // Validate() ensures exactly one of GlobalInferenceGateway or ModelGateways is set.
 func ResolveModelGateways(cfg *ProcessorConfig) (*ResolvedGateways, error) {
 	result := &ResolvedGateways{}
+
+	if cfg.IsAsync() {
+		models := make(map[string]string, len(cfg.ModelGateways))
+		for model, gw := range cfg.ModelGateways {
+			models[model] = gw.InferencePoolName
+		}
+		result.Async = &inference.AsyncClientConfig{
+			Models: models,
+		}
+		return result, nil
+	}
 
 	if cfg.GlobalInferenceGateway != nil {
 		apiKey, err := resolveGatewayAPIKey("global_inference_gateway", *cfg.GlobalInferenceGateway)

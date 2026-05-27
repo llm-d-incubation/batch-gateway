@@ -11,6 +11,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/semaphore"
+	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 func TestClientsetFields_Assigned(t *testing.T) {
@@ -18,6 +19,40 @@ func TestClientsetFields_Assigned(t *testing.T) {
 	if cs.BatchDB == nil || cs.FileDB == nil || cs.File == nil || cs.Queue == nil || cs.Status == nil || cs.Event == nil || cs.Inference == nil {
 		t.Fatalf("expected all clients to be assigned")
 	}
+}
+
+func TestValidate_InferenceClientRequired(t *testing.T) {
+	t.Run("rejects when neither sync nor async inference is set", func(t *testing.T) {
+		cs := validProcessorClients(t)
+		cs.Inference = nil
+		cs.AsyncInference = nil
+		p := mustNewProcessor(t, config.NewConfig(), cs)
+
+		if err := p.validate(); err == nil {
+			t.Fatal("expected validation error when both inference clients are nil")
+		}
+	})
+
+	t.Run("accepts sync inference only", func(t *testing.T) {
+		cs := validProcessorClients(t)
+		cs.AsyncInference = nil
+		p := mustNewProcessor(t, config.NewConfig(), cs)
+
+		if err := p.validate(); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+	})
+
+	t.Run("accepts async inference only", func(t *testing.T) {
+		cs := validProcessorClients(t)
+		cs.Inference = nil
+		cs.AsyncInference = &inference.AsyncGatewayResolver{}
+		p := mustNewProcessor(t, config.NewConfig(), cs)
+
+		if err := p.validate(); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+	})
 }
 
 func TestNewProcessor_InvalidNumWorkers(t *testing.T) {
