@@ -11,7 +11,7 @@ tests:
           pattern: 'dry_run: false'
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'interval: "30m"'
+          pattern: 'collector:\n\s+interval: "30m"'
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'db_client:\n\s+type: "postgresql"'
@@ -21,7 +21,7 @@ tests:
 
   - it: should render custom maxConcurrency
     set:
-      gc.config.maxConcurrency: 20
+      gc.config.collector.maxConcurrency: 20
     asserts:
       - matchRegex:
           path: data["config.yaml"]
@@ -37,7 +37,7 @@ tests:
 
   - it: should render custom interval
     set:
-      gc.config.interval: "1h"
+      gc.config.collector.interval: "1h"
     asserts:
       - matchRegex:
           path: data["config.yaml"]

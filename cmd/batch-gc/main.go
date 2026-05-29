@@ -62,7 +62,7 @@ func run() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	logger.Info("Starting batch garbage collector", "dryRun", cfg.DryRun, "interval", cfg.Interval)
+	logger.Info("Starting batch garbage collector", "dryRun", cfg.DryRun, "interval", cfg.Collector.Interval)
 
 	ctx, cancel := interrupt.ContextWithSignal(ctx)
 	defer cancel()
@@ -83,7 +83,7 @@ func run() error {
 	}
 	defer func() { _ = clients.Close() }()
 
-	gc := collector.NewGarbageCollector(clients.BatchDB, clients.FileDB, clients.File, cfg.DryRun, cfg.Interval, cfg.MaxConcurrency, nil)
+	gc := collector.NewGarbageCollector(clients.BatchDB, clients.FileDB, clients.File, cfg.DryRun, cfg.Collector.Interval, cfg.Collector.MaxConcurrency, nil)
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error { return gc.RunLoop(gCtx) })

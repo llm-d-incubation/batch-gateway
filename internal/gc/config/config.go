@@ -42,11 +42,18 @@ type ReconcilerConfig struct {
 	Interval time.Duration `yaml:"interval"`
 }
 
-// Config holds the garbage collector configuration.
-type Config struct {
-	DryRun         bool          `yaml:"dry_run"`
+// CollectorConfig holds collector-specific settings (interval and concurrency).
+type CollectorConfig struct {
 	Interval       time.Duration `yaml:"interval"`
 	MaxConcurrency int           `yaml:"max_concurrency"`
+}
+
+// Config holds the garbage collector configuration.
+type Config struct {
+	DryRun bool `yaml:"dry_run"`
+
+	// Collector holds the collector-specific configuration (interval, concurrency).
+	Collector CollectorConfig `yaml:"collector"`
 
 	// Reconciler configures the orphan reconciler that detects and recovers
 	// batch jobs stuck in non-terminal states.
@@ -67,8 +74,10 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Interval:       1 * time.Hour,
-		MaxConcurrency: DefaultMaxConcurrency,
+		Collector: CollectorConfig{
+			Interval:       1 * time.Hour,
+			MaxConcurrency: DefaultMaxConcurrency,
+		},
 		Reconciler: ReconcilerConfig{
 			Enabled:  true,
 			Interval: DefaultReconcilerInterval,
@@ -78,12 +87,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	if cfg.MaxConcurrency <= 0 {
-		return nil, fmt.Errorf("max_concurrency must be positive, got %d", cfg.MaxConcurrency)
+	if cfg.Collector.MaxConcurrency <= 0 {
+		return nil, fmt.Errorf("collector.max_concurrency must be positive, got %d", cfg.Collector.MaxConcurrency)
 	}
 
-	if cfg.Interval <= 0 {
-		return nil, fmt.Errorf("interval must be positive, got %v", cfg.Interval)
+	if cfg.Collector.Interval <= 0 {
+		return nil, fmt.Errorf("collector.interval must be positive, got %v", cfg.Collector.Interval)
 	}
 
 	if cfg.Reconciler.Enabled && cfg.Reconciler.Interval <= 0 {

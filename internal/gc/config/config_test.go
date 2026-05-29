@@ -35,7 +35,8 @@ func writeTempConfig(t *testing.T, content string) string {
 func TestLoad_FilesystemBackend(t *testing.T) {
 	path := writeTempConfig(t, `
 dry_run: true
-interval: 30m
+collector:
+  interval: 30m
 db_client:
   type: "postgresql"
 file_client:
@@ -50,8 +51,8 @@ file_client:
 	if !cfg.DryRun {
 		t.Error("expected dry_run to be true")
 	}
-	if cfg.Interval != 30*time.Minute {
-		t.Errorf("expected interval 30m, got %v", cfg.Interval)
+	if cfg.Collector.Interval != 30*time.Minute {
+		t.Errorf("expected interval 30m, got %v", cfg.Collector.Interval)
 	}
 	if cfg.FileClientCfg.Type != "fs" {
 		t.Errorf("expected file_client.type fs, got %s", cfg.FileClientCfg.Type)
@@ -213,11 +214,11 @@ file_client:
 	if cfg.DryRun {
 		t.Error("expected dry_run to default to false")
 	}
-	if cfg.Interval != 1*time.Hour {
-		t.Errorf("expected default interval 1h, got %v", cfg.Interval)
+	if cfg.Collector.Interval != 1*time.Hour {
+		t.Errorf("expected default interval 1h, got %v", cfg.Collector.Interval)
 	}
-	if cfg.MaxConcurrency != DefaultMaxConcurrency {
-		t.Errorf("expected default max_concurrency %d, got %d", DefaultMaxConcurrency, cfg.MaxConcurrency)
+	if cfg.Collector.MaxConcurrency != DefaultMaxConcurrency {
+		t.Errorf("expected default max_concurrency %d, got %d", DefaultMaxConcurrency, cfg.Collector.MaxConcurrency)
 	}
 }
 
@@ -225,7 +226,8 @@ func TestLoad_CustomMaxConcurrency(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:
   type: "postgresql"
-max_concurrency: 20
+collector:
+  max_concurrency: 20
 file_client:
   type: "fs"
   fs:
@@ -235,8 +237,8 @@ file_client:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.MaxConcurrency != 20 {
-		t.Errorf("expected max_concurrency 20, got %d", cfg.MaxConcurrency)
+	if cfg.Collector.MaxConcurrency != 20 {
+		t.Errorf("expected max_concurrency 20, got %d", cfg.Collector.MaxConcurrency)
 	}
 }
 
@@ -244,7 +246,8 @@ func TestLoad_ErrorZeroMaxConcurrency(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:
   type: "postgresql"
-max_concurrency: 0
+collector:
+  max_concurrency: 0
 file_client:
   type: "fs"
   fs:
@@ -260,7 +263,8 @@ func TestLoad_ErrorNegativeMaxConcurrency(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:
   type: "postgresql"
-max_concurrency: -5
+collector:
+  max_concurrency: -5
 file_client:
   type: "fs"
   fs:
@@ -341,7 +345,8 @@ func TestLoad_ErrorInvalidYAML(t *testing.T) {
 
 func TestLoad_ErrorZeroInterval(t *testing.T) {
 	path := writeTempConfig(t, `
-interval: 0s
+collector:
+  interval: 0s
 db_client:
   type: "postgresql"
 file_client:
@@ -357,7 +362,8 @@ file_client:
 
 func TestLoad_ErrorNegativeInterval(t *testing.T) {
 	path := writeTempConfig(t, `
-interval: -5m
+collector:
+  interval: -5m
 db_client:
   type: "postgresql"
 file_client:

@@ -9,8 +9,9 @@ data:
   config.yaml: |
     # Garbage Collector configuration
     dry_run: {{ .Values.gc.config.dryRun }}
-    interval: {{ .Values.gc.config.interval | quote }}
-    max_concurrency: {{ .Values.gc.config.maxConcurrency }}
+    collector:
+      interval: {{ .Values.gc.config.collector.interval | quote }}
+      max_concurrency: {{ .Values.gc.config.collector.maxConcurrency }}
     db_client:
       type: {{ .Values.global.dbClient.type | quote }}
       redis:
