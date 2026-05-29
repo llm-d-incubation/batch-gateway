@@ -45,6 +45,7 @@ type Result struct {
 	StaleCleanup int
 	Conflicts    int
 	Errors       int
+	Duration     time.Duration
 }
 
 // Reconciler periodically scans for orphaned batch jobs and recovers them.
@@ -115,13 +116,28 @@ func (r *Reconciler) RunLoop(ctx context.Context) error {
 // run executes a single reconciliation cycle.
 func (r *Reconciler) run(ctx context.Context) {
 	logger := logr.FromContextOrDiscard(ctx)
+	start := time.Now()
 	result := &Result{}
+
+	defer func() {
+		result.Duration = time.Since(start)
+		logger.Info("Reconciler: cycle completed",
+			"cancelled", result.Cancelled,
+			"expired", result.Expired,
+			"reEnqueued", result.ReEnqueued,
+			"failed", result.Failed,
+			"staleCleanup", result.StaleCleanup,
+			"conflicts", result.Conflicts,
+			"errors", result.Errors,
+			"duration", result.Duration,
+		)
+		r.notifyCycle(result)
+	}()
 
 	jobs, err := r.fetchNonTerminalJobs(ctx)
 	if err != nil {
 		logger.Error(err, "Reconciler: failed to fetch non-terminal jobs")
 		result.Errors++
-		r.notifyCycle(result)
 		return
 	}
 
@@ -129,7 +145,6 @@ func (r *Reconciler) run(ctx context.Context) {
 	if err != nil {
 		logger.Error(err, "Reconciler: failed to get in-flight entries")
 		result.Errors++
-		r.notifyCycle(result)
 		return
 	}
 
@@ -140,7 +155,6 @@ func (r *Reconciler) run(ctx context.Context) {
 		if err != nil {
 			logger.Error(err, "Reconciler: failed to get queued job IDs")
 			result.Errors++
-			r.notifyCycle(result)
 			return
 		}
 
@@ -166,18 +180,6 @@ func (r *Reconciler) run(ctx context.Context) {
 	}
 
 	r.cleanupStaleInflight(ctx, inflightEntries, nonTerminalIDs, result)
-
-	logger.Info("Reconciler: cycle completed",
-		"cancelled", result.Cancelled,
-		"expired", result.Expired,
-		"reEnqueued", result.ReEnqueued,
-		"failed", result.Failed,
-		"staleCleanup", result.StaleCleanup,
-		"conflicts", result.Conflicts,
-		"errors", result.Errors,
-	)
-
-	r.notifyCycle(result)
 }
 
 func (r *Reconciler) notifyCycle(result *Result) {

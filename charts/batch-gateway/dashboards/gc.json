@@ -1,0 +1,106 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["batch-gateway", "gc", "reconciler"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "default", "value": "default" },
+        "datasource": { "type": "prometheus" },
+        "definition": "label_values(batch_reconciler_cycle_duration_seconds_count, namespace)",
+        "name": "namespace",
+        "type": "query",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "time": { "from": "now-3h", "to": "now" },
+  "title": "Batch Gateway — GC Reconciler",
+  "uid": "batch-gateway-gc",
+  "panels": [
+    {
+      "title": "Orphans Recovered (rate)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(batch_reconciler_orphans_recovered_total{namespace=\"$namespace\"}[5m])) by (action)",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Cycle Duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(batch_reconciler_cycle_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(batch_reconciler_cycle_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(batch_reconciler_cycle_duration_seconds_bucket{namespace=\"$namespace\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Errors & CAS Conflicts (rate)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(batch_reconciler_errors_total{namespace=\"$namespace\"}[5m])",
+          "legendFormat": "errors"
+        },
+        {
+          "expr": "rate(batch_reconciler_cas_conflicts_total{namespace=\"$namespace\"}[5m])",
+          "legendFormat": "CAS conflicts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Stale In-Flight Cleanup (rate)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(batch_reconciler_stale_cleanup_total{namespace=\"$namespace\"}[5m])",
+          "legendFormat": "stale cleanup"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "title": "Orphans Recovered (cumulative)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 6 },
+      "targets": [
+        {
+          "expr": "sum(batch_reconciler_orphans_recovered_total{namespace=\"$namespace\"}) by (action)",
+          "legendFormat": "{{action}}"
+        }
+      ]
+    }
+  ]
+}

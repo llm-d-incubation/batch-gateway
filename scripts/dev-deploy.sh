@@ -34,6 +34,9 @@ LOG_VERBOSITY="${LOG_VERBOSITY:-5}"
 APISERVER_NODE_PORT="${APISERVER_NODE_PORT:-30080}"
 APISERVER_OBS_NODE_PORT="${APISERVER_OBS_NODE_PORT:-30081}"
 PROCESSOR_NODE_PORT="${PROCESSOR_NODE_PORT:-30090}"
+# Metrics ports must match values.yaml defaults (processor.addr / gc.config.metricsAddr)
+PROCESSOR_METRICS_PORT="${PROCESSOR_METRICS_PORT:-9090}"
+GC_METRICS_PORT="${GC_METRICS_PORT:-9091}"
 JAEGER_NODE_PORT="${JAEGER_NODE_PORT:-30086}"
 PROMETHEUS_NODE_PORT="${PROMETHEUS_NODE_PORT:-30091}"
 GRAFANA_NODE_PORT="${GRAFANA_NODE_PORT:-30030}"
@@ -573,9 +576,29 @@ data:
         action: keep
       - source_labels: [__meta_kubernetes_pod_ip]
         target_label: __address__
-        replacement: \$1:9090
+        replacement: \$1:${PROCESSOR_METRICS_PORT}
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
+    - job_name: 'batch-gateway-gc'
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['${NAMESPACE}']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+        regex: gc
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+        regex: ${HELM_RELEASE}
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: \$1:${GC_METRICS_PORT}
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -1,0 +1,22 @@
+{{- if and .Values.gc.enabled .Values.gc.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "batch-gateway.gc.fullname" . }}
+  labels:
+    {{- include "batch-gateway.gc.labels" . | nindent 4 }}
+    {{- with .Values.gc.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "batch-gateway.gc.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.gc.podMonitor.interval | quote }}
+{{- end }}

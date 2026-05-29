@@ -4,6 +4,7 @@ templates:
   - templates/apiserver-configmap.yaml
   - templates/processor-podmonitor.yaml
   - templates/processor-configmap.yaml
+  - templates/gc-podmonitor.yaml
   - templates/prometheus-rule.yaml
   - templates/grafana-dashboards-configmap.yaml
 # Required: fs file client (the default) needs a pvcName to pass template validation.
@@ -86,6 +87,39 @@ tests:
           count: 0
         template: templates/processor-podmonitor.yaml
 
+  # --- GC PodMonitor ---
+
+  - it: should not render GC PodMonitor when disabled (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/gc-podmonitor.yaml
+
+  - it: should render GC PodMonitor when enabled
+    set:
+      gc.podMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: PodMonitor
+        template: templates/gc-podmonitor.yaml
+      - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: metrics
+        template: templates/gc-podmonitor.yaml
+      - equal:
+          path: spec.podMetricsEndpoints[0].interval
+          value: "30s"
+        template: templates/gc-podmonitor.yaml
+
+  - it: should not render GC PodMonitor when gc is disabled
+    set:
+      gc.enabled: false
+      gc.podMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/gc-podmonitor.yaml
+
   # --- PrometheusRule ---
 
   - it: should not render PrometheusRule when disabled (default)
@@ -106,7 +140,7 @@ tests:
           value: batch-gateway.rules
         template: templates/prometheus-rule.yaml
 
-  - it: should render all four alert rules when enabled
+  - it: should render all five alert rules when enabled
     set:
       prometheusRule.enabled: true
     asserts:
@@ -132,6 +166,12 @@ tests:
           path: spec.groups[0].rules
           content:
             alert: BatchGatewayWorkersSaturated
+          any: true
+        template: templates/prometheus-rule.yaml
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: BatchReconcilerErrors
           any: true
         template: templates/prometheus-rule.yaml
 
@@ -175,6 +215,15 @@ tests:
       - matchRegex:
           path: spec.groups[0].rules[3].expr
           pattern: total_workers
+        template: templates/prometheus-rule.yaml
+
+  - it: should use batch_reconciler_errors_total in ReconcilerErrors expr
+    set:
+      prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[4].expr
+          pattern: batch_reconciler_errors_total
         template: templates/prometheus-rule.yaml
 
   - it: should not reference tenantID in any PrometheusRule expr
@@ -256,6 +305,31 @@ tests:
       - notMatchRegex:
           path: data["processor.json"]
           pattern: tenantID
+        template: templates/grafana-dashboards-configmap.yaml
+
+  - it: should reference expected GC reconciler metric names in dashboard JSON
+    set:
+      grafana.dashboards.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["gc.json"]
+          pattern: batch_reconciler_orphans_recovered_total
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["gc.json"]
+          pattern: batch_reconciler_cycle_duration_seconds_bucket
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["gc.json"]
+          pattern: batch_reconciler_errors_total
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["gc.json"]
+          pattern: batch_reconciler_cas_conflicts_total
+        template: templates/grafana-dashboards-configmap.yaml
+      - matchRegex:
+          path: data["gc.json"]
+          pattern: batch_reconciler_stale_cleanup_total
         template: templates/grafana-dashboards-configmap.yaml
 
   - it: should reference expected apiserver metric names in dashboard JSON

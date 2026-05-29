@@ -479,6 +479,49 @@ file_client:
 	}
 }
 
+func TestLoad_MetricsAddr(t *testing.T) {
+	valid := []string{":9091", ":8080", ":1", ":65535"}
+	for _, addr := range valid {
+		t.Run("valid_"+addr, func(t *testing.T) {
+			path := writeTempConfig(t, `
+metrics_addr: "`+addr+`"
+db_client:
+  type: "postgresql"
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", addr, err)
+			}
+			if cfg.MetricsAddr != addr {
+				t.Fatalf("metrics_addr=%q, want %q", cfg.MetricsAddr, addr)
+			}
+		})
+	}
+
+	invalid := []string{"9091", "0.0.0.0:9091", "localhost:9091", "example.com:9091", ":0", ":99999"}
+	for _, addr := range invalid {
+		t.Run("invalid_"+addr, func(t *testing.T) {
+			path := writeTempConfig(t, `
+metrics_addr: "`+addr+`"
+db_client:
+  type: "postgresql"
+file_client:
+  type: "fs"
+  fs:
+    base_path: "/tmp/files"
+`)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error for metrics_addr %q", addr)
+			}
+		})
+	}
+}
+
 func TestLoad_RedisConfigTuning(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:

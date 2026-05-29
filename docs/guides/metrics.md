@@ -73,6 +73,26 @@ Processor metrics intentionally omit unbounded identifiers such as tenant IDs. P
 
 - `batch_startup_recovery_total{status,action}` (Counter) - Jobs recovered during processor startup after a container restart. `status` is the recovered job status (common values: `in_progress`, `finalizing`, `cancelling`, `validating`, `unknown`). `action` is the recovery action taken (common values: `re_enqueued`, `failed`, `finalized`, `cancelled`, `expired`, `cleaned_up`, `error`). Non-zero values indicate prior container-level crashes (OOM, panic) or stale on-disk artifacts from a prior processor instance.
 
+## Garbage Collector — Reconciler
+
+The GC reconciler exposes the following Prometheus metrics (`internal/gc/metrics/metrics.go`) on port 9091 (configurable via `metrics_addr`):
+
+**Orphan Recovery:**
+
+- `batch_reconciler_orphans_recovered_total{action}` (Counter) - Orphans recovered by action type. `action` values: `cancelled`, `expired`, `re_enqueued`, `failed`. Not incremented when `dry_run: true` (no actual state change occurs).
+
+**Cycle Metrics:**
+
+- `batch_reconciler_cycle_duration_seconds` (Histogram) - Wall-clock time per reconciliation cycle. Uses exponential buckets from 100ms to ~30min (`ExponentialBuckets(0.1, 3, 10)`). Recorded for all cycles including failed ones (early-return error paths).
+
+**Conflict & Error Metrics:**
+
+- `batch_reconciler_cas_conflicts_total` (Counter) - CAS conflicts where another actor won the race during orphan transition.
+
+- `batch_reconciler_stale_cleanup_total` (Counter) - Stale in-flight entries cleaned up (entries for jobs no longer in a non-terminal state). Not incremented when `dry_run: true`.
+
+- `batch_reconciler_errors_total` (Counter) - Errors encountered during a reconciliation cycle (DB fetch failures, transition errors, etc.).
+
 ## Shared (file storage retry client)
 
 Used by components that wrap file storage with retries (`internal/files_store/retryclient/metrics.go`):

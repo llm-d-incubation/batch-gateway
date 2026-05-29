@@ -37,6 +37,29 @@ spec:
         args:
         - --config=/etc/batch-gc/config.yaml
         - --v={{ .Values.gc.logging.verbosity }}
+        {{- $metricsAddr := .Values.gc.config.metricsAddr }}
+        {{- if not (hasPrefix ":" $metricsAddr) }}
+        {{- fail (printf "gc.config.metricsAddr must be in \":PORT\" format (e.g. \":9091\"), got %q" $metricsAddr) }}
+        {{- end }}
+        {{- $metricsPort := trimPrefix ":" $metricsAddr | int }}
+        {{- if or (le $metricsPort 0) (gt $metricsPort 65535) }}
+        {{- fail (printf "gc.config.metricsAddr port must be 1-65535, got %d" $metricsPort) }}
+        {{- end }}
+        ports:
+        - name: metrics
+          containerPort: {{ $metricsPort }}
+          protocol: TCP
+        startupProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          periodSeconds: 5
+          failureThreshold: 60
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          periodSeconds: 30
         resources:
           {{- toYaml .Values.gc.resources | nindent 12 }}
         volumeMounts:

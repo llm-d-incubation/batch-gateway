@@ -12,6 +12,7 @@ data:
     collector:
       interval: {{ .Values.gc.config.collector.interval | quote }}
       max_concurrency: {{ .Values.gc.config.collector.maxConcurrency }}
+    metrics_addr: {{ .Values.gc.config.metricsAddr | quote }}
     db_client:
       type: {{ .Values.global.dbClient.type | quote }}
       redis:

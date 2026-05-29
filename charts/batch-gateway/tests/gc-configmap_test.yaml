@@ -18,6 +18,9 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'max_concurrency: 10'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'metrics_addr: ":9091"'
 
   - it: should render custom maxConcurrency
     set:

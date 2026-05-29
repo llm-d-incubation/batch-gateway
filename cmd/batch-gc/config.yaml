@@ -10,6 +10,9 @@ collector:
   # Maximum number of concurrent item deletions per GC cycle (default: 10)
   max_concurrency: 10
 
+# Metrics HTTP server listen address (default: ":9091")
+metrics_addr: ":9091"
+
 # Database client configuration
 db_client:
   # Type selects the database backend: "redis" or "postgresql".
