@@ -246,6 +246,10 @@ tests:
           path: spec.groups[0].rules[3].expr
           pattern: tenantID
         template: templates/prometheus-rule.yaml
+      - notMatchRegex:
+          path: spec.groups[0].rules[4].expr
+          pattern: tenantID
+        template: templates/prometheus-rule.yaml
 
   # --- Grafana Dashboards ConfigMap ---
 

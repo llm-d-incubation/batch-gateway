@@ -94,13 +94,22 @@ func run() error {
 	defer func() { _ = clients.Close() }()
 
 	var ready atomic.Bool
-	if err := startMetricsServer(ctx, cfg.MetricsAddr, logger, &ready); err != nil {
+	metricsErrCh, err := startMetricsServer(ctx, cfg.MetricsAddr, logger, &ready)
+	if err != nil {
 		return err
 	}
 
 	gc := collector.NewGarbageCollector(clients.BatchDB, clients.FileDB, clients.File, cfg.DryRun, cfg.Collector.Interval, cfg.Collector.MaxConcurrency, nil)
 
 	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		select {
+		case err := <-metricsErrCh:
+			return err
+		case <-gCtx.Done():
+			return gCtx.Err()
+		}
+	})
 	g.Go(func() error { return gc.RunLoop(gCtx) })
 
 	if cfg.Reconciler.Enabled {
@@ -134,7 +143,7 @@ func run() error {
 	return nil
 }
 
-func startMetricsServer(ctx context.Context, addr string, logger logr.Logger, ready *atomic.Bool) error {
+func startMetricsServer(ctx context.Context, addr string, logger logr.Logger, ready *atomic.Bool) (<-chan error, error) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -149,7 +158,7 @@ func startMetricsServer(ctx context.Context, addr string, logger logr.Logger, re
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("metrics server listen on %s: %w", addr, err)
+		return nil, fmt.Errorf("metrics server listen on %s: %w", addr, err)
 	}
 
 	server := &http.Server{
@@ -166,12 +175,14 @@ func startMetricsServer(ctx context.Context, addr string, logger logr.Logger, re
 		}
 	}()
 
+	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("Metrics server listening", "addr", ln.Addr())
 		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			logger.Error(err, "Metrics server failed")
+			errCh <- fmt.Errorf("metrics server: %w", err)
 		}
 	}()
 
-	return nil
+	return errCh, nil
 }

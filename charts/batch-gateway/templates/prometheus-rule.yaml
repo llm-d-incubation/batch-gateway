@@ -71,13 +71,13 @@ spec:
         {{- if .Values.prometheusRule.rules.reconcilerErrors.enabled }}
         - alert: BatchReconcilerErrors
           expr: |
-            rate(batch_reconciler_errors_total{namespace="{{ .Release.Namespace }}"}[10m])
-            > {{ .Values.prometheusRule.rules.reconcilerErrors.thresholdRate }}
+            increase(batch_reconciler_errors_total{namespace="{{ .Release.Namespace }}"}[{{ .Values.prometheusRule.rules.reconcilerErrors.window }}])
+            > 0
           for: {{ .Values.prometheusRule.rules.reconcilerErrors.for | quote }}
           labels:
             severity: warning
           annotations:
             summary: Batch reconciler is encountering errors
-            description: The GC orphan reconciler error rate has been above {{ .Values.prometheusRule.rules.reconcilerErrors.thresholdRate }}/s for {{ .Values.prometheusRule.rules.reconcilerErrors.for }}.
+            description: The GC orphan reconciler encountered errors in the last {{ .Values.prometheusRule.rules.reconcilerErrors.window }}.
         {{- end }}
 {{- end }}

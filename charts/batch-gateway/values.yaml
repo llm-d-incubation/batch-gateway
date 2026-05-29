@@ -442,8 +442,11 @@ prometheusRule:
       for: "15m"
     reconcilerErrors:
       enabled: true
-      thresholdRate: 0.01
-      for: "10m"
+      # window must be >= reconciler interval (default 60m in gc config) + ~5m scrape buffer.
+      # Uses increase(), not rate(), because errors arrive at most once per cycle.
+      window: "65m"
+      # Suppress brief eval/scrape jitter once the condition is true.
+      for: "5m"
 
 # Garbage Collector configuration
 gc:

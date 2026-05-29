@@ -1,7 +1,7 @@
 # Metrics
 
-**Revision:** 1.3
-**Last Modified:** 2026-03-30
+**Revision:** 1.4
+**Last Modified:** 2026-05-29
 
 Metric names below match `internal/*/metrics/metrics.go` (and related packages). Deployments may add a namespace/subsystem prefix when registering; check `/metrics` on the running binary for the exact series name.
 
@@ -92,6 +92,20 @@ The GC reconciler exposes the following Prometheus metrics (`internal/gc/metrics
 - `batch_reconciler_stale_cleanup_total` (Counter) - Stale in-flight entries cleaned up (entries for jobs no longer in a non-terminal state). Not incremented when `dry_run: true`.
 
 - `batch_reconciler_errors_total` (Counter) - Errors encountered during a reconciliation cycle (DB fetch failures, transition errors, etc.).
+
+**Alerting (`BatchReconcilerErrors`):**
+
+The Helm chart ships a PrometheusRule (`prometheusRule.rules.reconcilerErrors`) that fires when:
+
+```promql
+increase(batch_reconciler_errors_total{namespace="<release namespace>"}[<window>]) > 0
+```
+
+**Why `increase`, not `rate`:** the reconciler runs on a long interval (default 60 minutes). A cycle-level failure such as a DB fetch error increments the counter once per cycle, which is too sparse for a meaningful `rate()` threshold.
+
+**Tuning `window`:** set it to at least one full reconciler scan interval plus a small buffer for Prometheus scrape/evaluation delay. The default `65m` matches the default reconciler interval of 60 minutes. If you change `reconciler.interval` in the GC config, increase `window` to match (for example, interval `90m` → window `95m`). A window shorter than the interval can miss once-per-cycle failures; a much longer window keeps the alert firing longer after an error ages out of the window.
+
+**Tuning `for`:** default `5m` avoids paging on a single brief evaluation blip. It does not need to track the reconciler interval.
 
 ## Shared (file storage retry client)
 
