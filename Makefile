@@ -233,7 +233,7 @@ install-pre-commit-tools:
 	$(GO) install github.com/quasilyte/go-ruleguard/cmd/ruleguard@v0.4.5
 	@if command -v helm >/dev/null 2>&1; then \
 		helm plugin list | grep -q unittest || \
-			helm plugin install --verify=false --version v1.0.3 https://github.com/helm-unittest/helm-unittest.git; \
+			helm plugin install --version v1.0.3 --verify=false https://github.com/helm-unittest/helm-unittest.git; \
 	else \
 		echo "helm not found, skipping helm-unittest plugin install"; \
 	fi

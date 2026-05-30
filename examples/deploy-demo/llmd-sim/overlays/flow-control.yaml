@@ -1,0 +1,48 @@
+# Flow control overlay for InferencePool chart.
+# Use with: helm install ... -f gaie-sim-values.yaml -f overlays/flow-control.yaml
+#
+# Enables GIE flow control with two priority bands:
+#   - Interactive (priority 100): low-latency, round-robin fairness, FCFS ordering
+#   - Batch (priority -1): sheddable, throughput-optimized, SLO-deadline ordering
+#
+# See docs/guides/flow-control-setup.md for details.
+
+inferenceExtension:
+  pluginsConfigFile: "flow-control-plugins.yaml"
+  pluginsCustomConfig:
+    flow-control-plugins.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      featureGates:
+        - "flowControl"
+      plugins:
+        - type: round-robin-fairness-policy
+        - type: global-strict-fairness-policy
+        - type: slo-deadline-ordering-policy
+        - type: utilization-detector
+          parameters:
+            queueDepthThreshold: 5
+            kvCacheUtilThreshold: 0.8
+      flowControl:
+        maxBytes: 4294967296
+        defaultRequestTTL: 30s
+        priorityBands:
+          - priority: 100
+            maxBytes: 1073741824
+            fairnessPolicyRef: round-robin-fairness-policy
+            orderingPolicyRef: fcfs-ordering-policy
+          - priority: -1
+            maxBytes: 3221225472
+            fairnessPolicyRef: global-strict-fairness-policy
+            orderingPolicyRef: slo-deadline-ordering-policy
+        defaultPriorityBand:
+          maxBytes: 536870912
+          fairnessPolicyRef: global-strict-fairness-policy
+          orderingPolicyRef: fcfs-ordering-policy
+      saturationDetector:
+        pluginRef: utilization-detector
+
+# NOTE: inferenceObjectives are created via kubectl in deploy-k8s.sh
+# (create_inference_objectives) instead of chart values, because the
+# inferencepool chart v1.5.0 template has a scoping bug that causes
+# helm install to fail when inferenceObjectives is non-empty.
