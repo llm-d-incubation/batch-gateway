@@ -51,6 +51,14 @@ MODEL_ROUTES=(
     "${MODEL_NAME}:${LLMD_POOL_NAME}"
 )
 
+# Flow control: GIE priority-based dispatch (interactive > batch).
+# When enabled, EPP is configured with flow control plugins and InferenceObjective
+# CRDs are created so batch requests are sheddable (priority -1) while interactive
+# requests get priority 100.
+ENABLE_FLOW_CONTROL="${ENABLE_FLOW_CONTROL:-true}"
+INTERACTIVE_FLOW_CONTROL_OBJECTIVE="${INTERACTIVE_FLOW_CONTROL_OBJECTIVE:-interactive-default}"
+BATCH_FLOW_CONTROL_OBJECTIVE="${BATCH_FLOW_CONTROL_OBJECTIVE:-batch-sheddable}"
+
 # ── Infrastructure ────────────────────────────────────────────────────────────
 
 install_cert_manager() {
@@ -438,12 +446,19 @@ deploy_llmd_model() {
 
     # Install InferencePool (GAIE EPP)
     step "Installing InferencePool chart ${GAIE_CHART_VERSION}..."
+    local gaie_helm_args=(
+        --version "${GAIE_CHART_VERSION}"
+        --namespace "${LLM_NAMESPACE}"
+        -f "${sim_dir}/gaie-sim-values.yaml"
+        --set "provider.istio.destinationRule.host=${epp_host}"
+    )
+    if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
+        gaie_helm_args+=(-f "${sim_dir}/overlays/flow-control.yaml")
+        log "Flow control enabled: EPP will use flow-control-plugins.yaml"
+    fi
     helm upgrade --install "${pool_name}" \
         oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
-        --version "${GAIE_CHART_VERSION}" \
-        --namespace "${LLM_NAMESPACE}" \
-        -f "${sim_dir}/gaie-sim-values.yaml" \
-        --set "provider.istio.destinationRule.host=${epp_host}"
+        "${gaie_helm_args[@]}"
 
     # Install ModelService (vllm-sim)
     step "Installing ModelService chart ${MODELSERVICE_CHART_VERSION}..."
@@ -458,6 +473,177 @@ deploy_llmd_model() {
     wait_for_deployment "ms-${LLMD_RELEASE_POSTFIX}-llm-d-modelservice-decode" "${LLM_NAMESPACE}" 300s
 
     log "llm-d model deployed."
+}
+
+create_inference_objectives() {
+    step "Creating InferenceObjective CRDs..."
+    kubectl apply -f - <<EOF
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: ${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}
+  namespace: ${LLM_NAMESPACE}
+spec:
+  priority: 100
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${LLMD_POOL_NAME}
+---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: ${BATCH_FLOW_CONTROL_OBJECTIVE}
+  namespace: ${LLM_NAMESPACE}
+spec:
+  priority: -1
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${LLMD_POOL_NAME}
+EOF
+    log "InferenceObjectives created (${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}: priority 100, ${BATCH_FLOW_CONTROL_OBJECTIVE}: priority -1)."
+}
+
+verify_flow_control_config() {
+    banner "Verifying Flow Control configuration"
+
+    local pool_name="${LLMD_POOL_NAME}"
+    local errors=0
+
+    # 1. EPP plugins config
+    step "Checking EPP plugins config..."
+    local epp_pod
+    epp_pod=$(kubectl get pod -n "${LLM_NAMESPACE}" -l "inferencepool=${pool_name}-epp" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -z "${epp_pod}" ]; then
+        warn "No EPP pod found for pool '${pool_name}'. Cannot verify plugins config."
+        errors=$((errors + 1))
+    else
+        local pod_args
+        pod_args=$(kubectl get pod -n "${LLM_NAMESPACE}" "${epp_pod}" \
+            -o jsonpath='{.spec.containers[*].args}' 2>/dev/null || echo "")
+        if echo "${pod_args}" | grep -q "flow-control-plugins"; then
+            log "EPP is using flow-control-plugins.yaml"
+        else
+            warn "EPP does not appear to use flow-control-plugins.yaml"
+            errors=$((errors + 1))
+        fi
+    fi
+
+    # 2. InferenceObjective CRDs
+    step "Checking InferenceObjective CRDs..."
+    for obj in "${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}" "${BATCH_FLOW_CONTROL_OBJECTIVE}"; do
+        if kubectl get inferenceobjective "${obj}" -n "${LLM_NAMESPACE}" &>/dev/null; then
+            log "InferenceObjective '${obj}' exists."
+        else
+            warn "InferenceObjective '${obj}' not found."
+            errors=$((errors + 1))
+        fi
+    done
+
+    # 3. Batch processor inferenceObjective config (stored in configmap, not env)
+    step "Checking batch processor config..."
+    if kubectl get configmap "${BATCH_HELM_RELEASE}-processor-config" -n "${BATCH_NAMESPACE}" \
+        -o jsonpath='{.data}' 2>/dev/null | grep "inference_objective" | grep -q "${BATCH_FLOW_CONTROL_OBJECTIVE}"; then
+        log "Processor configured with inferenceObjective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
+    else
+        warn "Processor configmap does not contain inference_objective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
+        errors=$((errors + 1))
+    fi
+
+    if [ "${errors}" -gt 0 ]; then
+        die "Flow control verification failed with ${errors} error(s). Review output above."
+    fi
+    log "Flow control verification passed."
+}
+
+verify_flow_control_runtime() {
+    banner "Verifying Flow Control runtime (metrics)"
+
+    local pool_name="${LLMD_POOL_NAME}"
+    local errors=0
+
+    # Fetch metrics from EPP pod via kubectl exec + curl.
+    step "Fetching EPP flow control metrics..."
+    local epp_pod
+    epp_pod=$(kubectl get pod -n "${LLM_NAMESPACE}" -l "inferencepool=${pool_name}-epp" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -z "${epp_pod}" ]; then
+        die "No EPP pod found for pool '${pool_name}'."
+    fi
+
+    local metrics_port=19090
+    kubectl port-forward -n "${LLM_NAMESPACE}" "${epp_pod}" ${metrics_port}:9090 &>/dev/null &
+    local pf_pid=$!
+    sleep 2
+
+    local curl_args=(-s "http://localhost:${metrics_port}/metrics")
+    local metrics_secret
+    metrics_secret=$(kubectl get secret -n "${LLM_NAMESPACE}" -o name 2>/dev/null \
+        | grep 'metrics-reader' | head -1 | sed 's|^secret/||')
+    if [ -n "${metrics_secret}" ]; then
+        local metrics_token
+        metrics_token=$(kubectl get secret "${metrics_secret}" -n "${LLM_NAMESPACE}" \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d) || true
+        if [ -n "${metrics_token}" ]; then
+            curl_args=(-sk -H "Authorization: Bearer ${metrics_token}" "http://localhost:${metrics_port}/metrics")
+        fi
+    fi
+
+    local metrics_response
+    metrics_response=$(curl -w '\n%{http_code}' "${curl_args[@]}")
+    kill "${pf_pid}" 2>/dev/null || true
+    wait "${pf_pid}" 2>/dev/null || true
+
+    local metrics_body metrics_http_code
+    metrics_http_code=$(echo "${metrics_response}" | tail -1)
+    metrics_body=$(echo "${metrics_response}" | sed '$d')
+    if [ "${metrics_http_code}" != "200" ]; then
+        die "EPP metrics endpoint returned HTTP ${metrics_http_code}."
+    fi
+    if [ -z "${metrics_body}" ]; then
+        die "EPP metrics response body is empty."
+    fi
+
+    # 1. Interactive requests enqueued (priority 0)
+    step "Checking flow control metrics for interactive requests (priority 0)..."
+    local interactive_count
+    interactive_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_enqueue_duration_seconds_count' \
+        | grep 'priority="0"' | grep -oE '[0-9]+$' || echo "0")
+    if [ "${interactive_count}" -gt 0 ] 2>/dev/null; then
+        log "Flow control enqueued ${interactive_count} interactive request(s) (priority 0)."
+    else
+        warn "No interactive requests (priority 0) found in flow control metrics."
+        errors=$((errors + 1))
+    fi
+
+    # 2. Batch requests enqueued (priority -1)
+    step "Checking flow control metrics for batch requests (priority -1)..."
+    local batch_count
+    batch_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_enqueue_duration_seconds_count' \
+        | grep 'priority="-1"' | grep -oE '[0-9]+$' || echo "0")
+    if [ "${batch_count}" -gt 0 ] 2>/dev/null; then
+        log "Flow control enqueued ${batch_count} batch request(s) (priority -1)."
+    else
+        warn "No batch requests (priority -1) found in flow control metrics."
+        errors=$((errors + 1))
+    fi
+
+    # 3. Pool saturation metric exists
+    step "Checking pool saturation metric..."
+    if echo "${metrics_body}" | grep -q 'inference_extension_flow_control_pool_saturation'; then
+        local saturation
+        saturation=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_pool_saturation{' \
+            | grep -oE '[0-9.]+$' | head -1)
+        log "Pool saturation: ${saturation}"
+    else
+        warn "Pool saturation metric not found."
+        errors=$((errors + 1))
+    fi
+
+    if [ "${errors}" -gt 0 ]; then
+        die "Flow control runtime verification failed with ${errors} error(s). Review output above."
+    fi
+    log "Flow control runtime verification passed."
 }
 
 uninstall_llmd() {
@@ -494,6 +680,13 @@ deploy_batch_gateway_k8s() {
         --set "processor.config.modelGateways.${model_key}.maxBackoff=${GW_MAX_BACKOFF}"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )
+
+    if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
+        helm_args+=(
+            --set "processor.config.modelGateways.${model_key}.inferenceObjective=${BATCH_FLOW_CONTROL_OBJECTIVE}"
+        )
+        log "Flow control: processor will send x-gateway-inference-objective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
+    fi
 
     do_deploy_batch_gateway "${helm_args[@]}"
 }
@@ -671,6 +864,9 @@ cmd_install() {
     create_k8s_gateway
 
     deploy_llmd_model
+    if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
+        create_inference_objectives
+    fi
     create_llm_route
     apply_llm_auth_policy
     apply_llm_token_rate_limit
@@ -683,6 +879,10 @@ cmd_install() {
     deploy_batch_gateway_k8s
     apply_batch_auth_policy
     apply_batch_request_rate_limit
+
+    if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
+        verify_flow_control_config
+    fi
 
     log "Setup complete!"
     log "  Batch Gateway: ${BATCH_HELM_RELEASE} (${BATCH_NAMESPACE})"
@@ -761,6 +961,9 @@ EOF
         "Authorization: Bearer ${unauth_token}" \
         "${inference_payload}"
 
+    if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
+        verify_flow_control_runtime
+    fi
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
@@ -808,6 +1011,9 @@ cmd_uninstall() {
         helm uninstall "${KUADRANT_RELEASE}" -n "${KUADRANT_NAMESPACE}" --timeout 60s 2>/dev/null || true
         force_delete_crds 'kuadrant|authorino|limitador'
         force_delete_namespace "${KUADRANT_NAMESPACE}"
+
+        step "Removing InferenceObjective resources..."
+        kubectl delete inferenceobjective --all -n "${LLM_NAMESPACE}" 2>/dev/null || true
 
         step "Removing llm-d stack (${LLM_NAMESPACE})..."
         uninstall_llmd
@@ -875,6 +1081,8 @@ usage() {
     echo "  GATEWAY_LOCAL_PORT     Port-forward fallback port (default: 8080)"
     echo "  BATCH_DEV_VERSION      Batch gateway image tag / commit SHA (default: local)"
     echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"
+    echo "  ENABLE_FLOW_CONTROL   Enable GIE flow control (default: true)"
+    echo "  BATCH_FLOW_CONTROL_OBJECTIVE InferenceObjective name for batch (default: batch-sheddable)"
     echo "  UNINSTALL_ALL          Set to 1 to also remove Kuadrant/Istio/cert-manager and CRDs (ephemeral clusters only)"
     echo ""
     echo "Examples:"

@@ -30,6 +30,7 @@ This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or Op
     - **AuthPolicy** on the batch-llm-route performs authentication and authorization (SubjectAccessReview — checks if the original user can `get inferencepools/<model-name>`, where `<model-name>` is extracted from the URL path, not the backend InferencePool object name) — if the user lacks permission, the request is rejected with 403
     - No **TokenRateLimitPolicy** on the batch-llm-route — batch inference requests bypass per-user token rate limiting
 5. Request is routed to **InferencePool** → **EPP** (endpoint picker) → **vLLM** model server, and the response is returned to the Processor, which adds the response to the batch job's output file
+    - The Processor sets the `x-gateway-inference-objective: batch-sheddable` header, which assigns the request to the **batch priority band (priority -1)** in EPP's flow control. This band is **sheddable** — when the backend is saturated, batch requests are rejected immediately instead of queued, and the Processor retries with backoff
 
 **Online inference flow**:
 1. Client sends an inference request (e.g. `POST /{ns}/{model}/v1/chat/completions`) to the External Gateway with a Kubernetes token
@@ -37,8 +38,11 @@ This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or Op
     - **AuthPolicy** on the llm-route performs authentication and authorization (SubjectAccessReview — same model access check as the batch-llm-route)
     - **TokenRateLimitPolicy** on the llm-route enforces per-user token rate limiting, keyed by Kubernetes username from TokenReview
 3. Request is routed to **InferencePool** → **EPP** → **vLLM** model server
+    - Interactive requests without an `x-gateway-inference-objective` header default to **priority 0**, which outranks the batch band (priority -1). Requests with `x-gateway-inference-objective: interactive-default` are assigned to **priority 100**
 
 > **Why two gateways?** The Internal Gateway is a ClusterIP-only Envoy proxy that is not accessible from outside the cluster. The batch processor uses it to bypass the TokenRateLimitPolicy applied on the External Gateway's llm-route. This ensures batch jobs are not throttled by per-user token rate limits intended for interactive use. The Internal Gateway's batch-llm-route still enforces AuthPolicy (authentication + model authorization), so unauthorized access is always blocked.
+
+> **Why flow control?** Without flow control, batch and interactive requests compete equally for backend resources. Under heavy batch load, interactive latency spikes because the backend is saturated with batch requests. Flow control solves this with priority-based dispatch: interactive requests (priority 0/100) are always dispatched before batch requests (priority -1). When the backend is saturated, batch requests are shed (rejected immediately) rather than queued, and the batch processor retries with backoff. This ensures interactive traffic always gets low-latency treatment while batch fills remaining capacity. See [Flow Control Setup](flow-control-setup.md) for detailed configuration.
 
 ### 1.3 Authentication
 
@@ -137,13 +141,19 @@ export KUADRANT_NS=kuadrant-system
 # Component versions
 export CERT_MANAGER_VERSION=v1.15.3
 export KUADRANT_VERSION=1.3.1
-export LLMD_VERSION=v0.6.0
+export LLMD_VERSION=v0.7.0
 export LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
+export GAIE_CHART_VERSION=v1.5.0
+export MODELSERVICE_CHART_VERSION=v0.4.12
 
 # llm-d model
 export LLMD_RELEASE_POSTFIX=llmd
-export LLMD_POOL_NAME=gaie-llmd
+export LLMD_POOL_NAME=gaie-${LLMD_RELEASE_POSTFIX}
 export MODEL_NAME=random
+
+# Flow control
+export INTERACTIVE_FLOW_CONTROL_OBJECTIVE=interactive-default
+export BATCH_FLOW_CONTROL_OBJECTIVE=batch-sheddable
 ```
 
 ## 3. Installation Steps
@@ -425,23 +435,89 @@ replicaset.apps/istio-gateway-istio-544bcc95c5   1         1         1       12m
 
 ### 3.5 Deploy model with llm-d
 
-This doc follows the [simulated-accelerators guide](https://llm-d.ai/docs/guide/Installation/simulated-accelerators)
-
-Find more guides at [llm-d guides](https://llm-d.ai/docs/guide/)
-
-<details>
-<summary>Deploy simulated-accelerators model via helmfile</summary>
+This doc follows the [simulated-accelerators guide](https://llm-d.ai/docs/guide/Installation/simulated-accelerators). Find more guides at [llm-d guides](https://llm-d.ai/docs/guide/).
 
 ```bash
-# Deploy the stack
-RELEASE_NAME_POSTFIX="${LLMD_RELEASE_POSTFIX}" \
-    helmfile apply \
-    -f "${LLMD_GIT_DIR}/guides/simulated-accelerators/helmfile.yaml.gotmpl" \
-    -e istio -n "${LLM_NS}"
+# Create the LLM namespace
+kubectl create namespace "${LLM_NS}" 2>/dev/null || true
+kubectl label namespace "${LLM_NS}" llm-d.ai/gateway-route=true --overwrite
+```
+
+<details>
+<summary>Install InferencePool (GAIE EPP) with flow control</summary>
+
+The InferencePool chart deploys the EPP (Endpoint Picker Plugin). The flow control overlay configures priority-based dispatch with two bands: interactive (priority 100) and batch (priority -1, sheddable).
+
+```bash
+EPP_HOST="${LLMD_POOL_NAME}-epp.${LLM_NS}.svc.cluster.local"
+
+helm upgrade --install "${LLMD_POOL_NAME}" \
+    oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
+    --version "${GAIE_CHART_VERSION}" \
+    --namespace "${LLM_NS}" \
+    -f examples/deploy-demo/llmd-sim/gaie-sim-values.yaml \
+    -f examples/deploy-demo/llmd-sim/overlays/flow-control.yaml \
+    --set "provider.istio.destinationRule.host=${EPP_HOST}"
+```
+
+> **Flow control overlay**: The `-f overlays/flow-control.yaml` overlay sets `pluginsConfigFile: flow-control-plugins.yaml` and configures the `EndpointPickerConfig` with the `flowControl` feature gate, two priority bands, and a saturation detector. See [Flow Control Setup](flow-control-setup.md) for details on the configuration.
+
+</details>
+
+<details>
+<summary>Install ModelService (vllm-sim)</summary>
+
+```bash
+helm repo add llm-d-modelservice https://llm-d-incubation.github.io/llm-d-modelservice/ --force-update
+helm upgrade --install "ms-${LLMD_RELEASE_POSTFIX}" llm-d-modelservice/llm-d-modelservice \
+    --version "${MODELSERVICE_CHART_VERSION}" \
+    --namespace "${LLM_NS}" \
+    -f examples/deploy-demo/llmd-sim/ms-sim-values.yaml
 
 # Wait for deployments
-kubectl rollout status deploy/gaie-${LLMD_RELEASE_POSTFIX}-epp -n ${LLM_NS} --timeout=300s
+kubectl rollout status deploy/${LLMD_POOL_NAME}-epp -n ${LLM_NS} --timeout=300s
 kubectl rollout status deploy/ms-${LLMD_RELEASE_POSTFIX}-llm-d-modelservice-decode -n ${LLM_NS} --timeout=300s
+```
+
+</details>
+
+<details>
+<summary>Create InferenceObjective CRDs</summary>
+
+InferenceObjective CRDs assign requests to priority bands based on the `x-gateway-inference-objective` header. Create one for interactive traffic (priority 100) and one for batch traffic (priority -1, sheddable).
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: ${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}
+  namespace: ${LLM_NS}
+spec:
+  priority: 100
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${LLMD_POOL_NAME}
+---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: ${BATCH_FLOW_CONTROL_OBJECTIVE}
+  namespace: ${LLM_NS}
+spec:
+  priority: -1
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${LLMD_POOL_NAME}
+EOF
+```
+
+> **Note**: InferenceObjectives are created via `kubectl apply` instead of the InferencePool chart's `inferenceObjectives` values because the chart template (v1.5.0) has a scoping bug that causes `helm install` to fail when `inferenceObjectives` is non-empty.
+
+Verify the objectives:
+
+```bash
+kubectl get inferenceobjective -n ${LLM_NS}
 ```
 
 </details>
@@ -480,12 +556,6 @@ replicaset.apps/ms-llmd-llm-d-modelservice-prefill-7d7b78699f   1         1     
 
 <details>
 <summary>Create HTTPRoute for LLM inference</summary>
-
-Label the LLM namespace so the Gateway's namespace selector allows HTTPRoute attachment:
-
-```bash
-kubectl label namespace ${LLM_NS} llm-d.ai/gateway-route=true --overwrite
-```
 
 The llm-route is manually created with URL rewrite rules that map `/{namespace}/{model}/v1/*` to the InferencePool backend.
 
@@ -932,6 +1002,7 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
     --set "processor.config.modelGateways.${MODEL_NAME}.maxRetries=3" \
     --set "processor.config.modelGateways.${MODEL_NAME}.initialBackoff=1s" \
     --set "processor.config.modelGateways.${MODEL_NAME}.maxBackoff=60s" \
+    --set "processor.config.modelGateways.${MODEL_NAME}.inferenceObjective=${BATCH_FLOW_CONTROL_OBJECTIVE}" \
     --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
     --set apiserver.tls.enabled=true \
     --set apiserver.tls.certManager.enabled=true \
@@ -940,6 +1011,7 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
     --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}"
 ```
 
+> - **`modelGateways.<model>.inferenceObjective`**: Set to the `InferenceObjective` CRD name for batch traffic (`batch-sheddable`). The processor sends this as the `x-gateway-inference-objective` header on every inference request, which EPP's flow control uses to assign the request to the batch priority band (priority -1). Without this, batch requests default to priority 0 and compete equally with interactive traffic.
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It points to the **Internal Gateway's** model endpoint (via in-cluster Service DNS), not the External Gateway or the model server directly. The Internal Gateway enforces AuthPolicy (model access check) but bypasses TokenRateLimitPolicy, so batch inference is not token-rate-limited.
 > - **`passThroughHeaders`**: Set to `[Authorization]` so the processor forwards the end user's bearer token on inference calls. Without this, the Internal Gateway cannot attribute inference traffic to the original caller and model-level authorization checks will fail.
 > - **No `tlsInsecureSkipVerify`**: The Internal Gateway uses plain HTTP (ClusterIP :80), so TLS verification is not needed for the processor → model gateway connection.

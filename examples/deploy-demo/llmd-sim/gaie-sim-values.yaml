@@ -22,6 +22,8 @@ inferenceExtension:
       auth:
         enabled: true
         secretName: sim-gateway-sa-metrics-reader-secret
+  flags:
+    zap-log-level: "2"
   # Reduced for demo — defaults (4 CPU) exceed demo/CI cluster capacity.
   resources:
     requests:
