@@ -47,6 +47,12 @@ cleanup_kubernetes_resources() {
     kubectl delete deployment,svc "${VLLM_SIM_AIMD_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${MINIO_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
 
+    # Delete e2e helper pods (created by test runs, safe to ignore if absent)
+    kubectl delete pod "batch-gateway-e2e-curl" -n "${NAMESPACE}" --ignore-not-found=true
+    # Legacy pod name from before curl pod consolidation; remove once no
+    # clusters are likely to have it lingering (safe to drop after v0.10+).
+    kubectl delete pod "batch-gateway-epp-metrics-curl" -n "${NAMESPACE}" --ignore-not-found=true
+
     # Delete secrets
     log "Deleting secrets..."
     kubectl delete secret "${APP_SECRET_NAME}" "${TLS_SECRET_NAME}" -n "${NAMESPACE}" --ignore-not-found=true

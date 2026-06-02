@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -600,6 +602,135 @@ func validateBatchResults(t *testing.T, batch *openai.Batch, result batchResults
 		t.Errorf("error lines (%d) != failed count (%d)",
 			result.ErrorLines, batch.RequestCounts.Failed)
 	}
+}
+
+// ── Shared E2E curl pod ─────────────────────────────────────────────────
+
+const e2eCurlPod = "batch-gateway-e2e-curl"
+
+func ensureE2ECurlPod(t *testing.T) {
+	t.Helper()
+
+	if phaseOut, err := exec.Command("kubectl", "get", "pod",
+		e2eCurlPod,
+		"-n", testNamespace,
+		"-o", "jsonpath={.status.phase}",
+	).CombinedOutput(); err != nil || strings.TrimSpace(string(phaseOut)) == "" {
+		createE2ECurlPod(t)
+	} else {
+		phase := strings.TrimSpace(string(phaseOut))
+		if phase != "Running" && phase != "Pending" {
+			out, deleteErr := exec.Command("kubectl", "delete", "pod",
+				e2eCurlPod,
+				"-n", testNamespace,
+				"--ignore-not-found",
+			).CombinedOutput()
+			if deleteErr != nil {
+				t.Fatalf("failed to delete stale e2e curl pod: %v\n%s", deleteErr, out)
+			}
+			createE2ECurlPod(t)
+		}
+	}
+
+	waitOut, err := exec.Command("kubectl", "wait",
+		"--for=condition=Ready",
+		fmt.Sprintf("pod/%s", e2eCurlPod),
+		"-n", testNamespace,
+		"--timeout=90s",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to wait for e2e curl pod: %v\n%s", err, waitOut)
+	}
+}
+
+func createE2ECurlPod(t *testing.T) {
+	t.Helper()
+
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:8.8.0
+    command: ["sleep", "infinity"]
+`, e2eCurlPod, testNamespace)
+
+	cmd := exec.Command("kubectl", "create", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create e2e curl pod: %v\n%s", err, out)
+	}
+}
+
+func deleteE2ECurlPod(t *testing.T) {
+	t.Helper()
+
+	out, err := exec.Command("kubectl", "delete", "pod",
+		e2eCurlPod,
+		"-n", testNamespace,
+		"--ignore-not-found",
+	).CombinedOutput()
+	if err != nil {
+		t.Errorf("cleanup: failed to delete e2e curl pod: %v\n%s", err, out)
+	}
+}
+
+// ── Simulator admin helpers ──────────────────────────────────────────────
+
+// setSimAdminConfig sends a POST to the simulator's /admin/config endpoint
+// via a curl pod running in the cluster. It is used to dynamically change
+// failure injection at runtime without restarting the simulator deployment.
+func setSimAdminConfig(t *testing.T, simService string, body string) {
+	t.Helper()
+
+	ensureE2ECurlPod(t)
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/admin/config", simService, testNamespace)
+	out, err := exec.Command("kubectl", "exec",
+		"-n", testNamespace,
+		e2eCurlPod,
+		"--",
+		"curl", "-sS", "-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-d", body,
+		"--fail",
+		url,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("POST %s failed: %v\n%s", url, err, out)
+	}
+	t.Logf("POST %s: %s", url, strings.TrimSpace(string(out)))
+}
+
+// waitForModelInflight polls the processor's model_inflight_requests metric
+// until it reports > 0 for the given model, proving that at least one request
+// has been dispatched. With 100% failure injection, the gauge remains elevated
+// for the full retry chain duration (minutes) because Generate() blocks through
+// all resty retries, making this a stable signal — not transient.
+func waitForModelInflight(t *testing.T, model string, timeout time.Duration) {
+	t.Helper()
+
+	re := regexp.MustCompile(fmt.Sprintf(
+		`model_inflight_requests\{[^}]*model=%q[^}]*\}\s+(\d+)`, model))
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		body := scrapeProcessorMetrics(t)
+		if m := re.FindStringSubmatch(body); m != nil {
+			val, _ := strconv.Atoi(m[1])
+			if val > 0 {
+				t.Logf("model_inflight_requests{model=%q} = %d", model, val)
+				return
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for model_inflight_requests{model=%q} > 0", model)
 }
 
 // ── Generic helpers ──────────────────────────────────────────────────────

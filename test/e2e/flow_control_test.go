@@ -49,9 +49,7 @@ func testFlowControl(t *testing.T) {
 		}
 		t.Run("InferenceObjectiveHeader", doTestInferenceObjectiveHeader)
 		t.Run("SLOHeader", doTestSLOHeader)
-		t.Run("RetryOn429", func(t *testing.T) {
-			t.Skip("#445: disabled until llm-d-inference-sim supports deterministic 429 injection; retry coverage lives in lower-level deterministic tests")
-		})
+		t.Run("RetryOn429", doTestRetryOn429)
 		t.Run("RetryExhaustion", doTestRetryExhaustion)
 	})
 
@@ -129,6 +127,112 @@ func doTestSLOHeader(t *testing.T) {
 	}
 
 	t.Logf("batch completed within 10m SLO window (x-slo-ttft-ms header propagation unit-tested)")
+}
+
+// doTestRetryOn429 verifies the full retry-to-success path:
+//  1. Set sim-model-429 to 100% failure via /admin/config.
+//  2. Submit a batch — all initial attempts receive 429.
+//  3. Flip the simulator to 0% failure — subsequent retries succeed.
+//  4. Assert all requests completed with no failures.
+//  5. Assert AIMD decrease signals were recorded (proves 429s were observed).
+//
+// This exercises the end-to-end contract: transient 429 → retry → success.
+// Requires llm-d-inference-sim >= v0.9.1 for the /admin/config endpoint.
+func doTestRetryOn429(t *testing.T) {
+	t.Helper()
+
+	if !testKubectlAvailable {
+		t.Skip("kubectl not available")
+	}
+
+	const numRequests = 4
+
+	t.Cleanup(func() { deleteE2ECurlPod(t) })
+	t.Cleanup(func() {
+		t.Log("cleanup: restoring sim-model-429 to 50% failure rate")
+		setSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 50, "failure-types": ["rate_limit"]}`)
+	})
+
+	// Snapshot cumulative counters before the test. These are process-wide
+	// counters that persist across test runs on the same processor. We verify
+	// deltas (not absolute values) after batch completion.
+	metricsBefore := scrapeProcessorMetrics(t)
+	decreasesBefore := parseCounterByEndpoint(t, metricsBefore, "batch_processor_aimd_decreases_total")
+	var beforeCount float64
+	for endpoint, count := range decreasesBefore {
+		if strings.Contains(endpoint, testSimService429) {
+			beforeCount = count
+			break
+		}
+	}
+	errorsBefore := getRequestErrors(t, testModel429)
+
+	// Phase 1: Set 100% failure — all initial attempts will get 429.
+	t.Log("phase 1: setting sim-model-429 to 100% failure rate")
+	setSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 100, "failure-types": ["rate_limit"]}`)
+
+	// Phase 2: Submit batch.
+	t.Log("phase 2: submitting batch")
+	lines := make([]string, 0, numRequests)
+	for i := range numRequests {
+		lines = append(lines, fmt.Sprintf(
+			`{"custom_id":"retry429-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Retry test %d"}]}}`,
+			i+1, testModel429, i+1,
+		))
+	}
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-retry429-%s.jsonl", testRunID), strings.Join(lines, "\n"))
+	batchID := mustCreateBatch(t, fileID)
+
+	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
+
+	// Phase 3: Wait until the processor has dispatched at least one request
+	// to the sim. model_inflight_requests{model="sim-model-429"} > 0 proves
+	// dispatch happened. Because failure rate is 100%, the first response is
+	// a 429, and the resty client enters its retry loop (Generate blocks
+	// through all retries). The gauge stays elevated for the entire retry
+	// chain (minutes), making it a stable — not transient — signal here.
+	t.Log("phase 3: waiting for model_inflight_requests > 0")
+	waitForModelInflight(t, testModel429, 30*time.Second)
+
+	// Phase 4: Flip to 0% failure — the next retry attempt will succeed.
+	t.Log("phase 4: setting sim-model-429 to 0% failure rate")
+	setSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 0}`)
+
+	// Phase 5: Wait for batch to complete.
+	batch, _ := waitForBatchStatus(t, batchID, 3*time.Minute, openai.BatchStatusCompleted)
+
+	if batch.RequestCounts.Completed != int64(numRequests) {
+		t.Fatalf("expected %d completed, got %d (failed=%d)",
+			numRequests, batch.RequestCounts.Completed, batch.RequestCounts.Failed)
+	}
+	if batch.RequestCounts.Failed != 0 {
+		t.Errorf("expected 0 failed, got %d", batch.RequestCounts.Failed)
+	}
+
+	// Phase 6: Verify AIMD capacity_retry signals were recorded. Each request
+	// hit at least one 429 before succeeding, so hadCapacityRetry=true triggers
+	// an AIMD decrease on completion.
+	metricsAfter := scrapeProcessorMetrics(t)
+	decreasesAfter := parseCounterByEndpoint(t, metricsAfter, "batch_processor_aimd_decreases_total")
+	var afterCount float64
+	for endpoint, count := range decreasesAfter {
+		if strings.Contains(endpoint, testSimService429) {
+			afterCount = count
+			break
+		}
+	}
+
+	if afterCount <= beforeCount {
+		t.Errorf("expected AIMD decreases to increase after retry-on-429 "+
+			"(before=%.0f, after=%.0f); capacity_retry signals not recorded",
+			beforeCount, afterCount)
+	} else {
+		t.Logf("retry-on-429: all %d requests completed after retry "+
+			"(aimd_decreases: %.0f → %.0f)", numRequests, beforeCount, afterCount)
+	}
+
+	assertNoNewRequestErrors(t, testModel429, errorsBefore)
 }
 
 // doTestRetryExhaustion submits a batch targeting a simulator with 100%
@@ -278,7 +382,7 @@ func doTestBatchCompletionThroughEPP(t *testing.T) {
 	t.Helper()
 
 	t.Cleanup(func() {
-		deleteEPPMetricsCurlPod(t)
+		deleteE2ECurlPod(t)
 	})
 
 	eppPrefix := getEnvOrDefault("GIE_EPP_RELEASE", "epp")
@@ -341,10 +445,6 @@ func truncateLog(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
-
-const (
-	eppMetricsCurlPod = "batch-gateway-epp-metrics-curl"
-)
 
 var eppDispatchedCountPattern = regexp.MustCompile(`(?m)^inference_extension_flow_control_request_queue_duration_seconds_count\{([^}]*)\}\s+([0-9.e+-]+)$`)
 
@@ -413,11 +513,11 @@ func getEPPDispatchedCountAndSample(t *testing.T, deployment string) (float64, s
 func scrapeEPPMetrics(t *testing.T, deployment string) string {
 	t.Helper()
 
-	ensureEPPMetricsCurlPod(t)
+	ensureE2ECurlPod(t)
 
 	out, err := exec.Command("kubectl", "exec",
 		"-n", testNamespace,
-		eppMetricsCurlPod,
+		e2eCurlPod,
 		"--",
 		"curl",
 		"-sS",
@@ -427,78 +527,6 @@ func scrapeEPPMetrics(t *testing.T, deployment string) string {
 		t.Fatalf("failed to scrape metrics for %s: %v\n%s", deployment, err, out)
 	}
 	return string(out)
-}
-
-func ensureEPPMetricsCurlPod(t *testing.T) {
-	t.Helper()
-
-	if phaseOut, err := exec.Command("kubectl", "get", "pod",
-		eppMetricsCurlPod,
-		"-n", testNamespace,
-		"-o", "jsonpath={.status.phase}",
-	).CombinedOutput(); err != nil || strings.TrimSpace(string(phaseOut)) == "" {
-		createEPPMetricsCurlPod(t)
-	} else {
-		phase := strings.TrimSpace(string(phaseOut))
-		if phase != "Running" && phase != "Pending" {
-			out, deleteErr := exec.Command("kubectl", "delete", "pod",
-				eppMetricsCurlPod,
-				"-n", testNamespace,
-				"--ignore-not-found",
-			).CombinedOutput()
-			if deleteErr != nil {
-				t.Fatalf("failed to delete stale EPP metrics scrape pod: %v\n%s", deleteErr, out)
-			}
-			createEPPMetricsCurlPod(t)
-		}
-	}
-
-	waitOut, err := exec.Command("kubectl", "wait",
-		"--for=condition=Ready",
-		fmt.Sprintf("pod/%s", eppMetricsCurlPod),
-		"-n", testNamespace,
-		"--timeout=90s",
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to wait for EPP metrics curl pod: %v\n%s", err, waitOut)
-	}
-}
-
-func createEPPMetricsCurlPod(t *testing.T) {
-	t.Helper()
-
-	manifest := fmt.Sprintf(`apiVersion: v1
-kind: Pod
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  restartPolicy: Never
-  containers:
-  - name: curl
-    image: curlimages/curl:8.8.0
-    command: ["sleep", "3600"]
-`, eppMetricsCurlPod, testNamespace)
-
-	cmd := exec.Command("kubectl", "create", "-f", "-")
-	cmd.Stdin = strings.NewReader(manifest)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to create EPP metrics scrape pod: %v\n%s", err, out)
-	}
-}
-
-func deleteEPPMetricsCurlPod(t *testing.T) {
-	t.Helper()
-
-	out, err := exec.Command("kubectl", "delete", "pod",
-		eppMetricsCurlPod,
-		"-n", testNamespace,
-		"--ignore-not-found",
-	).CombinedOutput()
-	if err != nil {
-		t.Errorf("cleanup: failed to delete EPP metrics scrape pod: %v\n%s", err, out)
-	}
 }
 
 // getProcessorConfigObjective reads the deployed processor ConfigMap and
@@ -583,22 +611,33 @@ func waitForRetryExhaustion(t *testing.T, batchID string, timeout time.Duration)
 	return nil
 }
 
-// assertNoRequestErrors verifies that request_errors_by_model_total for the
-// given model is either absent or zero. When the HTTP client retries 429s
-// transparently and all retries succeed, the executor never records an error.
-func assertNoRequestErrors(t *testing.T, model string) {
+// getRequestErrors returns the current value of request_errors_by_model_total
+// for the given model, or 0 if the metric is not present yet.
+func getRequestErrors(t *testing.T, model string) int {
 	t.Helper()
 
 	metrics := scrapeProcessorMetrics(t)
-
 	pattern := regexp.MustCompile(fmt.Sprintf(`request_errors_by_model_total\{model=%q\}\s+(\d+)`, model))
 	match := pattern.FindStringSubmatch(metrics)
 	if match == nil {
-		t.Logf("request_errors_by_model_total{model=%q} not found in metrics (expected: retries succeeded transparently)", model)
-		return
+		return 0
 	}
-	if match[1] != "0" {
-		t.Errorf("expected request_errors_by_model_total{model=%q} = 0 (retries should succeed), got %s", model, match[1])
+	val, _ := strconv.Atoi(match[1])
+	return val
+}
+
+// assertNoNewRequestErrors verifies that request_errors_by_model_total for the
+// given model did not increase relative to the provided baseline. This is safe
+// to use against long-lived processors where previous test runs may have
+// already incremented the counter.
+func assertNoNewRequestErrors(t *testing.T, model string, baseline int) {
+	t.Helper()
+
+	current := getRequestErrors(t, model)
+	if current > baseline {
+		t.Errorf("request_errors_by_model_total{model=%q} increased during test "+
+			"(before=%d, after=%d); retries should have succeeded transparently",
+			model, baseline, current)
 	}
 }
 

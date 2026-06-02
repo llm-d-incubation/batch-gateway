@@ -41,7 +41,7 @@ This script:
 | `FILES_PVC_NAME`      | `<HELM_RELEASE>-files`                     | Name of the PVC created for file storage           |
 | `VLLM_SIM_NAME`       | `vllm-sim`                                 | Name of the vLLM simulator deployment              |
 | `VLLM_SIM_MODEL`      | `sim-model`                                | Model name served by the simulator                 |
-| `VLLM_SIM_IMAGE`      | `ghcr.io/llm-d/llm-d-inference-sim:latest` | vLLM simulator image                               |
+| `VLLM_SIM_IMAGE`      | `ghcr.io/llm-d/llm-d-inference-sim:latest` | vLLM simulator image (>= v0.9.1 required for `/admin/config`) |
 
 Example with overrides:
 
@@ -70,6 +70,8 @@ make test-e2e
 | `TEST_POSTGRESQL_RELEASE` | `postgresql`                     | Helm release name for PostgreSQL (used by GC tests)        |
 | `TEST_MODEL`              | `sim-model`                      | Primary model name for batch input                         |
 | `TEST_MODEL_B`            | `sim-model-b`                    | Secondary model name for multi-model tests                 |
+| `TEST_SIM_SERVICE_429`    | `vllm-sim-429`                   | K8s service name for the 429-injecting simulator           |
+| `TEST_SIM_SERVICE_AIMD`   | `vllm-sim-aimd`                  | K8s service name for the AIMD recovery simulator           |
 | `TEST_CHART_PATH`         | `../../charts/batch-gateway`     | Path to the Helm chart (used by HelmUpgrade tests)         |
 
 Example with overrides:
