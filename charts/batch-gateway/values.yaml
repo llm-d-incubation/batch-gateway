@@ -221,9 +221,7 @@ apiserver:
     enabled: false
     interval: "30s"
     # Extra labels to match Prometheus Operator's serviceMonitorSelector.
-    # The RHOAI monitoring label enables metrics scraping by the ODH observability stack.
-    labels:
-      monitoring.opendatahub.io/scrape: "true"
+    labels: {}
 
   # Logging configuration
   logging:
@@ -404,9 +402,7 @@ processor:
     enabled: false
     interval: "30s"
     # Extra labels to match Prometheus Operator's podMonitorSelector.
-    # The RHOAI monitoring label enables metrics scraping by the ODH observability stack.
-    labels:
-      monitoring.opendatahub.io/scrape: "true"
+    labels: {}
 
   # Logging configuration
   logging:
