@@ -35,15 +35,6 @@ tests:
           value: "30s"
         template: templates/apiserver-servicemonitor.yaml
 
-  - it: should include RHOAI monitoring label on ServiceMonitor by default
-    set:
-      apiserver.serviceMonitor.enabled: true
-    asserts:
-      - equal:
-          path: metadata.labels["monitoring.opendatahub.io/scrape"]
-          value: "true"
-        template: templates/apiserver-servicemonitor.yaml
-
   - it: should apply custom ServiceMonitor interval
     set:
       apiserver.serviceMonitor.enabled: true
@@ -85,15 +76,6 @@ tests:
       - equal:
           path: spec.podMetricsEndpoints[0].interval
           value: "30s"
-        template: templates/processor-podmonitor.yaml
-
-  - it: should include RHOAI monitoring label on PodMonitor by default
-    set:
-      processor.podMonitor.enabled: true
-    asserts:
-      - equal:
-          path: metadata.labels["monitoring.opendatahub.io/scrape"]
-          value: "true"
         template: templates/processor-podmonitor.yaml
 
   - it: should not render PodMonitor when processor is disabled

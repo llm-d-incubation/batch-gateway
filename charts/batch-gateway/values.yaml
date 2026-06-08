@@ -20,7 +20,7 @@ global:
   # Shared by all components; mounted read-only at /etc/.secrets/ in each container.
   # The secret must use these exact key names (hardcoded in the application):
   #   redis-url             — Redis/Valkey connection URL (e.g. redis://host:6379/0)
-  #   postgresql-url        — PostgreSQL connection URL (e.g. postgresql://user:pass@host/db)
+  #   postgresql-url        — PostgreSQL connection URL (e.g. postgresql://[user]:[pass]@[host]/[db])
   #   inference-api-key     — API key for the inference gateway (optional; omit if not required)
   #   s3-secret-access-key  — S3 secret access key (required when file_client.type is "s3")
   # Create with: kubectl create secret generic <name> --from-literal=redis-url=redis://...
@@ -221,9 +221,7 @@ apiserver:
     enabled: false
     interval: "30s"
     # Extra labels to match Prometheus Operator's serviceMonitorSelector.
-    # The RHOAI monitoring label enables metrics scraping by the ODH observability stack.
-    labels:
-      monitoring.opendatahub.io/scrape: "true"
+    labels: {}
 
   # Logging configuration
   logging:
@@ -404,9 +402,7 @@ processor:
     enabled: false
     interval: "30s"
     # Extra labels to match Prometheus Operator's podMonitorSelector.
-    # The RHOAI monitoring label enables metrics scraping by the ODH observability stack.
-    labels:
-      monitoring.opendatahub.io/scrape: "true"
+    labels: {}
 
   # Logging configuration
   logging:

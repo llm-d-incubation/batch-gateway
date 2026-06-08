@@ -248,7 +248,7 @@ create_tls_secret() {
 
     local tmp_dir
     tmp_dir="$(mktemp -d)"
-    trap "rm -rf ${tmp_dir}" RETURN
+    trap 'rm -rf ${tmp_dir}' RETURN
 
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "${tmp_dir}/tls.key" \
