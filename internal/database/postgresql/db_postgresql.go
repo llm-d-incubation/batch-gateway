@@ -40,7 +40,7 @@ type pgxPool interface {
 
 // PostgreSQLConfig holds the configuration for a PostgreSQL connection.
 type PostgreSQLConfig struct {
-	// Url is a PostgreSQL connection string (e.g., "postgres://user:pass@host:5432/dbname?sslmode=disable").
+	// Url is a PostgreSQL connection string (e.g., "postgres://[user]:[pass]@[host]:5432/[dbname]?sslmode=disable").
 	Url string `yaml:"-"`
 	// EnableTracing enables OpenTelemetry tracing for all PostgreSQL operations.
 	EnableTracing bool
