@@ -41,6 +41,21 @@ func (e Endpoint) String() string {
 	return string(e)
 }
 
+// IsValidEndpoint reports whether the given endpoint is one of the supported
+// Batch API endpoints.
+func IsValidEndpoint(endpoint string) bool {
+	switch Endpoint(endpoint) {
+	case EndpointResponses,
+		EndpointChatCompletions,
+		EndpointEmbeddings,
+		EndpointCompletions,
+		EndpointModerations:
+		return true
+	default:
+		return false
+	}
+}
+
 type BatchStatus string
 
 const (
@@ -286,14 +301,7 @@ func (r *CreateBatchRequest) Validate() error {
 		return errors.New("endpoint is required")
 	}
 
-	validEndpoints := map[Endpoint]bool{
-		EndpointResponses:       true,
-		EndpointChatCompletions: true,
-		EndpointEmbeddings:      true,
-		EndpointCompletions:     true,
-		EndpointModerations:     true,
-	}
-	if !validEndpoints[r.Endpoint] {
+	if !IsValidEndpoint(r.Endpoint.String()) {
 		return errors.New("invalid endpoint: " + string(r.Endpoint))
 	}
 

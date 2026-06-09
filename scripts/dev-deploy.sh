@@ -248,7 +248,8 @@ create_tls_secret() {
 
     local tmp_dir
     tmp_dir="$(mktemp -d)"
-    trap "rm -rf ${tmp_dir}" RETURN
+    # shellcheck disable=SC2064  # Intentional: expand tmp_dir at definition time; it is local and out of scope when RETURN trap fires from caller
+    trap "rm -rf '${tmp_dir}'" RETURN
 
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "${tmp_dir}/tls.key" \
