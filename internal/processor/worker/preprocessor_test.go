@@ -1182,7 +1182,7 @@ func TestRunPollingLoop_GuardReEnqueueFails_FallsBackToHandleFailed(t *testing.T
 // ---------------------------------------------------------------------------
 
 func TestExtractAndValidateLine_StreamTrue_ReturnsError(t *testing.T) {
-	line := []byte(`{"custom_id":"r1","body":{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","stream":true,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
 	_, err := extractAndValidateLine(line)
 	if err == nil {
 		t.Fatal("expected error for stream: true, got nil")
@@ -1193,7 +1193,7 @@ func TestExtractAndValidateLine_StreamTrue_ReturnsError(t *testing.T) {
 }
 
 func TestExtractAndValidateLine_StreamFalse_OK(t *testing.T) {
-	line := []byte(`{"custom_id":"r1","body":{"model":"gpt-4","stream":false,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","stream":false,"messages":[{"role":"user","content":"hi"}]}}` + "\n")
 	meta, err := extractAndValidateLine(line)
 	if err != nil {
 		t.Fatalf("unexpected error for stream: false: %v", err)
@@ -1207,7 +1207,7 @@ func TestExtractAndValidateLine_StreamFalse_OK(t *testing.T) {
 }
 
 func TestExtractAndValidateLine_StreamOmitted_OK(t *testing.T) {
-	line := []byte(`{"custom_id":"r1","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
 	meta, err := extractAndValidateLine(line)
 	if err != nil {
 		t.Fatalf("unexpected error when stream is omitted: %v", err)
@@ -1218,7 +1218,7 @@ func TestExtractAndValidateLine_StreamOmitted_OK(t *testing.T) {
 }
 
 func TestExtractAndValidateLine_EmptyCustomID_ReturnsError(t *testing.T) {
-	line := []byte(`{"custom_id":"","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	line := []byte(`{"custom_id":"","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
 	_, err := extractAndValidateLine(line)
 	if err == nil {
 		t.Fatal("expected error for empty custom_id, got nil")
@@ -1229,13 +1229,93 @@ func TestExtractAndValidateLine_EmptyCustomID_ReturnsError(t *testing.T) {
 }
 
 func TestExtractAndValidateLine_MissingCustomID_ReturnsError(t *testing.T) {
-	line := []byte(`{"body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	line := []byte(`{"method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
 	_, err := extractAndValidateLine(line)
 	if err == nil {
 		t.Fatal("expected error for missing custom_id, got nil")
 	}
 	if !strings.Contains(err.Error(), "custom_id is required") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_MissingMethod_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for missing method, got nil")
+	}
+	if !strings.Contains(err.Error(), "method is required") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_InvalidMethod_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","method":"DELETE","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for invalid method, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid method") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_MissingURL_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","method":"POST","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for missing url, got nil")
+	}
+	if !strings.Contains(err.Error(), "url is required") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_AbsoluteURL_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"http://evil.com","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for absolute url, got nil")
+	}
+	if !strings.Contains(err.Error(), "relative path") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_DoubleSlashURL_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"//evil.com","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for protocol-relative url, got nil")
+	}
+	if !strings.Contains(err.Error(), "relative path") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_NotAllowedEndpoint_ReturnsError(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"/not-allowed","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	_, err := extractAndValidateLine(line)
+	if err == nil {
+		t.Fatal("expected error for invalid endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid endpoint") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAndValidateLine_AllowedEndpoint_OK(t *testing.T) {
+	line := []byte(`{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}}` + "\n")
+	meta, err := extractAndValidateLine(line)
+	if err != nil {
+		t.Fatalf("unexpected error for allowed endpoint: %v", err)
+	}
+	if meta.CustomID != "r1" {
+		t.Fatalf("expected custom_id r1, got %s", meta.CustomID)
+	}
+	if meta.ModelID != "gpt-4" {
+		t.Fatalf("expected model gpt-4, got %s", meta.ModelID)
 	}
 }
 
@@ -1256,9 +1336,9 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 	}
 
 	var remoteBuf bytes.Buffer
-	remoteBuf.WriteString(`{"custom_id":"r1","body":{"model":"m1","messages":[{"role":"user","content":"ok"}]}}` + "\n")
-	remoteBuf.WriteString(`{"custom_id":"r2","body":{"model":"m1","stream":true,"messages":[{"role":"user","content":"bad"}]}}` + "\n")
-	remoteBuf.WriteString(`{"custom_id":"r3","body":{"model":"m1","messages":[{"role":"user","content":"ok2"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"ok"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"r2","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","stream":true,"messages":[{"role":"user","content":"bad"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"r3","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"ok2"}]}}` + "\n")
 
 	filename := "input.jsonl"
 	inputFileID := "file-stream-reject"
@@ -1323,9 +1403,9 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 	}
 
 	var remoteBuf bytes.Buffer
-	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
-	remoteBuf.WriteString(`{"custom_id":"req-2","body":{"model":"m1","messages":[{"role":"user","content":"b"}]}}` + "\n")
-	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"b"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
 
 	filename := "input.jsonl"
 	inputFileID := "file-dup-custom-id"
@@ -1393,9 +1473,9 @@ func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
 	}
 
 	var remoteBuf bytes.Buffer
-	remoteBuf.WriteString(`{"custom_id":"req-1","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
-	remoteBuf.WriteString(`{"custom_id":"req-2","body":{"model":"m1","messages":[{"role":"user","content":"b"}]}}` + "\n")
-	remoteBuf.WriteString(`{"custom_id":"req-3","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"a"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-2","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"b"}]}}` + "\n")
+	remoteBuf.WriteString(`{"custom_id":"req-3","method":"POST","url":"/v1/chat/completions","body":{"model":"m1","messages":[{"role":"user","content":"c"}]}}` + "\n")
 
 	filename := "input.jsonl"
 	inputFileID := "file-unique-custom-id"

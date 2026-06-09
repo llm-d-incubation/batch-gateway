@@ -499,7 +499,7 @@ func TestRunJob_Success_CompletesAndCleansArtifacts(t *testing.T) {
 		t.Fatalf("MkdirAll storage dir: %v", err)
 	}
 
-	inputContent := `{"custom_id":"req-1","body":{"model":"test-model","messages":[{"role":"user","content":"hello"}]}}` + "\n"
+	inputContent := `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"test-model","messages":[{"role":"user","content":"hello"}]}}` + "\n"
 	if err := os.WriteFile(filepath.Join(storageDir, storageName), []byte(inputContent), 0o644); err != nil {
 		t.Fatalf("WriteFile input to mock storage: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestRunJob_FinalizeFailedOver_PreservesFileIDsAndDoesNotCallHandleFailed(t 
 		t.Fatalf("MkdirAll storage dir: %v", err)
 	}
 
-	inputContent := `{"custom_id":"req-1","body":{"model":"test-model","messages":[{"role":"user","content":"hello"}]}}` + "\n"
+	inputContent := `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"test-model","messages":[{"role":"user","content":"hello"}]}}` + "\n"
 	if err := os.WriteFile(filepath.Join(storageDir, storageName), []byte(inputContent), 0o644); err != nil {
 		t.Fatalf("WriteFile input: %v", err)
 	}

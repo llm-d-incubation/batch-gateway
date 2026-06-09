@@ -26,12 +26,14 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 
 	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
+	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
 	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
@@ -264,6 +266,21 @@ func extractAndValidateLine(line []byte) (requestMeta, error) {
 	}
 	if req.CustomID == "" {
 		return requestMeta{}, fmt.Errorf("custom_id is required")
+	}
+	if req.Method == "" {
+		return requestMeta{}, fmt.Errorf("method is required")
+	}
+	if req.Method != "POST" {
+		return requestMeta{}, fmt.Errorf("invalid method: %s", req.Method)
+	}
+	if req.URL == "" {
+		return requestMeta{}, fmt.Errorf("url is required")
+	}
+	if !strings.HasPrefix(req.URL, "/") || strings.HasPrefix(req.URL, "//") || strings.Contains(req.URL, "://") {
+		return requestMeta{}, fmt.Errorf("url must be a relative path: %s", req.URL)
+	}
+	if !openai.IsValidEndpoint(req.URL) {
+		return requestMeta{}, fmt.Errorf("invalid endpoint: %s", req.URL)
 	}
 	if req.Body.Model == "" {
 		return requestMeta{}, fmt.Errorf("model id is empty")

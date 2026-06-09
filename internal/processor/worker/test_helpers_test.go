@@ -597,6 +597,8 @@ func makeInputLines(models []string) [][]byte {
 	for i, m := range models {
 		req := map[string]any{
 			"custom_id": fmt.Sprintf("req-%d", i),
+			"method":    "POST",
+			"url":       "/v1/chat/completions",
 			"body": map[string]any{
 				"model": m,
 			},
@@ -628,6 +630,8 @@ func makeInputLinesWithSystemPrompts(specs []inputLineSpec) [][]byte {
 		}
 		req := map[string]any{
 			"custom_id": fmt.Sprintf("req-%d", i),
+			"method":    "POST",
+			"url":       "/v1/chat/completions",
 			"body":      body,
 			"meta":      map[string]any{"i": i},
 		}
