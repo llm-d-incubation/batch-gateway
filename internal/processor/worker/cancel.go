@@ -22,10 +22,10 @@ import (
 
 	"github.com/go-logr/logr"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {

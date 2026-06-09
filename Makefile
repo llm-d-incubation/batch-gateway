@@ -19,11 +19,11 @@ CMD_GC=./cmd/batch-gc
 RELEASE_BINARIES := apiserver:$(CMD_APISERVER) processor:$(CMD_PROCESSOR) gc:$(CMD_GC)
 BINARIES_DIR ?= dist/binaries
 RELEASE_DIR ?= release
-APISERVER_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(APISERVER_BINARY)
+APISERVER_IMAGE_TAG_BASE ?= ghcr.io/llm-d/$(APISERVER_BINARY)
 APISERVER_IMG = $(APISERVER_IMAGE_TAG_BASE):$(IMAGE_TAG)
-PROCESSOR_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(PROCESSOR_BINARY)
+PROCESSOR_IMAGE_TAG_BASE ?= ghcr.io/llm-d/$(PROCESSOR_BINARY)
 PROCESSOR_IMG = $(PROCESSOR_IMAGE_TAG_BASE):$(IMAGE_TAG)
-GC_IMAGE_TAG_BASE ?= ghcr.io/llm-d-incubation/$(GC_BINARY)
+GC_IMAGE_TAG_BASE ?= ghcr.io/llm-d/$(GC_BINARY)
 GC_IMG = $(GC_IMAGE_TAG_BASE):$(IMAGE_TAG)
 GO=go
 GOFLAGS=
@@ -98,7 +98,7 @@ package-release:
 	  cat SHA256SUMS && \
 	  ls -la
 
-## publish-helm-chart: Patch chart for VERSION, package, append chart to SHA256SUMS, push to oci://ghcr.io/llm-d-incubation/charts (requires VERSION, yq, helm; GITHUB_TOKEN, GITHUB_ACTOR for push).
+## publish-helm-chart: Patch chart for VERSION, package, append chart to SHA256SUMS, push to oci://ghcr.io/llm-d/charts (requires VERSION, yq, helm; GITHUB_TOKEN, GITHUB_ACTOR for push).
 publish-helm-chart:
 	@if [ -z "$(VERSION)" ]; then \
 	  echo "VERSION is required (e.g. VERSION=v1.0.0 make publish-helm-chart)"; exit 1; \

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	mockdb "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 )
 
 type errStatusClient struct {

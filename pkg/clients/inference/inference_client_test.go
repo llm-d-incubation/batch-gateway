@@ -36,7 +36,7 @@ import (
 	"testing"
 	"time"
 
-	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
 )
 
 // TestInferenceClient aggregates all HTTPClient test cases

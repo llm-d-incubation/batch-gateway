@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
 )
 
 const (

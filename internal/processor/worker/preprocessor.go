@@ -31,10 +31,10 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 // preProcessJob performs the pre-processing steps for the job.

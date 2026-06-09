@@ -22,9 +22,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 // Recovery returns a RouteMiddleware that recovers from panics and returns a JSON error response.

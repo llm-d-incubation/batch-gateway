@@ -14,7 +14,7 @@ One-click deployment scripts for batch-gateway on different platforms. Each scri
 UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-k8s.sh uninstall
 ```
 
-Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](https://github.com/llm-d-incubation/batch-gateway/issues/309) for background.
+Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](https://github.com/llm-d/llm-d-batch-gateway/issues/309) for background.
 
 ## Overview
 

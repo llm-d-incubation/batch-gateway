@@ -3,8 +3,8 @@ package worker
 import (
 	"testing"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 )
 
 func TestJobRootDir_EmptyTenantID_ReturnsError(t *testing.T) {

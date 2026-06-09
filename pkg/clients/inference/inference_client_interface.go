@@ -19,7 +19,7 @@ package inference
 import (
 	"context"
 
-	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
 )
 
 // InferenceClientI defines the interface for making inference requests

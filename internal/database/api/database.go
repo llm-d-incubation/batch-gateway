@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/store"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/store"
 )
 
 // ErrConflict is returned by DBUpdate when expectedStatus is non-nil and

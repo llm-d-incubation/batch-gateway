@@ -48,7 +48,7 @@ Pushing `v*.*.*` **always** triggers the workflow if the check passes.
   ```
 
 3. **Let automation run**
-  - **create-release.yml**: Packages binaries as `.tar.gz`, pins Helm chart image tags to the release version, publishes the Helm chart to `oci://ghcr.io/llm-d-incubation/charts/batch-gateway`, creates the GitHub Release with generated notes, attaches binaries, chart `.tgz`, and `SHA256SUMS`.
+  - **create-release.yml**: Packages binaries as `.tar.gz`, pins Helm chart image tags to the release version, publishes the Helm chart to `oci://ghcr.io/llm-d/charts/batch-gateway`, creates the GitHub Release with generated notes, attaches binaries, chart `.tgz`, and `SHA256SUMS`.
   - **ci-release.yaml**: Builds and pushes images for that tag to GHCR.
 4. **Optional: edit the release**
   - In GitHub: **Releases** → open the new release → **Edit**.

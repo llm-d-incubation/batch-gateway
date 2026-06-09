@@ -27,8 +27,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
 )
 

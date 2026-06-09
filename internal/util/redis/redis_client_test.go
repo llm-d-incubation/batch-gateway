@@ -24,8 +24,8 @@ import (
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/redis"
+	utls "github.com/llm-d/llm-d-batch-gateway/internal/util/tls"
 	gredis "github.com/redis/go-redis/v9"
 )
 

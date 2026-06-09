@@ -11,7 +11,7 @@ body:
         Thank you for suggesting an improvement! Please fill in the details below.
 
         Before opening a new feature request, please check
-        [existing issues](https://github.com/llm-d-incubation/batch-gateway/issues)
+        [existing issues](https://github.com/llm-d/llm-d-batch-gateway/issues)
         to see if a similar request already exists.
 
   - type: textarea

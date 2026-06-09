@@ -23,7 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
 )
 
 // newTestConfig returns a minimal ServerConfig suitable for middleware tests.

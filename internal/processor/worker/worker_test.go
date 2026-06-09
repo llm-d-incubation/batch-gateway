@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/semaphore"
 )
 
 func TestClientsetFields_Assigned(t *testing.T) {

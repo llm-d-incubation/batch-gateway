@@ -30,7 +30,7 @@ The garbage collector periodically cleans up expired jobs and files.
 The chart is published to GitHub Container Registry for each release. Use `--version` with the **chart semver** (same as `Chart.yaml` `version`: the git tag **without** `v`, e.g. `v1.0.0` → `1.0.0`):
 
 ```bash
-helm install batch-gateway oci://ghcr.io/llm-d-incubation/charts/batch-gateway --version 1.0.0
+helm install batch-gateway oci://ghcr.io/llm-d/charts/batch-gateway --version 1.0.0
 ```
 
 Replace `1.0.0` with the version you need. Image tags in the published chart are pinned to the release version.
@@ -273,7 +273,7 @@ The ConfigMap is labeled `grafana_dashboard: "1"` for sidecar discovery.
 
 **Option 3: OpenShift with Grafana Operator**
 
-If the [Grafana Operator](https://github.com/grafana/grafana-operator) is installed, create a `GrafanaDashboard` CR referencing the JSON. This is not automated by the chart yet — see [#176](https://github.com/llm-d-incubation/batch-gateway/issues/176) for updates.
+If the [Grafana Operator](https://github.com/grafana/grafana-operator) is installed, create a `GrafanaDashboard` CR referencing the JSON. This is not automated by the chart yet — see [#176](https://github.com/llm-d/llm-d-batch-gateway/issues/176) for updates.
 
 ## Security
 

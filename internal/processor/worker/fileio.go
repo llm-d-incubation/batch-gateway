@@ -22,13 +22,13 @@ import (
 	"os"
 	"path/filepath"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	filesapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	filesapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 const (

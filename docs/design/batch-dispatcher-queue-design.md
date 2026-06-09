@@ -54,7 +54,7 @@ Queue names follow a fixed convention keyed by the inference pool name:
 | Request queue | Sorted Set | `llm-d-async:requests:{pool_name}` | `llm-d-async:requests:optimized-baseline` |
 | Result queue | List | `llm-d-async:results:{pool_name}:{tenant_id}` | `llm-d-async:results:optimized-baseline:$batch` |
 
-The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. Queue names are computed by the batch-processor's [`RequestQueueName` and `ResultQueueName` functions](https://github.com/llm-d-incubation/batch-gateway/blob/main/internal/processor/config/config.go).
+The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. Queue names are computed by the batch-processor's [`RequestQueueName` and `ResultQueueName` functions](https://github.com/llm-d/llm-d-batch-gateway/blob/main/internal/processor/config/config.go).
 
 The prefix `llm-d-async` is currently hardcoded but can be made configurable, so that multiple installations can share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier). The `tenant_id` suffix on the result queue uses the reserved value `$batch`. Per-tenant isolation (e.g., routing results to different queues per user or API key) is reserved for future use.
 
@@ -64,7 +64,7 @@ When the dispatcher is used, the inference gateway endpoint configuration lives 
 
 The batch-processor selects the dispatch backend via `dispatch_mode: sync | async`. In `sync` mode (default), the executor dispatches directly via HTTP using the existing AIMD + semaphore flow. In `async` mode, the executor enqueues to the dispatcher's request queue and collects results from the result queue.
 
-Each model resolves to an `inference_pool_name` that derives the queue pair. The config uses `dispatch_mode` on `ProcessorConfig` and `inference_pool_name` on each `ModelGatewayConfig` entry (see [#430](https://github.com/llm-d-incubation/batch-gateway/pull/430)):
+Each model resolves to an `inference_pool_name` that derives the queue pair. The config uses `dispatch_mode` on `ProcessorConfig` and `inference_pool_name` on each `ModelGatewayConfig` entry (see [#430](https://github.com/llm-d/llm-d-batch-gateway/pull/430)):
 
 ```yaml
 dispatch_mode: "async"

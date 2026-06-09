@@ -73,7 +73,7 @@ jobs:
           targets: default
           push: true
         env:
-          REGISTRY: ghcr.io/llm-d-incubation
+          REGISTRY: ghcr.io/llm-d
           COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
           BUILD_DATE: ${{ steps.meta.outputs.build_date }}
           VERSION: ${{ steps.meta.outputs.version }}
@@ -82,9 +82,9 @@ jobs:
       - name: Output image tags
         run: |
           echo "Images pushed:"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.commit_sha }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-apiserver:${{ steps.meta.outputs.tag }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
-          echo "  - ghcr.io/llm-d-incubation/batch-gateway-gc:${{ steps.meta.outputs.tag }}"
+          echo "  - ghcr.io/llm-d/batch-gateway-apiserver:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ghcr.io/llm-d/batch-gateway-apiserver:${{ steps.meta.outputs.tag }}"
+          echo "  - ghcr.io/llm-d/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ghcr.io/llm-d/batch-gateway-processor:${{ steps.meta.outputs.tag }}"
+          echo "  - ghcr.io/llm-d/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
+          echo "  - ghcr.io/llm-d/batch-gateway-gc:${{ steps.meta.outputs.tag }}"

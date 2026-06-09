@@ -32,14 +32,14 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	dbmock "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	dbapi "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	dbmock "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
+	fsapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	fsclient "github.com/llm-d/llm-d-batch-gateway/internal/files_store/fs"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 	"k8s.io/klog/v2"
 )
 

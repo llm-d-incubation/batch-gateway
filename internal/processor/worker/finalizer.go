@@ -26,16 +26,16 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 // uploadFileAndStoreFileRecord uploads a job output or error file to shared storage and creates a file

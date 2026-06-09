@@ -28,12 +28,12 @@ import (
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/batch_utils"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 const (

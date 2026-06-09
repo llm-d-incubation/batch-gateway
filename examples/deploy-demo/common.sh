@@ -85,9 +85,9 @@ MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
 # Image overrides. When set, these take precedence over defaults derived from
 # BATCH_RELEASE_VERSION / BATCH_DEV_VERSION. Leave unset to use chart defaults.
 # Example (upstream):
-#   BATCH_IMAGE_TAG=v0.1.0 BATCH_APISERVER_REPO=ghcr.io/llm-d-incubation/batch-gateway-apiserver \
-#   BATCH_PROCESSOR_REPO=ghcr.io/llm-d-incubation/batch-gateway-processor \
-#   BATCH_GC_REPO=ghcr.io/llm-d-incubation/batch-gateway-gc ./deploy-k8s.sh
+#   BATCH_IMAGE_TAG=v0.1.0 BATCH_APISERVER_REPO=ghcr.io/llm-d/batch-gateway-apiserver \
+#   BATCH_PROCESSOR_REPO=ghcr.io/llm-d/batch-gateway-processor \
+#   BATCH_GC_REPO=ghcr.io/llm-d/batch-gateway-gc ./deploy-k8s.sh
 BATCH_IMAGE_TAG="${BATCH_IMAGE_TAG:-}"
 BATCH_APISERVER_REPO="${BATCH_APISERVER_REPO:-}"
 BATCH_PROCESSOR_REPO="${BATCH_PROCESSOR_REPO:-}"
@@ -578,7 +578,7 @@ install_batch_gateway() {
 
     local chart version_args=()
     if [ -n "${BATCH_RELEASE_VERSION}" ]; then
-        chart="oci://ghcr.io/llm-d-incubation/charts/batch-gateway"
+        chart="oci://ghcr.io/llm-d/charts/batch-gateway"
         version_args=(--version "${BATCH_RELEASE_VERSION#v}")
     elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
         local repo_root
@@ -587,7 +587,7 @@ install_batch_gateway() {
     else
         # Download chart from GitHub at the specific commit
         _BATCH_TMP_DIR=$(mktemp -d)
-        local tarball_url="https://github.com/llm-d-incubation/batch-gateway/archive/${BATCH_DEV_VERSION}.tar.gz"
+        local tarball_url="https://github.com/llm-d/llm-d-batch-gateway/archive/${BATCH_DEV_VERSION}.tar.gz"
         step "Downloading chart from commit ${BATCH_DEV_VERSION}..."
         local http_code
         http_code=$(curl -sL -o "${_BATCH_TMP_DIR}/archive.tar.gz" -w '%{http_code}' "${tarball_url}")

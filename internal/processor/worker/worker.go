@@ -26,16 +26,16 @@ import (
 
 	"github.com/go-logr/logr"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/semaphore"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/batch_utils"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/semaphore"
+	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 // endpointLimit pairs an adaptive semaphore with its AIMD controller for a

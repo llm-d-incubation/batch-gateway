@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/ptr"
 )
 
 // validPerModelConfig returns a minimal valid per-model gateway config for tests.

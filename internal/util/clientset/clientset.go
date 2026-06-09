@@ -25,18 +25,18 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
-	dbRedis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
-	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/retryclient"
-	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
-	fstracing "github.com/llm-d-incubation/batch-gateway/internal/files_store/tracing"
-	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	dbapi "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/postgresql"
+	dbRedis "github.com/llm-d/llm-d-batch-gateway/internal/database/redis"
+	fsapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	fsclient "github.com/llm-d/llm-d-batch-gateway/internal/files_store/fs"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/retryclient"
+	s3client "github.com/llm-d/llm-d-batch-gateway/internal/files_store/s3"
+	fstracing "github.com/llm-d/llm-d-batch-gateway/internal/files_store/tracing"
+	sharedcfg "github.com/llm-d/llm-d-batch-gateway/internal/shared/config"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	uredis "github.com/llm-d/llm-d-batch-gateway/internal/util/redis"
+	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 // Clientset holds all clients.
@@ -198,7 +198,7 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 	if cfg.exchangeRedisCfg != nil {
 		// TODO: The exchange interfaces (priority queue, events, status) currently always use Redis.
 		// Consider adding a separate type parameter for these if we need alternative backends.
-		// See: https://github.com/llm-d-incubation/batch-gateway/pull/102#discussion_r2906181334
+		// See: https://github.com/llm-d/llm-d-batch-gateway/pull/102#discussion_r2906181334
 		if cfg.exchangeRedisCfg.Url == "" {
 			redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
 			if err != nil {

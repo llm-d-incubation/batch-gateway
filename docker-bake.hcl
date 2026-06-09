@@ -1,5 +1,5 @@
 variable "REGISTRY" {
-  default = "ghcr.io/llm-d-incubation"
+  default = "ghcr.io/llm-d"
 }
 
 variable "TAG" {
@@ -20,7 +20,7 @@ variable "VERSION" {
 
 # Docker metadata for labels
 variable "SOURCE_REPO" {
-  default = "https://github.com/llm-d-incubation/batch-gateway"
+  default = "https://github.com/llm-d/llm-d-batch-gateway"
 }
 
 # Common group to build all images

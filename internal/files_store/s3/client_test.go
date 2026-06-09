@@ -29,7 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
 )
 
 const testBucketName = "test-bucket"

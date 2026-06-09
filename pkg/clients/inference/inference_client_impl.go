@@ -24,8 +24,8 @@ import (
 	"net/http"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
 )
 
 // Compile-time check: InferenceHTTPClient implements InferenceClient.

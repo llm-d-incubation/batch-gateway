@@ -43,7 +43,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
 )
 
 const (

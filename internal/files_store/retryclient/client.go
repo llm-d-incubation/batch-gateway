@@ -23,9 +23,9 @@ import (
 	"io"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/retry"
 )
 
 // Client wraps a BatchFilesClient and retries transient errors.

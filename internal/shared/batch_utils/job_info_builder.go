@@ -20,10 +20,10 @@ package batch_utils
 import (
 	"strings"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 )
 
 // FromDBItemToJobInfoObject: convert db item to Processor's JobInfo object

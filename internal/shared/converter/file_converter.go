@@ -20,8 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 )
 
 func FileToDBItem(file *openai.FileObject, tenantID string, tags api.Tags) (*api.FileItem, error) {

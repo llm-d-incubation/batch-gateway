@@ -33,9 +33,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	fsio "github.com/llm-d-incubation/batch-gateway/internal/files_store/io"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	fsio "github.com/llm-d/llm-d-batch-gateway/internal/files_store/io"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 const (

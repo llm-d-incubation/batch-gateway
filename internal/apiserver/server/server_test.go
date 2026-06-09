@@ -27,8 +27,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/testr"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 )
 
 // freePort returns an available TCP port on localhost.

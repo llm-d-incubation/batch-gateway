@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	mockdb "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
+	mockfiles "github.com/llm-d/llm-d-batch-gateway/internal/files_store/mock"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.BatchDBClient, *spyPQ) {

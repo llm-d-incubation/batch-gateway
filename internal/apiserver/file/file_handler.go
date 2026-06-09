@@ -31,15 +31,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	dbapi "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	fsapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 const (

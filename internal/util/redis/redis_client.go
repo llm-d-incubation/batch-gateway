@@ -27,8 +27,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	utls "github.com/llm-d/llm-d-batch-gateway/internal/util/tls"
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	gredis "github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"

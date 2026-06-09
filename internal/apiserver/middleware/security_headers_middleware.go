@@ -20,7 +20,7 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
 )
 
 // SecurityHeaders returns a RouteMiddleware that sets security headers

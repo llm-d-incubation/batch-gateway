@@ -31,15 +31,15 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 // Compile-time check: BatchAPIHandler implements common.ApiHandler.

@@ -31,14 +31,14 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/worker"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/worker"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/interrupt"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 func main() {

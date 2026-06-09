@@ -25,11 +25,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	fsapi "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	mockfiles "github.com/llm-d-incubation/batch-gateway/internal/files_store/mock"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
+	fsapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	mockfiles "github.com/llm-d/llm-d-batch-gateway/internal/files_store/mock"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 )
 
 // errorBatchDBClient wraps a batch MockDBClient and injects errors.

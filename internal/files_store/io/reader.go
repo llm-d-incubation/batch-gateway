@@ -20,7 +20,7 @@ package io
 import (
 	"io"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
 )
 
 // LimitedCountingReader wraps a reader to count bytes and lines while enforcing limits.
