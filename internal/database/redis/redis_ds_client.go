@@ -96,6 +96,10 @@ var (
 	updateCASLua         string
 	redisScriptUpdateCAS = goredis.NewScript(updateCASLua)
 
+	//go:embed redis_pq_delete.lua
+	pqDeleteLua         string
+	redisScriptPQDelete = goredis.NewScript(pqDeleteLua)
+
 	//go:embed redis_pq_get_ids.lua
 	pqGetIDsLua         string
 	redisScriptPQGetIDs = goredis.NewScript(pqGetIDsLua)

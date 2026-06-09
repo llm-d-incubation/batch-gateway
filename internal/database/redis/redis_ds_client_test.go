@@ -1451,6 +1451,57 @@ func TestRedisDSClient(t *testing.T) {
 		}
 	})
 
+	t.Run("Queue PQDelete removes only target item with same SLO", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		slo := time.Now().Add(time.Hour)
+		items := make([]*db_api.BatchJobPriority, 3)
+		for i := 0; i < 3; i++ {
+			items[i] = &db_api.BatchJobPriority{
+				ID:   uuid.New().String(),
+				SLO:  slo,
+				TTL:  1000,
+				Data: []byte(fmt.Sprintf("same-slo-%d", i)),
+			}
+			if err := exchClient.PQEnqueue(context.Background(), items[i]); err != nil {
+				t.Fatalf("Failed to enqueue item %d: %v", i, err)
+			}
+		}
+
+		// Delete only the middle item.
+		nDel, err := exchClient.PQDelete(context.Background(), items[1])
+		if err != nil {
+			t.Fatalf("PQDelete failed: %v", err)
+		}
+		if nDel != 1 {
+			t.Fatalf("Expected 1 deleted, got %d", nDel)
+		}
+
+		// Verify the other two items are still in the queue.
+		ids, err := exchClient.PQGetIDs(context.Background())
+		if err != nil {
+			t.Fatalf("PQGetIDs failed: %v", err)
+		}
+		if len(ids) != 2 {
+			t.Fatalf("Expected 2 items remaining, got %d", len(ids))
+		}
+		if ids[items[1].ID] {
+			t.Fatalf("Deleted item %s should not be in queue", items[1].ID)
+		}
+		if !ids[items[0].ID] || !ids[items[2].ID] {
+			t.Fatalf("Surviving items missing from queue")
+		}
+
+		// Cleanup.
+		_, _ = exchClient.PQDequeue(context.Background(), 1*time.Second, 100)
+	})
+
 	t.Run("includeStatic parameter - Batch", func(t *testing.T) {
 		t.Parallel()
 		baseClient, batchClient, _, _ := setupRedisDSClients(t, redisUrl, redisCaCert)

@@ -101,19 +101,13 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	score := strconv.FormatInt(item.SLO.UnixMicro(), 10)
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	res := c.redisClient.ZRemRangeByScore(cctx, priorityQueueKeyName, score, score)
-	if res == nil {
-		err = fmt.Errorf("redis command result is nil")
+	res, lerr := redisScriptPQDelete.Run(cctx, c.redisClient,
+		[]string{priorityQueueKeyName}, score, item.ID).Int()
+	if lerr != nil {
+		err = lerr
 		return
 	}
-	if res.Err() == goredis.Nil {
-		logger.Info("PQDelete: key not found")
-		return
-	}
-	if err = res.Err(); err != nil {
-		return
-	}
-	nDeleted = int(res.Val())
+	nDeleted = res
 
 	logger.Info("PQDelete: succeeded")
 	return
