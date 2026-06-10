@@ -1,4 +1,4 @@
-name: PR title check and labels
+name: Auto-label PRs
 
 on:
   pull_request_target:

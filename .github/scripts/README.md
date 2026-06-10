@@ -1,13 +1,15 @@
-# PR Title Validation and Label Mapping
+# CI Scripts
 
-## Overview
+## PR Title Validation and Label Mapping
+
+### Overview
 
 PR titles are validated and labeled by [`.github/workflows/auto-label-pr.yml`](../workflows/auto-label-pr.yml):
 
 1. **Validate** — [`amannn/action-semantic-pull-request`](https://github.com/amannn/action-semantic-pull-request) enforces [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) on the PR title
 2. **Label** — `detect-pr-label.js` maps the validated `type` to a release-category label
 
-## Allowed PR title types
+### Allowed PR title types
 
 ```
 feat  enh  fix  docs  deps  ci  chore  refactor  test  perf  style  revert  build
@@ -17,7 +19,7 @@ Examples: `feat: add auth`, `fix(api): handle edge case`, `deps(go): bump module
 
 Breaking changes use `!` before `:`: `feat!: drop old API`, `fix(scope)!: breaking fix`
 
-## Type to label mapping
+### Type to label mapping
 
 | Type | Label |
 |------|-------|
@@ -31,12 +33,12 @@ Breaking changes use `!` before `:`: `feat!: drop old API`, `fix(scope)!: breaki
 
 Labels align with categories in [`.github/release.yml`](../release.yml).
 
-## Files
+### Files
 
 - `detect-pr-label.js` — maps validated type + title to a single category label
 - `detect-pr-label.test.js` — unit tests
 
-## Running tests
+### Running tests
 
 Requires Node.js 18+:
 
@@ -44,6 +46,6 @@ Requires Node.js 18+:
 node --test detect-pr-label.test.js
 ```
 
-## Branch protection
+### Branch protection
 
-After merging to `main`, add the **PR title check and labels** workflow as a required status check so invalid titles block merge.
+After merging to `main`, add the **Auto-label PRs** workflow as a required status check so invalid titles block merge.
