@@ -1,52 +1,49 @@
-# PR Label Detection Scripts
+# PR Title Validation and Label Mapping
+
+## Overview
+
+PR titles are validated and labeled by [`.github/workflows/auto-label-pr.yml`](../workflows/auto-label-pr.yml):
+
+1. **Validate** — [`amannn/action-semantic-pull-request`](https://github.com/amannn/action-semantic-pull-request) enforces [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) on the PR title
+2. **Label** — `detect-pr-label.js` maps the validated `type` to a release-category label
+
+## Allowed PR title types
+
+```
+feat  enh  fix  docs  deps  ci  chore  refactor  test  perf  style  revert  build
+```
+
+Examples: `feat: add auth`, `fix(api): handle edge case`, `deps(go): bump module`
+
+Breaking changes use `!` before `:`: `feat!: drop old API`, `fix(scope)!: breaking fix`
+
+## Type to label mapping
+
+| Type | Label |
+|------|-------|
+| any type with `!` (e.g. `feat!:`, `fix!:`) | `breaking-change` |
+| `feat` | `feature` |
+| `enh` | `enhancement` |
+| `fix` | `bug` |
+| `docs` | `documentation` |
+| `deps` | `dependencies` |
+| `ci`, `chore`, `refactor`, `test`, `style`, `perf`, `revert`, `build` | `release-note-none` |
+
+Labels align with categories in [`.github/release.yml`](../release.yml). Every PR also gets `ai-assisted`.
 
 ## Files
 
-- `detect-pr-label.js` - Main logic for detecting PR labels from titles
-- `detect-pr-label.test.js` - Node.js test suite
+- `detect-pr-label.js` — maps validated type + title to a single category label
+- `detect-pr-label.test.js` — unit tests
 
-## Running Tests
+## Running tests
 
-Requires Node.js 18+ (built-in test runner, no dependencies):
+Requires Node.js 18+:
 
 ```bash
 node --test detect-pr-label.test.js
 ```
 
-## Label Detection Rules
+## Branch protection
 
-The script detects labels with the following priority:
-
-1. **Breaking changes** (highest priority)
-   - `!: description`
-   - `type!: description`
-   - `type(scope)!: description`
-   - `breaking: description`
-
-2. **Conventional commit prefixes**
-   - `feat:` → `feature`
-   - `fix:` → `bug`
-   - `docs:` → `documentation`
-   - `deps:` → `dependencies`
-   - `enh:` / `improve:` → `enhancement`
-   - `test:` / `ci:` / `chore:` → `release-note-none`
-
-3. **Keyword fallback** (for non-conventional titles)
-   - Searches for keywords: `fix`, `bug`, `docs`, `feat`, etc.
-
-4. **File-path fallback** (when title has no match; all changed files must match)
-   - `docs/` or `*.md` → `documentation`
-   - `go.mod`, `go.sum`, `vendor/` → `dependencies`
-   - `.github/workflows/`, `test/`, `e2e/`, `*_test.go` → `release-note-none`
-
-## Examples
-
-```javascript
-detectFromTitle('feat: add feature')          // → 'feature'
-detectFromTitle('fix(api): resolve bug')      // → 'bug'
-detectFromTitle('feat!: breaking change')     // → 'breaking-change'
-detectFromTitle('Update documentation')       // → 'documentation'
-detectFromTitle('Random title')               // → null
-detectFromFiles(['docs/guide.md'])            // → 'documentation'
-detectFromFiles(['docs/a.md', 'internal/x.go']) // → null
-```
+After merging to `main`, add the **PR title check and labels** workflow as a required status check so invalid titles block merge.

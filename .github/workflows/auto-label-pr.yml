@@ -1,47 +1,96 @@
-name: Add default labels to PRs
+name: PR title check and labels
 
 on:
   pull_request_target:
-    types: [opened]
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
-  add-label:
+  title-and-labels:
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6
+        id: pr_title
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            enh
+            fix
+            docs
+            deps
+            ci
+            chore
+            refactor
+            test
+            perf
+            style
+            revert
+            build
 
-      - name: Add default labels
+      - name: Apply PR labels
         uses: actions/github-script@v9
+        env:
+          PR_TYPE: ${{ steps.pr_title.outputs.type }}
         with:
           script: |
+            const fs = require('fs');
+            const os = require('os');
             const path = require('path');
-            const { detectFromTitle, detectFromFiles } = require(path.join(process.env.GITHUB_WORKSPACE, '.github/scripts/detect-pr-label.js'));
 
+            const { data } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: '.github/scripts/detect-pr-label.js',
+              ref: context.payload.pull_request.base.sha,
+            });
+            const scriptPath = path.join(os.tmpdir(), 'detect-pr-label.js');
+            fs.writeFileSync(scriptPath, Buffer.from(data.content, 'base64').toString());
+            const { labelFromType, MANAGED_CATEGORY_LABELS } = require(scriptPath);
+
+            const type = process.env.PR_TYPE;
             const title = context.payload.pull_request.title;
-            let category = detectFromTitle(title);
+            const category = labelFromType(type, title);
 
-            // Fall back to file-based detection if title yields no label.
-            // detectFromFiles only returns a label when ALL changed files match
-            // the same category (avoids mislabeling mixed PRs).
-            if (!category) {
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-              });
-              category = detectFromFiles(files.map((f) => f.filename));
-            }
-
-            const labels = ['ai-assisted'];
-            if (category) labels.push(category);
-
-            await github.rest.issues.addLabels({
+            const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              labels,
             });
+            const currentLabels = issue.labels.map((label) => label.name);
+
+            for (const label of MANAGED_CATEGORY_LABELS) {
+              if (label !== category && currentLabels.includes(label)) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: label,
+                });
+              }
+            }
+
+            const labelsToAdd = ['ai-assisted'];
+            if (category) {
+              labelsToAdd.push(category);
+            }
+
+            const missing = labelsToAdd.filter((label) => !currentLabels.includes(label));
+            if (missing.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: missing,
+              });
+            }
