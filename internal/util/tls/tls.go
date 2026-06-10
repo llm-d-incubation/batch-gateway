@@ -47,6 +47,7 @@ const (
 
 func GetTlsConfig(loadType LoadType, insecure bool, certFile string, keyFile string, caCertFile string) (*tls.Config, error) {
 	var tlsConf tls.Config
+	tlsConf.MinVersion = tls.VersionTLS12
 	if certFile != "" {
 		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
