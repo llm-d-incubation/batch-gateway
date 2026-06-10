@@ -4,9 +4,9 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://llm-d.slack.com/archives/C0AA8772H7T)
-[![apiserver](https://ghcr-badge.egpl.dev/llm-d/llm-d-batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-apiserver)
-[![processor](https://ghcr-badge.egpl.dev/llm-d/llm-d-batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-processor)
-[![gc](https://ghcr-badge.egpl.dev/llm-d/llm-d-batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-gc)
+[![apiserver](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-apiserver)
+[![processor](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-processor)
+[![gc](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-gc)
 
 ## Overview
 
