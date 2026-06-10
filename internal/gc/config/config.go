@@ -26,7 +26,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
+	sharedcfg "github.com/llm-d/llm-d-batch-gateway/internal/shared/config"
 )
 
 const (

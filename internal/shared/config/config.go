@@ -18,11 +18,11 @@ limitations under the License.
 package config
 
 import (
-	"github.com/llm-d-incubation/batch-gateway/internal/database/postgresql"
-	fsclient "github.com/llm-d-incubation/batch-gateway/internal/files_store/fs"
-	s3client "github.com/llm-d-incubation/batch-gateway/internal/files_store/s3"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/postgresql"
+	fsclient "github.com/llm-d/llm-d-batch-gateway/internal/files_store/fs"
+	s3client "github.com/llm-d/llm-d-batch-gateway/internal/files_store/s3"
+	uredis "github.com/llm-d/llm-d-batch-gateway/internal/util/redis"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/retry"
 )
 
 // Database backend types.

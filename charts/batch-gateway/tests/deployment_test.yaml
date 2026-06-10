@@ -312,7 +312,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/llm-d-incubation/batch-gateway-apiserver@sha256:abc123"
+          value: "ghcr.io/llm-d/batch-gateway-apiserver@sha256:abc123"
         template: templates/apiserver-deployment.yaml
 
   - it: should use digest when set for processor
@@ -321,7 +321,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/llm-d-incubation/batch-gateway-processor@sha256:def456"
+          value: "ghcr.io/llm-d/batch-gateway-processor@sha256:def456"
         template: templates/processor-deployment.yaml
 
   - it: should use digest when set for gc
@@ -330,7 +330,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/llm-d-incubation/batch-gateway-gc@sha256:789ghi"
+          value: "ghcr.io/llm-d/batch-gateway-gc@sha256:789ghi"
         template: templates/gc-deployment.yaml
 
   - it: should prefer digest over tag when both are set
@@ -340,7 +340,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/llm-d-incubation/batch-gateway-apiserver@sha256:abc123"
+          value: "ghcr.io/llm-d/batch-gateway-apiserver@sha256:abc123"
         template: templates/apiserver-deployment.yaml
 
   # --- Fail guards ---

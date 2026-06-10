@@ -27,13 +27,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	dbapi "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	mockapi "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	dbapi "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	mockapi "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 )
 
 // failingEventClient wraps MockBatchEventChannelClient but returns an error on ECProducerSendEvents.

@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
 )
 
 // Compile-time check: MockBatchFilesClient implements api.BatchFilesClient.

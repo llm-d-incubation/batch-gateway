@@ -20,7 +20,7 @@ package metrics
 import (
 	"net/http"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 

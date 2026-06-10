@@ -2,7 +2,7 @@
 
 - **Revision**: 1
 - **Last Updated**: 2026-05-15
-- **Issue**: [#434](https://github.com/llm-d-incubation/batch-gateway/issues/434)
+- **Issue**: [#434](https://github.com/llm-d/llm-d-batch-gateway/issues/434)
 
 ---
 

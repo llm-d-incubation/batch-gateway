@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )

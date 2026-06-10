@@ -7,7 +7,7 @@
 #   GITHUB_TOKEN  Token for helm registry login to ghcr.io
 #   GITHUB_ACTOR  Username for registry login (e.g. github.actor in Actions)
 #
-# Chart is always pushed to oci://ghcr.io/llm-d-incubation/charts (not configurable).
+# Chart is always pushed to oci://ghcr.io/llm-d/charts (not configurable).
 #
 # Requires: helm, yq (mikefarah). Run after make package-release so release/ exists.
 set -euo pipefail
@@ -17,7 +17,7 @@ CHART_VERSION="${VERSION#v}"
 export VERSION
 export CHART_VERSION
 
-HELM_OCI_REGISTRY='oci://ghcr.io/llm-d-incubation/charts'
+HELM_OCI_REGISTRY='oci://ghcr.io/llm-d/charts'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

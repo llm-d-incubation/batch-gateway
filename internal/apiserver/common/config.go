@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"os"
 
-	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
+	sharedcfg "github.com/llm-d/llm-d-batch-gateway/internal/shared/config"
 	"gopkg.in/yaml.v3"
 	"k8s.io/klog/v2"
 )

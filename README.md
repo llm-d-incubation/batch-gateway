@@ -1,12 +1,12 @@
 # Batch Gateway
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/llm-d-incubation/batch-gateway)](https://goreportcard.com/report/github.com/llm-d-incubation/batch-gateway)
+[![Go Report Card](https://goreportcard.com/badge/github.com/llm-d/llm-d-batch-gateway)](https://goreportcard.com/report/github.com/llm-d/llm-d-batch-gateway)
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://llm-d.slack.com/archives/C0AA8772H7T)
-[![apiserver](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-apiserver)
-[![processor](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-processor)
-[![gc](https://ghcr-badge.egpl.dev/llm-d-incubation/batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d-incubation/batch-gateway/pkgs/container/batch-gateway-gc)
+[![apiserver](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-apiserver)
+[![processor](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-processor)
+[![gc](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-gc)
 
 ## Overview
 
@@ -274,9 +274,9 @@ make image-build-gc
 
 Images are published to:
 
-- `ghcr.io/llm-d-incubation/batch-gateway-apiserver`
-- `ghcr.io/llm-d-incubation/batch-gateway-processor`
-- `ghcr.io/llm-d-incubation/batch-gateway-gc`
+- `ghcr.io/llm-d/batch-gateway-apiserver`
+- `ghcr.io/llm-d/batch-gateway-processor`
+- `ghcr.io/llm-d/batch-gateway-gc`
 
 ## API Usage
 

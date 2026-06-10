@@ -1,4 +1,4 @@
-module github.com/llm-d-incubation/batch-gateway/test/e2e
+module github.com/llm-d/llm-d-batch-gateway/test/e2e
 
 go 1.25
 

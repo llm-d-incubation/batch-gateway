@@ -24,11 +24,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/batch_utils"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/batch_utils"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 type StatusUpdater struct {

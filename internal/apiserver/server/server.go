@@ -28,15 +28,15 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/batch"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/file"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/health"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/middleware"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/readiness"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/batch"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/file"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/health"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/middleware"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/readiness"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 )
 
 type Server struct {

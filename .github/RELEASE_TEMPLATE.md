@@ -14,7 +14,7 @@ Images are published to GitHub Container Registry. For this release, use the tag
 The Helm chart is published to GitHub Container Registry for each release. Install using the chart semver from `Chart.yaml` (no `v` prefix — for tag `$TAG` such as `v1.0.0`, use `--version 1.0.0`):
 
 ```bash
-helm install batch-gateway oci://ghcr.io/llm-d-incubation/charts/batch-gateway --version "${TAG#v}"
+helm install batch-gateway oci://ghcr.io/llm-d/charts/batch-gateway --version "${TAG#v}"
 ```
 
 ## Upgrade notes

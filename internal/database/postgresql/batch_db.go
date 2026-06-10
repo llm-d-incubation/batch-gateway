@@ -24,8 +24,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 )
 
 //go:embed batch_schema.sql

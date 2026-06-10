@@ -28,12 +28,12 @@ import (
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	fs "github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/converter"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	fs "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 // GarbageCollector handles garbage collection of expired batch jobs and files.

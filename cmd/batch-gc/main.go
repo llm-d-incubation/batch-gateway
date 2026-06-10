@@ -36,13 +36,13 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/gc/collector"
-	gcconfig "github.com/llm-d-incubation/batch-gateway/internal/gc/config"
-	gcmetrics "github.com/llm-d-incubation/batch-gateway/internal/gc/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/gc/reconciler"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/clientset"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
+	"github.com/llm-d/llm-d-batch-gateway/internal/gc/collector"
+	gcconfig "github.com/llm-d/llm-d-batch-gateway/internal/gc/config"
+	gcmetrics "github.com/llm-d/llm-d-batch-gateway/internal/gc/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/gc/reconciler"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/interrupt"
 )
 
 func main() {

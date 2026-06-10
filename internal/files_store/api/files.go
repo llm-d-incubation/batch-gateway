@@ -23,7 +23,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/shared/store"
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/store"
 )
 
 var (

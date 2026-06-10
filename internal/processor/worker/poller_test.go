@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	mockdb "github.com/llm-d-incubation/batch-gateway/internal/database/mock"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	mockdb "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
 )
 
 // --- Priority Queue Spy ---

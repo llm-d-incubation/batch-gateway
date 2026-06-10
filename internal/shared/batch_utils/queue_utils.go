@@ -21,8 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	db "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	batch_types "github.com/llm-d-incubation/batch-gateway/internal/shared/types"
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 )
 
 func GetJobPriorityDataFromQueueItem(item *db.BatchJobPriority) (*batch_types.BatchJobPriorityData, error) {

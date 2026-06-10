@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	httpclient "github.com/llm-d-incubation/batch-gateway/pkg/clients/http"
+	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
 )
 
 // Integration tests using llm-d-inference-sim mock server running in Docker

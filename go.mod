@@ -1,4 +1,4 @@
-module github.com/llm-d-incubation/batch-gateway
+module github.com/llm-d/llm-d-batch-gateway
 
 go 1.25.0
 

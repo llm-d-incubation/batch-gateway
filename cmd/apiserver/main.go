@@ -23,11 +23,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/common"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/metrics"
-	"github.com/llm-d-incubation/batch-gateway/internal/apiserver/server"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/interrupt"
-	uotel "github.com/llm-d-incubation/batch-gateway/internal/util/otel"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/server"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/interrupt"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 	"k8s.io/klog/v2"
 )
 

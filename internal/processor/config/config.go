@@ -24,11 +24,11 @@ import (
 	"strings"
 	"time"
 
-	sharedcfg "github.com/llm-d-incubation/batch-gateway/internal/shared/config"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/ptr"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/retry"
-	inference "github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
+	sharedcfg "github.com/llm-d/llm-d-batch-gateway/internal/shared/config"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/ptr"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/retry"
+	inference "github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 	"gopkg.in/yaml.v3"
 )
 

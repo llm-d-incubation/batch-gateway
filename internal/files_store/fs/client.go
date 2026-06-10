@@ -27,9 +27,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/batch-gateway/internal/files_store/api"
-	fsio "github.com/llm-d-incubation/batch-gateway/internal/files_store/io"
-	"github.com/llm-d-incubation/batch-gateway/internal/util/logging"
+	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	fsio "github.com/llm-d/llm-d-batch-gateway/internal/files_store/io"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 const (

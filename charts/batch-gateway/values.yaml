@@ -100,7 +100,7 @@ apiserver:
   terminationGracePeriodSeconds: 120
 
   image:
-    repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
+    repository: ghcr.io/llm-d/batch-gateway-apiserver
     pullPolicy: Always
     tag: "latest"
     digest: ""
@@ -238,7 +238,7 @@ processor:
     medium: "" # node disk
 
   image:
-    repository: ghcr.io/llm-d-incubation/batch-gateway-processor
+    repository: ghcr.io/llm-d/batch-gateway-processor
     pullPolicy: Always
     tag: "latest"
     digest: ""
@@ -455,7 +455,7 @@ gc:
   replicaCount: 1
 
   image:
-    repository: ghcr.io/llm-d-incubation/batch-gateway-gc
+    repository: ghcr.io/llm-d/batch-gateway-gc
     pullPolicy: IfNotPresent
     tag: "latest"
     digest: ""

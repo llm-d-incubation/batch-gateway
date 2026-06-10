@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/config"
-	"github.com/llm-d-incubation/batch-gateway/internal/processor/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 )
 
 // initialize metrics for worker tests

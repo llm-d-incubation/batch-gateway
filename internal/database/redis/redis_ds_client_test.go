@@ -32,11 +32,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/alicebob/miniredis/v2"
-	db_api "github.com/llm-d-incubation/batch-gateway/internal/database/api"
-	dbredis "github.com/llm-d-incubation/batch-gateway/internal/database/redis"
-	ucom "github.com/llm-d-incubation/batch-gateway/internal/util/com"
-	uredis "github.com/llm-d-incubation/batch-gateway/internal/util/redis"
-	utls "github.com/llm-d-incubation/batch-gateway/internal/util/tls"
+	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	dbredis "github.com/llm-d/llm-d-batch-gateway/internal/database/redis"
+	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	uredis "github.com/llm-d/llm-d-batch-gateway/internal/util/redis"
+	utls "github.com/llm-d/llm-d-batch-gateway/internal/util/tls"
 )
 
 func setupRedisDSClients(t *testing.T, redisUrl, redisCaCert string) (
