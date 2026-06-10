@@ -29,7 +29,7 @@ Breaking changes use `!` before `:`: `feat!: drop old API`, `fix(scope)!: breaki
 | `deps` | `dependencies` |
 | `ci`, `chore`, `refactor`, `test`, `style`, `perf`, `revert`, `build` | `release-note-none` |
 
-Labels align with categories in [`.github/release.yml`](../release.yml). Every PR also gets `ai-assisted`.
+Labels align with categories in [`.github/release.yml`](../release.yml).
 
 ## Files
 
