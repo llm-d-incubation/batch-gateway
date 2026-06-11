@@ -80,13 +80,14 @@ For changes that fix broken code or add small changes within a component:
 
 ## Testing Requirements
 
-We use three tiers of testing:
+We use four tiers of testing:
 
-1. **Unit tests**: Fast verification of code parts, testing different arguments
-2. **Integration tests**: Testing protocols between components and built artifacts
-3. **End-to-end (e2e) tests**: Whole system testing including benchmarking
+1. **Unit tests**: Fast verification of code parts, testing different arguments (`make test`)
+2. **Functional tests**: Feature-level validation through the real HTTP stack with in-memory backends — no cluster required (`make test-functional`)
+3. **Integration tests**: Testing protocols between components and built artifacts (`make test-integration`)
+4. **End-to-end (e2e) tests**: Whole system testing including benchmarking against a live deployment (`make test-e2e`)
 
-Strong e2e coverage is required for deployed systems to prevent performance regression. Appropriate test coverage is an important part of code review.
+Functional tests run in CI on every PR alongside unit tests and require no external infrastructure. Strong e2e coverage is required for deployed systems to prevent performance regression. Appropriate test coverage is an important part of code review.
 
 ## Security
 

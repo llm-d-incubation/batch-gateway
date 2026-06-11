@@ -42,5 +42,8 @@ jobs:
       - name: Run pre-commit hooks
         uses: pre-commit/action@v3.0.1
 
+      - name: Run functional tests
+        run: make test-functional
+
       - name: Lint Helm chart
         run: helm lint charts/batch-gateway
