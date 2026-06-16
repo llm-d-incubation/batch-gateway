@@ -33,5 +33,6 @@ OpenAI-compatible batch API gateway for llm-d. Three binaries: apiserver, batch-
 ## Local Testing
 
 - Unit tests: `make test`
-- Integration tests: `make test-integration` (or `make test-all` for unit + integration)
+- Regression tests: `make test-regression` (API schema compatibility + past-bug guards)
+- Integration tests: `make test-integration` (or `make test-all` for unit + regression + integration)
 - E2E: `make dev-deploy` to deploy to a local Kind cluster, then `make test-e2e`

@@ -1,0 +1,50 @@
+{
+  "id": "batch_abc123",
+  "object": "batch",
+  "endpoint": "/v1/chat/completions",
+  "input_file_id": "file_abc123",
+  "completion_window": "24h",
+  "metadata": {
+    "env": "test"
+  },
+  "created_at": 1719792000,
+  "status": "completed",
+  "output_file_id": "file_out456",
+  "error_file_id": "file_err789",
+  "cancelled_at": null,
+  "cancelling_at": null,
+  "completed_at": 1719795600,
+  "expired_at": null,
+  "expires_at": 1719878400,
+  "failed_at": null,
+  "finalizing_at": 1719795000,
+  "in_progress_at": 1719792060,
+  "model": "gpt-4",
+  "request_counts": {
+    "total": 100,
+    "completed": 95,
+    "failed": 5
+  },
+  "errors": {
+    "object": "list",
+    "data": [
+      {
+        "code": "invalid_input",
+        "message": "bad request body",
+        "param": "messages",
+        "line": 42
+      }
+    ]
+  },
+  "usage": {
+    "input_tokens": 5000,
+    "input_tokens_details": {
+      "cached_tokens": 1000
+    },
+    "output_tokens": 3000,
+    "output_tokens_details": {
+      "reasoning_tokens": 500
+    },
+    "total_tokens": 8000
+  }
+}

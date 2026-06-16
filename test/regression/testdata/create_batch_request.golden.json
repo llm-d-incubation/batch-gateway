@@ -1,0 +1,12 @@
+{
+  "input_file_id": "file_abc123",
+  "endpoint": "/v1/chat/completions",
+  "completion_window": "24h",
+  "metadata": {
+    "env": "test"
+  },
+  "output_expires_after": {
+    "seconds": 86400,
+    "anchor": "created_at"
+  }
+}

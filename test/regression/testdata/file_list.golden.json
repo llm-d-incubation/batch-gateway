@@ -1,0 +1,18 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "file_abc123",
+      "bytes": 12345,
+      "created_at": 1719792000,
+      "expires_at": null,
+      "filename": "input.jsonl",
+      "object": "file",
+      "purpose": "batch",
+      "status": "uploaded"
+    }
+  ],
+  "first_id": "file_abc123",
+  "last_id": "file_abc123",
+  "has_more": false
+}

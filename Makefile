@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit
 
 SHELL := /usr/bin/env bash
 
@@ -310,6 +310,13 @@ deps-verify:
 	@echo "Verifying dependencies..."
 	$(GO) mod verify
 
+## test-regression: Run regression tests (API schema compat, past-bug guards)
+test-regression:
+	@echo "Running regression tests..."
+	@$(GO) test $(TEST_FLAGS) -v -tags=regression -count=1 ./test/regression/... || \
+		(echo "\n❌ Regression tests failed" && exit 1)
+	@echo "\n✅ Regression tests passed!"
+
 ## test-integration: Run integration tests (in-process server with mock backends and external service integration, no cluster needed)
 test-integration:
 	@echo "Running integration tests..."
@@ -317,8 +324,8 @@ test-integration:
 		(echo "\n❌ Integration tests failed" && exit 1)
 	@echo "\n✅ Integration tests passed!"
 
-## test-all: Run all tests (unit + integration)
-test-all: test test-integration
+## test-all: Run all tests (unit + regression + integration)
+test-all: test test-regression test-integration
 
 KIND_CLUSTER_NAME ?= batch-gateway-dev
 
