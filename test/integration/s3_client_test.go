@@ -1,3 +1,5 @@
+//go:build integration
+
 /*
 Copyright 2026 The llm-d Authors
 
@@ -24,13 +26,13 @@ limitations under the License.
 //     -e MINIO_ROOT_PASSWORD=minioadmin \
 //     minio/minio server /data
 //
-//   S3_TEST_ENDPOINT=http://localhost:9000 go test -v -run TestIntegration ./internal/files_store/s3/
+//   S3_TEST_ENDPOINT=http://localhost:9000 go test -v -tags=integration -run TestS3 ./test/integration/...
 //
 // Option 2: After "make dev-deploy" (MinIO is exposed on localhost:9002)
 //
-//   S3_TEST_ENDPOINT=http://localhost:9002 go test -v -run TestIntegration ./internal/files_store/s3/
+//   S3_TEST_ENDPOINT=http://localhost:9002 go test -v -tags=integration -run TestS3 ./test/integration/...
 
-package s3
+package integration
 
 import (
 	"bytes"
@@ -44,20 +46,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	s3client "github.com/llm-d/llm-d-batch-gateway/internal/files_store/s3"
 )
 
 const (
 	integrationBucket = "integration-test"
 )
 
-func newIntegrationClient(t *testing.T) *Client {
-	t.Helper()
-
-	endpoint := os.Getenv("S3_TEST_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("S3_TEST_ENDPOINT not set, skipping integration test")
-	}
-
+func s3Config() s3client.Config {
 	accessKey := os.Getenv("S3_TEST_ACCESS_KEY")
 	if accessKey == "" {
 		accessKey = "minioadmin"
@@ -67,14 +63,24 @@ func newIntegrationClient(t *testing.T) *Client {
 		secretKey = "minioadmin"
 	}
 
-	client, err := New(context.Background(), Config{
+	return s3client.Config{
 		Region:           "us-east-1",
-		Endpoint:         endpoint,
+		Endpoint:         os.Getenv("S3_TEST_ENDPOINT"),
 		AccessKeyID:      accessKey,
 		SecretAccessKey:  secretKey,
 		UsePathStyle:     true,
 		AutoCreateBucket: true,
-	})
+	}
+}
+
+func newS3IntegrationClient(t *testing.T, cfg s3client.Config) *s3client.Client {
+	t.Helper()
+
+	if cfg.Endpoint == "" {
+		t.Skip("S3_TEST_ENDPOINT not set, skipping S3 integration test")
+	}
+
+	client, err := s3client.New(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("failed to create S3 client: %v", err)
 	}
@@ -83,13 +89,12 @@ func newIntegrationClient(t *testing.T) *Client {
 	return client
 }
 
-func TestIntegrationStoreAndRetrieve(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3StoreAndRetrieve(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 	content := []byte("hello integration test\nline2\nline3\n")
 	fileName := fmt.Sprintf("test-store-retrieve-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	// Store
 	md, err := client.Store(ctx, fileName, integrationBucket, 1024, 0, bytes.NewReader(content))
 	if err != nil {
 		t.Fatalf("Store failed: %v", err)
@@ -103,7 +108,6 @@ func TestIntegrationStoreAndRetrieve(t *testing.T) {
 		t.Errorf("expected 3 lines, got %d", md.LinesNumber)
 	}
 
-	// Retrieve
 	reader, md2, err := client.Retrieve(ctx, fileName, integrationBucket)
 	if err != nil {
 		t.Fatalf("Retrieve failed: %v", err)
@@ -122,8 +126,8 @@ func TestIntegrationStoreAndRetrieve(t *testing.T) {
 	}
 }
 
-func TestIntegrationStoreExistingFile(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3StoreExistingFile(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-existing-%s-%s", t.Name(), uuid.NewString()[:8])
 
@@ -139,8 +143,8 @@ func TestIntegrationStoreExistingFile(t *testing.T) {
 	}
 }
 
-func TestIntegrationStoreFileTooLarge(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3StoreFileTooLarge(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-toolarge-%s-%s", t.Name(), uuid.NewString()[:8])
 
@@ -149,15 +153,14 @@ func TestIntegrationStoreFileTooLarge(t *testing.T) {
 		t.Errorf("expected ErrFileTooLarge, got %v", err)
 	}
 
-	// Verify the rejected file did not leave a partial object in storage.
 	_, _, err = client.Retrieve(ctx, fileName, integrationBucket)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected rejected file to not exist in storage, got: %v", err)
 	}
 }
 
-func TestIntegrationStoreTooManyLines(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3StoreTooManyLines(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-toomanylines-%s-%s", t.Name(), uuid.NewString()[:8])
 
@@ -166,15 +169,14 @@ func TestIntegrationStoreTooManyLines(t *testing.T) {
 		t.Errorf("expected ErrTooManyLines, got %v", err)
 	}
 
-	// Verify the rejected file did not leave a partial object in storage.
 	_, _, err = client.Retrieve(ctx, fileName, integrationBucket)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected rejected file to not exist in storage, got: %v", err)
 	}
 }
 
-func TestIntegrationDelete(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3Delete(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-delete-%s-%s", t.Name(), uuid.NewString()[:8])
 
@@ -182,7 +184,6 @@ func TestIntegrationDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Store failed: %v", err)
 	}
-	// No t.Cleanup here — the test itself verifies deletion.
 
 	err = client.Delete(ctx, fileName, integrationBucket)
 	if err != nil {
@@ -195,13 +196,11 @@ func TestIntegrationDelete(t *testing.T) {
 	}
 }
 
-func TestIntegrationDeleteNonExistent(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3DeleteNonExistent(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 
 	// Deleting a file that was never created should succeed (S3 DeleteObject is idempotent).
-	// The file delete API handler relies on this behavior to tolerate retries and
-	// races where the blob has already been removed.
 	fileName := fmt.Sprintf("test-delete-nonexistent-%s-%s", t.Name(), uuid.NewString()[:8])
 	err := client.Delete(ctx, fileName, integrationBucket)
 	if err != nil {
@@ -209,8 +208,8 @@ func TestIntegrationDeleteNonExistent(t *testing.T) {
 	}
 }
 
-func TestIntegrationRetrieveNonExistent(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3RetrieveNonExistent(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 
 	_, _, err := client.Retrieve(ctx, "nonexistent-file-xyz", integrationBucket)
@@ -219,9 +218,10 @@ func TestIntegrationRetrieveNonExistent(t *testing.T) {
 	}
 }
 
-func TestIntegrationPrefix(t *testing.T) {
-	client := newIntegrationClient(t)
-	client.prefix = "testprefix"
+func TestS3Prefix(t *testing.T) {
+	cfg := s3Config()
+	cfg.Prefix = "testprefix"
+	client := newS3IntegrationClient(t, cfg)
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-prefix-%s-%s", t.Name(), uuid.NewString()[:8])
 
@@ -248,8 +248,8 @@ func TestIntegrationPrefix(t *testing.T) {
 	}
 }
 
-func TestIntegrationGetContext(t *testing.T) {
-	client := newIntegrationClient(t)
+func TestS3GetContext(t *testing.T) {
+	client := newS3IntegrationClient(t, s3Config())
 
 	ctx, cancel := client.GetContext(context.Background(), 5*time.Second)
 	defer cancel()

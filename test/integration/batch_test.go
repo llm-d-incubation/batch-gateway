@@ -1,4 +1,4 @@
-//go:build functional
+//go:build integration
 
 /*
 Copyright 2026 The llm-d Authors
@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package functional
+package integration
 
 import (
 	"bytes"
