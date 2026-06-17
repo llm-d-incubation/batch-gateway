@@ -34,6 +34,7 @@ func TestGetTlsConfig(t *testing.T) {
 			}
 			if cfg == nil {
 				t.Fatal("GetTlsConfig() returned nil config")
+				return
 			}
 			if cfg.MinVersion != tls.VersionTLS12 {
 				t.Fatalf("GetTlsConfig() MinVersion = %v, want %v", cfg.MinVersion, tls.VersionTLS12)
