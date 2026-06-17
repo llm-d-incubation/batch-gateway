@@ -426,8 +426,12 @@ func BuildTLSConfig(config *Config, logger logr.Logger) (*tls.Config, error) {
 	// At least one custom TLS option is set - build custom config
 	tlsConfig := &tls.Config{}
 
-	// 1. InsecureSkipVerify (testing only)
+	// 1. InsecureSkipVerify (testing only, requires explicit env opt-in)
 	if config.TLSInsecureSkipVerify {
+		if os.Getenv("BG_ALLOW_INSECURE_TLS") != "1" {
+			return nil, fmt.Errorf("TLSInsecureSkipVerify is set but BG_ALLOW_INSECURE_TLS=1 environment variable is not present; " +
+				"set this env var to confirm you intend to disable TLS verification")
+		}
 		tlsConfig.InsecureSkipVerify = true
 		logger.Info("WARNING: TLS certificate verification is disabled - this is insecure and should only be used for testing")
 	}

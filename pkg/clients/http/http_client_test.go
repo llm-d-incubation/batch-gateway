@@ -816,23 +816,34 @@ func TestBuildTLSConfig_Nil(t *testing.T) {
 
 // TestBuildTLSConfig_InsecureSkipVerify tests InsecureSkipVerify option
 func TestBuildTLSConfig_InsecureSkipVerify(t *testing.T) {
-	config := Config{
-		TLSInsecureSkipVerify: true,
-	}
-	tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+	t.Run("allowed with env gate", func(t *testing.T) {
+		t.Setenv("BG_ALLOW_INSECURE_TLS", "1")
+		config := Config{
+			TLSInsecureSkipVerify: true,
+		}
+		tlsConfig, err := BuildTLSConfig(&config, testLogger(t))
+		if err != nil {
+			t.Fatalf("BuildTLSConfig failed: %v", err)
+		}
+		if tlsConfig == nil {
+			t.Fatal("Expected non-nil TLS config")
+			return
+		}
+		if !tlsConfig.InsecureSkipVerify {
+			t.Error("Expected InsecureSkipVerify=true")
+		}
+	})
 
-	if err != nil {
-		t.Fatalf("BuildTLSConfig failed: %v", err)
-	}
-
-	if tlsConfig == nil {
-		t.Fatal("Expected non-nil TLS config")
-		return
-	}
-
-	if !tlsConfig.InsecureSkipVerify {
-		t.Error("Expected InsecureSkipVerify=true")
-	}
+	t.Run("rejected without env gate", func(t *testing.T) {
+		t.Setenv("BG_ALLOW_INSECURE_TLS", "")
+		config := Config{
+			TLSInsecureSkipVerify: true,
+		}
+		_, err := BuildTLSConfig(&config, testLogger(t))
+		if err == nil {
+			t.Fatal("Expected error when BG_ALLOW_INSECURE_TLS is not set")
+		}
+	})
 }
 
 // TestBuildTLSConfig_CustomCA tests custom CA certificate
@@ -1023,6 +1034,8 @@ func TestClientError_IsRetryable(t *testing.T) {
 
 // TestNewHTTPClient_TLSInsecureSkipVerify_Integration tests insecure TLS in integration
 func TestNewHTTPClient_TLSInsecureSkipVerify_Integration(t *testing.T) {
+	t.Setenv("BG_ALLOW_INSECURE_TLS", "1")
+
 	// Create HTTPS test server with self-signed cert
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

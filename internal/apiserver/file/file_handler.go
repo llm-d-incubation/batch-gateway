@@ -168,22 +168,38 @@ func (c *FileAPIHandler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	// Input file must be formatted as a JSONL file, and must be uploaded with the purpose batch.
 	// The file can contain up to 50,000 requests, and can be up to 200 MB in size.
 
-	// Check Content-Length header before reading the body
 	maxFileSize := c.config.FileAPI.GetMaxSizeBytes()
-	if r.ContentLength > maxFileSize {
-		logger.V(logging.DEBUG).Info("file size exceeds limit",
-			"contentLength", r.ContentLength, "limit", maxFileSize)
-		apiErr := openai.NewAPIError(
-			http.StatusBadRequest,
-			"",
-			fmt.Sprintf("File size exceeds the maximum allowed size of %d bytes", maxFileSize),
-			nil,
-		)
-		common.WriteAPIError(w, r, apiErr)
+
+	// Enforce body size before multipart parsing to prevent unbounded /tmp
+	// fill via chunked Transfer-Encoding (which bypasses Content-Length checks).
+	// The extra 1 MiB accommodates multipart framing overhead.
+	r.Body = http.MaxBytesReader(w, r.Body, maxFileSize+(1<<20))
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			logger.V(logging.DEBUG).Info("file size exceeds limit", "limit", maxFileSize)
+			apiErr := openai.NewAPIError(
+				http.StatusRequestEntityTooLarge,
+				"",
+				fmt.Sprintf("File size exceeds the maximum allowed size of %d bytes", maxFileSize),
+				nil,
+			)
+			common.WriteAPIError(w, r, apiErr)
+			return
+		}
+		logger.Error(err, "failed to parse multipart form")
+		common.WriteInternalServerError(w, r)
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			if err := r.MultipartForm.RemoveAll(); err != nil {
+				logger.Error(err, "failed to remove multipart temp files")
+			}
+		}
+	}()
 
-	// Read form file from request
 	fileReader, fileHeader, err := r.FormFile("file")
 	if err != nil {
 		logger.Error(err, "failed to read form file from request")

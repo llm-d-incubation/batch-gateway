@@ -1004,6 +1004,7 @@ func testTLSConfiguration(t *testing.T) {
 	})
 
 	t.Run("should disable certificate verification when InsecureSkipVerify is true", func(t *testing.T) {
+		t.Setenv("BG_ALLOW_INSECURE_TLS", "1")
 		client, err := NewInferenceClient(&HTTPClientConfig{
 			BaseURL:               "https://localhost:8443",
 			TLSInsecureSkipVerify: true, // Skip cert verification for testing
