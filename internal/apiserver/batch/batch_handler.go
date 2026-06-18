@@ -92,9 +92,12 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	createdAt := time.Now().UTC().Unix()
 
-	// parse request
+	// Limit JSON body size to prevent resource exhaustion from oversized payloads.
+	const maxBatchBodySize = 1 << 20 // 1 MiB
+	limitedBody := http.MaxBytesReader(w, r.Body, maxBatchBodySize)
+
 	batchReq := &openai.CreateBatchRequest{}
-	if err := common.DecodeJSON(r.Body, batchReq); err != nil {
+	if err := common.DecodeJSON(limitedBody, batchReq); err != nil {
 		logger.Error(err, "failed to decode request")
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", err.Error(), nil)
 		common.WriteAPIError(w, r, apiErr)

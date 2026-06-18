@@ -51,6 +51,8 @@ The processor supports per-gateway TLS configuration:
 
 See [Processor Inference TLS](processor-inference-tls.md) for scenario-by-scenario setup.
 
+> **`tlsInsecureSkipVerify` safety gate**: Setting `tlsInsecureSkipVerify: true` in Helm values requires `processor.config.confirmInsecureTLS: true` as well. This injects `BG_ALLOW_INSECURE_TLS=1` into the container. Without it, the processor refuses to start. This prevents accidental TLS verification bypass through Helm values alone.
+
 ### 3.3 Database Connections
 
 - **Redis**: optional TLS via `global.dbClient.redis.enableTLS` in Helm values.
@@ -105,7 +107,19 @@ Expected secret keys:
 
 Per-model API keys can also be loaded from arbitrary file paths via `api_key_file` in the gateway configuration.
 
-## 8. Pod Security
+## 8. Network Segmentation
+
+The Helm chart includes optional `NetworkPolicy` resources for all three components (apiserver, processor, gc). When enabled, only explicitly allowed sources can reach each component's ports:
+
+- **API server**: API port restricted to the ingress gateway; observability port restricted to monitoring.
+- **Processor**: metrics port restricted to monitoring.
+- **GC**: metrics port restricted to monitoring.
+
+NetworkPolicy is **disabled by default** for compatibility with existing deployments. Enable it in production to prevent in-cluster callers from bypassing the authentication gateway.
+
+See [Networking](networking.md) for configuration details.
+
+## 9. Pod Security
 
 The Helm chart defaults enforce a restricted container security posture:
 
@@ -127,7 +141,7 @@ securityContext:
 
 These defaults are compatible with OpenShift's `restricted-v2` SCC and Kubernetes Pod Security Standards (`restricted` profile).
 
-## 9. Rate Limiting
+## 10. Rate Limiting
 
 Rate limiting is delegated to Kuadrant/Limitador at the gateway layer:
 
@@ -136,7 +150,7 @@ Rate limiting is delegated to Kuadrant/Limitador at the gateway layer:
 
 Both support per-tier limits using identity attributes extracted by AuthPolicy. See [Kuadrant Integration](kuadrant-integration.md) for configuration.
 
-## 10. Observability and Audit
+## 11. Observability and Audit
 
 - **Request IDs**: a UUID is generated for each request and propagated via the `x-request-id` header.
 - **Structured logging**: every log entry includes tenant ID, request ID, batch ID, and file ID where applicable.
@@ -145,6 +159,6 @@ Both support per-tier limits using identity attributes extracted by AuthPolicy. 
 
 The observability port is always plain HTTP and should not be exposed externally. See [Networking](networking.md) for the port layout.
 
-## 11. Vulnerability Reporting
+## 12. Vulnerability Reporting
 
 Security vulnerabilities should be reported following the process in [SECURITY.md](../../SECURITY.md).
