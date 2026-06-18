@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"sort"
 	"testing"
 )
@@ -56,7 +56,7 @@ func assertJSONKeysMatch(t *testing.T, label string, golden, actual []byte) {
 	goldenKeys := jsonKeys(t, label+" (golden)", golden)
 	actualKeys := jsonKeys(t, label+" (actual)", actual)
 
-	if !reflect.DeepEqual(goldenKeys, actualKeys) {
+	if !slices.Equal(goldenKeys, actualKeys) {
 		missing, extra := diffKeys(goldenKeys, actualKeys)
 		if len(missing) > 0 {
 			t.Errorf("%s: missing keys (present in golden, absent in marshaled): %v", label, missing)
@@ -109,6 +109,43 @@ func assertRoundTrip[T any](t *testing.T, goldenFile string) {
 	}
 
 	assertJSONKeysMatch(t, goldenFile, golden, marshaled)
+	assertNullFieldsPreserved(t, goldenFile, golden, marshaled)
+}
+
+func assertNullFieldsPreserved(t *testing.T, label string, golden, actual []byte) {
+	t.Helper()
+
+	var goldenMap, actualMap map[string]json.RawMessage
+	if err := json.Unmarshal(golden, &goldenMap); err != nil {
+		return // Not a JSON object, skip
+	}
+	if err := json.Unmarshal(actual, &actualMap); err != nil {
+		return // Not a JSON object, skip
+	}
+
+	for key, gVal := range goldenMap {
+		aVal, ok := actualMap[key]
+		if !ok {
+			continue
+		}
+
+		if isNullValue(gVal) && !isNullValue(aVal) {
+			t.Errorf("%s: field %q was null in golden, but not null after roundtrip", label, key)
+		}
+
+		if isJSONObject(gVal) && isJSONObject(aVal) {
+			assertNullFieldsPreserved(t, label+"."+key, gVal, aVal)
+		}
+
+		if isJSONArrayOfObjects(gVal) && isJSONArrayOfObjects(aVal) {
+			var gArr, aArr []json.RawMessage
+			_ = json.Unmarshal(gVal, &gArr)
+			_ = json.Unmarshal(aVal, &aArr)
+			if len(gArr) > 0 && len(aArr) > 0 {
+				assertNullFieldsPreserved(t, label+"."+key+"[0]", gArr[0], aArr[0])
+			}
+		}
+	}
 }
 
 func diffKeys(golden, actual []string) (missing, extra []string) {
@@ -132,6 +169,10 @@ func diffKeys(golden, actual []string) (missing, extra []string) {
 		}
 	}
 	return missing, extra
+}
+
+func isNullValue(data json.RawMessage) bool {
+	return len(data) == 4 && string(data) == "null"
 }
 
 func isJSONObject(data json.RawMessage) bool {

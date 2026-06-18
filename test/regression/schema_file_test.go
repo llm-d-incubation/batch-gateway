@@ -24,14 +24,16 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 )
 
-func TestSchemaCompat_FileObject(t *testing.T) {
-	assertRoundTrip[openai.FileObject](t, "file_object.golden.json")
-}
+func TestSchemaCompat_File(t *testing.T) {
+	t.Run("FileObject", func(t *testing.T) {
+		assertRoundTrip[openai.FileObject](t, "file_object.golden.json")
+	})
 
-func TestSchemaCompat_ListFilesResponse(t *testing.T) {
-	assertRoundTrip[openai.ListFilesResponse](t, "file_list.golden.json")
-}
+	t.Run("ListFilesResponse", func(t *testing.T) {
+		assertRoundTrip[openai.ListFilesResponse](t, "file_list.golden.json")
+	})
 
-func TestSchemaCompat_FileDeleteResponse(t *testing.T) {
-	assertRoundTrip[openai.FileDeleteResponse](t, "file_delete.golden.json")
+	t.Run("FileDeleteResponse", func(t *testing.T) {
+		assertRoundTrip[openai.FileDeleteResponse](t, "file_delete.golden.json")
+	})
 }
