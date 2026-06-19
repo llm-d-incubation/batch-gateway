@@ -83,7 +83,7 @@ For changes that fix broken code or add small changes within a component:
 We use four tiers of testing:
 
 1. **Unit tests**: Fast verification of code parts, testing different arguments (`make test`)
-2. **Regression tests**: API schema compatibility (golden-file round-trips) and serialization guards (`make test-regression`, `//go:build regression`)
+2. **Regression tests**: API schema compatibility (golden-file round-trips) and serialization guards (`make test-regression`)
 3. **Integration tests**: Feature-level validation through the real HTTP stack with in-memory backends, plus component integration with external services — tests that require external services skip gracefully when unavailable (`make test-integration`)
 4. **End-to-end (e2e) tests**: Whole system testing including benchmarking against a live deployment (`make test-e2e`)
 

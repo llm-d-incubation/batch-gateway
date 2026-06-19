@@ -16,13 +16,11 @@ make test-regression
 Or directly:
 
 ```bash
-go test -v -tags=regression -count=1 ./test/regression/...
+go test -v -count=1 ./test/regression/...
 ```
 
 ## How they work
 
 Each schema test loads a golden JSON file from `testdata/`, unmarshals it into the corresponding Go struct, re-marshals it, and recursively compares the JSON key structure. This detects added, removed, or renamed fields without being sensitive to value changes.
 
-## Build tag
-
-All files carry `//go:build regression`. They are excluded from `make test` (unit-only) and run with `make test-regression`.
+These tests have no build tag — they run as part of `go test ./...` alongside unit tests, so schema breaks are caught locally before push.

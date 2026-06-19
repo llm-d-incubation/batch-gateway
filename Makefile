@@ -313,7 +313,7 @@ deps-verify:
 ## test-regression: Run regression tests (API schema compat, past-bug guards)
 test-regression:
 	@echo "Running regression tests..."
-	@$(GO) test $(TEST_FLAGS) -v -tags=regression -count=1 ./test/regression/... || \
+	@$(GO) test $(TEST_FLAGS) -v -count=1 ./test/regression/... || \
 		(echo "\n❌ Regression tests failed" && exit 1)
 	@echo "\n✅ Regression tests passed!"
 

@@ -1,5 +1,3 @@
-//go:build regression
-
 /*
 Copyright 2026 The llm-d Authors
 
