@@ -12,9 +12,10 @@ set -euo pipefail
 #   SCENARIO           — scenario number (0-5)
 #
 # Optional:
-#   LLM_D_REPO         — path to llm-d checkout (overrides OCI default)
-#   ROUTER_REPO        — path to llm-d-router checkout (overrides OCI default)
-#   ROUTER_CHART_VERSION — OCI chart version for llm-d-router (default: 0.3.0)
+#   LLM_D_REPO         — path to llm-d checkout (overrides downloading from LLM_D_TAG)
+#   ROUTER_REPO        — path to llm-d-router checkout (overrides OCI chart)
+#   ROUTER_CHART_VERSION — OCI chart version for llm-d-router (default: 0.9.2)
+#   LLM_D_TAG          — git tag for llm-d guide values (default: v0.7.0)
 #   NAMESPACE          — override auto-generated namespace (default: batch-bench-s${SCENARIO})
 #   MODEL              — model to serve (default: Qwen/Qwen3-8B)
 #   GUIDE_NAME         — inference pool name (default: optimized-baseline)
@@ -28,7 +29,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
 GUIDE_NAME="${GUIDE_NAME:-optimized-baseline}"
 NAMESPACE="${NAMESPACE:-batch-bench-s${SCENARIO}}"
-ROUTER_CHART_VERSION="${ROUTER_CHART_VERSION:-0.3.0}"
+ROUTER_CHART_VERSION="${ROUTER_CHART_VERSION:-0.9.2}"
+LLM_D_TAG="${LLM_D_TAG:-v0.7.0}"
 
 # Validate required vars
 for var in KUBE_CONTEXT SCENARIO; do
@@ -124,12 +126,25 @@ if [ -n "${ROUTER_REPO:-}" ] && [ -n "${LLM_D_REPO:-}" ]; then
         --set httpRoute.create=true \
         --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
 else
-    # OCI mode (default — reproducible, pinned version)
+    # OCI mode (default — reproducible, pinned versions)
     log "  Using OCI chart: ghcr.io/llm-d/llm-d-router-gateway:${ROUTER_CHART_VERSION}"
+    log "  Using llm-d guide values from tag: ${LLM_D_TAG}"
+
+    # Download guide values from pinned llm-d tag
+    LLM_D_VALUES_DIR=$(mktemp -d)
+    trap "rm -rf ${LLM_D_VALUES_DIR}" EXIT
+    local_base="https://raw.githubusercontent.com/llm-d/llm-d/${LLM_D_TAG}"
+    curl -sL "${local_base}/guides/recipes/router/base.values.yaml" -o "${LLM_D_VALUES_DIR}/base.values.yaml"
+    curl -sL "${local_base}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml" -o "${LLM_D_VALUES_DIR}/guide.values.yaml"
+    curl -sL "${local_base}/guides/recipes/router/features/monitoring.values.yaml" -o "${LLM_D_VALUES_DIR}/monitoring.values.yaml"
+
     ${H} install "${GUIDE_NAME}" \
         oci://ghcr.io/llm-d/llm-d-router-gateway \
         --version "${ROUTER_CHART_VERSION}" \
         -n "${NAMESPACE}" \
+        -f "${LLM_D_VALUES_DIR}/base.values.yaml" \
+        -f "${LLM_D_VALUES_DIR}/guide.values.yaml" \
+        -f "${LLM_D_VALUES_DIR}/monitoring.values.yaml" \
         --set provider.name=istio \
         --set httpRoute.create=true \
         --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
