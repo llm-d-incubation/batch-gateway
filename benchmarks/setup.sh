@@ -10,10 +10,11 @@ set -euo pipefail
 # Required env vars:
 #   KUBE_CONTEXT       — kubectl context (e.g. coreweave-waldorf)
 #   SCENARIO           — scenario number (0-5)
-#   LLM_D_REPO        — path to llm-d checkout
-#   ROUTER_REPO        — path to llm-d-router checkout
 #
 # Optional:
+#   LLM_D_REPO         — path to llm-d checkout (overrides OCI default)
+#   ROUTER_REPO        — path to llm-d-router checkout (overrides OCI default)
+#   ROUTER_CHART_VERSION — OCI chart version for llm-d-router (default: 0.3.0)
 #   NAMESPACE          — override auto-generated namespace (default: batch-bench-s${SCENARIO})
 #   MODEL              — model to serve (default: Qwen/Qwen3-8B)
 #   GUIDE_NAME         — inference pool name (default: optimized-baseline)
@@ -27,9 +28,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
 GUIDE_NAME="${GUIDE_NAME:-optimized-baseline}"
 NAMESPACE="${NAMESPACE:-batch-bench-s${SCENARIO}}"
+ROUTER_CHART_VERSION="${ROUTER_CHART_VERSION:-0.3.0}"
 
 # Validate required vars
-for var in KUBE_CONTEXT SCENARIO LLM_D_REPO ROUTER_REPO; do
+for var in KUBE_CONTEXT SCENARIO; do
     if [ -z "${!var:-}" ]; then
         echo "ERROR: $var is not set" >&2
         exit 1
@@ -106,18 +108,32 @@ ${K} -n "${NAMESPACE}" apply -f "${SCRIPT_DIR}/manifests/results-pvc.yaml"
 
 # --- llm-d Router (EPP) ---
 log "Installing llm-d Router (${GUIDE_NAME})"
-if [ ! -f "${ROUTER_REPO}/config/charts/llm-d-router-gateway/charts/router-0.0.0.tgz" ]; then
-    (cd "${ROUTER_REPO}/config/charts/llm-d-router-gateway" && helm dependency build >/dev/null 2>&1)
+if [ -n "${ROUTER_REPO:-}" ] && [ -n "${LLM_D_REPO:-}" ]; then
+    # Local repo mode (development override)
+    log "  Using local repos: ROUTER_REPO=${ROUTER_REPO}, LLM_D_REPO=${LLM_D_REPO}"
+    if [ ! -f "${ROUTER_REPO}/config/charts/llm-d-router-gateway/charts/router-0.0.0.tgz" ]; then
+        (cd "${ROUTER_REPO}/config/charts/llm-d-router-gateway" && helm dependency build >/dev/null 2>&1)
+    fi
+    ${H} install "${GUIDE_NAME}" \
+        "${ROUTER_REPO}/config/charts/llm-d-router-gateway/" \
+        -n "${NAMESPACE}" \
+        -f "${LLM_D_REPO}/guides/recipes/router/base.values.yaml" \
+        -f "${LLM_D_REPO}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml" \
+        -f "${LLM_D_REPO}/guides/recipes/router/features/monitoring.values.yaml" \
+        --set provider.name=istio \
+        --set httpRoute.create=true \
+        --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
+else
+    # OCI mode (default — reproducible, pinned version)
+    log "  Using OCI chart: ghcr.io/llm-d/llm-d-router-gateway:${ROUTER_CHART_VERSION}"
+    ${H} install "${GUIDE_NAME}" \
+        oci://ghcr.io/llm-d/llm-d-router-gateway \
+        --version "${ROUTER_CHART_VERSION}" \
+        -n "${NAMESPACE}" \
+        --set provider.name=istio \
+        --set httpRoute.create=true \
+        --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
 fi
-${H} install "${GUIDE_NAME}" \
-    "${ROUTER_REPO}/config/charts/llm-d-router-gateway/" \
-    -n "${NAMESPACE}" \
-    -f "${LLM_D_REPO}/guides/recipes/router/base.values.yaml" \
-    -f "${LLM_D_REPO}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml" \
-    -f "${LLM_D_REPO}/guides/recipes/router/features/monitoring.values.yaml" \
-    --set provider.name=istio \
-    --set httpRoute.create=true \
-    --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
 
 # --- Istio Gateway ---
 log "Creating Istio Gateway"

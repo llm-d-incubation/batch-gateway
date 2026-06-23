@@ -30,9 +30,11 @@ The benchmark compares dispatch strategies under a realistic traffic pattern: in
 - `kubectl` configured with access to the cluster
 - `helm` 3.x
 - `python3` with `faker` installed (`pip3 install faker`)
+- [guidellm](https://github.com/vllm-project/guidellm) (container image used automatically)
+
+Optional (for development with local checkouts instead of OCI charts):
 - [llm-d](https://github.com/llm-d/llm-d) repo cloned locally
 - [llm-d-router](https://github.com/llm-d/llm-d-router) repo cloned locally
-- [guidellm](https://github.com/vllm-project/guidellm) (container image used automatically)
 
 ## Quick Start
 
@@ -53,9 +55,15 @@ python3 benchmarks/generate_prompts.py \
 ```bash
 export KUBE_CONTEXT=my-context
 export SCENARIO=2
+
+./benchmarks/setup.sh
+```
+
+To use local repo checkouts instead of published OCI charts (for development):
+
+```bash
 export LLM_D_REPO=/path/to/llm-d
 export ROUTER_REPO=/path/to/llm-d-router
-
 ./benchmarks/setup.sh
 ```
 
@@ -174,8 +182,9 @@ Compare TTFT p99 during burst phases across scenarios:
 |----------|----------|---------|-------------|
 | `KUBE_CONTEXT` | Yes | — | kubectl context |
 | `SCENARIO` | Yes | — | Scenario number (0-5) |
-| `LLM_D_REPO` | Yes (setup) | — | Path to llm-d checkout |
-| `ROUTER_REPO` | Yes (setup) | — | Path to llm-d-router |
+| `LLM_D_REPO` | No | — | Path to llm-d checkout (overrides OCI default) |
+| `ROUTER_REPO` | No | — | Path to llm-d-router checkout (overrides OCI default) |
+| `ROUTER_CHART_VERSION` | No | `0.3.0` | OCI chart version for llm-d-router |
 | `NAMESPACE` | No | `batch-bench-s${SCENARIO}` | Override namespace |
 | `MODEL` | No | `Qwen/Qwen3-8B` | Model to serve |
 | `GUIDE_NAME` | No | `optimized-baseline` | Inference pool name |
