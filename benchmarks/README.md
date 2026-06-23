@@ -211,4 +211,3 @@ benchmarks/
 - [Issue #491](https://github.com/llm-d/llm-d-batch-gateway/issues/491) — Full benchmark spec
 - [Flow Control Setup Guide](../docs/guides/flow-control-setup.md) — AIMD + Router configuration
 - [Batch Processor Architecture](../docs/design/batch_processor_architecture.md) — Processor internals
-- [@evacchi's prior work](https://github.com/evacchi/batch-gateway/pull/1) — Original benchmark infrastructure
