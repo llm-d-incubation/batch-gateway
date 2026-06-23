@@ -200,24 +200,10 @@ benchmarks/
 ├── setup.sh                  # Deploy full stack per scenario
 ├── teardown.sh               # Cleanup
 ├── README.md                 # This file
-├── helm-values/
-│   ├── scenario-0-interactive-only.yaml
-│   ├── scenario-1-no-batch-gateway.yaml
-│   ├── scenario-2-ungated.yaml
-│   ├── scenario-3-aimd.yaml
-│   ├── scenario-4-aimd-flow-control.yaml
-│   └── scenario-5-async.yaml
-├── manifests/
-│   ├── guidellm-interactive.yaml
-│   ├── guidellm-batch.yaml
-│   ├── batch-submit.yaml
-│   ├── results-pvc.yaml
-│   └── vllm/
-│       ├── kustomization.yaml
-│       ├── patch-vllm.yaml
-│       └── base/
+├── helm-values/              # Per-scenario Helm value overrides
+├── manifests/                # K8s manifests (guidellm jobs, vLLM overlay, PVCs)
+├── profiles/                 # Canonical parameter profiles
 └── results/                  # gitignored — local run output
-    └── .gitkeep
 ```
 
 ## Related
