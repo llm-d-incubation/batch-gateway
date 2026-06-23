@@ -4,7 +4,7 @@ This guide provides an overview of the security features in batch-gateway. It co
 
 ## 1. Authentication
 
-Batch-gateway delegates authentication to an external system (e.g. Envoy `ext_authz`, Kuadrant/Authorino). The API server itself does not validate credentials — it trusts that authenticated identity attributes (tenant, tier, username) are injected as HTTP headers by the upstream gateway.
+Batch-gateway delegates authentication to an external system (e.g. Envoy `ext_authz`, Kuadrant/Authorino). The API server itself does not validate credentials — it trusts that authenticated identity attributes (tenant, tier, username) are injected as HTTP headers by the upstream gateway. The auth proxy is therefore a **hard security prerequisite**; see [Multi-Tenancy Isolation](#2-multi-tenancy-isolation) for implications.
 
 The tenant header name is configurable (`X-MaaS-Username` by default). The middleware takes the **last** entry when multiple values are present, preventing callers from injecting a spoofed identity ahead of the gateway-injected one.
 
@@ -19,6 +19,8 @@ Three authentication options are documented in detail:
 See [Kuadrant Integration](kuadrant-integration.md) for full setup instructions.
 
 ## 2. Multi-Tenancy Isolation
+
+> **Security prerequisite**: The API server has no built-in authentication. Tenant identity is derived entirely from headers injected by the upstream auth proxy (e.g. Envoy, Kuadrant/Authorino). Direct access to the API server bypasses all tenant isolation. Deployments **must** ensure the API server is not reachable without passing through the auth proxy.
 
 All data access is scoped to the authenticated tenant:
 

@@ -878,6 +878,7 @@ func testDroppedReason(t *testing.T) {
 			_, genErr := client.Generate(context.Background(), req)
 			if genErr == nil {
 				t.Fatal("expected non-nil error for 429 response")
+				return
 			}
 			if genErr.DroppedReason != tt.wantDroppedReason {
 				t.Errorf("DroppedReason = %q, want %q", genErr.DroppedReason, tt.wantDroppedReason)

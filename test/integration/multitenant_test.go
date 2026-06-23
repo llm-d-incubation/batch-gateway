@@ -1,0 +1,154 @@
+//go:build integration
+
+/*
+Copyright 2026 The llm-d Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package integration
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+)
+
+func TestTenantIsolation(t *testing.T) {
+	ts := newTestServer(t)
+
+	tenantA := "tenant-alpha"
+	tenantB := "tenant-beta"
+
+	content := `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}` + "\n"
+
+	// Tenant A: upload a file
+	resp := ts.uploadFileAs(t, "alpha.jsonl", "batch", content, tenantA)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("tenant-A upload: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	fileA := decodeJSON[openai.FileObject](t, resp)
+
+	// Tenant A: create a batch
+	createReq := openai.CreateBatchRequest{
+		InputFileID:      fileA.ID,
+		Endpoint:         openai.EndpointChatCompletions,
+		CompletionWindow: "24h",
+	}
+	resp = ts.doJSONAs(t, http.MethodPost, "/v1/batches", createReq, tenantA)
+	if resp.StatusCode != http.StatusOK {
+		body := readBody(t, resp)
+		t.Fatalf("tenant-A create batch: expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	batchA := decodeJSON[openai.Batch](t, resp)
+
+	// Tenant B: cannot see tenant A's file
+	t.Run("FileIsolation", func(t *testing.T) {
+		resp := ts.doRequestAs(t, http.MethodGet, "/v1/files/"+fileA.ID, tenantB)
+		if resp.StatusCode != http.StatusNotFound {
+			body := readBody(t, resp)
+			t.Fatalf("tenant-B retrieve file: expected 404, got %d: %s", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	// Tenant B: cannot see tenant A's batch
+	t.Run("BatchIsolation", func(t *testing.T) {
+		resp := ts.doRequestAs(t, http.MethodGet, "/v1/batches/"+batchA.ID, tenantB)
+		if resp.StatusCode != http.StatusNotFound {
+			body := readBody(t, resp)
+			t.Fatalf("tenant-B retrieve batch: expected 404, got %d: %s", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	// Tenant B: list files returns empty
+	t.Run("FileListIsolation", func(t *testing.T) {
+		resp := ts.doRequestAs(t, http.MethodGet, "/v1/files", tenantB)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("tenant-B list files: expected 200, got %d", resp.StatusCode)
+		}
+		listResp := decodeJSON[openai.ListFilesResponse](t, resp)
+		if len(listResp.Data) != 0 {
+			t.Errorf("tenant-B list files: expected 0 files, got %d", len(listResp.Data))
+		}
+	})
+
+	// Tenant B: list batches returns empty
+	t.Run("BatchListIsolation", func(t *testing.T) {
+		resp := ts.doRequestAs(t, http.MethodGet, "/v1/batches?limit=100", tenantB)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("tenant-B list batches: expected 200, got %d", resp.StatusCode)
+		}
+		listResp := decodeJSON[openai.ListBatchResponse](t, resp)
+		if len(listResp.Data) != 0 {
+			t.Errorf("tenant-B list batches: expected 0 batches, got %d", len(listResp.Data))
+		}
+	})
+
+	// Tenant B: cannot cancel tenant A's batch
+	t.Run("CancelIsolation", func(t *testing.T) {
+		resp := ts.doJSONAs(t, http.MethodPost, "/v1/batches/"+batchA.ID+"/cancel", nil, tenantB)
+		if resp.StatusCode != http.StatusNotFound {
+			body := readBody(t, resp)
+			t.Fatalf("tenant-B cancel batch: expected 404, got %d: %s", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+
+	// Tenant B: cannot delete tenant A's file
+	t.Run("DeleteIsolation", func(t *testing.T) {
+		resp := ts.doRequestAs(t, http.MethodDelete, "/v1/files/"+fileA.ID, tenantB)
+		if resp.StatusCode != http.StatusNotFound {
+			body := readBody(t, resp)
+			t.Fatalf("tenant-B delete file: expected 404, got %d: %s", resp.StatusCode, body)
+		}
+		resp.Body.Close()
+	})
+}
+
+func TestDefaultTenant(t *testing.T) {
+	ts := newTestServer(t)
+
+	content := `{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{}}` + "\n"
+
+	// Upload as explicit tenant
+	resp := ts.uploadFileAs(t, "explicit.jsonl", "batch", content, "explicit-tenant")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload: expected 200, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Request without tenant header — should use "default" tenant
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/files", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately NOT setting the tenant header
+
+	resp, err = ts.Client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d", resp.StatusCode)
+	}
+	listResp := decodeJSON[openai.ListFilesResponse](t, resp)
+
+	// "default" tenant should not see "explicit-tenant"'s files
+	if len(listResp.Data) != 0 {
+		t.Errorf("default tenant: expected 0 files, got %d", len(listResp.Data))
+	}
+}

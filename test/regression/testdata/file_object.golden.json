@@ -1,0 +1,11 @@
+{
+  "id": "file_abc123",
+  "bytes": 12345,
+  "created_at": 1719792000,
+  "expires_at": 1719878400,
+  "filename": "input.jsonl",
+  "object": "file",
+  "purpose": "batch",
+  "status": "uploaded",
+  "status_details": "processing complete"
+}

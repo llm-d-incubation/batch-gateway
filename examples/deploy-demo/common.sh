@@ -578,7 +578,8 @@ install_batch_gateway() {
 
     local chart version_args=()
     if [ -n "${BATCH_RELEASE_VERSION}" ]; then
-        chart="oci://ghcr.io/llm-d/charts/batch-gateway"
+        # TODO: pre-graduation location; update to ghcr.io/llm-d in the next release
+        chart="oci://ghcr.io/llm-d-incubation/charts/batch-gateway"
         version_args=(--version "${BATCH_RELEASE_VERSION#v}")
     elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
         local repo_root
@@ -628,7 +629,20 @@ install_batch_gateway() {
         fi
     done
     if [ "${mismatch}" = "true" ]; then
-        warn "Image tags do not match expected version."
+        die "Image tags do not match expected version."
+    fi
+
+    # Verify OCI chart version for release installs
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        local installed_ver
+        installed_ver=$(helm get metadata "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" -o json 2>/dev/null \
+            | jq -r '.version // empty')
+        local expected_ver="${BATCH_RELEASE_VERSION#v}"
+        if [ "${installed_ver}" = "${expected_ver}" ]; then
+            log "Verified: OCI chart version ${installed_ver} matches release ${BATCH_RELEASE_VERSION}"
+        else
+            die "Chart version '${installed_ver}' does not match expected '${expected_ver}'"
+        fi
     fi
 
     log "batch-gateway installed."

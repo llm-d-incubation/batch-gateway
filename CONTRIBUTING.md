@@ -80,13 +80,14 @@ For changes that fix broken code or add small changes within a component:
 
 ## Testing Requirements
 
-We use three tiers of testing:
+We use four tiers of testing:
 
-1. **Unit tests**: Fast verification of code parts, testing different arguments
-2. **Integration tests**: Testing protocols between components and built artifacts
-3. **End-to-end (e2e) tests**: Whole system testing including benchmarking
+1. **Unit tests**: Fast verification of code parts, testing different arguments (`make test`)
+2. **Regression tests**: API schema compatibility (golden-file round-trips) and serialization guards (`make test-regression`)
+3. **Integration tests**: Feature-level validation through the real HTTP stack with in-memory backends, plus component integration with external services — tests that require external services skip gracefully when unavailable (`make test-integration`)
+4. **End-to-end (e2e) tests**: Whole system testing including benchmarking against a live deployment (`make test-e2e`)
 
-Strong e2e coverage is required for deployed systems to prevent performance regression. Appropriate test coverage is an important part of code review.
+Integration tests run in CI on every PR alongside unit tests. Tests that require external infrastructure (Docker, S3) skip gracefully when those services are unavailable. Strong e2e coverage is required for deployed systems to prevent performance regression. Appropriate test coverage is an important part of code review.
 
 ## Security
 
