@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import csv
+import datetime
 import json
 import os
 import subprocess
@@ -33,6 +34,8 @@ import textwrap
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import yaml
 
 SCENARIO_NAMES = {
     0: "interactive-only",
@@ -44,6 +47,15 @@ SCENARIO_NAMES = {
 }
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+
+
+def load_profile():
+    """Load default parameter profile if available."""
+    profile_path = SCRIPT_DIR / "profiles" / "default.yaml"
+    if profile_path.exists():
+        with open(profile_path) as f:
+            return yaml.safe_load(f)
+    return {}
 
 
 @dataclass
@@ -603,6 +615,8 @@ def generate_html_report(cfg, results):
                         {cfg.cycles} cycles</td></tr>
                 <tr><td><strong>Batch</strong></td>
                     <td>{cfg.num_jobs} jobs x {cfg.batch_size} requests</td></tr>
+                <tr><td><strong>Prompts</strong></td>
+                    <td>{cfg.prompt_tokens} tokens, {cfg.num_system_prompts} system prompts</td></tr>
                 <tr><td><strong>Scenarios</strong></td>
                     <td>{', '.join(f's{r.scenario} ({r.name})' for r in results)}</td></tr>
             </table>
@@ -731,31 +745,45 @@ def run_scenario(cfg, scenario):
 
 
 def main():
+    profile = load_profile()
+    bench_cfg = profile.get("benchmark", {})
+    prompt_cfg = profile.get("prompt", {})
+
     parser = argparse.ArgumentParser(
         description="Batch Gateway Benchmark Orchestrator"
     )
     parser.add_argument("--context", required=True, help="kubectl context")
     parser.add_argument("--scenarios", type=int, nargs="+", default=[2],
                         help="Scenarios to run (default: [2])")
-    parser.add_argument("--model", default="Qwen/Qwen3-8B",
+    parser.add_argument("--model",
+                        default=bench_cfg.get("model", "Qwen/Qwen3-8B"),
                         help="Model name (default: Qwen/Qwen3-8B)")
-    parser.add_argument("--burst-rate", type=int, default=15,
+    parser.add_argument("--burst-rate", type=int,
+                        default=bench_cfg.get("burst_rate", 15),
                         help="Requests/s during burst (default: 15)")
-    parser.add_argument("--idle-rate", type=int, default=1,
+    parser.add_argument("--idle-rate", type=int,
+                        default=bench_cfg.get("idle_rate", 1),
                         help="Requests/s during idle (default: 1)")
-    parser.add_argument("--burst-seconds", type=int, default=90,
+    parser.add_argument("--burst-seconds", type=int,
+                        default=bench_cfg.get("burst_seconds", 90),
                         help="Duration of burst phase (default: 90)")
-    parser.add_argument("--idle-seconds", type=int, default=90,
+    parser.add_argument("--idle-seconds", type=int,
+                        default=bench_cfg.get("idle_seconds", 90),
                         help="Duration of idle phase (default: 90)")
-    parser.add_argument("--cycles", type=int, default=3,
+    parser.add_argument("--cycles", type=int,
+                        default=bench_cfg.get("cycles", 3),
                         help="Number of burst/idle cycles (default: 3)")
-    parser.add_argument("--batch-size", type=int, default=1000,
+    parser.add_argument("--batch-size", type=int,
+                        default=bench_cfg.get("batch_size", 1000),
                         help="Requests per batch job (default: 1000)")
-    parser.add_argument("--num-jobs", type=int, default=3,
+    parser.add_argument("--num-jobs", type=int,
+                        default=bench_cfg.get("num_jobs", 3),
                         help="Concurrent batch jobs (default: 3)")
-    parser.add_argument("--prompt-tokens", type=int, default=256,
+    parser.add_argument("--prompt-tokens", type=int,
+                        default=prompt_cfg.get("prompt_tokens", 256),
                         help="Input tokens per prompt (default: 256)")
-    parser.add_argument("--num-system-prompts", type=int, default=5,
+    parser.add_argument("--num-system-prompts", type=int,
+                        default=prompt_cfg.get("num_system_prompts", 5),
                         help="Distinct system prompts (default: 5)")
     parser.add_argument("--results-dir", type=Path,
                         default=Path("benchmarks/results/latest"),
@@ -812,9 +840,36 @@ def main():
     # Generate report
     generate_html_report(cfg, results)
 
+    # Write machine-readable run metadata
+    metadata = {
+        "profile": "default",
+        "parameters": {
+            "model": cfg.model,
+            "burst_rate": cfg.burst_rate,
+            "idle_rate": cfg.idle_rate,
+            "burst_seconds": cfg.burst_seconds,
+            "idle_seconds": cfg.idle_seconds,
+            "cycles": cfg.cycles,
+            "batch_size": cfg.batch_size,
+            "num_jobs": cfg.num_jobs,
+            "prompt_tokens": cfg.prompt_tokens,
+            "num_system_prompts": cfg.num_system_prompts,
+        },
+        "versions": {
+            "batch_gateway": "unknown",
+            "router": "unknown",
+            "vllm": "unknown",
+        },
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    metadata_path = cfg.results_dir / "run-metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
     log("=== Benchmark complete ===")
-    log(f"Results: {cfg.results_dir}")
-    log(f"Report:  {cfg.results_dir / 'report.html'}")
+    log(f"Results:  {cfg.results_dir}")
+    log(f"Report:   {cfg.results_dir / 'report.html'}")
+    log(f"Metadata: {metadata_path}")
 
 
 if __name__ == "__main__":

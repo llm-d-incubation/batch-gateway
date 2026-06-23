@@ -31,6 +31,8 @@ import json
 import sys
 from pathlib import Path
 
+import yaml
+
 try:
     from faker import Faker
 except ImportError:
@@ -157,19 +159,36 @@ def generate_jsonl(
     print(f"Generated {num_requests} requests -> {output_path}", file=sys.stderr)
 
 
+def load_profile():
+    """Load default parameter profile if available."""
+    profile_path = Path(__file__).parent / "profiles" / "default.yaml"
+    if profile_path.exists():
+        with open(profile_path) as f:
+            return yaml.safe_load(f)
+    return {}
+
+
 def main():
+    profile = load_profile()
+    prompt_cfg = profile.get("prompt", {})
+
     parser = argparse.ArgumentParser(
         description="Generate JSONL batch input files for benchmarking"
     )
-    parser.add_argument("--num-requests", type=int, default=1000,
+    parser.add_argument("--num-requests", type=int,
+                        default=prompt_cfg.get("num_requests", 1000),
                         help="Number of requests per file (default: 1000)")
-    parser.add_argument("--num-system-prompts", type=int, default=5,
+    parser.add_argument("--num-system-prompts", type=int,
+                        default=prompt_cfg.get("num_system_prompts", 5),
                         help="Number of distinct system prompts (default: 5)")
-    parser.add_argument("--prompt-tokens", type=int, default=256,
+    parser.add_argument("--prompt-tokens", type=int,
+                        default=prompt_cfg.get("prompt_tokens", 256),
                         help="Approximate input tokens per user prompt (default: 256)")
-    parser.add_argument("--model", default="Qwen/Qwen3-8B",
+    parser.add_argument("--model",
+                        default=prompt_cfg.get("model", "Qwen/Qwen3-8B"),
                         help="Model name for requests (default: Qwen/Qwen3-8B)")
-    parser.add_argument("--seed", type=int, default=42,
+    parser.add_argument("--seed", type=int,
+                        default=prompt_cfg.get("seed", 42),
                         help="Random seed for reproducibility (default: 42)")
     parser.add_argument("--output", type=Path, default=None,
                         help="Output JSONL file path (single-job mode)")

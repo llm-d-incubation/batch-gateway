@@ -29,7 +29,7 @@ The benchmark compares dispatch strategies under a realistic traffic pattern: in
 - Kubernetes cluster with GPU node(s) (e.g., 1x NVIDIA A100)
 - `kubectl` configured with access to the cluster
 - `helm` 3.x
-- `python3` with `faker` installed (`pip3 install faker`)
+- `python3` with `faker` and `pyyaml` installed (`pip3 install faker pyyaml`)
 - [guidellm](https://github.com/vllm-project/guidellm) (container image used automatically)
 
 Optional (for development with local checkouts instead of OCI charts):
