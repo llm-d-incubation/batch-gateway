@@ -32,7 +32,7 @@ fi
 K="kubectl --context=${KUBE_CONTEXT}"
 H="helm --kube-context=${KUBE_CONTEXT}"
 
-lo "[$(date +%H:%M:%S)] $*"; }
+log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 teardown_namespace() {
     local NS="$1"

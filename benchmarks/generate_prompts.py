@@ -151,8 +151,8 @@ def generate_jsonl(
             }
             f.write(json.dumps(line, separators=(",", ":")) + "\n")
 
-        if (i + 1) % 500 == 0:
-            print(f"  Generated {i + 1}/{num_requests}", file=sys.stderr)
+            if (i + 1) % 500 == 0:
+                print(f"  Generated {i + 1}/{num_requests}", file=sys.stderr)
 
     print(f"Generated {num_requests} requests -> {output_path}", file=sys.stderr)
 

@@ -25,7 +25,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Defaults
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
-GUIDE_NAME="${GUIDEaseline}"
+GUIDE_NAME="${GUIDE_NAME:-optimized-baseline}"
 NAMESPACE="${NAMESPACE:-batch-bench-s${SCENARIO}}"
 
 # Validate required vars
