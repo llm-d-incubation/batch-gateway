@@ -15,6 +15,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -808,4 +809,140 @@ func fetchOutputFile(t *testing.T, batch *openai.Batch) string {
 		t.Fatalf("read output file body failed: %v", err)
 	}
 	return strings.TrimSpace(string(body))
+}
+
+func withProcessorObsURL(t *testing.T, fn func(string)) {
+	t.Helper()
+
+	if testProcessorObsURL != "" {
+		fn(testProcessorObsURL)
+		return
+	}
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe for processor port-forward: %v", err)
+	}
+	defer reader.Close()
+
+	cmd := exec.Command("kubectl", "port-forward",
+		"-n", testNamespace,
+		fmt.Sprintf("svc/%s-processor-nodeport", testHelmRelease),
+		":9090",
+		"--address", "127.0.0.1",
+	)
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+
+	if err := cmd.Start(); err != nil {
+		writer.Close()
+		t.Fatalf("start processor port-forward: %v", err)
+	}
+	_ = writer.Close()
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	waited := false
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		if !waited {
+			<-waitDone
+		}
+	}()
+
+	lineCh := make(chan string, 16)
+	scanDone := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			lineCh <- scanner.Text()
+		}
+		close(lineCh)
+		scanDone <- scanner.Err()
+	}()
+
+	var output []string
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				if err := <-scanDone; err != nil {
+					t.Fatalf("read processor port-forward output: %v", err)
+				}
+				t.Fatalf("processor port-forward exited before reporting a local port:\n%s", strings.Join(output, "\n"))
+			}
+			output = append(output, line)
+			const prefix = "Forwarding from 127.0.0.1:"
+			if !strings.Contains(line, prefix) {
+				continue
+			}
+			parts := strings.Fields(strings.SplitN(line, prefix, 2)[1])
+			if len(parts) == 0 {
+				t.Fatalf("unexpected processor port-forward output: %q", line)
+			}
+			fn("http://127.0.0.1:" + parts[0])
+			return
+		case err := <-waitDone:
+			waited = true
+			t.Fatalf("processor port-forward exited early: %v\n%s", err, strings.Join(output, "\n"))
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for processor port-forward:\n%s", strings.Join(output, "\n"))
+		}
+	}
+}
+
+func readProcessorObsEndpoint(t *testing.T, path string) (int, []byte, error) {
+	t.Helper()
+
+	var (
+		status int
+		body   []byte
+		err    error
+	)
+
+	withProcessorObsURL(t, func(baseURL string) {
+		var resp *http.Response
+		resp, err = http.Get(baseURL + path)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		status = resp.StatusCode
+		body, err = io.ReadAll(resp.Body)
+	})
+
+	return status, body, err
+}
+
+func waitForProcessorReady(t *testing.T, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	var lastStatus int
+
+	for {
+		status, _, err := readProcessorObsEndpoint(t, "/ready")
+		if err == nil && status == http.StatusOK {
+			return
+		}
+		lastErr = err
+		lastStatus = status
+
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				t.Fatalf("processor not ready after %v: %v", timeout, lastErr)
+			}
+			t.Fatalf("processor not ready after %v (status %d)", timeout, lastStatus)
+		}
+		time.Sleep(time.Second)
+	}
 }

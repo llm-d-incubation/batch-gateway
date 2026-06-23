@@ -377,6 +377,7 @@ benchmark-local-teardown:
 test-e2e:
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
+	echo "Processor observability endpoint: auto-resolved by the e2e test helpers"; \
 	cd test/e2e && $(GO) test -v -count=1 $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
 	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \

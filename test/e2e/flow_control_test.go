@@ -30,7 +30,6 @@ package e2e_test
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -570,15 +569,9 @@ func resolveExpectedObjective(t *testing.T, model string) string {
 func scrapeProcessorMetrics(t *testing.T) string {
 	t.Helper()
 
-	resp, err := http.Get(testProcessorObsURL + "/metrics")
+	_, body, err := readProcessorObsEndpoint(t, "/metrics")
 	if err != nil {
 		t.Fatalf("failed to scrape processor metrics: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read processor metrics body: %v", err)
 	}
 	return string(body)
 }

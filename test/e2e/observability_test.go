@@ -29,7 +29,7 @@ import (
 
 func testObservability(t *testing.T) {
 	t.Run("APIServer", func(t *testing.T) { doTestObservabilityEndpoints(t, testApiserverObsURL) })
-	t.Run("Processor", func(t *testing.T) { doTestObservabilityEndpoints(t, testProcessorObsURL) })
+	t.Run("Processor", doTestProcessorObservabilityEndpoints)
 	t.Run("Pprof", testPprof)
 	t.Run("OtelTraces", doTestOtelTraces)
 	t.Run("RequestLogging", doTestRequestLogging)
@@ -94,7 +94,6 @@ func testPprof(t *testing.T) {
 		obsURL string
 	}{
 		{"APIServer", testApiserverObsURL},
-		{"Processor", testProcessorObsURL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp, err := http.Get(tc.obsURL + "/debug/pprof/")
@@ -120,6 +119,27 @@ func testPprof(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("Processor", func(t *testing.T) {
+		status, _, err := readProcessorObsEndpoint(t, "/debug/pprof/")
+		if err != nil {
+			t.Skipf("pprof not reachable on processor observability endpoint: %v", err)
+		}
+		if status == http.StatusNotFound {
+			t.Skip("pprof not enabled on processor observability endpoint")
+		}
+		if status != http.StatusOK {
+			t.Errorf("expected 200 from /debug/pprof/, got %d", status)
+		}
+
+		heapStatus, _, err := readProcessorObsEndpoint(t, "/debug/pprof/heap")
+		if err != nil {
+			t.Fatalf("GET /debug/pprof/heap failed: %v", err)
+		}
+		if heapStatus != http.StatusOK {
+			t.Errorf("expected 200 from /debug/pprof/heap, got %d", heapStatus)
+		}
+	})
 }
 
 // doTestRequestLogging verifies that the apiserver emits request-level logs
@@ -183,6 +203,22 @@ func doTestObservabilityEndpoints(t *testing.T, obsURL string) {
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("expected 200 from %s, got %d", endpoint, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func doTestProcessorObservabilityEndpoints(t *testing.T) {
+	t.Helper()
+
+	for _, endpoint := range []string{"/health", "/ready", "/metrics"} {
+		t.Run(strings.TrimPrefix(endpoint, "/"), func(t *testing.T) {
+			status, _, err := readProcessorObsEndpoint(t, endpoint)
+			if err != nil {
+				t.Fatalf("GET %s failed: %v", endpoint, err)
+			}
+			if status != http.StatusOK {
+				t.Errorf("expected 200 from %s, got %d", endpoint, status)
 			}
 		})
 	}
