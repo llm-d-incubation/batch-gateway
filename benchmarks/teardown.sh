@@ -6,15 +6,11 @@ set -uo pipefail
 #
 # Usage:
 #   KUBE_CONTEXT=my-ctx SCENARIO=2 ./benchmarks/teardown.sh
-#   KUBE_CONTEXT=my-ctx ./benchmarks/teardown.sh --all
+#   KUBE_CONTEXT=my-ctx SCENARIO=all ./benchmarks/teardown.sh
 #
 # Required env vars:
 #   KUBE_CONTEXT       — kubectl context
-#
-# Either:
-#   SCENARIO           — scenario number (0-5) to tear down
-# Or:
-#   --all              — tear down all scenario namespaces (batch-bench-s0 through s5)
+#   SCENARIO           — scenario number (0-5), or "all" to tear down all namespaces
 #
 # Optional:
 #   NAMESPACE          — override auto-generated namespace
@@ -67,20 +63,20 @@ teardown_namespace() {
     log "  ${NS}: namespace deleted"
 }
 
-# Handle --all flag
-if [ "${1:-}" = "--all" ]; then
+# Validate SCENARIO
+if [ -z "${SCENARIO:-}" ]; then
+    echo "ERROR: SCENARIO is not set (use 0-5 or 'all')" >&2
+    exit 1
+fi
+
+# Handle SCENARIO=all
+if [ "${SCENARIO}" = "all" ]; then
     log "=== Tearing down ALL scenario namespaces ==="
     for i in 0 1 2 3 4 5; do
         teardown_namespace "batch-bench-s${i}"
     done
     log "=== Teardown complete ==="
     exit 0
-fi
-
-# Single scenario teardown
-if [ -z "${SCENARIO:-}" ]; then
-    echo "ERROR: SCENARIO is not set (or use --all)" >&2
-    exit 1
 fi
 
 NAMESPACE="${NAMESPACE:-batch-bench-s${SCENARIO}}"
