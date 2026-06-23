@@ -1,0 +1,8 @@
+processor:
+  config:
+    dispatchMode: async
+    asyncDispatch:
+      resultPollTimeout: "30s"
+    modelGateways:
+      Qwen/Qwen3-8B:
+        inferencePoolName: "optimized-baseline"

@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-submit
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: batch-submit
+          image: curlimages/curl:latest
+          env:
+            - name: BATCH_GATEWAY_URL
+              value: "http://batch-gateway-apiserver:8000"
+            - name: BATCH_MODEL
+              value: "Qwen/Qwen3-0.6B"
+            - name: BATCH_SIZE
+              value: "100"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              # Generate JSONL input file
+              JSONL_FILE="/tmp/batch-input.jsonl"
+              i=0
+              while [ "$i" -lt "$BATCH_SIZE" ]; do
+                echo "{\"custom_id\":\"bench-${i}\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"${BATCH_MODEL}\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"Write a short paragraph about request number ${i}.\"}]}}" >> "$JSONL_FILE"
+                i=$((i + 1))
+              done
+              echo "Generated ${BATCH_SIZE} requests in ${JSONL_FILE}"
+
+              # Upload the file
+              FILE_RESPONSE=$(curl -sk "${BATCH_GATEWAY_URL}/v1/files" \
+                -H "Authorization: Bearer benchmark" \
+                -F "purpose=batch" \
+                -F "file=@${JSONL_FILE}")
+              FILE_ID=$(echo "${FILE_RESPONSE}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+              if [ -z "${FILE_ID}" ]; then
+                echo "Failed to upload file: ${FILE_RESPONSE}"
+                exit 1
+              fi
+              echo "Uploaded file: ${FILE_ID}"
+
+              # Create the batch
+              BATCH_RESPONSE=$(curl -sk "${BATCH_GATEWAY_URL}/v1/batches" \
+                -H "Authorization: Bearer benchmark" \
+                -H "Content-Type: application/json" \
+                -d "{\"input_file_id\":\"${FILE_ID}\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}")
+              BATCH_ID=$(echo "${BATCH_RESPONSE}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+              if [ -z "${BATCH_ID}" ]; then
+                echo "Failed to create batch: ${BATCH_RESPONSE}"
+                exit 1
+              fi
+              echo "Created batch: ${BATCH_ID}"
+
+              # Poll until terminal state or timeout
+              TIMEOUT=600
+              ELAPSED=0
+              while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+                STATUS_RESPONSE=$(curl -sk "${BATCH_GATEWAY_URL}/v1/batches/${BATCH_ID}" \
+                  -H "Authorization: Bearer benchmark")
+                STATUS=$(echo "${STATUS_RESPONSE}" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+                COMPLETED=$(echo "${STATUS_RESPONSE}" | grep -o '"completed":[0-9]*' | head -1 | cut -d: -f2)
+                TOTAL=$(echo "${STATUS_RESPONSE}" | grep -o '"total":[0-9]*' | head -1 | cut -d: -f2)
+                echo "Batch ${BATCH_ID}: status=${STATUS} completed=${COMPLETED}/${TOTAL} (${ELAPSED}s)"
+
+                case "${STATUS}" in
+                  completed|failed|cancelled|expired)
+                    echo "Batch reached terminal state: ${STATUS}"
+                    exit 0
+                    ;;
+                esac
+
+                sleep 5
+                ELAPSED=$((ELAPSED + 5))
+              done
+              echo "Timed out waiting for batch after ${TIMEOUT}s"

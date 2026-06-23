@@ -1,0 +1,27 @@
+# Scenario 4: AIMD + llm-d Router flow control
+# Same processor config as scenario 3, plus:
+# - llm-d Router flowControl feature gate enabled
+# - EndpointPickerConfig with priority bands (interactive: 100, batch: -1 sheddable)
+# - InferenceObjective CRDs deployed
+# - Processor configured with inferenceObjective: "batch-sheddable"
+#
+# TODO: Add full configuration in PR 3
+processor:
+  config:
+    dispatchMode: sync
+    concurrency:
+      global: 100
+      perEndpoint: 20
+      recovery: 5
+      aimd:
+        enabled: true
+        min: 5
+        backoffFactor: 0.5
+        additiveIncrease: 1
+    globalInferenceGateway:
+      url: "http://llm-d-inference-gateway-istio:80"
+      inferenceObjective: "batch-sheddable"
+      requestTimeout: "5m"
+      maxRetries: 3
+      initialBackoff: "2s"
+      maxBackoff: "30s"

@@ -1,0 +1,4 @@
+# Scenario 0: Interactive-only baseline
+# No batch-gateway is deployed in this scenario.
+# Only vLLM + llm-d Router + guidellm interactive traffic.
+# This file is intentionally empty — setup.sh skips batch-gateway install for scenario 0.

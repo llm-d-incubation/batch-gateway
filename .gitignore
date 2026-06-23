@@ -3,3 +3,5 @@ bin/
 .claude/
 .cursor/
 .codegraph/
+benchmarks/results/*
+!benchmarks/results/.gitkeep

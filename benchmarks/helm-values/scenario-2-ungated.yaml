@@ -1,0 +1,28 @@
+processor:
+  config:
+    dispatchMode: sync
+    concurrency:
+      global: 200
+      perEndpoint: 100
+      recovery: 5
+      aimd:
+        enabled: false
+    modelGateways:
+      Qwen/Qwen3-0.6B:
+        url: "http://llm-d-inference-gateway-istio:80"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"
+      Qwen/Qwen3-8B:
+        url: "http://llm-d-inference-gateway-istio:80"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"
+      Qwen/Qwen3-32B-AWQ:
+        url: "http://llm-d-inference-gateway-istio:80"
+        requestTimeout: "5m"
+        maxRetries: 3
+        initialBackoff: "1s"
+        maxBackoff: "60s"

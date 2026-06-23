@@ -1,0 +1,47 @@
+# Scenario 1: Batch-equivalent traffic sent as regular interactive requests.
+# This is a second guidellm instance that sends the same prompts at constant rate,
+# simulating what a user would do without batch-gateway.
+#
+# TODO: Flesh out in PR 2
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-batch
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: guidellm
+          image: ghcr.io/vllm-project/guidellm:latest
+          env:
+            - name: USER
+              value: "guidellm"
+            - name: HF_HUB_CACHE
+              value: "/tmp/hf_cache"
+          command:
+            - sh
+            - -c
+            - |
+              # Sends batch-equivalent prompts as regular requests (no burst/idle cycling)
+              # Constant rate to simulate naive batch submission without batch-gateway
+              guidellm benchmark run \
+                --target "$BENCH_TARGET" \
+                --request-format text_completions \
+                --model "$BENCH_MODEL" \
+                --profile constant \
+                --rate "$BENCH_BATCH_RATE" \
+                --max-seconds "$BENCH_DURATION" \
+                --data "prompt_tokens=256,output_tokens=128" \
+                --output-dir "/results/batch" \
+                --outputs "batch.csv" \
+                --processor "$BENCH_MODEL" \
+                --disable-console-interactive
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results

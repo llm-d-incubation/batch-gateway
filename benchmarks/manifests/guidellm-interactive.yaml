@@ -1,0 +1,87 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-burst
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: guidellm
+          image: ghcr.io/vllm-project/guidellm:latest
+          env:
+            - name: USER
+              value: "guidellm"
+            - name: HF_HUB_CACHE
+              value: "/tmp/hf_cache"
+            # BENCH_ prefix avoids collision with guidellm's GUIDELLM_* auto-env-binding
+            - name: BENCH_TARGET
+              value: "$BENCH_TARGET"
+            - name: BENCH_MODEL
+              value: "$BENCH_MODEL"
+            - name: BENCH_SCENARIO
+              value: "$BENCH_SCENARIO"
+            - name: BENCH_BURST_RATE
+              value: "$BENCH_BURST_RATE"
+            - name: BENCH_IDLE_RATE
+              value: "$BENCH_IDLE_RATE"
+            - name: BENCH_PHASE_SECONDS
+              value: "$BENCH_PHASE_SECONDS"
+            - name: BENCH_NUM_CYCLES
+              value: "$BENCH_NUM_CYCLES"
+          command:
+            - sh
+            - -c
+            - |
+              TARGET="${BENCH_TARGET}"
+              MODEL="${BENCH_MODEL}"
+              SCENARIO="${BENCH_SCENARIO}"
+              BURST_RATE="${BENCH_BURST_RATE}"
+              IDLE_RATE="${BENCH_IDLE_RATE}"
+              PHASE_SECONDS="${BENCH_PHASE_SECONDS}"
+              NUM_CYCLES="${BENCH_NUM_CYCLES}"
+
+              echo "=== Burst benchmark: ${NUM_CYCLES} cycles of ${PHASE_SECONDS}s burst@${BURST_RATE}/s + ${PHASE_SECONDS}s idle@${IDLE_RATE}/s ==="
+              mkdir -p "/results/${SCENARIO}"
+
+              cycle=0
+              while [ "$cycle" -lt "$NUM_CYCLES" ]; do
+                echo "--- Cycle $((cycle+1))/${NUM_CYCLES}: BURST phase (${BURST_RATE} req/s for ${PHASE_SECONDS}s) ---"
+                guidellm benchmark run \
+                  --target "$TARGET" \
+                  --request-format text_completions \
+                  --model "$MODEL" \
+                  --profile constant \
+                  --rate "$BURST_RATE" \
+                  --max-seconds "$PHASE_SECONDS" \
+                  --data "prompt_tokens=256,output_tokens=128" \
+                  --output-dir "/results/${SCENARIO}" \
+                  --outputs "burst-${cycle}.csv" \
+                  --processor "$MODEL" \
+                  --disable-console-interactive
+
+                echo "--- Cycle $((cycle+1))/${NUM_CYCLES}: IDLE phase (${IDLE_RATE} req/s for ${PHASE_SECONDS}s) ---"
+                guidellm benchmark run \
+                  --target "$TARGET" \
+                  --request-format text_completions \
+                  --model "$MODEL" \
+                  --profile constant \
+                  --rate "$IDLE_RATE" \
+                  --max-seconds "$PHASE_SECONDS" \
+                  --data "prompt_tokens=256,output_tokens=128" \
+                  --output-dir "/results/${SCENARIO}" \
+                  --outputs "idle-${cycle}.csv" \
+                  --processor "$MODEL" \
+                  --disable-console-interactive
+
+                cycle=$((cycle + 1))
+              done
+              echo "=== Burst benchmark complete ==="
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results
