@@ -92,7 +92,7 @@ open benchmarks/results/run-01/report.html
 KUBE_CONTEXT=my-context SCENARIO=2 ./benchmarks/teardown.sh
 
 # All scenarios
-KUBE_CONTEXT=my-context ./benchmarks/teardown.sh --all
+KUBE_CONTEXT=my-context SCENARIO=all ./benchmarks/teardown.sh
 ```
 
 ## Local Testing (Kind + inference-sim)
