@@ -113,10 +113,20 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 	}
 
 	// Create temp file name within the target directory.
-	tmpName := filepath.Join(dir, fmt.Sprintf(".tmp-%d", time.Now().UnixNano()))
-	tmpFile, err := c.root.Create(tmpName)
-	if err != nil {
-		return nil, err
+	var tmpFile *os.File
+	var tmpName string
+	for range 3 {
+		tmpName = filepath.Join(dir, fmt.Sprintf(".tmp-%d", time.Now().UnixNano()))
+		tmpFile, err = c.root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+	}
+	if tmpFile == nil {
+		return nil, fmt.Errorf("failed to create unique temp file in %s after retries", dir)
 	}
 	defer func() {
 		// Clean up on error.

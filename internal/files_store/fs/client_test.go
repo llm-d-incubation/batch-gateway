@@ -20,10 +20,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,6 +185,50 @@ func TestStore(t *testing.T) {
 			t.Errorf("expected original content to be unchanged")
 		}
 	})
+}
+
+func TestStore_ConcurrentSameDir(t *testing.T) {
+	ctx := context.Background()
+	client := newTestClient(t)
+
+	const n = 10
+	errs := make([]error, n)
+	mds := make([]*api.BatchFileMetadata, n)
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func() {
+			defer wg.Done()
+			content := []byte(fmt.Sprintf("content-%d", i))
+			mds[i], errs[i] = client.Store(ctx, fmt.Sprintf("file-%d.txt", i), testFolder, 1024, 0, bytes.NewReader(content))
+		}()
+	}
+	wg.Wait()
+
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("Store goroutine %d failed: %v", i, errs[i])
+		}
+	}
+
+	for i := range n {
+		reader, _, err := client.Retrieve(ctx, fmt.Sprintf("file-%d.txt", i), testFolder)
+		if err != nil {
+			t.Fatalf("failed to retrieve file-%d.txt: %v", i, err)
+		}
+		data, _ := io.ReadAll(reader)
+		if closer, ok := reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		expected := fmt.Sprintf("content-%d", i)
+		if string(data) != expected {
+			t.Errorf("file-%d.txt: expected %q, got %q (data corruption from temp file collision)", i, expected, string(data))
+		}
+		if mds[i].Size != int64(len(expected)) {
+			t.Errorf("file-%d.txt: expected size %d, got %d", i, len(expected), mds[i].Size)
+		}
+	}
 }
 
 func TestRetrieve(t *testing.T) {
