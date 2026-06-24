@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -59,6 +60,8 @@ type Client struct {
 
 // Compile-time check that Client implements api.BatchFilesClient.
 var _ api.BatchFilesClient = (*Client)(nil)
+
+var tmpCounter atomic.Int64
 
 // New creates a new filesystem-based BatchFilesClient.
 func New(basePath string) (*Client, error) {
@@ -116,7 +119,7 @@ func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSiz
 	var tmpFile *os.File
 	var tmpName string
 	for range 3 {
-		tmpName = filepath.Join(dir, fmt.Sprintf(".tmp-%d", time.Now().UnixNano()))
+		tmpName = filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", time.Now().UnixNano(), tmpCounter.Add(1)))
 		tmpFile, err = c.root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
 			break
