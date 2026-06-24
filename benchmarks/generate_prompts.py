@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 Generate JSONL batch input files with configurable ISL/OSL distributions
 and system-prompt diversity.
