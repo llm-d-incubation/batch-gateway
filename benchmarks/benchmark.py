@@ -83,6 +83,9 @@ class PhaseMetrics:
     ttft_p50: float = 0.0
     ttft_p95: float = 0.0
     ttft_p99: float = 0.0
+    tpot_p50: float = 0.0
+    tpot_p95: float = 0.0
+    tpot_p99: float = 0.0
     itl_p50: float = 0.0
     itl_p95: float = 0.0
     itl_p99: float = 0.0
@@ -616,7 +619,9 @@ def generate_html_report(cfg, results):
                 <tr><td><strong>Batch</strong></td>
                     <td>{cfg.num_jobs} jobs x {cfg.batch_size} requests</td></tr>
                 <tr><td><strong>Prompts</strong></td>
-                    <td>{cfg.prompt_tokens} tokens, {cfg.num_system_prompts} system prompts</td></tr>
+                    <td>{cfg.prompt_tokens} tokens ISL, {cfg.num_system_prompts} system prompts</td></tr>
+                <tr><td><strong>Metrics</strong></td>
+                    <td>TTFT, TPOT, ITL, request latency (p50/p95/p99)</td></tr>
                 <tr><td><strong>Scenarios</strong></td>
                     <td>{', '.join(f's{r.scenario} ({r.name})' for r in results)}</td></tr>
             </table>
@@ -855,6 +860,8 @@ def main():
             "prompt_tokens": cfg.prompt_tokens,
             "num_system_prompts": cfg.num_system_prompts,
         },
+        "metrics_collected": ["ttft", "tpot", "itl", "req_latency"],
+        "percentiles": ["p50", "p95", "p99"],
         "versions": {
             "batch_gateway": "unknown",
             "router": "unknown",
