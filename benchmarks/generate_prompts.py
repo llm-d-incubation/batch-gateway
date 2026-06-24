@@ -86,7 +86,7 @@ TEMPLATE_FILLS = {
 }
 
 
-def sample_from_distribution(rng, distribution, mean, stdev, min_val=1):
+def sample_from_distribution(rng, distribution, mean, stdev, min_val=1, max_val=None):
     """Sample a positive integer from the specified distribution."""
     if distribution == "fixed":
         return int(mean)
@@ -105,7 +105,10 @@ def sample_from_distribution(rng, distribution, mean, stdev, min_val=1):
     else:
         val = mean
 
-    return max(min_val, int(round(val)))
+    val = max(min_val, int(round(val)))
+    if max_val is not None:
+        val = min(val, max_val)
+    return val
 
 
 def generate_system_prompts(num_prompts: int, seed: int, target_tokens: int) -> list[str]:
@@ -129,7 +132,9 @@ def generate_system_prompts(num_prompts: int, seed: int, target_tokens: int) -> 
             padding = fake.text(max_nb_chars=max(target_chars - len(template), 100))
             template = template + " " + padding
 
-        prompts.append(template[:target_chars].strip())
+        # Inject unique prefix to ensure distinct prefix-cache groups
+        prompt_text = f"[Persona {i:03d}] {template}"
+        prompts.append(prompt_text[:target_chars].strip())
 
     return prompts
 
@@ -152,9 +157,11 @@ def generate_jsonl(
     isl_distribution: str,
     isl_mean: float,
     isl_stdev: float,
+    isl_max: int,
     osl_distribution: str,
     osl_mean: float,
     osl_stdev: float,
+    osl_max: int,
     id_prefix: str = "req",
 ):
     """Generate a JSONL batch input file with ISL/OSL distributions."""
@@ -169,12 +176,12 @@ def generate_jsonl(
             system_prompt = system_prompts[i % num_system_prompts]
 
             # Sample ISL for this request (user prompt portion)
-            isl_tokens = sample_from_distribution(rng, isl_distribution, isl_mean, isl_stdev, min_val=16)
+            isl_tokens = sample_from_distribution(rng, isl_distribution, isl_mean, isl_stdev, min_val=16, max_val=isl_max)
             target_chars = isl_tokens * 4
             user_prompt = generate_user_prompt(fake, target_chars)
 
             # Sample OSL (max_tokens) for this request
-            osl_tokens = sample_from_distribution(rng, osl_distribution, osl_mean, osl_stdev, min_val=1)
+            osl_tokens = sample_from_distribution(rng, osl_distribution, osl_mean, osl_stdev, min_val=1, max_val=osl_max)
 
             line = {
                 "custom_id": f"{id_prefix}-{i:04d}",
@@ -244,6 +251,9 @@ def main():
     parser.add_argument("--isl-stdev", type=float,
                         default=isl_cfg.get("stdev", 1200),
                         help="ISL distribution stdev in tokens (default: 1200)")
+    parser.add_argument("--isl-max", type=int,
+                        default=isl_cfg.get("max", 4096),
+                        help="ISL maximum (clamp to model context length, default: 4096)")
 
     # OSL (Output Sequence Length) distribution
     parser.add_argument("--osl-distribution",
@@ -256,6 +266,9 @@ def main():
     parser.add_argument("--osl-stdev", type=float,
                         default=osl_cfg.get("stdev", 400),
                         help="OSL distribution stdev in tokens (default: 400)")
+    parser.add_argument("--osl-max", type=int,
+                        default=osl_cfg.get("max", 2048),
+                        help="OSL maximum (clamp output length, default: 2048)")
 
     # Legacy compat
     parser.add_argument("--prompt-tokens", type=int, default=None,
@@ -296,9 +309,11 @@ def main():
                 isl_distribution=args.isl_distribution,
                 isl_mean=args.isl_mean,
                 isl_stdev=args.isl_stdev,
+                isl_max=args.isl_max,
                 osl_distribution=args.osl_distribution,
                 osl_mean=args.osl_mean,
                 osl_stdev=args.osl_stdev,
+                osl_max=args.osl_max,
                 id_prefix=name,
             )
         print(f"\nAll jobs generated in {args.output_dir}/", file=sys.stderr)
@@ -317,9 +332,11 @@ def main():
             isl_distribution=args.isl_distribution,
             isl_mean=args.isl_mean,
             isl_stdev=args.isl_stdev,
+            isl_max=args.isl_max,
             osl_distribution=args.osl_distribution,
             osl_mean=args.osl_mean,
             osl_stdev=args.osl_stdev,
+            osl_max=args.osl_max,
         )
 
 

@@ -866,6 +866,7 @@ def main():
             "batch_gateway": "unknown",
             "router": "unknown",
             "vllm": "unknown",
+            "model_revision": os.environ.get("MODEL_REVISION", "latest"),
         },
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
     }

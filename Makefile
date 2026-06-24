@@ -353,6 +353,10 @@ BENCHMARK_RESULTS_DIR ?= benchmarks/results/local-run
 
 ## benchmark-local: Run benchmark e2e on local Kind cluster with inference-sim (no GPU required)
 benchmark-local:
+	@kind get clusters 2>/dev/null | grep -q $(KIND_CLUSTER_NAME) || \
+		{ echo "ERROR: Kind cluster '$(KIND_CLUSTER_NAME)' not found. Run 'make dev-deploy' first."; exit 1; }
+	@docker exec $(KIND_CLUSTER_NAME)-control-plane crictl images 2>/dev/null | grep -q batch-gateway-apiserver || \
+		{ echo "ERROR: batch-gateway images not loaded in Kind. Run 'make dev-deploy' first."; exit 1; }
 	@echo "=== Benchmark local e2e (MODE=sim, scenario $(BENCHMARK_SCENARIO)) ==="
 	@echo "Step 1/4: Setting up infrastructure..."
 	@MODE=sim KUBE_CONTEXT=$(BENCHMARK_CONTEXT) SCENARIO=$(BENCHMARK_SCENARIO) BG_IMAGE_TAG=0.0.1 BG_PULL_POLICY=IfNotPresent bash benchmarks/setup.sh

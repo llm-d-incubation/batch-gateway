@@ -20,6 +20,7 @@ set -euo pipefail
 #   NAMESPACE          — override auto-generated namespace (default: batch-bench-s${SCENARIO})
 #   MODEL              — model to serve (default: Qwen/Qwen3-8B)
 #   GUIDE_NAME         — inference pool name (default: optimized-baseline)
+#   MODEL_REVISION     — HuggingFace model revision/commit-sha to pin (default: unset, uses latest)
 #   SIM_IMAGE          — inference-sim container image (default: ghcr.io/llm-d/llm-d-inference-sim:latest)
 #   SIM_TTFT           — simulated time-to-first-token (default: 50ms)
 #   SIM_ITL            — simulated inter-token-latency (default: 20ms)
@@ -248,6 +249,13 @@ EOF
     # --- vLLM ---
     log "Deploying vLLM (${MODEL})"
     ${K} -n "${NAMESPACE}" apply -k "${SCRIPT_DIR}/manifests/vllm/"
+
+    # Pin model revision if specified
+    if [ -n "${MODEL_REVISION:-}" ]; then
+        log "  Pinning model revision: ${MODEL_REVISION}"
+        ${K} -n "${NAMESPACE}" patch deploy/decode --type=json \
+            -p "[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"--revision=${MODEL_REVISION}\"}]" >/dev/null
+    fi
 fi
 
 # --- Wait for inference backend ---
@@ -285,14 +293,10 @@ if [ -n "${VALUES_FILE}" ]; then
         )
     fi
 
-    # In sim mode, route processor directly to inference-sim service
+    # In sim mode, replace all model gateways with a single entry pointing to inference-sim
     if [ "${MODE}" = "sim" ]; then
         BG_EXTRA_ARGS+=(
-            --set "processor.config.modelGateways.${MODEL}.url=http://inference-sim.${NAMESPACE}.svc.cluster.local:8000"
-            --set "processor.config.modelGateways.${MODEL}.requestTimeout=5m"
-            --set "processor.config.modelGateways.${MODEL}.maxRetries=3"
-            --set "processor.config.modelGateways.${MODEL}.initialBackoff=1s"
-            --set "processor.config.modelGateways.${MODEL}.maxBackoff=60s"
+            --set-json "processor.config.modelGateways={\"${MODEL}\":{\"url\":\"http://inference-sim.${NAMESPACE}.svc.cluster.local:8000\",\"requestTimeout\":\"5m\",\"maxRetries\":3,\"initialBackoff\":\"1s\",\"maxBackoff\":\"60s\"}}"
         )
     fi
 
