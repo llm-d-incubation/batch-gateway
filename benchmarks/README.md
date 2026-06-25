@@ -97,13 +97,64 @@ KUBE_CONTEXT=my-context SCENARIO=all ./benchmarks/teardown.sh
 
 ## Local Testing (Kind + inference-sim)
 
-The full pipeline can be validated locally without a GPU using [`llm-d-inference-sim`](https://github.com/llm-d/llm-d-inference-sim):
+The full pipeline can be validated locally without a GPU using [`llm-d-inference-sim`](https://github.com/llm-d/llm-d-inference-sim). This deploys inference-sim (a synthetic vLLM-compatible server), Redis, PostgreSQL, and batch-gateway into a local Kind cluster.
+
+### Prerequisites
+
+1. A Kind cluster with batch-gateway images pre-loaded:
 
 ```bash
-make dev-deploy  # Deploys Kind cluster with inference-sim
+make dev-deploy
 ```
 
-The simulator supports configurable TTFT, inter-token latency, and 429 rate-limiting injection. Metrics won't reflect real GPU performance, but orchestration, metric collection, and report generation can be validated end-to-end.
+This creates the Kind cluster, builds batch-gateway images, and loads them into the cluster. Alternatively, create a cluster manually (`kind create cluster`) and load images with `kind load docker-image`.
+
+### Running
+
+```bash
+make benchmark-local
+```
+
+This runs the full pipeline end-to-end:
+1. Deploys infrastructure (`setup.sh` with `MODE=sim`) — Redis, PostgreSQL, inference-sim, batch-gateway
+2. Generates prompts (`generate_prompts.py` with fixed ISL for fast local runs)
+3. Runs the benchmark (`benchmark.py`)
+4. Produces a report and metadata JSON in `benchmarks/results/latest/`
+
+Expected output:
+
+```
+=== Benchmark local e2e (MODE=sim, scenario 2) ===
+Step 1/4: Setting up infrastructure...
+Step 2/4: Generating prompts...
+Step 3/4: Running benchmark...
+Step 4/4: Done!
+Report: benchmarks/results/latest/report.html
+Metadata: benchmarks/results/latest/run-metadata.json
+```
+
+### Cleanup
+
+```bash
+make benchmark-local-teardown
+```
+
+This tears down the benchmark namespace while leaving the Kind cluster intact.
+
+### Configuration
+
+The simulator behaviour is controlled via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODE` | `gpu` | Set to `sim` to use inference-sim (automatic in `make benchmark-local`) |
+| `SIM_IMAGE` | `ghcr.io/llm-d/llm-d-inference-sim:latest` | Inference-sim container image |
+| `SIM_TTFT` | `50ms` | Simulated time-to-first-token |
+| `SIM_ITL` | `20ms` | Simulated inter-token latency |
+
+Metrics from sim mode won't reflect real GPU performance, but orchestration, metric collection, and report generation can be validated end-to-end.
+
+> **Note:** Batch-gateway images must be built and loaded into Kind before running. If you see `ImagePullBackOff` errors, run `make dev-deploy` to rebuild and reload images.
 
 ## Traffic Pattern
 
@@ -188,6 +239,7 @@ Compare TTFT p99 during burst phases across scenarios:
 | `LLM_D_TAG` | No | `v0.7.0` | Git tag for llm-d guide values (used in OCI mode) |
 | `NAMESPACE` | No | `batch-bench-s${SCENARIO}` | Override namespace |
 | `MODEL` | No | `Qwen/Qwen3-8B` | Model to serve |
+| `MODEL_REVISION` | No | — | HuggingFace model revision/commit-sha to pin for reproducibility |
 | `GUIDE_NAME` | No | `optimized-baseline` | Inference pool name |
 | `BG_IMAGE_REPO` | No | — | Batch-gateway image repo override |
 | `BG_IMAGE_TAG` | No | — | Batch-gateway image tag override |

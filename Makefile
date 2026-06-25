@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown
 
 SHELL := /usr/bin/env bash
 
@@ -346,6 +346,31 @@ dev-rm-cluster:
 	@echo "Deleting kind cluster 'batch-gateway-dev'..."
 	@kind delete cluster --name batch-gateway-dev || echo "Cluster not found or already deleted"
 	@echo "✅ Kind cluster deleted"
+
+BENCHMARK_CONTEXT ?= kind-$(KIND_CLUSTER_NAME)
+BENCHMARK_SCENARIO ?= 3
+BENCHMARK_RESULTS_DIR ?= benchmarks/results/local-run
+
+## benchmark-local: Run benchmark e2e on local Kind cluster with inference-sim (no GPU required)
+benchmark-local:
+	@kind get clusters 2>/dev/null | grep -q $(KIND_CLUSTER_NAME) || \
+		{ echo "ERROR: Kind cluster '$(KIND_CLUSTER_NAME)' not found. Run 'make dev-deploy' first."; exit 1; }
+	@docker exec $(KIND_CLUSTER_NAME)-control-plane crictl images 2>/dev/null | grep -q batch-gateway-apiserver || \
+		{ echo "ERROR: batch-gateway images not loaded in Kind. Run 'make dev-deploy' first."; exit 1; }
+	@echo "=== Benchmark local e2e (MODE=sim, scenario $(BENCHMARK_SCENARIO)) ==="
+	@echo "Step 1/4: Setting up infrastructure..."
+	@MODE=sim KUBE_CONTEXT=$(BENCHMARK_CONTEXT) SCENARIO=$(BENCHMARK_SCENARIO) BG_IMAGE_TAG=0.0.1 BG_PULL_POLICY=IfNotPresent bash benchmarks/setup.sh
+	@echo "Step 2/4: Generating prompts..."
+	@python3 benchmarks/generate_prompts.py --num-requests 50 --isl-distribution fixed --isl-mean 256 --model sim-model --multi-job --output-dir $(BENCHMARK_RESULTS_DIR)
+	@echo "Step 3/4: Running benchmark..."
+	@python3 benchmarks/benchmark.py --context $(BENCHMARK_CONTEXT) --scenarios $(BENCHMARK_SCENARIO) --model sim-model --batch-size 50 --num-jobs 1 --results-dir $(BENCHMARK_RESULTS_DIR)
+	@echo "Step 4/4: Done!"
+	@echo "Report: $(BENCHMARK_RESULTS_DIR)/report.html"
+	@echo "Metadata: $(BENCHMARK_RESULTS_DIR)/run-metadata.json"
+
+## benchmark-local-teardown: Teardown local benchmark environment
+benchmark-local-teardown:
+	@KUBE_CONTEXT=$(BENCHMARK_CONTEXT) SCENARIO=$(BENCHMARK_SCENARIO) bash benchmarks/teardown.sh
 
 ## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
 ##           Use TEST_RUN to filter tests, e.g.: make test-e2e TEST_RUN=TestE2E/Batches/Cancel/InProgress

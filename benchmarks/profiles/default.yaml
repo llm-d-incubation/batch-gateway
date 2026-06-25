@@ -1,8 +1,18 @@
 prompt:
   num_requests: 1000
-  num_system_prompts: 5
-  prompt_tokens: 256
+  num_system_prompts: 32
+  system_prompt_tokens: 2048
   seed: 42
+  isl:
+    distribution: lognormal
+    mean: 1500
+    stdev: 1200
+    max: 4096
+  osl:
+    distribution: lognormal
+    mean: 500
+    stdev: 400
+    max: 2048
 benchmark:
   burst_rate: 15
   idle_rate: 1

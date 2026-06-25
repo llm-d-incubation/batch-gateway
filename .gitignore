@@ -3,5 +3,8 @@ bin/
 .claude/
 .cursor/
 .codegraph/
+.venv/
+__pycache__/
+*.pyc
 benchmarks/results/*
 !benchmarks/results/.gitkeep
