@@ -377,8 +377,6 @@ benchmark-local-teardown:
 test-e2e:
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
-	export TEST_SIM_SERVICE_429=$${VLLM_SIM_429_NAME:-vllm-sim-429}; \
-	export TEST_SIM_SERVICE_AIMD=$${VLLM_SIM_AIMD_NAME:-vllm-sim-aimd}; \
 	cd test/e2e && $(GO) test -v -count=1 $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
 	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
