@@ -252,24 +252,23 @@ func parseCounterByEndpoint(t *testing.T, metrics, metricName string) map[string
 // starts at 100% failure rate. The test:
 //  1. Submits requests to drive the AIMD limit to min (5).
 //  2. Flips the simulator to 0% failure rate via /admin/config (no rollout needed).
-//  3. Submits more requests and verifies the limit eventually increases above
-//     its phase-1 baseline.
+//  3. Submits single-request batches to deterministically complete multiple
+//     additive-increase windows, then verifies the exported limit rises above
+//     its phase-1 baseline without any new decrease signals.
 //
 // t.Cleanup restores the simulator to 100% failure for subsequent runs.
 //
-// Because AIMD increases by +1 per successful window, full recovery to the
-// configured perEndpoint limit requires many requests. We only assert that the
-// limit eventually increases beyond the phase-1 floor, since the exported gauge
-// can lag the recovery batch completion by a scrape interval.
+// Because AIMD increases by +1 per successful window, a single large recovery
+// batch can complete before exported metrics clearly reflect the recovery under
+// CI load. Driving recovery with enough single-request batches makes the
+// success windows deterministic while still keeping the original guarantee:
+// the exported limit must rise above the phase-1 floor.
 func doTestAIMDRecovery(t *testing.T) {
 	if !testKubectlAvailable {
 		t.Skip("kubectl not available, skipping AIMD recovery test")
 	}
 
-	const (
-		numFailRequests  = 10
-		numRecovRequests = 30
-	)
+	const numFailRequests = 10
 
 	t.Cleanup(func() {
 		t.Log("cleanup: restoring vllm-sim-aimd to 100% failure rate")
@@ -306,15 +305,21 @@ func doTestAIMDRecovery(t *testing.T) {
 
 	metrics := scrapeProcessorMetrics(t)
 	aimdLimits := parseGaugeByEndpoint(t, metrics, "batch_processor_aimd_concurrency_limit")
+	aimdIncreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_increases_total")
+	aimdDecreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_decreases_total")
 
 	var (
-		aimdEndpoint  string
-		baselineLimit float64
+		aimdEndpoint      string
+		baselineLimit     float64
+		baselineIncreases float64
+		baselineDecreases float64
 	)
 	for endpoint, limit := range aimdLimits {
 		if strings.Contains(endpoint, testSimServiceAIMD) {
 			aimdEndpoint = endpoint
 			baselineLimit = limit
+			baselineIncreases = aimdIncreases[endpoint]
+			baselineDecreases = aimdDecreases[endpoint]
 			t.Logf("phase 1: aimd_concurrency_limit{endpoint=%q} = %.0f", endpoint, limit)
 			if limit > float64(aimdMin) {
 				t.Fatalf("expected AIMD limit <= %d after 100%% failure, got %.0f", aimdMin, limit)
@@ -332,37 +337,53 @@ func doTestAIMDRecovery(t *testing.T) {
 	t.Log("phase 2: setting vllm-sim-aimd to 0% failure rate via /admin/config")
 	setSimAdminConfig(t, testSimServiceAIMD, `{"failure-injection-rate": 0}`)
 
-	// Phase 3: Submit requests that all succeed, triggering additive increases.
-	// Each successful window adds +1 to the limit (from aimd.additiveIncrease=1).
-	t.Log("phase 3: submitting requests to trigger AIMD recovery...")
-	recovLines := make([]string, 0, numRecovRequests)
-	for i := range numRecovRequests {
-		recovLines = append(recovLines, fmt.Sprintf(
+	// Phase 3: Submit one successful request at a time. A limit of 5 needs 5
+	// clean successes to record the first additive increase. Send more than one
+	// full success window so the exported gauge has time to move above the floor
+	// even under CI scrape lag.
+	numRecoveryRequests := 2*int(baselineLimit) + 1
+	t.Logf("phase 3: submitting %d single-request batches to trigger AIMD recovery...", numRecoveryRequests)
+	for i := range numRecoveryRequests {
+		recovLine := fmt.Sprintf(
 			`{"custom_id":"aimd-recov-ok-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"AIMD recover %d"}]}}`,
 			i+1, testModelAIMD, i+1,
-		))
+		)
+		recovFileID := mustCreateFile(t, fmt.Sprintf("aimd-recov-ok-%s-%02d.jsonl", testRunID, i+1), recovLine)
+		recovBatchID := mustCreateBatch(t, recovFileID)
+
+		recovBatch, _ := waitForBatchStatus(t, recovBatchID, 5*time.Minute, openai.BatchStatusCompleted)
+		if recovBatch.RequestCounts.Completed != 1 || recovBatch.RequestCounts.Failed != 0 {
+			t.Fatalf("expected recovery batch %d to complete cleanly, got completed=%d failed=%d",
+				i+1, recovBatch.RequestCounts.Completed, recovBatch.RequestCounts.Failed)
+		}
 	}
 
-	recovFileID := mustCreateFile(t, fmt.Sprintf("aimd-recov-ok-%s.jsonl", testRunID), strings.Join(recovLines, "\n"))
-	recovBatchID := mustCreateBatch(t, recovFileID)
-
-	recovBatch, _ := waitForBatchStatus(t, recovBatchID, 5*time.Minute, openai.BatchStatusCompleted)
-	if recovBatch.RequestCounts.Completed != int64(numRecovRequests) {
-		t.Fatalf("expected %d completed in recovery batch, got %d (failed=%d)",
-			numRecovRequests, recovBatch.RequestCounts.Completed, recovBatch.RequestCounts.Failed)
-	}
-
-	limit, increases := waitForAIMDLimitIncrease(t, aimdEndpoint, baselineLimit, 15*time.Second, 500*time.Millisecond)
+	limit, increases, decreases := waitForAIMDRecovery(
+		t,
+		aimdEndpoint,
+		baselineLimit,
+		baselineIncreases,
+		baselineDecreases,
+		60*time.Second,
+		500*time.Millisecond,
+	)
 	t.Logf("phase 3: aimd_concurrency_limit{endpoint=%q} = %.0f", aimdEndpoint, limit)
 	t.Logf("aimd_increases_total{endpoint=%q} = %.0f", aimdEndpoint, increases)
+	t.Logf("aimd_decreases_total{endpoint=%q} = %.0f", aimdEndpoint, decreases)
 }
 
-func waitForAIMDLimitIncrease(t *testing.T, endpoint string, baselineLimit float64, timeout, interval time.Duration) (float64, float64) {
+func waitForAIMDRecovery(
+	t *testing.T,
+	endpoint string,
+	baselineLimit, baselineIncreases, baselineDecreases float64,
+	timeout, interval time.Duration,
+) (float64, float64, float64) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
 	lastLimit := baselineLimit
-	var lastIncreases float64
+	lastIncreases := baselineIncreases
+	lastDecreases := baselineDecreases
 
 	for {
 		metrics := scrapeProcessorMetrics(t)
@@ -376,12 +397,21 @@ func waitForAIMDLimitIncrease(t *testing.T, endpoint string, baselineLimit float
 			lastIncreases = increases
 		}
 
+		aimdDecreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_decreases_total")
+		if decreases, ok := aimdDecreases[endpoint]; ok {
+			lastDecreases = decreases
+		}
+
+		if lastDecreases > baselineDecreases {
+			t.Fatalf("expected no new AIMD decreases during recovery, baseline=%.0f last=%.0f",
+				baselineDecreases, lastDecreases)
+		}
 		if lastLimit > baselineLimit {
-			return lastLimit, lastIncreases
+			return lastLimit, lastIncreases, lastDecreases
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("expected AIMD limit to increase above %.0f after recovery, last limit=%.0f, increases_total=%.0f",
-				baselineLimit, lastLimit, lastIncreases)
+			t.Fatalf("expected AIMD recovery after baseline limit %.0f, last limit=%.0f, increases_total=%.0f, decreases_total=%.0f",
+				baselineLimit, lastLimit, lastIncreases, lastDecreases)
 		}
 
 		time.Sleep(interval)
