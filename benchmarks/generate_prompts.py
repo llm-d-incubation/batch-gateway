@@ -1,27 +1,43 @@
 #!/usr/bin/env python3
 """
-Generate JSONL batch input files with Faker-based prompts and system-prompt diversity.
+Generate JSONL batch input files with pluggable data sources.
+
+Supports three data sources:
+- faker: Faker-based random text with system-prompt diversity (default)
+- synthetic: inference-perf style deterministic token generation (reproducible)
+- sharegpt: Real conversations from HuggingFace ShareGPT dataset
 
 Produces OpenAI-compatible batch input files with configurable:
 - Number of requests
 - Number of distinct system prompts (for prefix-cache evaluation)
-- Prompt token length
+- Prompt token length / ISL/OSL distributions
 - Model name
 
 Usage:
+    # Faker-based (default):
     python3 benchmarks/generate_prompts.py \
         --num-requests 1000 \
-        --num-system-prompts 5 \
-        --prompt-tokens 256 \
         --model "Qwen/Qwen3-8B" \
         --output job-a.jsonl
 
-    # Generate all 3 benchmark jobs at once:
+    # inference-perf synthetic:
+    python3 benchmarks/generate_prompts.py \
+        --data-source synthetic \
+        --num-requests 1000 \
+        --prompt-tokens 512 \
+        --model "Qwen/Qwen3-8B" \
+        --output job-a.jsonl
+
+    # ShareGPT real dataset:
+    python3 benchmarks/generate_prompts.py \
+        --data-source sharegpt \
+        --num-requests 1000 \
+        --model "Qwen/Qwen3-8B" \
+        --output job-a.jsonl
+
+    # Multi-job mode:
     python3 benchmarks/generate_prompts.py \
         --num-requests 1000 \
-        --num-system-prompts 5 \
-        --prompt-tokens 256 \
-        --model "Qwen/Qwen3-8B" \
         --multi-job \
         --output-dir benchmarks/results/
 """
@@ -117,6 +133,78 @@ def generate_user_prompt(fake: Faker, target_chars: int) -> str:
     return text[:target_chars].strip()
 
 
+def generate_synthetic_prompt(token_count: int, seed: int) -> str:
+    """Generate a deterministic prompt of exact token count (inference-perf style).
+
+    Uses a repeating word pattern that tokenizes predictably (~1 token per word).
+    This aligns with the llm-d ecosystem methodology for reproducible benchmarks.
+    """
+    words = ["hello", "world", "the", "quick", "brown", "fox", "jumps", "over",
+             "lazy", "dog", "alpha", "beta", "gamma", "delta", "epsilon"]
+    import random
+    rng = random.Random(seed)
+    rng.shuffle(words)
+    prompt_words = []
+    for i in range(token_count):
+        prompt_words.append(words[i % len(words)])
+    return " ".join(prompt_words)
+
+
+def load_sharegpt_dataset(num_requests: int, seed: int):
+    """Load conversations from the ShareGPT dataset on HuggingFace.
+
+    Returns list of (system_prompt, user_prompt) tuples.
+    Requires: pip install datasets
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        print("ERROR: 'datasets' package required for sharegpt source. "
+              "Install with: pip install datasets", file=sys.stderr)
+        sys.exit(1)
+
+    print("  Loading ShareGPT dataset from HuggingFace...", file=sys.stderr)
+    ds = load_dataset("anon8231489123/ShareGPT_Vicuna_unfiltered",
+                      split="train", trust_remote_code=True)
+
+    import random
+    rng = random.Random(seed)
+    indices = list(range(len(ds)))
+    rng.shuffle(indices)
+
+    conversations = []
+    for idx in indices:
+        if len(conversations) >= num_requests:
+            break
+        item = ds[idx]
+        convs = item.get("conversations", [])
+        if len(convs) < 2:
+            continue
+
+        system = ""
+        user = ""
+        for msg in convs:
+            role = msg.get("from", "")
+            value = msg.get("value", "")
+            if role == "system" and not system:
+                system = value
+            elif role == "human" and not user:
+                user = value
+            if user:
+                break
+
+        if user:
+            if not system:
+                system = "You are a helpful assistant."
+            conversations.append((system, user))
+
+    if len(conversations) < num_requests:
+        print(f"  WARNING: Only found {len(conversations)} usable conversations "
+              f"(requested {num_requests})", file=sys.stderr)
+
+    return conversations
+
+
 def generate_jsonl(
     num_requests: int,
     num_system_prompts: int,
@@ -125,19 +213,34 @@ def generate_jsonl(
     seed: int,
     output_path: Path,
     id_prefix: str = "req",
+    data_source: str = "faker",
 ):
-    """Generate a JSONL batch input file."""
-    fake = Faker()
-    fake.seed_instance(seed)
+    """Generate a JSONL batch input file using the specified data source."""
+    # Load data based on source
+    sharegpt_data = None
+    if data_source == "sharegpt":
+        sharegpt_data = load_sharegpt_dataset(num_requests, seed)
+        num_requests = min(num_requests, len(sharegpt_data))
 
-    system_prompts = generate_system_prompts(num_system_prompts, seed)
-    # Approximate: 1 token ≈ 4 characters
+    fake = None
+    system_prompts = None
+    if data_source in ("faker", "synthetic"):
+        fake = Faker()
+        fake.seed_instance(seed)
+        system_prompts = generate_system_prompts(num_system_prompts, seed)
+
     target_chars = prompt_tokens * 4
 
     with open(output_path, "w") as f:
         for i in range(num_requests):
-            system_prompt = system_prompts[i % num_system_prompts]
-            user_prompt = generate_user_prompt(fake, target_chars)
+            if data_source == "sharegpt":
+                system_prompt, user_prompt = sharegpt_data[i]
+            elif data_source == "synthetic":
+                system_prompt = system_prompts[i % num_system_prompts]
+                user_prompt = generate_synthetic_prompt(prompt_tokens, seed + i)
+            else:
+                system_prompt = system_prompts[i % num_system_prompts]
+                user_prompt = generate_user_prompt(fake, target_chars)
 
             line = {
                 "custom_id": f"{id_prefix}-{i:04d}",
@@ -157,6 +260,7 @@ def generate_jsonl(
                 print(f"  Generated {i + 1}/{num_requests}", file=sys.stderr)
 
     print(f"Generated {num_requests} requests -> {output_path}", file=sys.stderr)
+    print(f"  Data source: {data_source}", file=sys.stderr)
 
 
 def load_profile():
@@ -175,6 +279,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate JSONL batch input files for benchmarking"
     )
+    parser.add_argument("--data-source",
+                        choices=["faker", "synthetic", "sharegpt"],
+                        default=prompt_cfg.get("data_source", "faker"),
+                        help="Data source for prompt generation (default: faker)")
     parser.add_argument("--num-requests", type=int,
                         default=prompt_cfg.get("num_requests", 1000),
                         help="Number of requests per file (default: 1000)")
@@ -218,6 +326,7 @@ def main():
                 seed=args.seed + i,  # Different seed per job for variety
                 output_path=output_path,
                 id_prefix=name,
+                data_source=args.data_source,
             )
         print(f"\nAll jobs generated in {args.output_dir}/", file=sys.stderr)
         print("Submit with completion_window: job-a=30m, job-b=2h, job-c=24h", file=sys.stderr)
@@ -232,6 +341,7 @@ def main():
             model=args.model,
             seed=args.seed,
             output_path=args.output,
+            data_source=args.data_source,
         )
 
 

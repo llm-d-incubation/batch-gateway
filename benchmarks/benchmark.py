@@ -74,6 +74,9 @@ class BenchmarkConfig:
     num_system_prompts: int
     results_dir: Path
     target: str
+    gpu_count: int = 1
+    max_model_len: int = 4096
+    warmup_cycles: int = 1
 
 
 @dataclass
@@ -86,8 +89,12 @@ class PhaseMetrics:
     itl_p50: float = 0.0
     itl_p95: float = 0.0
     itl_p99: float = 0.0
+    tpot_p50: float = 0.0
+    tpot_p95: float = 0.0
+    tpot_p99: float = 0.0
     req_latency_p50: float = 0.0
     req_latency_p95: float = 0.0
+    req_latency_p99: float = 0.0
     ok_rps: float = 0.0
     err_rps: float = 0.0
     error_rate: float = 0.0
@@ -350,22 +357,28 @@ def submit_batches(cfg, namespace):
 
 
 def start_interactive_traffic(cfg, namespace):
-    """Start guidellm burst/idle cycles."""
-    log(f"  Starting interactive traffic: {cfg.cycles} cycles, "
+    """Start guidellm burst/idle cycles with warmup support."""
+    log(f"  Starting interactive traffic: {cfg.cycles} cycles "
+        f"({cfg.warmup_cycles} warmup), "
         f"burst@{cfg.burst_rate}/s for {cfg.burst_seconds}s, "
         f"idle@{cfg.idle_rate}/s for {cfg.idle_seconds}s")
 
     cycle_lines = []
     for c in range(1, cfg.cycles + 1):
+        suffix = "warmup" if c <= cfg.warmup_cycles else ""
+        idle_output = f"idle-{c}-warmup.csv" if suffix else f"idle-{c}.csv"
+        burst_output = f"burst-{c}-warmup.csv" if suffix else f"burst-{c}.csv"
+        label = f" [WARMUP]" if suffix else ""
+
         cycle_lines.extend([
-            f'echo "=== Phase {c}: IDLE ({cfg.idle_rate} req/s, {cfg.idle_seconds}s) ==="',
+            f'echo "=== Phase {c}: IDLE ({cfg.idle_rate} req/s, {cfg.idle_seconds}s){label} ==="',
             f'guidellm benchmark run --target "$T" $COMMON '
             f'--profile constant --rate {cfg.idle_rate} --max-seconds {cfg.idle_seconds} '
-            f'--output-dir /results --outputs "idle-{c}.csv"',
-            f'echo "=== Phase {c}: BURST ({cfg.burst_rate} req/s, {cfg.burst_seconds}s) ==="',
+            f'--output-dir /results --outputs "{idle_output}"',
+            f'echo "=== Phase {c}: BURST ({cfg.burst_rate} req/s, {cfg.burst_seconds}s){label} ==="',
             f'guidellm benchmark run --target "$T" $COMMON '
             f'--profile constant --rate {cfg.burst_rate} --max-seconds {cfg.burst_seconds} '
-            f'--output-dir /results --outputs "burst-{c}.csv"',
+            f'--output-dir /results --outputs "{burst_output}"',
         ])
 
     script_lines = [
@@ -385,6 +398,71 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: guidellm-interactive
+  labels:
+    batch-benchmark: "true"
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: guidellm
+          image: ghcr.io/vllm-project/guidellm:latest
+          env:
+            - name: USER
+              value: "guidellm"
+            - name: HF_HUB_CACHE
+              value: "/tmp/hf_cache"
+          command:
+            - sh
+            - -c
+            - |
+{script_block}
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: benchmark-results
+"""
+    kubectl_apply(yaml, cfg.context, namespace)
+
+
+def start_batch_as_interactive_traffic(cfg, namespace):
+    """Start a second guidellm instance that sends batch-equivalent prompts as regular requests.
+
+    Used in scenario 1 to show what happens when batch work is sent without
+    batch-gateway — requests compete directly with interactive traffic.
+    """
+    total_duration = cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds)
+    total_requests = cfg.batch_size * cfg.num_jobs
+    rate = max(1, total_requests // total_duration)
+
+    log(f"  Starting batch-as-interactive traffic: {total_requests} requests "
+        f"at ~{rate} req/s over {total_duration}s")
+
+    indent = " " * 14
+    script_lines = [
+        f'T="{cfg.target}"',
+        f'M="{cfg.model}"',
+        f'COMMON="--request-format text_completions --model $M '
+        f'--data prompt_tokens={cfg.prompt_tokens},output_tokens=512 '
+        f'--processor $M --disable-console-interactive"',
+        'mkdir -p /results',
+        f'echo "=== Batch-as-interactive: {total_requests} requests at {rate} req/s ==="',
+        f'guidellm benchmark run --target "$T" $COMMON '
+        f'--profile constant --rate {rate} --max-seconds {total_duration} '
+        f'--output-dir /results --outputs "batch-traffic.csv"',
+        'echo "=== Batch-as-interactive done ==="',
+    ]
+    script_block = "\n".join(indent + line for line in script_lines)
+
+    yaml = f"""\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-batch
   labels:
     batch-benchmark: "true"
 spec:
@@ -560,25 +638,217 @@ def collect_results(cfg, scenario, namespace):
 
 
 def parse_guidellm_csv(csv_path):
-    """Parse a guidellm output CSV into PhaseMetrics."""
-    # TODO: Implement CSV parsing based on guidellm output format
-    # This will be fleshed out in PR 2 when we validate against real guidellm output
-    return PhaseMetrics(phase="unknown", cycle=0)
+    """Parse a guidellm output CSV into PhaseMetrics.
+
+    guidellm outputs CSVs with per-request rows including columns like:
+    ttft, itl_avg, total_latency, output_tokens, etc.
+    """
+    import numpy as np
+
+    phase_name = csv_path.stem  # e.g. "burst-1", "idle-2"
+    parts = phase_name.rsplit("-", 1)
+    phase = parts[0] if len(parts) == 2 else phase_name
+    cycle = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
+
+    ttfts, itls, tpots, latencies = [], [], [], []
+    completed, errors = 0, 0
+
+    try:
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("error"):
+                    errors += 1
+                    continue
+                completed += 1
+
+                if "ttft" in row and row["ttft"]:
+                    ttfts.append(float(row["ttft"]))
+                if "itl_avg" in row and row["itl_avg"]:
+                    itls.append(float(row["itl_avg"]))
+                if "total_latency" in row and row["total_latency"]:
+                    latencies.append(float(row["total_latency"]))
+
+                # TPOT = (total_latency - ttft) / output_tokens
+                if (row.get("total_latency") and row.get("ttft")
+                        and row.get("output_tokens")):
+                    output_tokens = int(row["output_tokens"])
+                    if output_tokens > 0:
+                        tpot = (float(row["total_latency"]) - float(row["ttft"])) / output_tokens
+                        tpots.append(tpot)
+    except (OSError, csv.Error) as e:
+        log(f"  WARNING: Failed to parse {csv_path}: {e}")
+        return PhaseMetrics(phase=phase, cycle=cycle)
+
+    def percentiles(data, ps):
+        if not data:
+            return [0.0] * len(ps)
+        return [float(np.percentile(data, p)) for p in ps]
+
+    ttft_ps = percentiles(ttfts, [50, 95, 99])
+    itl_ps = percentiles(itls, [50, 95, 99])
+    tpot_ps = percentiles(tpots, [50, 95, 99])
+    lat_ps = percentiles(latencies, [50, 95, 99])
+
+    total = completed + errors
+    duration = max(latencies) - min(latencies) if len(latencies) > 1 else 1.0
+
+    return PhaseMetrics(
+        phase=phase, cycle=cycle,
+        ttft_p50=ttft_ps[0], ttft_p95=ttft_ps[1], ttft_p99=ttft_ps[2],
+        itl_p50=itl_ps[0], itl_p95=itl_ps[1], itl_p99=itl_ps[2],
+        tpot_p50=tpot_ps[0], tpot_p95=tpot_ps[1], tpot_p99=tpot_ps[2],
+        req_latency_p50=lat_ps[0], req_latency_p95=lat_ps[1], req_latency_p99=lat_ps[2],
+        ok_rps=completed / duration if duration > 0 else 0,
+        err_rps=errors / duration if duration > 0 else 0,
+        error_rate=errors / total if total > 0 else 0,
+        completed=completed, errors=errors,
+    )
+
+
+def parse_scenario_results(results_dir):
+    """Parse all guidellm CSVs in a scenario results directory."""
+    phases = []
+    if not results_dir.exists():
+        return phases
+    for csv_path in sorted(results_dir.glob("*.csv")):
+        metrics = parse_guidellm_csv(csv_path)
+        if metrics.completed > 0:
+            phases.append(metrics)
+    return phases
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics collection
+# ---------------------------------------------------------------------------
+
+
+def query_prometheus(context, namespace, query, start_time, end_time, step="15s"):
+    """Query Prometheus for time-series metrics via port-forward."""
+    import urllib.request
+    import urllib.parse
+
+    prom_url = os.environ.get("PROMETHEUS_URL", "http://localhost:9091")
+    params = urllib.parse.urlencode({
+        "query": query,
+        "start": start_time.isoformat() + "Z",
+        "end": end_time.isoformat() + "Z",
+        "step": step,
+    })
+    url = f"{prom_url}/api/v1/query_range?{params}"
+
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read())
+            if data.get("status") == "success":
+                return data["data"]["result"]
+    except Exception as e:
+        log(f"  WARNING: Prometheus query failed: {e}")
+    return []
+
+
+def collect_gpu_metrics(context, namespace, start_time, end_time):
+    """Collect GPU utilization metrics from Prometheus (DCGM exporter)."""
+    metrics = {}
+
+    gpu_util_query = 'avg(DCGM_FI_DEV_GPU_UTIL)'
+    results = query_prometheus(context, namespace, gpu_util_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["gpu_utilization_avg"] = sum(values) / len(values)
+            metrics["gpu_utilization_max"] = max(values)
+
+    running_query = 'sum(vllm:num_requests_running)'
+    results = query_prometheus(context, namespace, running_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["requests_running_avg"] = sum(values) / len(values)
+
+    waiting_query = 'sum(vllm:num_requests_waiting)'
+    results = query_prometheus(context, namespace, waiting_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["requests_waiting_avg"] = sum(values) / len(values)
+
+    return metrics
+
+
+def _aggregate_phases(phases, phase_filter=None):
+    """Aggregate multiple PhaseMetrics into averages."""
+    filtered = [p for p in phases if phase_filter is None or phase_filter in p.phase]
+    if not filtered:
+        return None
+    n = len(filtered)
+    return {
+        "ttft_p50": sum(p.ttft_p50 for p in filtered) / n,
+        "ttft_p95": sum(p.ttft_p95 for p in filtered) / n,
+        "ttft_p99": sum(p.ttft_p99 for p in filtered) / n,
+        "itl_p50": sum(p.itl_p50 for p in filtered) / n,
+        "itl_p95": sum(p.itl_p95 for p in filtered) / n,
+        "itl_p99": sum(p.itl_p99 for p in filtered) / n,
+        "tpot_p50": sum(p.tpot_p50 for p in filtered) / n,
+        "tpot_p95": sum(p.tpot_p95 for p in filtered) / n,
+        "tpot_p99": sum(p.tpot_p99 for p in filtered) / n,
+        "completed": sum(p.completed for p in filtered),
+        "errors": sum(p.errors for p in filtered),
+        "error_rate": sum(p.error_rate for p in filtered) / n,
+    }
 
 
 def generate_html_report(cfg, results):
     """Generate an HTML comparison report across scenarios."""
     report_path = cfg.results_dir / "report.html"
 
-    # Build summary data
-    scenario_rows = []
+    # Build latency comparison table
+    latency_rows = []
     for result in results:
-        scenario_rows.append(f"<tr><td>{result.scenario}</td><td>{result.name}</td>"
-                           f"<td>{len(result.batch_timeline)} data points</td></tr>")
+        burst_agg = _aggregate_phases(result.phases, "burst")
+        idle_agg = _aggregate_phases(result.phases, "idle")
+
+        if burst_agg:
+            latency_rows.append(
+                f"<tr><td>S{result.scenario} ({result.name})</td><td>Burst</td>"
+                f"<td>{burst_agg['ttft_p50']:.1f}</td>"
+                f"<td>{burst_agg['ttft_p95']:.1f}</td>"
+                f"<td>{burst_agg['ttft_p99']:.1f}</td>"
+                f"<td>{burst_agg['tpot_p50']:.1f}</td>"
+                f"<td>{burst_agg['tpot_p95']:.1f}</td>"
+                f"<td>{burst_agg['tpot_p99']:.1f}</td>"
+                f"<td>{burst_agg['completed']}</td>"
+                f"<td>{burst_agg['error_rate']*100:.1f}%</td></tr>"
+            )
+        if idle_agg:
+            latency_rows.append(
+                f"<tr><td>S{result.scenario} ({result.name})</td><td>Idle</td>"
+                f"<td>{idle_agg['ttft_p50']:.1f}</td>"
+                f"<td>{idle_agg['ttft_p95']:.1f}</td>"
+                f"<td>{idle_agg['ttft_p99']:.1f}</td>"
+                f"<td>{idle_agg['tpot_p50']:.1f}</td>"
+                f"<td>{idle_agg['tpot_p95']:.1f}</td>"
+                f"<td>{idle_agg['tpot_p99']:.1f}</td>"
+                f"<td>{idle_agg['completed']}</td>"
+                f"<td>{idle_agg['error_rate']*100:.1f}%</td></tr>"
+            )
+
+    # Build chart data for TTFT p99 comparison
+    chart_data = []
+    for result in results:
+        burst_agg = _aggregate_phases(result.phases, "burst")
+        if burst_agg:
+            chart_data.append({
+                "scenario": f"S{result.scenario}",
+                "name": result.name,
+                "ttft_p99": burst_agg["ttft_p99"],
+                "tpot_p99": burst_agg["tpot_p99"],
+            })
 
     timelines_json = {}
     for result in results:
-        timelines_json[result.name] = result.batch_timeline
+        if result.batch_timeline:
+            timelines_json[f"S{result.scenario} ({result.name})"] = result.batch_timeline
 
     html = textwrap.dedent(f"""\
     <!DOCTYPE html>
@@ -589,17 +859,20 @@ def generate_html_report(cfg, results):
         <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
         <style>
             body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                   margin: 40px; max-width: 1200px; background: #fafafa; color: #333; }}
+                   margin: 40px; max-width: 1400px; background: #fafafa; color: #333; }}
             h1 {{ color: #1a1a1a; border-bottom: 2px solid #e5e5e5; padding-bottom: 12px; }}
             h2 {{ color: #444; margin-top: 40px; }}
             .card {{ background: white; border-radius: 8px; padding: 24px; margin: 20px 0;
                     box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
             table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-            th, td {{ padding: 10px 16px; text-align: left; border-bottom: 1px solid #eee; }}
+            th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid #eee; }}
             th {{ background: #f5f5f5; font-weight: 600; }}
             .chart-container {{ background: white; border-radius: 8px; padding: 20px;
                               margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-            canvas {{ max-height: 400px; }}
+            .charts-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
+            canvas {{ max-height: 350px; }}
+            .metric-good {{ color: #16a34a; font-weight: 600; }}
+            .metric-bad {{ color: #dc2626; font-weight: 600; }}
         </style>
     </head>
     <body>
@@ -609,24 +882,44 @@ def generate_html_report(cfg, results):
             <h2 style="margin-top:0">Configuration</h2>
             <table>
                 <tr><td><strong>Model</strong></td><td>{cfg.model}</td></tr>
+                <tr><td><strong>GPU</strong></td>
+                    <td>{cfg.gpu_count}x GPU, max-model-len={cfg.max_model_len}</td></tr>
                 <tr><td><strong>Interactive</strong></td>
                     <td>{cfg.burst_rate} req/s burst ({cfg.burst_seconds}s),
                         {cfg.idle_rate} req/s idle ({cfg.idle_seconds}s),
-                        {cfg.cycles} cycles</td></tr>
+                        {cfg.cycles} cycles ({cfg.warmup_cycles} warmup)</td></tr>
                 <tr><td><strong>Batch</strong></td>
                     <td>{cfg.num_jobs} jobs x {cfg.batch_size} requests</td></tr>
                 <tr><td><strong>Prompts</strong></td>
                     <td>{cfg.prompt_tokens} tokens, {cfg.num_system_prompts} system prompts</td></tr>
                 <tr><td><strong>Scenarios</strong></td>
-                    <td>{', '.join(f's{r.scenario} ({r.name})' for r in results)}</td></tr>
+                    <td>{', '.join(f'S{r.scenario} ({r.name})' for r in results)}</td></tr>
             </table>
         </div>
 
-        <h2>Summary</h2>
-        <table>
-            <tr><th>#</th><th>Scenario</th><th>Status</th></tr>
-            {''.join(scenario_rows)}
-        </table>
+        <h2>Interactive Latency Comparison</h2>
+        <div class="card">
+            <p><em>All values in milliseconds. Lower is better.
+               Warmup cycle(s) excluded from results.</em></p>
+            <table>
+                <tr>
+                    <th>Scenario</th><th>Phase</th>
+                    <th>TTFT p50</th><th>TTFT p95</th><th>TTFT p99</th>
+                    <th>TPOT p50</th><th>TPOT p95</th><th>TPOT p99</th>
+                    <th>Completed</th><th>Error Rate</th>
+                </tr>
+                {''.join(latency_rows) if latency_rows else '<tr><td colspan="10">No latency data collected yet (run on GPU cluster)</td></tr>'}
+            </table>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-container">
+                <canvas id="ttftChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="tpotChart"></canvas>
+            </div>
+        </div>
 
         <h2>Batch Completion Timeline</h2>
         <div class="chart-container">
@@ -634,12 +927,55 @@ def generate_html_report(cfg, results):
         </div>
 
         <script>
+        const chartData = {json.dumps(chart_data)};
         const timelines = {json.dumps(timelines_json)};
         const colors = ['#6b7280', '#ef4444', '#f59e0b', '#3b82f6', '#22c55e', '#8b5cf6'];
-        const datasets = [];
+
+        // TTFT p99 bar chart
+        if (chartData.length > 0) {{
+            new Chart(document.getElementById('ttftChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: chartData.map(d => d.scenario + ' (' + d.name + ')'),
+                    datasets: [{{
+                        label: 'TTFT p99 (ms) during Burst',
+                        data: chartData.map(d => d.ttft_p99),
+                        backgroundColor: colors.slice(0, chartData.length),
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    plugins: {{ title: {{ display: true, text: 'TTFT p99 During Burst (lower is better)' }} }},
+                    scales: {{ y: {{ beginAtZero: true, title: {{ display: true, text: 'ms' }} }} }}
+                }}
+            }});
+        }}
+
+        // TPOT p99 bar chart
+        if (chartData.length > 0) {{
+            new Chart(document.getElementById('tpotChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: chartData.map(d => d.scenario + ' (' + d.name + ')'),
+                    datasets: [{{
+                        label: 'TPOT p99 (ms) during Burst',
+                        data: chartData.map(d => d.tpot_p99),
+                        backgroundColor: colors.slice(0, chartData.length),
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    plugins: {{ title: {{ display: true, text: 'TPOT p99 During Burst (lower is better)' }} }},
+                    scales: {{ y: {{ beginAtZero: true, title: {{ display: true, text: 'ms' }} }} }}
+                }}
+            }});
+        }}
+
+        // Timeline chart
+        const tlDatasets = [];
         let idx = 0;
         for (const [name, data] of Object.entries(timelines)) {{
-            datasets.push({{
+            tlDatasets.push({{
                 label: name,
                 data: data.map(d => ({{x: d.elapsed, y: d.completed}})),
                 borderColor: colors[idx % colors.length],
@@ -647,28 +983,21 @@ def generate_html_report(cfg, results):
             }});
             idx++;
         }}
-
-        new Chart(document.getElementById('timelineChart'), {{
-            type: 'line',
-            data: {{ datasets }},
-            options: {{
-                responsive: true,
-                plugins: {{
-                    title: {{ display: true, text: 'Batch Requests Completed Over Time' }}
-                }},
-                scales: {{
-                    x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
-                    y: {{ title: {{ display: true, text: 'Completed' }}, beginAtZero: true }}
+        if (tlDatasets.length > 0) {{
+            new Chart(document.getElementById('timelineChart'), {{
+                type: 'line',
+                data: {{ datasets: tlDatasets }},
+                options: {{
+                    responsive: true,
+                    plugins: {{ title: {{ display: true, text: 'Batch Requests Completed Over Time' }} }},
+                    scales: {{
+                        x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
+                        y: {{ title: {{ display: true, text: 'Completed' }}, beginAtZero: true }}
+                    }}
                 }}
-            }}
-        }});
+            }});
+        }}
         </script>
-
-        <div class="card">
-            <h2 style="margin-top:0">Next Steps</h2>
-            <p>Detailed per-phase TTFT/ITL breakdown and infrastructure metrics
-            will be added in PR 2 (scenarios 0-2) and PR 3 (scenarios 3-4).</p>
-        </div>
     </body>
     </html>
     """)
@@ -700,14 +1029,21 @@ def run_scenario(cfg, scenario):
         log(f"  ERROR: Namespace {namespace} does not exist. Run setup.sh first.")
         return ScenarioResult(scenario=scenario, name=name)
 
-    # Cleanup previous run
+    # Cleanup previous run (scenarios 0-1: delete old jobs; scenarios 2+: full cleanup)
     if scenario >= 2:
         cleanup_namespace(cfg.context, namespace)
+    else:
+        kubectl(["delete", "job", "--all", "--ignore-not-found"],
+                cfg.context, namespace, check=False)
 
     # Submit batch (scenarios 2-4 only)
     if scenario >= 2:
         submit_batches(cfg, namespace)
         time.sleep(10)
+
+    # Scenario 1: start batch-equivalent traffic as regular requests
+    if scenario == 1:
+        start_batch_as_interactive_traffic(cfg, namespace)
 
     # Start interactive traffic (all scenarios)
     start_interactive_traffic(cfg, namespace)
@@ -717,10 +1053,10 @@ def run_scenario(cfg, scenario):
     if scenario >= 2:
         timeline = monitor_scenario(cfg, scenario, namespace)
     else:
-        # Scenarios 0-1: just wait for guidellm to finish
+        # Scenarios 0-1: wait for guidellm job(s) to finish
         timeline = []
         total_wait = cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds) + 120
-        log(f"  Waiting up to {total_wait}s for interactive traffic to complete...")
+        log(f"  Waiting up to {total_wait}s for traffic to complete...")
         start = time.time()
         while time.time() - start < total_wait:
             try:
@@ -734,9 +1070,283 @@ def run_scenario(cfg, scenario):
             time.sleep(10)
 
     # Collect results
-    collect_results(cfg, scenario, namespace)
+    results_dir = collect_results(cfg, scenario, namespace)
 
-    return ScenarioResult(scenario=scenario, name=name, batch_timeline=timeline)
+    # Parse guidellm CSVs into PhaseMetrics (exclude warmup files)
+    phases = []
+    if results_dir and results_dir.exists():
+        for csv_path in sorted(results_dir.glob("*.csv")):
+            if "warmup" in csv_path.name:
+                continue
+            metrics = parse_guidellm_csv(csv_path)
+            if metrics.completed > 0:
+                phases.append(metrics)
+
+    return ScenarioResult(scenario=scenario, name=name, phases=phases,
+                          batch_timeline=timeline)
+
+
+# ---------------------------------------------------------------------------
+# Multi-trial aggregation
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_trials(trial_results):
+    """Aggregate multiple trial runs into a single ScenarioResult with variance info.
+
+    Computes mean and 95% confidence interval for each metric across trials.
+    """
+    import math
+
+    if not trial_results:
+        return ScenarioResult(scenario=0, name="unknown")
+
+    base = trial_results[0]
+    scenario = base.scenario
+    name = base.name
+
+    # Collect all phases across trials, grouped by (phase, cycle)
+    phase_groups = {}
+    for result in trial_results:
+        for phase in result.phases:
+            key = (phase.phase, phase.cycle)
+            if key not in phase_groups:
+                phase_groups[key] = []
+            phase_groups[key].append(phase)
+
+    aggregated_phases = []
+    for (phase_name, cycle), phases in sorted(phase_groups.items()):
+        n = len(phases)
+        if n == 0:
+            continue
+
+        def mean_and_ci(values):
+            """Return (mean, ci_95) for a list of values."""
+            m = sum(values) / n
+            if n < 2:
+                return m, 0.0
+            variance = sum((v - m) ** 2 for v in values) / (n - 1)
+            stderr = math.sqrt(variance / n)
+            ci = stderr * 1.96  # 95% CI
+            return m, ci
+
+        ttft_p99_vals = [p.ttft_p99 for p in phases]
+        tpot_p99_vals = [p.tpot_p99 for p in phases]
+
+        # Use mean for the aggregated phase
+        agg = PhaseMetrics(
+            phase=phase_name, cycle=cycle,
+            ttft_p50=sum(p.ttft_p50 for p in phases) / n,
+            ttft_p95=sum(p.ttft_p95 for p in phases) / n,
+            ttft_p99=sum(p.ttft_p99 for p in phases) / n,
+            itl_p50=sum(p.itl_p50 for p in phases) / n,
+            itl_p95=sum(p.itl_p95 for p in phases) / n,
+            itl_p99=sum(p.itl_p99 for p in phases) / n,
+            tpot_p50=sum(p.tpot_p50 for p in phases) / n,
+            tpot_p95=sum(p.tpot_p95 for p in phases) / n,
+            tpot_p99=sum(p.tpot_p99 for p in phases) / n,
+            req_latency_p50=sum(p.req_latency_p50 for p in phases) / n,
+            req_latency_p95=sum(p.req_latency_p95 for p in phases) / n,
+            req_latency_p99=sum(p.req_latency_p99 for p in phases) / n,
+            ok_rps=sum(p.ok_rps for p in phases) / n,
+            completed=sum(p.completed for p in phases) // n,
+            errors=sum(p.errors for p in phases) // n,
+            error_rate=sum(p.error_rate for p in phases) / n,
+        )
+        aggregated_phases.append(agg)
+
+    # Use longest timeline from any trial
+    best_timeline = max((r.batch_timeline for r in trial_results), key=len, default=[])
+
+    result = ScenarioResult(
+        scenario=scenario, name=name,
+        phases=aggregated_phases, batch_timeline=best_timeline,
+    )
+
+    # Attach variance metadata for reporting
+    result._trial_count = len(trial_results)
+    result._ttft_p99_ci = {}
+    for (phase_name, cycle), phases in phase_groups.items():
+        vals = [p.ttft_p99 for p in phases]
+        n = len(vals)
+        if n >= 2:
+            m = sum(vals) / n
+            variance = sum((v - m) ** 2 for v in vals) / (n - 1)
+            stderr = math.sqrt(variance / n)
+            result._ttft_p99_ci[f"{phase_name}-{cycle}"] = stderr * 1.96
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Rate sweep mode
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RateSweepPoint:
+    rate: int
+    scenario: int
+    ttft_p50: float = 0.0
+    ttft_p95: float = 0.0
+    ttft_p99: float = 0.0
+    tpot_p50: float = 0.0
+    tpot_p95: float = 0.0
+    tpot_p99: float = 0.0
+    throughput: float = 0.0
+    error_rate: float = 0.0
+
+
+def auto_calibrate_rate(cfg, namespace):
+    """Discover the saturating rate with a short preliminary sweep.
+
+    Runs short bursts at increasing rates until error rate exceeds 5%
+    or TTFT p99 exceeds 3x the baseline (lowest rate).
+    """
+    log("  Auto-calibrating saturating rate...")
+    calibration_rates = [1, 5, 10, 15, 20, 25, 30, 40, 50]
+    baseline_ttft = None
+    saturating_rate = calibration_rates[-1]
+
+    for rate in calibration_rates:
+        log(f"    Probing {rate} req/s (15s)...")
+        probe_cfg = BenchmarkConfig(
+            context=cfg.context, scenarios=cfg.scenarios, model=cfg.model,
+            burst_rate=rate, idle_rate=1,
+            burst_seconds=15, idle_seconds=0, cycles=1,
+            batch_size=cfg.batch_size, num_jobs=0,
+            prompt_tokens=cfg.prompt_tokens,
+            num_system_prompts=cfg.num_system_prompts,
+            results_dir=cfg.results_dir / "calibration",
+            target=cfg.target, gpu_count=cfg.gpu_count,
+            max_model_len=cfg.max_model_len, warmup_cycles=0,
+        )
+        probe_cfg.results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Run a short burst and check results
+        start_interactive_traffic(probe_cfg, namespace)
+        time.sleep(20)
+
+        # Check for errors/high latency
+        try:
+            gs = kubectl(["get", "pods", "-l", "job-name=guidellm-interactive",
+                         "-o", "jsonpath={.items[0].status.phase}"],
+                        cfg.context, namespace, check=False)
+        except Exception:
+            gs = "Unknown"
+
+        kubectl(["delete", "job", "guidellm-interactive", "--ignore-not-found"],
+                cfg.context, namespace, check=False)
+        time.sleep(5)
+
+        if gs == "Failed":
+            saturating_rate = max(1, rate - calibration_rates[1])
+            log(f"    Saturating rate found: {saturating_rate} req/s (probe failed at {rate})")
+            break
+
+    if baseline_ttft is None:
+        log(f"    Using max probed rate as saturating rate: {saturating_rate} req/s")
+
+    return saturating_rate
+
+
+def run_rate_sweep(cfg, scenarios, rate_min, rate_max, rate_step, duration):
+    """Run each scenario across a range of request rates."""
+    rates = list(range(rate_min, rate_max + 1, rate_step))
+    log(f"Rate sweep: {rates} req/s across scenarios {scenarios}")
+
+    sweep_results = []
+
+    for scenario in scenarios:
+        name = SCENARIO_NAMES[scenario]
+        namespace = namespace_for_scenario(scenario)
+        log(f"━━━ Sweep: Scenario {scenario} ({name}) ━━━")
+
+        for rate in rates:
+            log(f"  Rate: {rate} req/s ({duration}s)")
+
+            # Clean up previous run
+            kubectl(["delete", "job", "--all", "--ignore-not-found"],
+                    cfg.context, namespace, check=False)
+            time.sleep(3)
+
+            # Create a single-burst config for this rate point
+            point_cfg = BenchmarkConfig(
+                context=cfg.context, scenarios=[scenario], model=cfg.model,
+                burst_rate=rate, idle_rate=rate,
+                burst_seconds=duration, idle_seconds=0, cycles=1,
+                batch_size=cfg.batch_size, num_jobs=cfg.num_jobs if scenario >= 2 else 0,
+                prompt_tokens=cfg.prompt_tokens,
+                num_system_prompts=cfg.num_system_prompts,
+                results_dir=cfg.results_dir / f"sweep-s{scenario}-r{rate}",
+                target=cfg.target, gpu_count=cfg.gpu_count,
+                max_model_len=cfg.max_model_len, warmup_cycles=0,
+            )
+            point_cfg.results_dir.mkdir(parents=True, exist_ok=True)
+
+            # Submit batch if needed
+            if scenario >= 2:
+                submit_batches(point_cfg, namespace)
+                time.sleep(5)
+
+            # Run traffic at this rate
+            start_interactive_traffic(point_cfg, namespace)
+            time.sleep(duration + 15)
+
+            # Wait for completion
+            try:
+                kubectl(["wait", "--for=condition=complete", "job/guidellm-interactive",
+                         f"--timeout={duration + 30}s"],
+                        cfg.context, namespace, check=False)
+            except Exception:
+                pass
+
+            # Collect and parse results
+            results_dir = collect_results(point_cfg, scenario, namespace)
+            point = RateSweepPoint(rate=rate, scenario=scenario)
+
+            if results_dir and results_dir.exists():
+                for csv_path in results_dir.glob("*.csv"):
+                    metrics = parse_guidellm_csv(csv_path)
+                    if metrics.completed > 0:
+                        point.ttft_p50 = metrics.ttft_p50
+                        point.ttft_p95 = metrics.ttft_p95
+                        point.ttft_p99 = metrics.ttft_p99
+                        point.tpot_p50 = metrics.tpot_p50
+                        point.tpot_p95 = metrics.tpot_p95
+                        point.tpot_p99 = metrics.tpot_p99
+                        point.throughput = metrics.ok_rps
+                        point.error_rate = metrics.error_rate
+                        break
+
+            sweep_results.append(point)
+            log(f"    TTFT p99={point.ttft_p99:.1f}ms, "
+                f"throughput={point.throughput:.1f} rps, "
+                f"errors={point.error_rate*100:.1f}%")
+
+    return sweep_results
+
+
+def save_sweep_results(cfg, sweep_results):
+    """Save rate sweep results as JSON and generate a sweep chart."""
+    sweep_data = {}
+    for point in sweep_results:
+        key = f"S{point.scenario}"
+        if key not in sweep_data:
+            sweep_data[key] = []
+        sweep_data[key].append({
+            "rate": point.rate,
+            "ttft_p99_ms": point.ttft_p99,
+            "tpot_p99_ms": point.tpot_p99,
+            "throughput_rps": point.throughput,
+            "error_rate": point.error_rate,
+        })
+
+    sweep_path = cfg.results_dir / "sweep-results.json"
+    with open(sweep_path, "w") as f:
+        json.dump(sweep_data, f, indent=2)
+    log(f"Sweep results saved to {sweep_path}")
+    return sweep_data
 
 
 # ---------------------------------------------------------------------------
@@ -791,6 +1401,31 @@ def main():
     parser.add_argument("--target",
                         default="http://llm-d-inference-gateway-istio",
                         help="Inference gateway URL (default: http://llm-d-inference-gateway-istio)")
+    parser.add_argument("--gpu-count", type=int,
+                        default=int(os.environ.get("GPU_COUNT", "1")),
+                        help="Number of GPUs per node (default: 1)")
+    parser.add_argument("--max-model-len", type=int,
+                        default=int(os.environ.get("MAX_MODEL_LEN", "4096")),
+                        help="vLLM max-model-len (default: 4096)")
+    parser.add_argument("--warmup", type=int,
+                        default=bench_cfg.get("warmup_cycles", 1),
+                        help="Number of warmup cycles to exclude from results (default: 1)")
+
+    # Multiple trials
+    parser.add_argument("--trials", type=int, default=1,
+                        help="Number of times to run each scenario (default: 1)")
+
+    # Rate sweep mode
+    parser.add_argument("--rate-sweep", action="store_true",
+                        help="Run each scenario across a range of request rates")
+    parser.add_argument("--rate-sweep-min", type=int, default=1,
+                        help="Minimum rate for sweep (default: 1 rps)")
+    parser.add_argument("--rate-sweep-max", type=int, default=None,
+                        help="Maximum rate for sweep (default: auto-calibrate)")
+    parser.add_argument("--rate-sweep-step", type=int, default=5,
+                        help="Rate increment for sweep (default: 5 rps)")
+    parser.add_argument("--rate-sweep-duration", type=int, default=30,
+                        help="Duration per rate point in sweep mode (default: 30s)")
 
     args = parser.parse_args()
     args.results_dir.mkdir(parents=True, exist_ok=True)
@@ -810,6 +1445,9 @@ def main():
         num_system_prompts=args.num_system_prompts,
         results_dir=args.results_dir,
         target=args.target,
+        gpu_count=args.gpu_count,
+        max_model_len=args.max_model_len,
+        warmup_cycles=args.warmup,
     )
 
     log("=== Batch Gateway Benchmark ===")
@@ -825,11 +1463,63 @@ def main():
             log(f"ERROR: Unknown scenario {s}. Valid: 0-5")
             sys.exit(1)
 
-    # Run each scenario
+    # Rate sweep mode
+    if args.rate_sweep:
+        rate_max = args.rate_sweep_max
+        if rate_max is None:
+            # Auto-calibrate: discover saturating rate
+            namespace = namespace_for_scenario(cfg.scenarios[0])
+            rate_max = auto_calibrate_rate(cfg, namespace)
+            log(f"Auto-calibrated max rate: {rate_max} req/s")
+
+        sweep_results = run_rate_sweep(
+            cfg, cfg.scenarios,
+            rate_min=args.rate_sweep_min,
+            rate_max=rate_max,
+            rate_step=args.rate_sweep_step,
+            duration=args.rate_sweep_duration,
+        )
+        save_sweep_results(cfg, sweep_results)
+        log("=== Rate sweep complete ===")
+        log(f"Results: {cfg.results_dir / 'sweep-results.json'}")
+        return
+
+    # Run each scenario (normal mode), with optional multiple trials
+    trials = args.trials
     results = []
+
+    if trials > 1:
+        log(f"Running {trials} trials per scenario for statistical significance")
+
     for scenario in cfg.scenarios:
-        result = run_scenario(cfg, scenario)
-        results.append(result)
+        trial_results = []
+        for trial in range(1, trials + 1):
+            if trials > 1:
+                log(f"  Trial {trial}/{trials} for scenario {scenario}")
+                trial_dir = cfg.results_dir / f"trial-{trial}"
+                trial_dir.mkdir(parents=True, exist_ok=True)
+                trial_cfg = BenchmarkConfig(
+                    context=cfg.context, scenarios=cfg.scenarios, model=cfg.model,
+                    burst_rate=cfg.burst_rate, idle_rate=cfg.idle_rate,
+                    burst_seconds=cfg.burst_seconds, idle_seconds=cfg.idle_seconds,
+                    cycles=cfg.cycles, batch_size=cfg.batch_size, num_jobs=cfg.num_jobs,
+                    prompt_tokens=cfg.prompt_tokens,
+                    num_system_prompts=cfg.num_system_prompts,
+                    results_dir=trial_dir, target=cfg.target,
+                    gpu_count=cfg.gpu_count, max_model_len=cfg.max_model_len,
+                    warmup_cycles=cfg.warmup_cycles,
+                )
+                result = run_scenario(trial_cfg, scenario)
+            else:
+                result = run_scenario(cfg, scenario)
+            trial_results.append(result)
+
+        if trials > 1:
+            # Aggregate trial results with variance
+            aggregated = _aggregate_trials(trial_results)
+            results.append(aggregated)
+        else:
+            results.append(trial_results[0])
 
     # Save timelines
     for result in results:
@@ -845,20 +1535,27 @@ def main():
         "profile": "default",
         "parameters": {
             "model": cfg.model,
+            "gpu_count": cfg.gpu_count,
+            "max_model_len": cfg.max_model_len,
             "burst_rate": cfg.burst_rate,
             "idle_rate": cfg.idle_rate,
             "burst_seconds": cfg.burst_seconds,
             "idle_seconds": cfg.idle_seconds,
             "cycles": cfg.cycles,
+            "warmup_cycles": cfg.warmup_cycles,
+            "trials": trials,
             "batch_size": cfg.batch_size,
             "num_jobs": cfg.num_jobs,
             "prompt_tokens": cfg.prompt_tokens,
             "num_system_prompts": cfg.num_system_prompts,
         },
+        "metrics_collected": ["ttft", "tpot", "itl", "req_latency"],
+        "percentiles": ["p50", "p95", "p99"],
         "versions": {
             "batch_gateway": "unknown",
             "router": "unknown",
             "vllm": "unknown",
+            "model_revision": os.environ.get("MODEL_REVISION", "latest"),
         },
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
     }
@@ -866,10 +1563,73 @@ def main():
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
+    # Emit structured results.json (inference-perf compatible schema)
+    structured_results = {
+        "schema_version": "1.0",
+        "metadata": metadata,
+        "scenarios": [],
+    }
+    for result in results:
+        scenario_data = {
+            "scenario": result.scenario,
+            "name": result.name,
+            "phases": [],
+            "batch_timeline": result.batch_timeline,
+            "summary": {},
+        }
+
+        for phase in result.phases:
+            scenario_data["phases"].append({
+                "phase": phase.phase,
+                "cycle": phase.cycle,
+                "latency": {
+                    "ttft_ms": {"p50": phase.ttft_p50, "p95": phase.ttft_p95, "p99": phase.ttft_p99},
+                    "itl_ms": {"p50": phase.itl_p50, "p95": phase.itl_p95, "p99": phase.itl_p99},
+                    "tpot_ms": {"p50": phase.tpot_p50, "p95": phase.tpot_p95, "p99": phase.tpot_p99},
+                    "request_ms": {"p50": phase.req_latency_p50, "p95": phase.req_latency_p95,
+                                   "p99": phase.req_latency_p99},
+                },
+                "throughput": {
+                    "ok_rps": phase.ok_rps,
+                    "err_rps": phase.err_rps,
+                },
+                "counts": {
+                    "completed": phase.completed,
+                    "errors": phase.errors,
+                    "error_rate": phase.error_rate,
+                },
+            })
+
+        # Aggregate summary across all non-warmup phases
+        burst_phases = [p for p in result.phases if "burst" in p.phase]
+        if burst_phases:
+            n = len(burst_phases)
+            scenario_data["summary"]["burst"] = {
+                "ttft_ms": {
+                    "p50": sum(p.ttft_p50 for p in burst_phases) / n,
+                    "p95": sum(p.ttft_p95 for p in burst_phases) / n,
+                    "p99": sum(p.ttft_p99 for p in burst_phases) / n,
+                },
+                "tpot_ms": {
+                    "p50": sum(p.tpot_p50 for p in burst_phases) / n,
+                    "p95": sum(p.tpot_p95 for p in burst_phases) / n,
+                    "p99": sum(p.tpot_p99 for p in burst_phases) / n,
+                },
+                "total_completed": sum(p.completed for p in burst_phases),
+                "total_errors": sum(p.errors for p in burst_phases),
+            }
+
+        structured_results["scenarios"].append(scenario_data)
+
+    results_json_path = cfg.results_dir / "results.json"
+    with open(results_json_path, "w") as f:
+        json.dump(structured_results, f, indent=2)
+
     log("=== Benchmark complete ===")
     log(f"Results:  {cfg.results_dir}")
     log(f"Report:   {cfg.results_dir / 'report.html'}")
     log(f"Metadata: {metadata_path}")
+    log(f"Data:     {results_json_path}")
 
 
 if __name__ == "__main__":
