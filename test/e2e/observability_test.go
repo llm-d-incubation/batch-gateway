@@ -123,13 +123,13 @@ func testPprof(t *testing.T) {
 	t.Run("Processor", func(t *testing.T) {
 		pf, err := startProcessorObsPortForward(t)
 		if err != nil {
-			t.Skipf("pprof not reachable on processor observability endpoint: %v", err)
+			t.Fatalf("processor port-forward failed: %v", err)
 		}
 		defer pf.Close()
 
 		status, _, err := pf.Read("/debug/pprof/")
 		if err != nil {
-			t.Skipf("pprof not reachable on processor observability endpoint: %v", err)
+			t.Fatalf("GET /debug/pprof/ failed: %v", err)
 		}
 		if status == http.StatusNotFound {
 			t.Skip("pprof not enabled on processor observability endpoint")

@@ -816,6 +816,7 @@ type processorObsPortForward struct {
 	cmd      *exec.Cmd
 	reader   *os.File
 	waitDone chan error
+	scanDone chan error
 }
 
 func startProcessorObsPortForward(t *testing.T) (*processorObsPortForward, error) {
@@ -843,20 +844,26 @@ func startProcessorObsPortForward(t *testing.T) (*processorObsPortForward, error
 
 	var (
 		waitDone chan error
+		scanDone chan error
 		success  bool
 	)
+	startupDone := make(chan struct{})
 	defer func() {
 		if success {
 			return
 		}
+		close(startupDone)
 		_ = writer.Close()
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
+		_ = reader.Close()
 		if waitDone != nil {
 			<-waitDone
 		}
-		_ = reader.Close()
+		if scanDone != nil {
+			<-scanDone
+		}
 	}()
 
 	if err := cmd.Start(); err != nil {
@@ -869,12 +876,16 @@ func startProcessorObsPortForward(t *testing.T) (*processorObsPortForward, error
 		waitDone <- cmd.Wait()
 	}()
 
-	lineCh := make(chan string, 16)
-	scanDone := make(chan error, 1)
+	lineCh := make(chan string)
+	scanDone = make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(reader)
 		for scanner.Scan() {
-			lineCh <- scanner.Text()
+			line := scanner.Text()
+			select {
+			case lineCh <- line:
+			case <-startupDone:
+			}
 		}
 		close(lineCh)
 		scanDone <- scanner.Err()
@@ -902,12 +913,14 @@ func startProcessorObsPortForward(t *testing.T) (*processorObsPortForward, error
 			if len(parts) == 0 {
 				return nil, fmt.Errorf("unexpected processor port-forward output: %q", line)
 			}
+			close(startupDone)
 			success = true
 			return &processorObsPortForward{
 				baseURL:  "http://127.0.0.1:" + parts[0],
 				cmd:      cmd,
 				reader:   reader,
 				waitDone: waitDone,
+				scanDone: scanDone,
 			}, nil
 		case err := <-waitDone:
 			return nil, fmt.Errorf("processor port-forward exited early: %v\n%s", err, strings.Join(output, "\n"))
@@ -924,11 +937,14 @@ func (pf *processorObsPortForward) Close() {
 	if pf.cmd != nil && pf.cmd.Process != nil {
 		_ = pf.cmd.Process.Kill()
 	}
+	if pf.reader != nil {
+		_ = pf.reader.Close()
+	}
 	if pf.waitDone != nil {
 		<-pf.waitDone
 	}
-	if pf.reader != nil {
-		_ = pf.reader.Close()
+	if pf.scanDone != nil {
+		<-pf.scanDone
 	}
 }
 
