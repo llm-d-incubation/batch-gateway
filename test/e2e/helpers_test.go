@@ -811,19 +811,26 @@ func fetchOutputFile(t *testing.T, batch *openai.Batch) string {
 	return strings.TrimSpace(string(body))
 }
 
-func withProcessorObsURL(t *testing.T, fn func(string)) {
+type processorObsPortForward struct {
+	baseURL  string
+	cmd      *exec.Cmd
+	reader   *os.File
+	waitDone chan error
+}
+
+func startProcessorObsPortForward(t *testing.T) (*processorObsPortForward, error) {
 	t.Helper()
 
 	if testProcessorObsURL != "" {
-		fn(testProcessorObsURL)
-		return
+		return &processorObsPortForward{
+			baseURL: testProcessorObsURL,
+		}, nil
 	}
 
 	reader, writer, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("create pipe for processor port-forward: %v", err)
+		return nil, fmt.Errorf("create pipe for processor port-forward: %w", err)
 	}
-	defer reader.Close()
 
 	cmd := exec.Command("kubectl", "port-forward",
 		"-n", testNamespace,
@@ -834,25 +841,32 @@ func withProcessorObsURL(t *testing.T, fn func(string)) {
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 
-	if err := cmd.Start(); err != nil {
-		writer.Close()
-		t.Fatalf("start processor port-forward: %v", err)
-	}
-	_ = writer.Close()
-
-	waitDone := make(chan error, 1)
-	go func() {
-		waitDone <- cmd.Wait()
-	}()
-
-	waited := false
+	var (
+		waitDone chan error
+		success  bool
+	)
 	defer func() {
+		if success {
+			return
+		}
+		_ = writer.Close()
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
-		if !waited {
+		if waitDone != nil {
 			<-waitDone
 		}
+		_ = reader.Close()
+	}()
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start processor port-forward: %w", err)
+	}
+	_ = writer.Close()
+
+	waitDone = make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
 	}()
 
 	lineCh := make(chan string, 16)
@@ -875,9 +889,9 @@ func withProcessorObsURL(t *testing.T, fn func(string)) {
 		case line, ok := <-lineCh:
 			if !ok {
 				if err := <-scanDone; err != nil {
-					t.Fatalf("read processor port-forward output: %v", err)
+					return nil, fmt.Errorf("read processor port-forward output: %w", err)
 				}
-				t.Fatalf("processor port-forward exited before reporting a local port:\n%s", strings.Join(output, "\n"))
+				return nil, fmt.Errorf("processor port-forward exited before reporting a local port:\n%s", strings.Join(output, "\n"))
 			}
 			output = append(output, line)
 			const prefix = "Forwarding from 127.0.0.1:"
@@ -886,40 +900,62 @@ func withProcessorObsURL(t *testing.T, fn func(string)) {
 			}
 			parts := strings.Fields(strings.SplitN(line, prefix, 2)[1])
 			if len(parts) == 0 {
-				t.Fatalf("unexpected processor port-forward output: %q", line)
+				return nil, fmt.Errorf("unexpected processor port-forward output: %q", line)
 			}
-			fn("http://127.0.0.1:" + parts[0])
-			return
+			success = true
+			return &processorObsPortForward{
+				baseURL:  "http://127.0.0.1:" + parts[0],
+				cmd:      cmd,
+				reader:   reader,
+				waitDone: waitDone,
+			}, nil
 		case err := <-waitDone:
-			waited = true
-			t.Fatalf("processor port-forward exited early: %v\n%s", err, strings.Join(output, "\n"))
+			return nil, fmt.Errorf("processor port-forward exited early: %v\n%s", err, strings.Join(output, "\n"))
 		case <-timeout.C:
-			t.Fatalf("timed out waiting for processor port-forward:\n%s", strings.Join(output, "\n"))
+			return nil, fmt.Errorf("timed out waiting for processor port-forward:\n%s", strings.Join(output, "\n"))
 		}
 	}
+}
+
+func (pf *processorObsPortForward) Close() {
+	if pf == nil {
+		return
+	}
+	if pf.cmd != nil && pf.cmd.Process != nil {
+		_ = pf.cmd.Process.Kill()
+	}
+	if pf.waitDone != nil {
+		<-pf.waitDone
+	}
+	if pf.reader != nil {
+		_ = pf.reader.Close()
+	}
+}
+
+func (pf *processorObsPortForward) Read(path string) (int, []byte, error) {
+	resp, err := http.Get(pf.baseURL + path)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, body, nil
 }
 
 func readProcessorObsEndpoint(t *testing.T, path string) (int, []byte, error) {
 	t.Helper()
 
-	var (
-		status int
-		body   []byte
-		err    error
-	)
+	pf, err := startProcessorObsPortForward(t)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer pf.Close()
 
-	withProcessorObsURL(t, func(baseURL string) {
-		var resp *http.Response
-		resp, err = http.Get(baseURL + path)
-		if err != nil {
-			return
-		}
-		defer resp.Body.Close()
-		status = resp.StatusCode
-		body, err = io.ReadAll(resp.Body)
-	})
-
-	return status, body, err
+	return pf.Read(path)
 }
 
 func waitForProcessorReady(t *testing.T, timeout time.Duration) {
@@ -928,14 +964,37 @@ func waitForProcessorReady(t *testing.T, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	var lastStatus int
+	var pf *processorObsPortForward
+	defer func() {
+		if pf != nil {
+			pf.Close()
+		}
+	}()
 
 	for {
-		status, _, err := readProcessorObsEndpoint(t, "/ready")
+		if pf == nil {
+			var err error
+			pf, err = startProcessorObsPortForward(t)
+			if err != nil {
+				lastErr = err
+				if time.Now().After(deadline) {
+					t.Fatalf("processor not ready after %v: %v", timeout, lastErr)
+				}
+				time.Sleep(time.Second)
+				continue
+			}
+		}
+
+		status, _, err := pf.Read("/ready")
 		if err == nil && status == http.StatusOK {
 			return
 		}
 		lastErr = err
 		lastStatus = status
+		if err != nil {
+			pf.Close()
+			pf = nil
+		}
 
 		if time.Now().After(deadline) {
 			if lastErr != nil {

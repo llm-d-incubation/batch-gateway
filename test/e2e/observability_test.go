@@ -121,7 +121,13 @@ func testPprof(t *testing.T) {
 	}
 
 	t.Run("Processor", func(t *testing.T) {
-		status, _, err := readProcessorObsEndpoint(t, "/debug/pprof/")
+		pf, err := startProcessorObsPortForward(t)
+		if err != nil {
+			t.Skipf("pprof not reachable on processor observability endpoint: %v", err)
+		}
+		defer pf.Close()
+
+		status, _, err := pf.Read("/debug/pprof/")
 		if err != nil {
 			t.Skipf("pprof not reachable on processor observability endpoint: %v", err)
 		}
@@ -132,7 +138,7 @@ func testPprof(t *testing.T) {
 			t.Errorf("expected 200 from /debug/pprof/, got %d", status)
 		}
 
-		heapStatus, _, err := readProcessorObsEndpoint(t, "/debug/pprof/heap")
+		heapStatus, _, err := pf.Read("/debug/pprof/heap")
 		if err != nil {
 			t.Fatalf("GET /debug/pprof/heap failed: %v", err)
 		}
@@ -211,9 +217,15 @@ func doTestObservabilityEndpoints(t *testing.T, obsURL string) {
 func doTestProcessorObservabilityEndpoints(t *testing.T) {
 	t.Helper()
 
+	pf, err := startProcessorObsPortForward(t)
+	if err != nil {
+		t.Fatalf("failed to start processor observability port-forward: %v", err)
+	}
+	defer pf.Close()
+
 	for _, endpoint := range []string{"/health", "/ready", "/metrics"} {
 		t.Run(strings.TrimPrefix(endpoint, "/"), func(t *testing.T) {
-			status, _, err := readProcessorObsEndpoint(t, endpoint)
+			status, _, err := pf.Read(endpoint)
 			if err != nil {
 				t.Fatalf("GET %s failed: %v", endpoint, err)
 			}
