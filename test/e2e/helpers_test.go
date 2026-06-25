@@ -682,10 +682,10 @@ func deleteE2ECurlPod(t *testing.T) {
 
 // ── Simulator admin helpers ──────────────────────────────────────────────
 
-// setSimAdminConfig sends a POST to the simulator's /admin/config endpoint
-// via a curl pod running in the cluster. It is used to dynamically change
-// failure injection at runtime without restarting the simulator deployment.
-func setSimAdminConfig(t *testing.T, simService string, body string) {
+// trySetSimAdminConfig sends a POST to the simulator's /admin/config endpoint
+// via a curl pod running in the cluster. It returns an error so cleanup paths
+// can report restore failures without halting the rest of cleanup.
+func trySetSimAdminConfig(t *testing.T, simService string, body string) error {
 	t.Helper()
 
 	ensureE2ECurlPod(t)
@@ -702,9 +702,21 @@ func setSimAdminConfig(t *testing.T, simService string, body string) {
 		url,
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("POST %s failed: %v\n%s", url, err, out)
+		return fmt.Errorf("POST %s failed: %w\n%s", url, err, out)
 	}
 	t.Logf("POST %s: %s", url, strings.TrimSpace(string(out)))
+	return nil
+}
+
+// setSimAdminConfig sends a POST to the simulator's /admin/config endpoint
+// via a curl pod running in the cluster. It is used to dynamically change
+// failure injection at runtime without restarting the simulator deployment.
+func setSimAdminConfig(t *testing.T, simService string, body string) {
+	t.Helper()
+
+	if err := trySetSimAdminConfig(t, simService, body); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // waitForModelInflight polls the processor's model_inflight_requests metric
@@ -722,7 +734,10 @@ func waitForModelInflight(t *testing.T, model string, timeout time.Duration) {
 	for time.Now().Before(deadline) {
 		body := scrapeProcessorMetrics(t)
 		if m := re.FindStringSubmatch(body); m != nil {
-			val, _ := strconv.Atoi(m[1])
+			val, err := strconv.Atoi(m[1])
+			if err != nil {
+				t.Fatalf("failed to parse model_inflight_requests value %q: %v", m[1], err)
+			}
 			if val > 0 {
 				t.Logf("model_inflight_requests{model=%q} = %d", model, val)
 				return

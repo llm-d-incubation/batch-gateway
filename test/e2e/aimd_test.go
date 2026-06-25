@@ -273,7 +273,9 @@ func doTestAIMDRecovery(t *testing.T) {
 
 	t.Cleanup(func() {
 		t.Log("cleanup: restoring vllm-sim-aimd to 100% failure rate")
-		setSimAdminConfig(t, testSimServiceAIMD, `{"failure-injection-rate": 100, "failure-types": ["rate_limit"]}`)
+		if err := trySetSimAdminConfig(t, testSimServiceAIMD, `{"failure-injection-rate": 100, "failure-types": ["rate_limit"]}`); err != nil {
+			t.Errorf("cleanup: failed to restore %s to 100%% failure rate: %v", testSimServiceAIMD, err)
+		}
 	})
 
 	// Phase 1: Drive AIMD limit to min with 100% failure rate.

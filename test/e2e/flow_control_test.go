@@ -150,7 +150,9 @@ func doTestRetryOn429(t *testing.T) {
 	t.Cleanup(func() { deleteE2ECurlPod(t) })
 	t.Cleanup(func() {
 		t.Log("cleanup: restoring sim-model-429 to 50% failure rate")
-		setSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 50, "failure-types": ["rate_limit"]}`)
+		if err := trySetSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 50, "failure-types": ["rate_limit"]}`); err != nil {
+			t.Errorf("cleanup: failed to restore %s to 50%% failure rate: %v", testSimService429, err)
+		}
 	})
 
 	// Snapshot cumulative counters before the test. These are process-wide
@@ -622,7 +624,10 @@ func getRequestErrors(t *testing.T, model string) int {
 	if match == nil {
 		return 0
 	}
-	val, _ := strconv.Atoi(match[1])
+	val, err := strconv.Atoi(match[1])
+	if err != nil {
+		t.Fatalf("failed to parse request_errors_by_model_total value %q: %v", match[1], err)
+	}
 	return val
 }
 
