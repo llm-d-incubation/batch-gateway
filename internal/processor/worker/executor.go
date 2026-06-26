@@ -425,10 +425,11 @@ func (p *Processor) processModel(
 	endpointSem := epLimit.sem
 
 	var (
-		wg              sync.WaitGroup
-		errOnce         sync.Once
-		modelErr        error
-		dispatchedCount int
+		wg                sync.WaitGroup
+		errOnce           sync.Once
+		modelErr          error
+		dispatchedCount   int
+		shutdownCancelled atomic.Int32
 	)
 
 dispatch:
@@ -532,6 +533,10 @@ dispatch:
 				return
 			}
 
+			if result.Error != nil && mainCtx.Err() != nil {
+				shutdownCancelled.Add(1)
+			}
+
 			progress.record(requestAbortCtx, result.isSuccess())
 
 			lineBytes, marshalErr := json.Marshal(result)
@@ -593,10 +598,12 @@ dispatch:
 		returnErr = modelErr
 
 	default:
-		if mainCtx.Err() != nil && len(undispatched) > 0 {
+		if mainCtx.Err() != nil && (len(undispatched) > 0 || shutdownCancelled.Load() > 0) {
 			// Pod shutdown (SIGTERM): main processor context is cancelled.
-			// Do not drain here — startup recovery or the re-enqueued worker
-			// will process these entries from scratch.
+			// Do not drain here — the re-enqueued worker will process the
+			// entire job from scratch. The undispatched check catches SIGTERM
+			// arriving during dispatch; shutdownCancelled catches SIGTERM
+			// cancelling already-dispatched in-flight requests.
 			returnErr = errShutdown
 		} else if requestAbortCtx.Err() != nil && len(undispatched) > 0 {
 			// Sibling model abort: requestAbortCtx was cancelled by another
