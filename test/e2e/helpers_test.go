@@ -15,6 +15,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -602,6 +605,150 @@ func validateBatchResults(t *testing.T, batch *openai.Batch, result batchResults
 	}
 }
 
+// ── Shared E2E curl pod ─────────────────────────────────────────────────
+
+const e2eCurlPod = "batch-gateway-e2e-curl"
+
+func ensureE2ECurlPod(t *testing.T) {
+	t.Helper()
+
+	if phaseOut, err := exec.Command("kubectl", "get", "pod",
+		e2eCurlPod,
+		"-n", testNamespace,
+		"-o", "jsonpath={.status.phase}",
+	).CombinedOutput(); err != nil || strings.TrimSpace(string(phaseOut)) == "" {
+		createE2ECurlPod(t)
+	} else {
+		phase := strings.TrimSpace(string(phaseOut))
+		if phase != "Running" && phase != "Pending" {
+			out, deleteErr := exec.Command("kubectl", "delete", "pod",
+				e2eCurlPod,
+				"-n", testNamespace,
+				"--ignore-not-found",
+			).CombinedOutput()
+			if deleteErr != nil {
+				t.Fatalf("failed to delete stale e2e curl pod: %v\n%s", deleteErr, out)
+			}
+			createE2ECurlPod(t)
+		}
+	}
+
+	waitOut, err := exec.Command("kubectl", "wait",
+		"--for=condition=Ready",
+		fmt.Sprintf("pod/%s", e2eCurlPod),
+		"-n", testNamespace,
+		"--timeout=90s",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to wait for e2e curl pod: %v\n%s", err, waitOut)
+	}
+}
+
+func createE2ECurlPod(t *testing.T) {
+	t.Helper()
+
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  containers:
+  - name: curl
+    image: curlimages/curl:8.8.0
+    command: ["sleep", "infinity"]
+`, e2eCurlPod, testNamespace)
+
+	cmd := exec.Command("kubectl", "create", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create e2e curl pod: %v\n%s", err, out)
+	}
+}
+
+func deleteE2ECurlPod(t *testing.T) {
+	t.Helper()
+
+	out, err := exec.Command("kubectl", "delete", "pod",
+		e2eCurlPod,
+		"-n", testNamespace,
+		"--ignore-not-found",
+	).CombinedOutput()
+	if err != nil {
+		t.Errorf("cleanup: failed to delete e2e curl pod: %v\n%s", err, out)
+	}
+}
+
+// ── Simulator admin helpers ──────────────────────────────────────────────
+
+// trySetSimAdminConfig sends a POST to the simulator's /admin/config endpoint
+// via a curl pod running in the cluster. It returns an error so cleanup paths
+// can report restore failures without halting the rest of cleanup.
+func trySetSimAdminConfig(t *testing.T, simService string, body string) error {
+	t.Helper()
+
+	ensureE2ECurlPod(t)
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/admin/config", simService, testNamespace)
+	out, err := exec.Command("kubectl", "exec",
+		"-n", testNamespace,
+		e2eCurlPod,
+		"--",
+		"curl", "-sS", "-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-d", body,
+		"--fail",
+		url,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("POST %s failed: %w\n%s", url, err, out)
+	}
+	t.Logf("POST %s: %s", url, strings.TrimSpace(string(out)))
+	return nil
+}
+
+// setSimAdminConfig sends a POST to the simulator's /admin/config endpoint
+// via a curl pod running in the cluster. It is used to dynamically change
+// failure injection at runtime without restarting the simulator deployment.
+func setSimAdminConfig(t *testing.T, simService string, body string) {
+	t.Helper()
+
+	if err := trySetSimAdminConfig(t, simService, body); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitForModelInflight polls the processor's model_inflight_requests metric
+// until it reports > 0 for the given model, proving that at least one request
+// has been dispatched. With 100% failure injection, the gauge remains elevated
+// for the full retry chain duration (minutes) because Generate() blocks through
+// all resty retries, making this a stable signal — not transient.
+func waitForModelInflight(t *testing.T, model string, timeout time.Duration) {
+	t.Helper()
+
+	re := regexp.MustCompile(fmt.Sprintf(
+		`model_inflight_requests\{[^}]*model=%q[^}]*\}\s+(\d+)`, model))
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		body := scrapeProcessorMetrics(t)
+		if m := re.FindStringSubmatch(body); m != nil {
+			val, err := strconv.Atoi(m[1])
+			if err != nil {
+				t.Fatalf("failed to parse model_inflight_requests value %q: %v", m[1], err)
+			}
+			if val > 0 {
+				t.Logf("model_inflight_requests{model=%q} = %d", model, val)
+				return
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for model_inflight_requests{model=%q} > 0", model)
+}
+
 // ── Generic helpers ──────────────────────────────────────────────────────
 
 // assertSliceEqual verifies that want and got contain the same elements
@@ -662,4 +809,215 @@ func fetchOutputFile(t *testing.T, batch *openai.Batch) string {
 		t.Fatalf("read output file body failed: %v", err)
 	}
 	return strings.TrimSpace(string(body))
+}
+
+type processorObsPortForward struct {
+	baseURL  string
+	cmd      *exec.Cmd
+	reader   *os.File
+	waitDone chan error
+	scanDone chan error
+}
+
+func startProcessorObsPortForward(t *testing.T) (*processorObsPortForward, error) {
+	t.Helper()
+
+	if testProcessorObsURL != "" {
+		return &processorObsPortForward{
+			baseURL: testProcessorObsURL,
+		}, nil
+	}
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("create pipe for processor port-forward: %w", err)
+	}
+
+	cmd := exec.Command("kubectl", "port-forward",
+		"-n", testNamespace,
+		fmt.Sprintf("svc/%s-processor-nodeport", testHelmRelease),
+		":9090",
+		"--address", "127.0.0.1",
+	)
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+
+	var (
+		waitDone chan error
+		scanDone chan error
+		success  bool
+	)
+	startupDone := make(chan struct{})
+	defer func() {
+		if success {
+			return
+		}
+		close(startupDone)
+		_ = writer.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = reader.Close()
+		if waitDone != nil {
+			<-waitDone
+		}
+		if scanDone != nil {
+			<-scanDone
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start processor port-forward: %w", err)
+	}
+	_ = writer.Close()
+
+	waitDone = make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	lineCh := make(chan string)
+	scanDone = make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			line := scanner.Text()
+			select {
+			case lineCh <- line:
+			case <-startupDone:
+			}
+		}
+		close(lineCh)
+		scanDone <- scanner.Err()
+	}()
+
+	var output []string
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				if err := <-scanDone; err != nil {
+					return nil, fmt.Errorf("read processor port-forward output: %w", err)
+				}
+				return nil, fmt.Errorf("processor port-forward exited before reporting a local port:\n%s", strings.Join(output, "\n"))
+			}
+			output = append(output, line)
+			const prefix = "Forwarding from 127.0.0.1:"
+			if !strings.Contains(line, prefix) {
+				continue
+			}
+			parts := strings.Fields(strings.SplitN(line, prefix, 2)[1])
+			if len(parts) == 0 {
+				return nil, fmt.Errorf("unexpected processor port-forward output: %q", line)
+			}
+			close(startupDone)
+			success = true
+			return &processorObsPortForward{
+				baseURL:  "http://127.0.0.1:" + parts[0],
+				cmd:      cmd,
+				reader:   reader,
+				waitDone: waitDone,
+				scanDone: scanDone,
+			}, nil
+		case err := <-waitDone:
+			return nil, fmt.Errorf("processor port-forward exited early: %v\n%s", err, strings.Join(output, "\n"))
+		case <-timeout.C:
+			return nil, fmt.Errorf("timed out waiting for processor port-forward:\n%s", strings.Join(output, "\n"))
+		}
+	}
+}
+
+func (pf *processorObsPortForward) Close() {
+	if pf == nil {
+		return
+	}
+	if pf.cmd != nil && pf.cmd.Process != nil {
+		_ = pf.cmd.Process.Kill()
+	}
+	if pf.reader != nil {
+		_ = pf.reader.Close()
+	}
+	if pf.waitDone != nil {
+		<-pf.waitDone
+	}
+	if pf.scanDone != nil {
+		<-pf.scanDone
+	}
+}
+
+func (pf *processorObsPortForward) Read(path string) (int, []byte, error) {
+	resp, err := http.Get(pf.baseURL + path)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, body, nil
+}
+
+func readProcessorObsEndpoint(t *testing.T, path string) (int, []byte, error) {
+	t.Helper()
+
+	pf, err := startProcessorObsPortForward(t)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer pf.Close()
+
+	return pf.Read(path)
+}
+
+func waitForProcessorReady(t *testing.T, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	var lastStatus int
+	var pf *processorObsPortForward
+	defer func() {
+		if pf != nil {
+			pf.Close()
+		}
+	}()
+
+	for {
+		if pf == nil {
+			var err error
+			pf, err = startProcessorObsPortForward(t)
+			if err != nil {
+				lastErr = err
+				if time.Now().After(deadline) {
+					t.Fatalf("processor not ready after %v: %v", timeout, lastErr)
+				}
+				time.Sleep(time.Second)
+				continue
+			}
+		}
+
+		status, _, err := pf.Read("/ready")
+		if err == nil && status == http.StatusOK {
+			return
+		}
+		lastErr = err
+		lastStatus = status
+		if err != nil {
+			pf.Close()
+			pf = nil
+		}
+
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				t.Fatalf("processor not ready after %v: %v", timeout, lastErr)
+			}
+			t.Fatalf("processor not ready after %v (status %d)", timeout, lastStatus)
+		}
+		time.Sleep(time.Second)
+	}
 }

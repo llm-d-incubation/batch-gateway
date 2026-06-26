@@ -33,7 +33,6 @@ GRAFANA_IMAGE="${GRAFANA_IMAGE:-${IMAGE_REGISTRY}/grafana/grafana:latest}"
 LOG_VERBOSITY="${LOG_VERBOSITY:-5}"
 APISERVER_NODE_PORT="${APISERVER_NODE_PORT:-30080}"
 APISERVER_OBS_NODE_PORT="${APISERVER_OBS_NODE_PORT:-30081}"
-PROCESSOR_NODE_PORT="${PROCESSOR_NODE_PORT:-30090}"
 # Metrics ports must match values.yaml defaults (processor.addr / gc.config.metricsAddr)
 PROCESSOR_METRICS_PORT="${PROCESSOR_METRICS_PORT:-9090}"
 GC_METRICS_PORT="${GC_METRICS_PORT:-9091}"
@@ -124,9 +123,6 @@ nodes:
     protocol: TCP
   - containerPort: ${APISERVER_OBS_NODE_PORT}
     hostPort: ${LOCAL_OBS_PORT}
-    protocol: TCP
-  - containerPort: ${PROCESSOR_NODE_PORT}
-    hostPort: ${LOCAL_PROCESSOR_PORT}
     protocol: TCP
   - containerPort: ${JAEGER_NODE_PORT}
     hostPort: ${JAEGER_PORT}
@@ -1244,7 +1240,6 @@ kind: Service
 metadata:
   name: ${HELM_RELEASE}-processor-nodeport
 spec:
-  type: NodePort
   selector:
     app.kubernetes.io/name: batch-gateway-processor
     app.kubernetes.io/instance: ${HELM_RELEASE}
@@ -1254,7 +1249,6 @@ spec:
     protocol: TCP
     port: 9090
     targetPort: metrics
-    nodePort: ${PROCESSOR_NODE_PORT}
 ---
 apiVersion: v1
 kind: Service
@@ -1304,6 +1298,7 @@ EOF
 
     log "NodePort services created."
     wait_for_http_ready
+    log "Processor observability service created for local port-forwarding."
 }
 
 print_usage() {
@@ -1318,6 +1313,7 @@ print_usage() {
     echo "  1. Run E2E tests:"
     echo ""
     echo "       make test-e2e"
+    echo "       # make test-e2e will port-forward processor observability automatically"
     echo ""
     echo "  2. Upload a batch input file (JSONL):"
     echo ""
@@ -1356,11 +1352,12 @@ print_usage() {
     echo "       go tool pprof http://localhost:${LOCAL_OBS_PORT}/debug/pprof/allocs             # Allocs"
     echo "       go tool pprof http://localhost:${LOCAL_OBS_PORT}/debug/pprof/goroutine          # Goroutine"
     echo ""
-    echo "     Processor (port ${LOCAL_PROCESSOR_PORT}):"
-    echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/profile?seconds=30  # CPU"
-    echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/heap               # Heap"
-    echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/allocs             # Allocs"
-    echo "       go tool pprof http://localhost:${LOCAL_PROCESSOR_PORT}/debug/pprof/goroutine          # Goroutine"
+    echo "     Processor (via local port-forward):"
+    echo "       kubectl port-forward -n ${NAMESPACE} svc/${HELM_RELEASE}-processor-nodeport 19090:9090"
+    echo "       go tool pprof http://127.0.0.1:19090/debug/pprof/profile?seconds=30  # CPU"
+    echo "       go tool pprof http://127.0.0.1:19090/debug/pprof/heap               # Heap"
+    echo "       go tool pprof http://127.0.0.1:19090/debug/pprof/allocs             # Allocs"
+    echo "       go tool pprof http://127.0.0.1:19090/debug/pprof/goroutine          # Goroutine"
     echo ""
     echo "  5. Prometheus (metrics):"
     echo ""
