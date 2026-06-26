@@ -100,6 +100,12 @@ func doTestPodDeleteMidJob(t *testing.T) {
 	if finalBatch.Status != openai.BatchStatusCompleted {
 		t.Errorf("expected batch to complete after pod delete, got %s", finalBatch.Status)
 	}
+	if finalBatch.RequestCounts.Completed != finalBatch.RequestCounts.Total {
+		t.Errorf("expected all %d requests to complete after graceful shutdown, got completed=%d failed=%d",
+			finalBatch.RequestCounts.Total,
+			finalBatch.RequestCounts.Completed,
+			finalBatch.RequestCounts.Failed)
+	}
 }
 
 // doTestRollingRestartReEnqueue submits a batch with the same slow-request
@@ -157,5 +163,11 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 
 	if finalBatch.Status != openai.BatchStatusCompleted {
 		t.Errorf("expected batch to complete after rolling restart, got %s", finalBatch.Status)
+	}
+	if finalBatch.RequestCounts.Completed != finalBatch.RequestCounts.Total {
+		t.Errorf("expected all %d requests to complete after graceful shutdown, got completed=%d failed=%d",
+			finalBatch.RequestCounts.Total,
+			finalBatch.RequestCounts.Completed,
+			finalBatch.RequestCounts.Failed)
 	}
 }
