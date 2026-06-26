@@ -109,6 +109,8 @@ class ScenarioResult:
     name: str
     phases: list = field(default_factory=list)
     batch_timeline: list = field(default_factory=list)
+    aimd_metrics: dict = field(default_factory=dict)
+    flow_control_metrics: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +831,67 @@ def collect_gpu_metrics(context, namespace, start_time, end_time):
     return metrics
 
 
+def collect_aimd_metrics(context, namespace, start_time, end_time):
+    """Collect AIMD adaptive concurrency metrics from Prometheus."""
+    metrics = {}
+
+    # Current concurrency limit (gauge)
+    limit_query = 'avg(batch_processor_aimd_concurrency_limit)'
+    results = query_prometheus(context, namespace, limit_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["aimd_concurrency_limit_avg"] = sum(values) / len(values)
+            metrics["aimd_concurrency_limit_min"] = min(values)
+            metrics["aimd_concurrency_limit_max"] = max(values)
+            metrics["aimd_concurrency_limit_series"] = values
+
+    # Decrease events (multiplicative backoff on 429/5xx)
+    decrease_query = 'sum(rate(batch_processor_aimd_decrease_total[30s]))'
+    results = query_prometheus(context, namespace, decrease_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["aimd_decrease_rate_avg"] = sum(values) / len(values)
+
+    # Increase events (additive increase on success)
+    increase_query = 'sum(rate(batch_processor_aimd_increase_total[30s]))'
+    results = query_prometheus(context, namespace, increase_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["aimd_increase_rate_avg"] = sum(values) / len(values)
+
+    return metrics
+
+
+def collect_flow_control_metrics(context, namespace, start_time, end_time):
+    """Collect llm-d Router flow control metrics from Prometheus."""
+    metrics = {}
+
+    # Pool saturation (0-1 ratio of flow control capacity used)
+    saturation_query = 'avg(inference_extension_flow_control_pool_saturation)'
+    results = query_prometheus(context, namespace, saturation_query, start_time, end_time)
+    if results:
+        values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
+        if values:
+            metrics["flow_control_saturation_avg"] = sum(values) / len(values)
+            metrics["flow_control_saturation_max"] = max(values)
+            metrics["flow_control_saturation_series"] = values
+
+    # Queue size per priority band
+    queue_query = 'sum by (priority) (inference_extension_flow_control_queue_size)'
+    results = query_prometheus(context, namespace, queue_query, start_time, end_time)
+    if results:
+        for series in results:
+            priority = series.get("metric", {}).get("priority", "unknown")
+            values = [float(v[1]) for v in series.get("values", []) if v[1] != "NaN"]
+            if values:
+                metrics[f"queue_size_priority_{priority}_avg"] = sum(values) / len(values)
+
+    return metrics
+
+
 def _aggregate_phases(phases, phase_filter=None):
     """Aggregate multiple PhaseMetrics into averages."""
     filtered = [p for p in phases if phase_filter is None or phase_filter in p.phase]
@@ -902,6 +965,31 @@ def generate_html_report(cfg, results):
     for result in results:
         if result.batch_timeline:
             timelines_json[f"S{result.scenario} ({result.name})"] = result.batch_timeline
+
+    # AIMD dynamics data (scenarios 3-4)
+    aimd_chart_data = []
+    for result in results:
+        if result.aimd_metrics and "aimd_concurrency_limit_series" in result.aimd_metrics:
+            aimd_chart_data.append({
+                "scenario": f"S{result.scenario}",
+                "name": result.name,
+                "series": result.aimd_metrics["aimd_concurrency_limit_series"],
+                "avg": result.aimd_metrics.get("aimd_concurrency_limit_avg", 0),
+                "min": result.aimd_metrics.get("aimd_concurrency_limit_min", 0),
+                "max": result.aimd_metrics.get("aimd_concurrency_limit_max", 0),
+            })
+
+    # Flow control data (scenario 4)
+    flow_control_chart_data = []
+    for result in results:
+        if result.flow_control_metrics and "flow_control_saturation_series" in result.flow_control_metrics:
+            flow_control_chart_data.append({
+                "scenario": f"S{result.scenario}",
+                "name": result.name,
+                "series": result.flow_control_metrics["flow_control_saturation_series"],
+                "avg": result.flow_control_metrics.get("flow_control_saturation_avg", 0),
+                "max": result.flow_control_metrics.get("flow_control_saturation_max", 0),
+            })
 
     html = textwrap.dedent(f"""\
     <!DOCTYPE html>
@@ -981,9 +1069,21 @@ def generate_html_report(cfg, results):
             <canvas id="timelineChart"></canvas>
         </div>
 
+        <h2>AIMD Concurrency Dynamics (Scenarios 3-4)</h2>
+        <div class="chart-container">
+            <canvas id="aimdChart"></canvas>
+        </div>
+
+        <h2>Flow Control Pool Saturation (Scenario 4)</h2>
+        <div class="chart-container">
+            <canvas id="flowControlChart"></canvas>
+        </div>
+
         <script>
         const chartData = {json.dumps(chart_data)};
         const timelines = {json.dumps(timelines_json)};
+        const aimdData = {json.dumps(aimd_chart_data)};
+        const flowControlData = {json.dumps(flow_control_chart_data)};
         const colors = ['#6b7280', '#ef4444', '#f59e0b', '#3b82f6', '#22c55e', '#8b5cf6'];
 
         // TTFT p99 bar chart
@@ -1048,6 +1148,52 @@ def generate_html_report(cfg, results):
                     scales: {{
                         x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
                         y: {{ title: {{ display: true, text: 'Completed' }}, beginAtZero: true }}
+                    }}
+                }}
+            }});
+        }}
+
+        // AIMD concurrency limit time-series chart
+        if (aimdData.length > 0) {{
+            const aimdDatasets = aimdData.map((d, i) => ({{
+                label: d.scenario + ' (' + d.name + ') avg=' + d.avg.toFixed(1),
+                data: d.series.map((v, j) => ({{x: j * 15, y: v}})),
+                borderColor: colors[(i + 3) % colors.length],
+                fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
+            }}));
+            new Chart(document.getElementById('aimdChart'), {{
+                type: 'line',
+                data: {{ datasets: aimdDatasets }},
+                options: {{
+                    responsive: true,
+                    plugins: {{ title: {{ display: true, text: 'AIMD Concurrency Limit Over Time' }} }},
+                    scales: {{
+                        x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
+                        y: {{ title: {{ display: true, text: 'Concurrency Limit' }}, beginAtZero: true }}
+                    }}
+                }}
+            }});
+        }}
+
+        // Flow control pool saturation time-series chart
+        if (flowControlData.length > 0) {{
+            const fcDatasets = flowControlData.map((d, i) => ({{
+                label: d.scenario + ' (' + d.name + ') avg=' + (d.avg * 100).toFixed(1) + '%',
+                data: d.series.map((v, j) => ({{x: j * 15, y: v * 100}})),
+                borderColor: '#dc2626',
+                fill: true,
+                backgroundColor: 'rgba(220, 38, 38, 0.1)',
+                tension: 0.3, pointRadius: 0, borderWidth: 2,
+            }}));
+            new Chart(document.getElementById('flowControlChart'), {{
+                type: 'line',
+                data: {{ datasets: fcDatasets }},
+                options: {{
+                    responsive: true,
+                    plugins: {{ title: {{ display: true, text: 'Flow Control Pool Saturation (%)' }} }},
+                    scales: {{
+                        x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
+                        y: {{ title: {{ display: true, text: 'Saturation (%)' }}, min: 0, max: 100 }}
                     }}
                 }}
             }});
@@ -1147,8 +1293,27 @@ def run_scenario(cfg, scenario):
             if metrics.completed > 0:
                 phases.append(metrics)
 
+    # Collect AIMD metrics for scenarios 3-4
+    aimd_metrics = {}
+    if scenario >= 3 and os.environ.get("PROMETHEUS_URL"):
+        end_time = time.time()
+        start_time = end_time - cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds)
+        aimd_metrics = collect_aimd_metrics(cfg.context, namespace, start_time, end_time)
+        if aimd_metrics:
+            log(f"  AIMD: concurrency limit avg={aimd_metrics.get('aimd_concurrency_limit_avg', 0):.1f}")
+
+    # Collect flow control metrics for scenario 4
+    flow_control_metrics = {}
+    if scenario == 4 and os.environ.get("PROMETHEUS_URL"):
+        end_time = time.time()
+        start_time = end_time - cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds)
+        flow_control_metrics = collect_flow_control_metrics(cfg.context, namespace, start_time, end_time)
+        if flow_control_metrics:
+            log(f"  Flow control: saturation avg={flow_control_metrics.get('flow_control_saturation_avg', 0):.2f}")
+
     return ScenarioResult(scenario=scenario, name=name, phases=phases,
-                          batch_timeline=timeline)
+                          batch_timeline=timeline, aimd_metrics=aimd_metrics,
+                          flow_control_metrics=flow_control_metrics)
 
 
 # ---------------------------------------------------------------------------
@@ -1221,9 +1386,14 @@ def _aggregate_trials(trial_results):
     # Use longest timeline from any trial
     best_timeline = max((r.batch_timeline for r in trial_results), key=len, default=[])
 
+    # Use AIMD/flow-control metrics from first trial that has them
+    aimd = next((r.aimd_metrics for r in trial_results if r.aimd_metrics), {})
+    fc = next((r.flow_control_metrics for r in trial_results if r.flow_control_metrics), {})
+
     result = ScenarioResult(
         scenario=scenario, name=name,
         phases=aggregated_phases, batch_timeline=best_timeline,
+        aimd_metrics=aimd, flow_control_metrics=fc,
     )
 
     # Attach variance metadata for reporting
@@ -1721,6 +1891,18 @@ def main():
                 },
                 "total_completed": sum(p.completed for p in burst_phases),
                 "total_errors": sum(p.errors for p in burst_phases),
+            }
+
+        # AIMD and flow control metrics (scenarios 3-4)
+        if result.aimd_metrics:
+            scenario_data["aimd"] = {
+                k: v for k, v in result.aimd_metrics.items()
+                if k != "aimd_concurrency_limit_series"
+            }
+        if result.flow_control_metrics:
+            scenario_data["flow_control"] = {
+                k: v for k, v in result.flow_control_metrics.items()
+                if k != "flow_control_saturation_series"
             }
 
         structured_results["scenarios"].append(scenario_data)

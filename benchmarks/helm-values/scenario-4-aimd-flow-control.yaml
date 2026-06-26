@@ -1,11 +1,11 @@
 # Scenario 4: AIMD + llm-d Router flow control
-# Same processor config as scenario 3, plus:
-# - llm-d Router flowControl feature gate enabled
-# - EndpointPickerConfig with priority bands (interactive: 100, batch: -1 sheddable)
-# - InferenceObjective CRDs deployed
-# - Processor configured with inferenceObjective: "batch-sheddable"
+# Same processor AIMD config as scenario 3, plus two-layer protection:
+# - llm-d Router flowControl feature gate enabled (EndpointPickerConfig)
+# - Priority bands: interactive (100) + batch (-1, sheddable)
+# - InferenceObjective CRDs: interactive-default (100), batch-sheddable (-1)
+# - Processor sends x-gateway-inference-objective: "batch-sheddable" header
 #
-# TODO: Add full configuration in PR 3
+# CRDs and Router overlay are deployed by setup.sh (scenario 4 block).
 processor:
   config:
     dispatchMode: sync
