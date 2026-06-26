@@ -1296,8 +1296,8 @@ def run_scenario(cfg, scenario):
     # Collect AIMD metrics for scenarios 3-4
     aimd_metrics = {}
     if scenario >= 3 and os.environ.get("PROMETHEUS_URL"):
-        end_time = time.time()
-        start_time = end_time - cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds)
+        end_time = datetime.datetime.utcfromtimestamp(time.time())
+        start_time = end_time - datetime.timedelta(seconds=cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds))
         aimd_metrics = collect_aimd_metrics(cfg.context, namespace, start_time, end_time)
         if aimd_metrics:
             log(f"  AIMD: concurrency limit avg={aimd_metrics.get('aimd_concurrency_limit_avg', 0):.1f}")
@@ -1305,8 +1305,8 @@ def run_scenario(cfg, scenario):
     # Collect flow control metrics for scenario 4
     flow_control_metrics = {}
     if scenario == 4 and os.environ.get("PROMETHEUS_URL"):
-        end_time = time.time()
-        start_time = end_time - cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds)
+        end_time = datetime.datetime.utcfromtimestamp(time.time())
+        start_time = end_time - datetime.timedelta(seconds=cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds))
         flow_control_metrics = collect_flow_control_metrics(cfg.context, namespace, start_time, end_time)
         if flow_control_metrics:
             log(f"  Flow control: saturation avg={flow_control_metrics.get('flow_control_saturation_avg', 0):.2f}")
