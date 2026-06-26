@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+import ast
 import csv
 import datetime
 import json
@@ -92,9 +93,6 @@ class PhaseMetrics:
     itl_p50: float = 0.0
     itl_p95: float = 0.0
     itl_p99: float = 0.0
-    tpot_p50: float = 0.0
-    tpot_p95: float = 0.0
-    tpot_p99: float = 0.0
     req_latency_p50: float = 0.0
     req_latency_p95: float = 0.0
     req_latency_p99: float = 0.0
@@ -136,7 +134,12 @@ def kubectl_apply(yaml_str, context, namespace):
     subprocess.run(cmd, input=yaml_str, text=True, check=True)
 
 
+_NAMESPACE_OVERRIDE = None
+
+
 def namespace_for_scenario(scenario):
+    if _NAMESPACE_OVERRIDE:
+        return _NAMESPACE_OVERRIDE
     return f"batch-bench-s{scenario}"
 
 
@@ -641,70 +644,117 @@ def collect_results(cfg, scenario, namespace):
 
 
 def parse_guidellm_csv(csv_path):
-    """Parse a guidellm output CSV into PhaseMetrics.
+    """Parse a guidellm 0.6.x summary CSV into PhaseMetrics.
 
-    guidellm outputs CSVs with per-request rows including columns like:
-    ttft, itl_avg, total_latency, output_tokens, etc.
+    guidellm outputs a multi-header summary CSV:
+      Row 0: Category (e.g. "Time to First Token", "Request Latency")
+      Row 1: Sub-header (e.g. "Successful ms", "Successful Sec")
+      Row 2: Stat type (e.g. "Mean", "Median", "Std Dev", "Percentiles")
+      Row 3: Single data row with aggregated values
+
+    Percentile arrays contain 11 decile values (p0..p100 in steps of 10).
+    We interpolate p95/p99 from p90 and p100.
     """
-    import numpy as np
 
     phase_name = csv_path.stem  # e.g. "burst-1", "idle-2"
     parts = phase_name.rsplit("-", 1)
     phase = parts[0] if len(parts) == 2 else phase_name
     cycle = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
 
-    ttfts, itls, tpots, latencies = [], [], [], []
-    completed, errors = 0, 0
-
     try:
         with open(csv_path) as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("error"):
-                    errors += 1
-                    continue
-                completed += 1
-
-                if "ttft" in row and row["ttft"]:
-                    ttfts.append(float(row["ttft"]))
-                if "itl_avg" in row and row["itl_avg"]:
-                    itls.append(float(row["itl_avg"]))
-                if "total_latency" in row and row["total_latency"]:
-                    latencies.append(float(row["total_latency"]))
-
-                # TPOT = (total_latency - ttft) / output_tokens
-                if (row.get("total_latency") and row.get("ttft")
-                        and row.get("output_tokens")):
-                    output_tokens = int(row["output_tokens"])
-                    if output_tokens > 0:
-                        tpot = (float(row["total_latency"]) - float(row["ttft"])) / output_tokens
-                        tpots.append(tpot)
+            reader = csv.reader(f)
+            rows = list(reader)
     except (OSError, csv.Error) as e:
         log(f"  WARNING: Failed to parse {csv_path}: {e}")
         return PhaseMetrics(phase=phase, cycle=cycle)
 
-    def percentiles(data, ps):
-        if not data:
-            return [0.0] * len(ps)
-        return [float(np.percentile(data, p)) for p in ps]
+    if len(rows) < 4:
+        log(f"  WARNING: {csv_path} has fewer than 4 rows")
+        return PhaseMetrics(phase=phase, cycle=cycle)
 
-    ttft_ps = percentiles(ttfts, [50, 95, 99])
-    itl_ps = percentiles(itls, [50, 95, 99])
-    tpot_ps = percentiles(tpots, [50, 95, 99])
-    lat_ps = percentiles(latencies, [50, 95, 99])
+    categories, sub_headers, stat_types = rows[0], rows[1], rows[2]
+    data = rows[3]
 
-    total = completed + errors
-    duration = max(latencies) - min(latencies) if len(latencies) > 1 else 1.0
+    def find_col(category, sub_header, stat_type):
+        for i, (c, s, t) in enumerate(zip(categories, sub_headers, stat_types)):
+            cat_match = category in c if category else c == ""
+            sub_match = sub_header in s if sub_header else s == ""
+            stat_match = stat_type in t if stat_type else t.strip() == ""
+            if cat_match and sub_match and stat_match:
+                return i
+        return None
+
+    def safe_float(col_idx, default=0.0):
+        if col_idx is None or col_idx >= len(data):
+            return default
+        try:
+            return float(data[col_idx])
+        except (ValueError, TypeError):
+            return default
+
+    def parse_percentile_array(col_idx):
+        if col_idx is None or col_idx >= len(data):
+            return []
+        try:
+            return list(ast.literal_eval(data[col_idx]))
+        except (ValueError, SyntaxError):
+            return []
+
+    def interpolate_percentile(pct_array, target_pct):
+        """Interpolate a percentile from a decile array (11 values: p0..p100)."""
+        if not pct_array or len(pct_array) < 11:
+            return 0.0
+        step = 10
+        lower_idx = min(target_pct // step, 9)
+        upper_idx = min(lower_idx + 1, 10)
+        frac = (target_pct - lower_idx * step) / step
+        return pct_array[lower_idx] + frac * (pct_array[upper_idx] - pct_array[lower_idx])
+
+    # Request counts
+    completed = int(safe_float(find_col("Request Counts", "Successful", "")))
+    errors = int(safe_float(find_col("Request Counts", "Errored", "")))
+    total = int(safe_float(find_col("Request Counts", "Total", "")))
+
+    # TTFT (milliseconds)
+    ttft_median = safe_float(find_col("Time to First Token", "Successful ms", "Median"))
+    ttft_pct = parse_percentile_array(find_col("Time to First Token", "Successful ms", "Percentiles"))
+
+    # TPOT (milliseconds)
+    tpot_median = safe_float(find_col("Time per Output Token", "Successful ms", "Median"))
+    tpot_pct = parse_percentile_array(find_col("Time per Output Token", "Successful ms", "Percentiles"))
+
+    # ITL (milliseconds)
+    itl_median = safe_float(find_col("Inter Token Latency", "Successful ms", "Median"))
+    itl_pct = parse_percentile_array(find_col("Inter Token Latency", "Successful ms", "Percentiles"))
+
+    # Request latency (seconds → convert to ms for consistency)
+    req_lat_median = safe_float(find_col("Request Latency", "Successful Sec", "Median")) * 1000
+    req_lat_pct_raw = parse_percentile_array(find_col("Request Latency", "Successful Sec", "Percentiles"))
+    req_lat_pct = [v * 1000 for v in req_lat_pct_raw]
+
+    # Duration (seconds) for throughput calculation
+    duration = safe_float(find_col("Timings", "Duration", "Sec"), default=1.0)
+
+    error_rate = errors / total if total > 0 else 0.0
 
     return PhaseMetrics(
         phase=phase, cycle=cycle,
-        ttft_p50=ttft_ps[0], ttft_p95=ttft_ps[1], ttft_p99=ttft_ps[2],
-        itl_p50=itl_ps[0], itl_p95=itl_ps[1], itl_p99=itl_ps[2],
-        tpot_p50=tpot_ps[0], tpot_p95=tpot_ps[1], tpot_p99=tpot_ps[2],
-        req_latency_p50=lat_ps[0], req_latency_p95=lat_ps[1], req_latency_p99=lat_ps[2],
+        ttft_p50=ttft_median,
+        ttft_p95=interpolate_percentile(ttft_pct, 95),
+        ttft_p99=interpolate_percentile(ttft_pct, 99),
+        itl_p50=itl_median,
+        itl_p95=interpolate_percentile(itl_pct, 95),
+        itl_p99=interpolate_percentile(itl_pct, 99),
+        tpot_p50=tpot_median,
+        tpot_p95=interpolate_percentile(tpot_pct, 95),
+        tpot_p99=interpolate_percentile(tpot_pct, 99),
+        req_latency_p50=req_lat_median,
+        req_latency_p95=interpolate_percentile(req_lat_pct, 95),
+        req_latency_p99=interpolate_percentile(req_lat_pct, 99),
         ok_rps=completed / duration if duration > 0 else 0,
         err_rps=errors / duration if duration > 0 else 0,
-        error_rate=errors / total if total > 0 else 0,
+        error_rate=error_rate,
         completed=completed, errors=errors,
     )
 
@@ -1074,6 +1124,16 @@ def run_scenario(cfg, scenario):
                 pass
             time.sleep(10)
 
+        # Scenario 1: also wait for the batch-as-interactive job
+        if scenario == 1:
+            log("  Waiting for guidellm-batch job to complete...")
+            try:
+                kubectl(["wait", "--for=condition=complete", "job/guidellm-batch",
+                         f"--timeout={total_wait}s"],
+                        cfg.context, namespace, check=False)
+            except Exception:
+                pass
+
     # Collect results
     results_dir = collect_results(cfg, scenario, namespace)
 
@@ -1119,26 +1179,24 @@ def _aggregate_trials(trial_results):
                 phase_groups[key] = []
             phase_groups[key].append(phase)
 
+    def mean_and_ci(values):
+        """Return (mean, ci_95) for a list of values."""
+        n = len(values)
+        if n == 0:
+            return 0.0, 0.0
+        m = sum(values) / n
+        if n < 2:
+            return m, 0.0
+        variance = sum((v - m) ** 2 for v in values) / (n - 1)
+        stderr = math.sqrt(variance / n)
+        return m, stderr * 1.96
+
     aggregated_phases = []
     for (phase_name, cycle), phases in sorted(phase_groups.items()):
         n = len(phases)
         if n == 0:
             continue
 
-        def mean_and_ci(values):
-            """Return (mean, ci_95) for a list of values."""
-            m = sum(values) / n
-            if n < 2:
-                return m, 0.0
-            variance = sum((v - m) ** 2 for v in values) / (n - 1)
-            stderr = math.sqrt(variance / n)
-            ci = stderr * 1.96  # 95% CI
-            return m, ci
-
-        ttft_p99_vals = [p.ttft_p99 for p in phases]
-        tpot_p99_vals = [p.tpot_p99 for p in phases]
-
-        # Use mean for the aggregated phase
         agg = PhaseMetrics(
             phase=phase_name, cycle=cycle,
             ttft_p50=sum(p.ttft_p50 for p in phases) / n,
@@ -1171,14 +1229,15 @@ def _aggregate_trials(trial_results):
     # Attach variance metadata for reporting
     result._trial_count = len(trial_results)
     result._ttft_p99_ci = {}
+    result._tpot_p99_ci = {}
     for (phase_name, cycle), phases in phase_groups.items():
-        vals = [p.ttft_p99 for p in phases]
-        n = len(vals)
-        if n >= 2:
-            m = sum(vals) / n
-            variance = sum((v - m) ** 2 for v in vals) / (n - 1)
-            stderr = math.sqrt(variance / n)
-            result._ttft_p99_ci[f"{phase_name}-{cycle}"] = stderr * 1.96
+        key = f"{phase_name}-{cycle}"
+        _, ttft_ci = mean_and_ci([p.ttft_p99 for p in phases])
+        _, tpot_ci = mean_and_ci([p.tpot_p99 for p in phases])
+        if ttft_ci > 0:
+            result._ttft_p99_ci[key] = ttft_ci
+        if tpot_ci > 0:
+            result._tpot_p99_ci[key] = tpot_ci
 
     return result
 
@@ -1207,6 +1266,7 @@ def auto_calibrate_rate(cfg, namespace):
 
     Runs short bursts at increasing rates until error rate exceeds 5%
     or TTFT p99 exceeds 3x the baseline (lowest rate).
+    Returns the last rate before saturation was detected.
     """
     log("  Auto-calibrating saturating rate...")
     calibration_rates = [1, 5, 10, 15, 20, 25, 30, 40, 50]
@@ -1228,11 +1288,16 @@ def auto_calibrate_rate(cfg, namespace):
         )
         probe_cfg.results_dir.mkdir(parents=True, exist_ok=True)
 
-        # Run a short burst and check results
         start_interactive_traffic(probe_cfg, namespace)
-        time.sleep(20)
 
-        # Check for errors/high latency
+        # Wait for probe job to complete (15s burst + buffer)
+        try:
+            kubectl(["wait", "--for=condition=complete", "job/guidellm-interactive",
+                     "--timeout=45s"], cfg.context, namespace, check=False)
+        except Exception:
+            pass
+
+        # Check pod status
         try:
             gs = kubectl(["get", "pods", "-l", "job-name=guidellm-interactive",
                          "-o", "jsonpath={.items[0].status.phase}"],
@@ -1240,18 +1305,47 @@ def auto_calibrate_rate(cfg, namespace):
         except Exception:
             gs = "Unknown"
 
+        # Collect and parse probe results
+        probe_metrics = None
+        results_dir = collect_results(probe_cfg, 0, namespace)
+        if results_dir and results_dir.exists():
+            for csv_path in results_dir.glob("*.csv"):
+                m = parse_guidellm_csv(csv_path)
+                if m.completed > 0:
+                    probe_metrics = m
+                    break
+
+        # Clean up probe job
         kubectl(["delete", "job", "guidellm-interactive", "--ignore-not-found"],
                 cfg.context, namespace, check=False)
         time.sleep(5)
 
-        if gs == "Failed":
+        # Detect saturation via TTFT degradation or error rate
+        if probe_metrics and probe_metrics.completed > 0:
+            ttft_p99 = probe_metrics.ttft_p99
+            log(f"    Rate {rate}: TTFT p99={ttft_p99:.1f}ms, "
+                f"errors={probe_metrics.error_rate*100:.1f}%")
+
+            if baseline_ttft is None:
+                baseline_ttft = ttft_p99
+                log(f"    Baseline TTFT p99: {baseline_ttft:.1f}ms")
+            elif baseline_ttft > 0 and ttft_p99 > 3 * baseline_ttft:
+                saturating_rate = max(1, rate - calibration_rates[1])
+                log(f"    Saturating rate: {saturating_rate} req/s "
+                    f"(TTFT p99 {ttft_p99:.1f}ms > 3x baseline {baseline_ttft:.1f}ms)")
+                break
+
+            if probe_metrics.error_rate > 0.05:
+                saturating_rate = max(1, rate - calibration_rates[1])
+                log(f"    Saturating rate: {saturating_rate} req/s "
+                    f"(error rate {probe_metrics.error_rate*100:.1f}% > 5%)")
+                break
+        elif gs == "Failed":
             saturating_rate = max(1, rate - calibration_rates[1])
-            log(f"    Saturating rate found: {saturating_rate} req/s (probe failed at {rate})")
+            log(f"    Saturating rate: {saturating_rate} req/s (probe failed at {rate})")
             break
 
-    if baseline_ttft is None:
-        log(f"    Using max probed rate as saturating rate: {saturating_rate} req/s")
-
+    log(f"    Final saturating rate: {saturating_rate} req/s")
     return saturating_rate
 
 
@@ -1368,6 +1462,8 @@ def main():
         description="Batch Gateway Benchmark Orchestrator"
     )
     parser.add_argument("--context", required=True, help="kubectl context")
+    parser.add_argument("--namespace", default=None,
+                        help="Override namespace (default: batch-bench-s{scenario})")
     parser.add_argument("--scenarios", type=int, nargs="+", default=[2],
                         help="Scenarios to run (default: [2])")
     parser.add_argument("--model",
@@ -1434,6 +1530,9 @@ def main():
 
     args = parser.parse_args()
     args.results_dir.mkdir(parents=True, exist_ok=True)
+
+    global _NAMESPACE_OVERRIDE
+    _NAMESPACE_OVERRIDE = args.namespace
 
     cfg = BenchmarkConfig(
         context=args.context,

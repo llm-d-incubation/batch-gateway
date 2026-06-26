@@ -352,6 +352,7 @@ BENCHMARK_SCENARIO ?= 3
 BENCHMARK_RESULTS_DIR ?= benchmarks/results/local-run
 
 ## benchmark-local: Run benchmark e2e on local Kind cluster with inference-sim (no GPU required)
+##                   Set BENCHMARK_KEEP_CLUSTER=1 to skip teardown for inspection.
 benchmark-local:
 	@kind get clusters 2>/dev/null | grep -q $(KIND_CLUSTER_NAME) || \
 		{ echo "ERROR: Kind cluster '$(KIND_CLUSTER_NAME)' not found. Run 'make dev-deploy' first."; exit 1; }
@@ -367,6 +368,12 @@ benchmark-local:
 	@echo "Step 4/4: Done!"
 	@echo "Report: $(BENCHMARK_RESULTS_DIR)/report.html"
 	@echo "Metadata: $(BENCHMARK_RESULTS_DIR)/run-metadata.json"
+	@if [ -z "$(BENCHMARK_KEEP_CLUSTER)" ]; then \
+		echo "Tearing down benchmark namespace..."; \
+		KUBE_CONTEXT=$(BENCHMARK_CONTEXT) SCENARIO=$(BENCHMARK_SCENARIO) bash benchmarks/teardown.sh; \
+	else \
+		echo "Keeping cluster (BENCHMARK_KEEP_CLUSTER set). Teardown with: make benchmark-local-teardown"; \
+	fi
 
 ## benchmark-local-teardown: Teardown local benchmark environment
 benchmark-local-teardown:

@@ -201,6 +201,7 @@ def load_sharegpt_dataset(num_requests: int, seed: int):
 
     print("  Loading ShareGPT dataset from HuggingFace...", file=sys.stderr)
     ds = load_dataset("anon8231489123/ShareGPT_Vicuna_unfiltered",
+                      data_files="ShareGPT_V3_unfiltered_cleaned_split.json",
                       split="train", trust_remote_code=True)
 
     import random
