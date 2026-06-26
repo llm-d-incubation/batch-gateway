@@ -280,11 +280,11 @@ def generate_jsonl(
             if data_source == "sharegpt":
                 system_prompt, user_prompt = sharegpt_data[i]
             elif data_source == "synthetic":
-                system_prompt = system_prompts[i % num_system_prompts]
+                system_prompt = system_prompts[i % num_system_prompts] if num_system_prompts > 0 else ""
                 isl_tokens = sample_from_distribution(rng, isl_distribution, isl_mean, isl_stdev, min_val=16, max_val=isl_max)
                 user_prompt = generate_synthetic_prompt(isl_tokens, seed + i)
             else:
-                system_prompt = system_prompts[i % num_system_prompts]
+                system_prompt = system_prompts[i % num_system_prompts] if num_system_prompts > 0 else ""
                 # Sample ISL for this request (user prompt portion)
                 isl_tokens = sample_from_distribution(rng, isl_distribution, isl_mean, isl_stdev, min_val=16, max_val=isl_max)
                 target_chars = isl_tokens * 4
