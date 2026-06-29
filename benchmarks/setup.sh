@@ -242,6 +242,8 @@ inferenceExtension:
           maxBytes: 536870912
           fairnessPolicyRef: global-strict-fairness-policy
           orderingPolicyRef: fcfs-ordering-policy
+      saturationDetector:
+        pluginRef: utilization-detector
 VALUESEOF
 
         # Install EPP standalone chart
