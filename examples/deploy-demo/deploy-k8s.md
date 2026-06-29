@@ -54,8 +54,9 @@ Batch-route has no authorization — model-level authz is enforced downstream wh
 | Mode | Command |
 |------|---------|
 | Local chart (default) | `bash examples/deploy-demo/deploy-k8s.sh install` |
-| Specific commit | `BATCH_DEV_VERSION=1f925ff bash examples/deploy-demo/deploy-k8s.sh install` |
+| Chart from a specific commit | `BATCH_DEV_VERSION=1f925ff bash examples/deploy-demo/deploy-k8s.sh install` |
 | Released OCI chart | `BATCH_RELEASE_VERSION=v0.1.0 bash examples/deploy-demo/deploy-k8s.sh install` |
+| Custom images | `BATCH_IMAGE_TAG=v0.2.0` <br> `BATCH_APISERVER_REPO=ghcr.io/llm-d/batch-gateway-apiserver` <br> `BATCH_PROCESSOR_REPO=ghcr.io/llm-d/batch-gateway-processor` <br> `BATCH_GC_REPO=ghcr.io/llm-d/batch-gateway-gc` <br> `bash examples/deploy-demo/deploy-k8s.sh install` |
 
 > `BATCH_RELEASE_VERSION` and `BATCH_DEV_VERSION` cannot be used together. See [Environment Variables](#environment-variables) for common parameters.
 
@@ -88,9 +89,9 @@ bash examples/deploy-demo/deploy-k8s.sh uninstall
 
 Default `uninstall` removes the batch-gateway footprint and associated gateway/policy resources:
 
-- Helm releases and CRs in `BATCH_NAMESPACE` (including all HTTPRoutes)
+- Helm releases and CRs in `BATCH_NAMESPACE` (`batch-route` HTTPRoute, Redis, PostgreSQL, MinIO)
 - Both Gateways: `GATEWAY_NAME` and `BATCH_INTERNAL_GATEWAY_NAME`
-- DestinationRule `${BATCH_HELM_RELEASE}-backend-tls`
+- DestinationRule `${BATCH_INSTANCE_NAME}-backend-tls`
 - Internal Gateway resources (`batch-llm-route`, `batch-llm-route-auth`) in `LLM_NAMESPACE`
 - Kuadrant policies (`llm-route-auth`, `batch-route-auth`, `inference-token-limit`, `batch-ratelimit`)
 - Demo RBAC (test ServiceAccounts, Role, RoleBinding) in `LLM_NAMESPACE`
@@ -112,37 +113,38 @@ Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](http
 
 ## Environment Variables
 
-| Variable | Default | Scope | Description |
-|----------|---------|-------|-------------|
-| `BATCH_HELM_RELEASE` | `batch-gateway` | all | Helm release name |
-| `BATCH_RELEASE_VERSION` | — | all | Install from released OCI chart (e.g. `v1.0.0`). Cannot be used with `BATCH_DEV_VERSION` |
-| `BATCH_DEV_VERSION` | `local` | all | Image tag / commit SHA. `local` uses local chart + `latest` image. Cannot be used with `BATCH_RELEASE_VERSION` |
-| `BATCH_IMAGE_TAG` | — | all | Override image tag for all components. Takes precedence over `BATCH_RELEASE_VERSION` / `BATCH_DEV_VERSION` derived tags |
-| `BATCH_APISERVER_REPO` | — | all | Override apiserver image repository |
-| `BATCH_PROCESSOR_REPO` | — | all | Override processor image repository |
-| `BATCH_GC_REPO` | — | all | Override gc image repository |
-| `BATCH_DB_TYPE` | `postgresql` | all | Database backend: `postgresql` or `redis` |
-| `BATCH_STORAGE_TYPE` | `s3` | all | File storage: `fs` or `s3` |
-| `DEMO_TLS_INSECURE_SKIP_VERIFY` | `1` | all | Disables TLS certificate verification for processor → model gateway and Istio Gateway → batch apiserver (**demo/lab only**, [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Default `1` since demo scripts use self-signed certs. Set to `0` if you have trusted CA certs. |
-| `BATCH_NAMESPACE` | `batch-api` | all | Namespace for batch-gateway |
-| `LLM_NAMESPACE` | `llm` | all | Namespace for model serving |
-| `GATEWAY_NAME` | `istio-gateway` | k8s | Gateway resource name |
-| `GATEWAY_NAMESPACE` | `istio-ingress` | k8s | Gateway namespace |
-| `LLMD_VERSION` | `v0.7.0` | k8s | llm-d git ref to install |
-| `LLMD_RELEASE_POSTFIX` | `llmd` | k8s | Helm release postfix |
-| `GATEWAY_LOCAL_PORT` | `8080` | k8s | Port-forward local port |
-| `MODEL_NAME` | `random` | k8s | Model name for routing |
-| `KUADRANT_VERSION` | `1.3.1` | k8s | Kuadrant Helm chart version |
-| `GATEWAY_CLASS_NAME` | `istio` | k8s | GatewayClass name |
-| `CERT_MANAGER_VERSION` | `v1.15.3` | k8s | cert-manager Helm chart version |
-| `GAIE_CHART_VERSION` | `v1.5.0` | k8s | InferencePool (GAIE) Helm chart version |
-| `MODELSERVICE_CHART_VERSION` | `v0.4.12` | k8s | ModelService (vllm-sim) Helm chart version |
-| `ENABLE_FLOW_CONTROL` | `true` | k8s | Enable GIE priority-based flow control |
-| `BATCH_FLOW_CONTROL_OBJECTIVE` | `batch-sheddable` | k8s | InferenceObjective name for batch requests (priority -1) |
-| `BATCH_EXCHANGE_CLIENT_TYPE` | `redis` | all | Exchange backend type (`redis` or `valkey`) |
-| `BATCH_INTERNAL_GATEWAY_NAME` | `batch-internal-gateway` | k8s | Internal Gateway resource name |
-| `BATCH_INTERNAL_GATEWAY_NAMESPACE` | `${GATEWAY_NAMESPACE}` | k8s | Internal Gateway namespace |
-| `GW_REQUEST_TIMEOUT` | `5m` | all | Model gateway HTTP request timeout |
-| `GW_MAX_RETRIES` | `3` | all | Model gateway max retries |
-| `GW_INITIAL_BACKOFF` | `1s` | all | Model gateway initial retry backoff |
-| `GW_MAX_BACKOFF` | `60s` | all | Model gateway max retry backoff |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BATCH_INSTANCE_NAME` | `batch-gateway` | Helm release / instance name |
+| `BATCH_RELEASE_VERSION` | — | Install from released OCI chart (e.g. `v1.0.0`). Cannot be used with `BATCH_DEV_VERSION` |
+| `BATCH_DEV_VERSION` | `local` | Image tag / commit SHA. `local` uses local chart + `latest` image. Cannot be used with `BATCH_RELEASE_VERSION` |
+| `BATCH_IMAGE_TAG` | — | Override image tag for all components. Takes precedence over `BATCH_RELEASE_VERSION` / `BATCH_DEV_VERSION` derived tags |
+| `BATCH_APISERVER_REPO` | — | Override apiserver image repository |
+| `BATCH_PROCESSOR_REPO` | — | Override processor image repository |
+| `BATCH_GC_REPO` | — | Override gc image repository |
+| `BATCH_DB_TYPE` | `postgresql` | Database backend: `postgresql` or `redis` |
+| `BATCH_STORAGE_TYPE` | `s3` | File storage: `fs` or `s3` |
+| `DEMO_TLS_INSECURE_SKIP_VERIFY` | `1` | Disables TLS certificate verification for processor → model gateway and Istio Gateway → batch apiserver (**demo/lab only**, [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Default `1` since demo scripts use self-signed certs. Set to `0` if you have trusted CA certs. |
+| `BATCH_NAMESPACE` | `batch-api` | Namespace for batch-gateway |
+| `LLM_NAMESPACE` | `llm` | Namespace for model serving |
+| `BATCH_EXCHANGE_CLIENT_TYPE` | `redis` | Exchange backend type (`redis` or `valkey`) |
+| `GW_REQUEST_TIMEOUT` | `5m` | Model gateway HTTP request timeout |
+| `GW_MAX_RETRIES` | `3` | Model gateway max retries |
+| `GW_INITIAL_BACKOFF` | `1s` | Model gateway initial retry backoff |
+| `GW_MAX_BACKOFF` | `60s` | Model gateway max retry backoff |
+| `GATEWAY_NAME` | `istio-gateway` | Gateway resource name |
+| `GATEWAY_NAMESPACE` | `istio-ingress` | Gateway namespace |
+| `GATEWAY_CLASS_NAME` | `istio` | GatewayClass name |
+| `GATEWAY_LOCAL_PORT` | `8080` | Port-forward local port |
+| `BATCH_INTERNAL_GATEWAY_NAME` | `batch-internal-gateway` | Internal Gateway resource name |
+| `BATCH_INTERNAL_GATEWAY_NAMESPACE` | `${GATEWAY_NAMESPACE}` | Internal Gateway namespace |
+| `LLMD_VERSION` | `v0.7.0` | llm-d git ref to install |
+| `LLMD_RELEASE_POSTFIX` | `llmd` | Helm release postfix |
+| `MODEL_NAME` | `random` | Model name for routing |
+| `CERT_MANAGER_VERSION` | `v1.15.3` | cert-manager Helm chart version |
+| `KUADRANT_VERSION` | `1.3.1` | Kuadrant Helm chart version |
+| `GAIE_CHART_VERSION` | `v1.5.0` | InferencePool (GAIE) Helm chart version |
+| `MODELSERVICE_CHART_VERSION` | `v0.4.12` | ModelService (vllm-sim) Helm chart version |
+| `ENABLE_FLOW_CONTROL` | `true` | Enable GIE priority-based flow control |
+| `BATCH_FLOW_CONTROL_OBJECTIVE` | `batch-sheddable` | InferenceObjective name for batch requests (priority -1) |
+| `UNINSTALL_ALL` | `0` | Set to `1` to remove Kuadrant, Istio, cert-manager, CRDs (ephemeral clusters only) |

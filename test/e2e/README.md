@@ -20,7 +20,8 @@ This script:
 4. Installs PostgreSQL via Helm
 5. Deploys a vLLM simulator as the inference backend
 6. Deploys batch-gateway via Helm
-7. Creates NodePort services mapping to `https://localhost:8000` (apiserver), `http://localhost:8081` (apiserver observability), and `http://localhost:9090` (processor observability)
+7. Creates NodePort services mapping to `https://localhost:8000` (apiserver) and `http://localhost:8081` (apiserver observability)
+8. Creates a processor observability service that `make test-e2e` reaches via a temporary local `kubectl port-forward`
 
 **Environment variables**
 
@@ -41,7 +42,7 @@ This script:
 | `FILES_PVC_NAME`      | `<HELM_RELEASE>-files`                     | Name of the PVC created for file storage           |
 | `VLLM_SIM_NAME`       | `vllm-sim`                                 | Name of the vLLM simulator deployment              |
 | `VLLM_SIM_MODEL`      | `sim-model`                                | Model name served by the simulator                 |
-| `VLLM_SIM_IMAGE`      | `ghcr.io/llm-d/llm-d-inference-sim:latest` | vLLM simulator image                               |
+| `VLLM_SIM_IMAGE`      | `ghcr.io/llm-d/llm-d-inference-sim:latest` | vLLM simulator image (>= v0.9.1 required for `/admin/config`) |
 
 Example with overrides:
 
@@ -61,7 +62,7 @@ make test-e2e
 |---------------------------|----------------------------------|------------------------------------------------------------|
 | `TEST_APISERVER_URL`      | `https://localhost:8000`         | Base URL of the running API server (TLS)                   |
 | `TEST_APISERVER_OBS_URL`  | `http://localhost:8081`          | Apiserver observability endpoint (health, metrics)         |
-| `TEST_PROCESSOR_OBS_URL`  | `http://localhost:9090`          | Processor observability endpoint (health, metrics)         |
+| `TEST_PROCESSOR_OBS_URL`  | auto-resolved by the e2e test helpers | Processor observability endpoint (health, metrics)   |
 | `TEST_JAEGER_URL`         | `http://localhost:16686`         | Jaeger query endpoint for trace verification               |
 | `TEST_TENANT_HEADER`      | `X-MaaS-Username`               | HTTP header used to identify the tenant                    |
 | `TEST_TENANT_ID`          | `default`                        | Tenant ID sent in the tenant header                        |
@@ -70,12 +71,21 @@ make test-e2e
 | `TEST_POSTGRESQL_RELEASE` | `postgresql`                     | Helm release name for PostgreSQL (used by GC tests)        |
 | `TEST_MODEL`              | `sim-model`                      | Primary model name for batch input                         |
 | `TEST_MODEL_B`            | `sim-model-b`                    | Secondary model name for multi-model tests                 |
+| `TEST_SIM_SERVICE_429`    | `vllm-sim-429`                   | K8s service name for the 429-injecting simulator           |
+| `TEST_SIM_SERVICE_AIMD`   | `vllm-sim-aimd`                  | K8s service name for the AIMD recovery simulator           |
 | `TEST_CHART_PATH`         | `../../charts/batch-gateway`     | Path to the Helm chart (used by HelmUpgrade tests)         |
 
 Example with overrides:
 
 ```bash
 TEST_APISERVER_URL=https://localhost:9000 TEST_TENANT_ID=my-tenant make test-e2e
+```
+
+If you run `go test` directly instead of `make test-e2e`, the test helpers will auto-resolve the processor observability endpoint. You can still override it explicitly if needed:
+
+```bash
+TEST_PROCESSOR_OBS_URL=http://127.0.0.1:19090 \
+go test -v ./test/e2e/...
 ```
 
 ## 3. Cleanup

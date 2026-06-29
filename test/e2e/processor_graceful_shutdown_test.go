@@ -82,7 +82,7 @@ func doTestPodDeleteMidJob(t *testing.T) {
 	t.Logf("processor pod delete issued: %s", strings.TrimSpace(string(out)))
 
 	// Wait for the new pod to become ready.
-	waitForReady(t, testProcessorObsURL, 2*time.Minute)
+	waitForProcessorReady(t, 2*time.Minute)
 	t.Log("new processor pod is ready")
 
 	// The re-enqueue path should succeed reliably with the full grace period.
@@ -99,6 +99,12 @@ func doTestPodDeleteMidJob(t *testing.T) {
 
 	if finalBatch.Status != openai.BatchStatusCompleted {
 		t.Errorf("expected batch to complete after pod delete, got %s", finalBatch.Status)
+	}
+	if finalBatch.RequestCounts.Completed != finalBatch.RequestCounts.Total {
+		t.Errorf("expected all %d requests to complete after graceful shutdown, got completed=%d failed=%d",
+			finalBatch.RequestCounts.Total,
+			finalBatch.RequestCounts.Completed,
+			finalBatch.RequestCounts.Failed)
 	}
 }
 
@@ -140,7 +146,7 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 
 	// Wait for rollout to complete.
 	waitForRollout(t, deployment)
-	waitForReady(t, testProcessorObsURL, 2*time.Minute)
+	waitForProcessorReady(t, 2*time.Minute)
 	t.Log("processor rollout complete and ready")
 
 	// Same re-enqueue path as PodDeleteMidJob. completed is expected; failed
@@ -157,5 +163,11 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 
 	if finalBatch.Status != openai.BatchStatusCompleted {
 		t.Errorf("expected batch to complete after rolling restart, got %s", finalBatch.Status)
+	}
+	if finalBatch.RequestCounts.Completed != finalBatch.RequestCounts.Total {
+		t.Errorf("expected all %d requests to complete after graceful shutdown, got completed=%d failed=%d",
+			finalBatch.RequestCounts.Total,
+			finalBatch.RequestCounts.Completed,
+			finalBatch.RequestCounts.Failed)
 	}
 }

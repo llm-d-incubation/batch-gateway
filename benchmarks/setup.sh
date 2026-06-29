@@ -186,6 +186,14 @@ else
 
     # --- llm-d Router (EPP) ---
     log "Installing llm-d Router (${GUIDE_NAME})"
+
+    # Scenario 4: include flow-control overlay for priority-based scheduling
+    FLOW_CONTROL_OVERLAY=""
+    if [ "${SCENARIO}" = "4" ]; then
+        FLOW_CONTROL_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay.yaml"
+        log "  Flow control: enabling EPP priority bands (interactive=100, batch=-1)"
+    fi
+
     if [ -n "${ROUTER_REPO:-}" ] && [ -n "${LLM_D_REPO:-}" ]; then
         # Local repo mode (development override)
         log "  Using local repos: ROUTER_REPO=${ROUTER_REPO}, LLM_D_REPO=${LLM_D_REPO}"
@@ -198,6 +206,7 @@ else
             -f "${LLM_D_REPO}/guides/recipes/router/base.values.yaml" \
             -f "${LLM_D_REPO}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml" \
             -f "${LLM_D_REPO}/guides/recipes/router/features/monitoring.values.yaml" \
+            ${FLOW_CONTROL_OVERLAY} \
             --set provider.name=istio \
             --set httpRoute.create=true \
             --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
@@ -221,6 +230,7 @@ else
             -f "${LLM_D_VALUES_DIR}/base.values.yaml" \
             -f "${LLM_D_VALUES_DIR}/guide.values.yaml" \
             -f "${LLM_D_VALUES_DIR}/monitoring.values.yaml" \
+            ${FLOW_CONTROL_OVERLAY} \
             --set provider.name=istio \
             --set httpRoute.create=true \
             --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
@@ -316,11 +326,32 @@ else
     log "Skipping batch-gateway (not needed for scenario ${SCENARIO})"
 fi
 
-# --- Scenario 4: Flow control CRDs ---
+# --- Scenario 4: Flow control InferenceObjective CRDs ---
 if [ "${SCENARIO}" = "4" ]; then
-    log "Deploying flow control CRDs (EndpointPickerConfig + InferenceObjective)"
-    # TODO: Deploy EndpointPickerConfig and InferenceObjective CRDs in PR 3
-    log "  WARNING: Flow control CRDs not yet implemented — stub only"
+    log "Deploying InferenceObjective CRDs for flow control"
+    ${K} -n "${NAMESPACE}" apply -f - <<EOF
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: interactive-default
+spec:
+  priority: 100
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${GUIDE_NAME}
+---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: batch-sheddable
+spec:
+  priority: -1
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${GUIDE_NAME}
+EOF
+    log "  Created InferenceObjective: interactive-default (priority 100)"
+    log "  Created InferenceObjective: batch-sheddable (priority -1)"
 fi
 
 # --- Scenario 5: Async processor ---

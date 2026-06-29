@@ -1087,6 +1087,56 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 	}
 }
 
+// TestProcessModel_SIGTERMCancelsAllDispatched verifies that when SIGTERM arrives after all
+// requests have been dispatched as goroutines, processModel returns errShutdown so the job
+// is re-enqueued. This covers the case where undispatched is empty but in-flight requests
+// were cancelled by context propagation.
+func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	started := make(chan struct{})
+	mainCtx, mainCancel := context.WithCancel(testLoggerCtx(t))
+
+	mock := &mockInferenceClient{
+		generateFn: func(ctx context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			close(started)
+			mainCancel()
+			<-ctx.Done()
+			return nil, &inference.ClientError{
+				Category: httpclient.ErrCategoryServer,
+				Message:  "request cancelled",
+				RawError: ctx.Err(),
+			}
+		},
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
+
+	inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	inputFile, _ := os.Open(inputPath)
+	defer inputFile.Close()
+
+	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+	var outBuf, errBuf bytes.Buffer
+	writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
+
+	progress := &executionProgress{
+		total:   int64(len(requests)),
+		updater: env.updater,
+		jobID:   jobInfo.JobID,
+	}
+
+	err := env.p.processModel(mainCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	if !errors.Is(err, errShutdown) {
+		t.Fatalf("expected errShutdown when SIGTERM cancels all dispatched requests, got: %v", err)
+	}
+}
+
 // TestProcessModel_SiblingAbort_ReturnsNil verifies that when requestAbortCtx is cancelled
 // by a sibling model error (via requestAbortFn), processModel returns nil rather than errShutdown.
 //

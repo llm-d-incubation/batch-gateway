@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # ── Deploy batch-gateway on Kubernetes / OpenShift ─────────────────────────────
@@ -244,20 +244,6 @@ create_llm_route() {
     backendRefs:
     - group: inference.networking.k8s.io
       kind: InferencePool
-      name: ${pool_name}
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /${LLM_NAMESPACE}/${model_name}
-    filters:
-    - type: URLRewrite
-      urlRewrite:
-        path:
-          type: ReplacePrefixMatch
-          replacePrefixMatch: /
-    backendRefs:
-    - group: inference.networking.k8s.io
-      kind: InferencePool
       name: ${pool_name}"
         log "  llm-route rule: /${LLM_NAMESPACE}/${model_name}/* -> InferencePool/${pool_name}"
     done
@@ -310,20 +296,6 @@ create_batch_llm_route() {
         path:
           type: ReplacePrefixMatch
           replacePrefixMatch: /v1/chat/completions
-    backendRefs:
-    - group: inference.networking.k8s.io
-      kind: InferencePool
-      name: ${pool_name}
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /${LLM_NAMESPACE}/${model_name}
-    filters:
-    - type: URLRewrite
-      urlRewrite:
-        path:
-          type: ReplacePrefixMatch
-          replacePrefixMatch: /
     backendRefs:
     - group: inference.networking.k8s.io
       kind: InferencePool
@@ -542,7 +514,7 @@ verify_flow_control_config() {
 
     # 3. Batch processor inferenceObjective config (stored in configmap, not env)
     step "Checking batch processor config..."
-    if kubectl get configmap "${BATCH_HELM_RELEASE}-processor-config" -n "${BATCH_NAMESPACE}" \
+    if kubectl get configmap "${BATCH_INSTANCE_NAME}-processor-config" -n "${BATCH_NAMESPACE}" \
         -o jsonpath='{.data}' 2>/dev/null | grep "inference_objective" | grep -q "${BATCH_FLOW_CONTROL_OBJECTIVE}"; then
         log "Processor configured with inferenceObjective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
     else
@@ -688,7 +660,7 @@ deploy_batch_gateway_k8s() {
         log "Flow control: processor will send x-gateway-inference-objective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
     fi
 
-    do_deploy_batch_gateway "${helm_args[@]}"
+    do_deploy_batch_gateway_helm "${helm_args[@]}"
 }
 
 # ── Auth & Rate Limit Policies ────────────────────────────────────────────────
@@ -885,7 +857,7 @@ cmd_install() {
     fi
 
     log "Setup complete!"
-    log "  Batch Gateway: ${BATCH_HELM_RELEASE} (${BATCH_NAMESPACE})"
+    log "  Batch Gateway: ${BATCH_INSTANCE_NAME} (${BATCH_NAMESPACE})"
     if [ -n "${BATCH_IMAGE_TAG}" ]; then
         log "  Batch Gateway image tag: ${BATCH_IMAGE_TAG}"
     fi
@@ -994,7 +966,7 @@ cmd_uninstall() {
 
     step "Removing batch resources (${BATCH_NAMESPACE})..."
     timeout_delete 30s httproute --all -n "${BATCH_NAMESPACE}" || true
-    helm uninstall "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    helm uninstall "${BATCH_INSTANCE_NAME}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
     helm uninstall "${BATCH_REDIS_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
     helm uninstall "${BATCH_POSTGRESQL_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
     kubectl delete deployment,svc -l app="${BATCH_MINIO_RELEASE}" -n "${BATCH_NAMESPACE}" 2>/dev/null || true
@@ -1003,7 +975,7 @@ cmd_uninstall() {
     step "Removing Gateways (${GATEWAY_NAMESPACE})..."
     timeout_delete 30s gateway "${BATCH_INTERNAL_GATEWAY_NAME}" -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" || true
     timeout_delete 30s gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}" || true
-    kubectl delete destinationrule "${BATCH_HELM_RELEASE}-backend-tls" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
+    kubectl delete destinationrule "${BATCH_INSTANCE_NAME}-backend-tls" -n "${GATEWAY_NAMESPACE}" 2>/dev/null || true
 
     if is_demo_uninstall_all; then
         step "Removing Kuadrant..."
@@ -1077,7 +1049,7 @@ usage() {
     echo "  MODEL_NAME             Model name for routing (default: random)"
     echo "  LLMD_VERSION           llm-d branch or tag"
     echo "  LLMD_RELEASE_POSTFIX   Release name postfix (default: llmd)"
-    echo "  BATCH_HELM_RELEASE     Helm release name (default: batch-gateway)"
+    echo "  BATCH_INSTANCE_NAME     Instance name (default: batch-gateway)"
     echo "  GATEWAY_LOCAL_PORT     Port-forward fallback port (default: 8080)"
     echo "  BATCH_DEV_VERSION      Batch gateway image tag / commit SHA (default: local)"
     echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"

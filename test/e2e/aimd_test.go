@@ -21,15 +21,13 @@
 //   - Isolation: sim-model (0% failure) stays at the configured perEndpoint limit while
 //     sim-model-429 decreases independently.
 //   - Recovery: a dedicated sim-model-aimd starts at 100% failure (driving
-//     limit to min), then is patched to 0% failure; subsequent requests
-//     drive the limit back toward the configured perEndpoint limit.
+//     limit to min), then is flipped to 0% failure via /admin/config;
+//     subsequent requests drive the limit back toward the configured perEndpoint limit.
 
 package e2e_test
 
 import (
-	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -45,6 +43,8 @@ const (
 )
 
 func testAIMD(t *testing.T) {
+	t.Cleanup(func() { deleteE2ECurlPod(t) })
+
 	t.Run("DecreaseAndIsolation", doTestAIMDDecreaseAndIsolation)
 	t.Run("Recovery", doTestAIMDRecovery)
 }
@@ -69,6 +69,28 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 		num429Requests    = 10
 		numNormalRequests = 2
 	)
+
+	// Snapshot AIMD state before the test. Counters and gauges persist across
+	// runs on a long-lived processor, so we assert on deltas rather than
+	// absolute values.
+	metricsBefore := scrapeProcessorMetrics(t)
+	decreasesBefore := parseCounterByEndpoint(t, metricsBefore, "batch_processor_aimd_decreases_total")
+	limitsBefore := parseGaugeByEndpoint(t, metricsBefore, "batch_processor_aimd_concurrency_limit")
+
+	var decreaseBefore429 float64
+	for endpoint, count := range decreasesBefore {
+		if strings.Contains(endpoint, testSimService429) {
+			decreaseBefore429 = count
+			break
+		}
+	}
+	var limitBeforeHealthy float64
+	for endpoint, limit := range limitsBefore {
+		if isHealthySimEndpoint(endpoint) {
+			limitBeforeHealthy = limit
+			break
+		}
+	}
 
 	lines := make([]string, 0, num429Requests+numNormalRequests)
 	for i := range num429Requests {
@@ -113,16 +135,18 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 	for endpoint, limit := range aimdLimits {
 		t.Logf("aimd_concurrency_limit{endpoint=%q} = %.0f", endpoint, limit)
 
-		if strings.Contains(endpoint, "vllm-sim-429") {
+		if strings.Contains(endpoint, testSimService429) {
 			found429Endpoint = true
 			if limit >= float64(expectedPerEndpoint) {
 				t.Errorf("429 endpoint limit = %.0f, want < %d (AIMD should have decreased)", limit, expectedPerEndpoint)
 			}
 
 			if count, ok := aimdDecreases[endpoint]; ok {
-				t.Logf("aimd_decreases_total{endpoint=%q} = %.0f", endpoint, count)
-				if count == 0 {
-					t.Errorf("expected AIMD decrease signals > 0 for 429 endpoint")
+				delta := count - decreaseBefore429
+				t.Logf("aimd_decreases_total{endpoint=%q} = %.0f (delta=%.0f)", endpoint, count, delta)
+				if delta == 0 {
+					t.Errorf("expected AIMD decrease delta > 0 for 429 endpoint (before=%.0f, after=%.0f)",
+						decreaseBefore429, count)
 				}
 			} else {
 				t.Errorf("no aimd_decreases_total found for 429 endpoint %q", endpoint)
@@ -131,14 +155,21 @@ func doTestAIMDDecreaseAndIsolation(t *testing.T) {
 
 		if isHealthySimEndpoint(endpoint) {
 			foundNormalEndpoint = true
-			if limit != float64(expectedPerEndpoint) {
-				t.Errorf("healthy endpoint limit = %.0f, want %d (should be unaffected)", limit, expectedPerEndpoint)
+			if limitBeforeHealthy == 0 {
+				if limit != float64(expectedPerEndpoint) {
+					t.Errorf("healthy endpoint limit = %.0f, want %d (first run: should start at max)",
+						limit, expectedPerEndpoint)
+				}
+			} else if limit < limitBeforeHealthy {
+				t.Errorf("healthy endpoint limit decreased during test "+
+					"(before=%.0f, after=%.0f); should be unaffected by 429 traffic",
+					limitBeforeHealthy, limit)
 			}
 		}
 	}
 
 	if !found429Endpoint {
-		t.Error("no AIMD metric found for an endpoint containing 'vllm-sim-429'")
+		t.Errorf("no AIMD metric found for an endpoint containing %q", testSimService429)
 	}
 	if !foundNormalEndpoint {
 		t.Error("no AIMD metric found for a healthy (non-429) endpoint")
@@ -220,26 +251,31 @@ func parseCounterByEndpoint(t *testing.T, metrics, metricName string) map[string
 // backpressure subsides. It uses a dedicated simulator (vllm-sim-aimd) that
 // starts at 100% failure rate. The test:
 //  1. Submits requests to drive the AIMD limit to min (5).
-//  2. Patches the simulator to 0% failure rate and waits for rollout.
-//  3. Submits more requests and verifies the limit eventually increases above
-//     its phase-1 baseline.
+//  2. Flips the simulator to 0% failure rate via /admin/config (no rollout needed).
+//  3. Submits single-request batches to deterministically complete multiple
+//     additive-increase windows, then verifies the exported limit rises above
+//     its phase-1 baseline without any new decrease signals.
 //
 // t.Cleanup restores the simulator to 100% failure for subsequent runs.
 //
-// Because AIMD increases by +1 per successful window, full recovery to the
-// configured perEndpoint limit requires many requests. We only assert that the
-// limit eventually increases beyond the phase-1 floor, since the exported gauge
-// can lag the recovery batch completion by a scrape interval.
+// Because AIMD increases by +1 per successful window, a single large recovery
+// batch can complete before exported metrics clearly reflect the recovery under
+// CI load. Driving recovery with enough single-request batches makes the
+// success windows deterministic while still keeping the original guarantee:
+// the exported limit must rise above the phase-1 floor.
 func doTestAIMDRecovery(t *testing.T) {
 	if !testKubectlAvailable {
 		t.Skip("kubectl not available, skipping AIMD recovery test")
 	}
 
-	const (
-		numFailRequests   = 10
-		numRecovRequests  = 30
-		aimdSimDeployment = "vllm-sim-aimd"
-	)
+	const numFailRequests = 10
+
+	t.Cleanup(func() {
+		t.Log("cleanup: restoring vllm-sim-aimd to 100% failure rate")
+		if err := trySetSimAdminConfig(t, testSimServiceAIMD, `{"failure-injection-rate": 100, "failure-types": ["rate_limit"]}`); err != nil {
+			t.Errorf("cleanup: failed to restore %s to 100%% failure rate: %v", testSimServiceAIMD, err)
+		}
+	})
 
 	// Phase 1: Drive AIMD limit to min with 100% failure rate.
 	// The simulator starts with 100% failure, so all requests get 429s
@@ -269,15 +305,21 @@ func doTestAIMDRecovery(t *testing.T) {
 
 	metrics := scrapeProcessorMetrics(t)
 	aimdLimits := parseGaugeByEndpoint(t, metrics, "batch_processor_aimd_concurrency_limit")
+	aimdIncreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_increases_total")
+	aimdDecreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_decreases_total")
 
 	var (
-		aimdEndpoint  string
-		baselineLimit float64
+		aimdEndpoint      string
+		baselineLimit     float64
+		baselineIncreases float64
+		baselineDecreases float64
 	)
 	for endpoint, limit := range aimdLimits {
-		if strings.Contains(endpoint, aimdSimDeployment) {
+		if strings.Contains(endpoint, testSimServiceAIMD) {
 			aimdEndpoint = endpoint
 			baselineLimit = limit
+			baselineIncreases = aimdIncreases[endpoint]
+			baselineDecreases = aimdDecreases[endpoint]
 			t.Logf("phase 1: aimd_concurrency_limit{endpoint=%q} = %.0f", endpoint, limit)
 			if limit > float64(aimdMin) {
 				t.Fatalf("expected AIMD limit <= %d after 100%% failure, got %.0f", aimdMin, limit)
@@ -286,76 +328,62 @@ func doTestAIMDRecovery(t *testing.T) {
 		}
 	}
 	if aimdEndpoint == "" {
-		t.Fatalf("no AIMD metric found for endpoint containing %q", aimdSimDeployment)
+		t.Fatalf("no AIMD metric found for endpoint containing %q", testSimServiceAIMD)
 	}
 
-	// Phase 2: Patch simulator to 0% failure and wait for rollout.
-	t.Log("phase 2: patching simulator to 0% failure rate...")
-	patchSimulatorFailureRate(t, aimdSimDeployment, testModelAIMD, 0)
-	t.Cleanup(func() {
-		t.Log("cleanup: restoring simulator to 100% failure rate")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+	// Phase 2: Flip simulator to 0% failure via /admin/config.
+	// Unlike kubectl patch + rollout, this takes effect immediately without
+	// restarting the pod (~1s vs ~90s).
+	t.Log("phase 2: setting vllm-sim-aimd to 0% failure rate via /admin/config")
+	setSimAdminConfig(t, testSimServiceAIMD, `{"failure-injection-rate": 0}`)
 
-		// Timing args (10ms/10ms) must match dev-deploy.sh's install_vllm_sim defaults.
-		patch := fmt.Sprintf(
-			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5","--failure-injection-rate=100","--failure-types=rate_limit"]}]}}}}`,
-			testModelAIMD,
-		)
-		out, err := exec.CommandContext(ctx, "kubectl", "patch", "deployment", aimdSimDeployment,
-			"-n", testNamespace,
-			"--type=strategic",
-			"-p", patch,
-		).CombinedOutput()
-		if err != nil {
-			t.Errorf("cleanup: failed to restore %s to 100%% failure: %v\n%s\nMANUAL RESTORE REQUIRED: kubectl patch deployment %s -n %s ...",
-				aimdSimDeployment, err, out, aimdSimDeployment, testNamespace)
-			return
-		}
-
-		rollCtx, rollCancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer rollCancel()
-		out, err = exec.CommandContext(rollCtx, "kubectl", "rollout", "status",
-			"deployment/"+aimdSimDeployment, "-n", testNamespace, "--timeout=90s",
-		).CombinedOutput()
-		if err != nil {
-			t.Errorf("cleanup: rollout wait failed for %s: %v\n%s", aimdSimDeployment, err, out)
-		}
-	})
-	waitForRollout(t, aimdSimDeployment)
-	t.Log("phase 2: simulator rollout complete, now at 0% failure rate")
-
-	// Phase 3: Submit requests that all succeed, triggering additive increases.
-	// Each successful window adds +1 to the limit (from aimd.additiveIncrease=1).
-	t.Log("phase 3: submitting requests to trigger AIMD recovery...")
-	recovLines := make([]string, 0, numRecovRequests)
-	for i := range numRecovRequests {
-		recovLines = append(recovLines, fmt.Sprintf(
+	// Phase 3: Submit one successful request at a time. A limit of 5 needs 5
+	// clean successes to record the first additive increase. Send more than one
+	// full success window so the exported gauge has time to move above the floor
+	// even under CI scrape lag.
+	numRecoveryRequests := 2*int(baselineLimit) + 1
+	t.Logf("phase 3: submitting %d single-request batches to trigger AIMD recovery...", numRecoveryRequests)
+	for i := range numRecoveryRequests {
+		recovLine := fmt.Sprintf(
 			`{"custom_id":"aimd-recov-ok-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"AIMD recover %d"}]}}`,
 			i+1, testModelAIMD, i+1,
-		))
+		)
+		recovFileID := mustCreateFile(t, fmt.Sprintf("aimd-recov-ok-%s-%02d.jsonl", testRunID, i+1), recovLine)
+		recovBatchID := mustCreateBatch(t, recovFileID)
+
+		recovBatch, _ := waitForBatchStatus(t, recovBatchID, 5*time.Minute, openai.BatchStatusCompleted)
+		if recovBatch.RequestCounts.Completed != 1 || recovBatch.RequestCounts.Failed != 0 {
+			t.Fatalf("expected recovery batch %d to complete cleanly, got completed=%d failed=%d",
+				i+1, recovBatch.RequestCounts.Completed, recovBatch.RequestCounts.Failed)
+		}
 	}
 
-	recovFileID := mustCreateFile(t, fmt.Sprintf("aimd-recov-ok-%s.jsonl", testRunID), strings.Join(recovLines, "\n"))
-	recovBatchID := mustCreateBatch(t, recovFileID)
-
-	recovBatch, _ := waitForBatchStatus(t, recovBatchID, 5*time.Minute, openai.BatchStatusCompleted)
-	if recovBatch.RequestCounts.Completed != int64(numRecovRequests) {
-		t.Fatalf("expected %d completed in recovery batch, got %d (failed=%d)",
-			numRecovRequests, recovBatch.RequestCounts.Completed, recovBatch.RequestCounts.Failed)
-	}
-
-	limit, increases := waitForAIMDLimitIncrease(t, aimdEndpoint, baselineLimit, 15*time.Second, 500*time.Millisecond)
+	limit, increases, decreases := waitForAIMDRecovery(
+		t,
+		aimdEndpoint,
+		baselineLimit,
+		baselineIncreases,
+		baselineDecreases,
+		60*time.Second,
+		500*time.Millisecond,
+	)
 	t.Logf("phase 3: aimd_concurrency_limit{endpoint=%q} = %.0f", aimdEndpoint, limit)
 	t.Logf("aimd_increases_total{endpoint=%q} = %.0f", aimdEndpoint, increases)
+	t.Logf("aimd_decreases_total{endpoint=%q} = %.0f", aimdEndpoint, decreases)
 }
 
-func waitForAIMDLimitIncrease(t *testing.T, endpoint string, baselineLimit float64, timeout, interval time.Duration) (float64, float64) {
+func waitForAIMDRecovery(
+	t *testing.T,
+	endpoint string,
+	baselineLimit, baselineIncreases, baselineDecreases float64,
+	timeout, interval time.Duration,
+) (float64, float64, float64) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
 	lastLimit := baselineLimit
-	var lastIncreases float64
+	lastIncreases := baselineIncreases
+	lastDecreases := baselineDecreases
 
 	for {
 		metrics := scrapeProcessorMetrics(t)
@@ -369,50 +397,23 @@ func waitForAIMDLimitIncrease(t *testing.T, endpoint string, baselineLimit float
 			lastIncreases = increases
 		}
 
+		aimdDecreases := parseCounterByEndpoint(t, metrics, "batch_processor_aimd_decreases_total")
+		if decreases, ok := aimdDecreases[endpoint]; ok {
+			lastDecreases = decreases
+		}
+
+		if lastDecreases > baselineDecreases {
+			t.Fatalf("expected no new AIMD decreases during recovery, baseline=%.0f last=%.0f",
+				baselineDecreases, lastDecreases)
+		}
 		if lastLimit > baselineLimit {
-			return lastLimit, lastIncreases
+			return lastLimit, lastIncreases, lastDecreases
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("expected AIMD limit to increase above %.0f after recovery, last limit=%.0f, increases_total=%.0f",
-				baselineLimit, lastLimit, lastIncreases)
+			t.Fatalf("expected AIMD recovery after baseline limit %.0f, last limit=%.0f, increases_total=%.0f, decreases_total=%.0f",
+				baselineLimit, lastLimit, lastIncreases, lastDecreases)
 		}
 
 		time.Sleep(interval)
 	}
-}
-
-// patchSimulatorFailureRate patches the vllm-sim container args in the given
-// deployment to set --failure-injection-rate to the specified value. A rate of
-// 0 removes the failure injection flags entirely.
-//
-// The timing args (10ms/10ms) must match dev-deploy.sh's install_vllm_sim
-// invocation for the AIMD simulator; if those defaults change, update here.
-func patchSimulatorFailureRate(t *testing.T, deployment, model string, rate int) {
-	t.Helper()
-
-	var patch string
-	if rate == 0 {
-		patch = fmt.Sprintf(
-			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5"]}]}}}}`,
-			model,
-		)
-	} else {
-		patch = fmt.Sprintf(
-			`{"spec":{"template":{"spec":{"containers":[{"name":"vllm-sim","args":["--model","%s","--port","8000","--time-to-first-token=10ms","--inter-token-latency=10ms","--v=5","--failure-injection-rate=%d","--failure-types=rate_limit"]}]}}}}`,
-			model, rate,
-		)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "kubectl", "patch", "deployment", deployment,
-		"-n", testNamespace,
-		"--type=strategic",
-		"-p", patch,
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to patch %s failure rate to %d%%: %v\n%s", deployment, rate, err, out)
-	}
-	t.Logf("patched %s: failure-injection-rate=%d%%", deployment, rate)
 }

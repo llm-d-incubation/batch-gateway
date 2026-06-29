@@ -1,0 +1,42 @@
+# Flow control overlay for llm-d Router (InferencePool EPP chart).
+# Applied in scenario 4 to enable two-layer protection:
+#   Layer 1: Router EPP flow control (priority-based request scheduling)
+#   Layer 2: Processor AIMD (adaptive concurrency per endpoint)
+#
+# Priority bands:
+#   Interactive (100): low-latency, round-robin fairness, FCFS ordering
+#   Batch (-1): sheddable, throughput-optimized, SLO-deadline ordering
+inferenceExtension:
+  pluginsConfigFile: "flow-control-plugins.yaml"
+  pluginsCustomConfig:
+    flow-control-plugins.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      featureGates:
+        - "flowControl"
+      plugins:
+        - type: round-robin-fairness-policy
+        - type: global-strict-fairness-policy
+        - type: slo-deadline-ordering-policy
+        - type: utilization-detector
+          parameters:
+            queueDepthThreshold: 5
+            kvCacheUtilThreshold: 0.8
+      flowControl:
+        maxBytes: 4294967296
+        defaultRequestTTL: 30s
+        priorityBands:
+          - priority: 100
+            maxBytes: 1073741824
+            fairnessPolicyRef: round-robin-fairness-policy
+            orderingPolicyRef: fcfs-ordering-policy
+          - priority: -1
+            maxBytes: 3221225472
+            fairnessPolicyRef: global-strict-fairness-policy
+            orderingPolicyRef: slo-deadline-ordering-policy
+        defaultPriorityBand:
+          maxBytes: 536870912
+          fairnessPolicyRef: global-strict-fairness-policy
+          orderingPolicyRef: fcfs-ordering-policy
+        saturationDetector:
+          pluginRef: utilization-detector

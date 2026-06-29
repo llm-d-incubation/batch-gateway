@@ -19,6 +19,7 @@ benchmark:
   burst_seconds: 90
   idle_seconds: 90
   cycles: 3
+  warmup_cycles: 1
   batch_size: 1000
   num_jobs: 3
   model: Qwen/Qwen3-8B
