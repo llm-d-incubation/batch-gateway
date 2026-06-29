@@ -462,7 +462,7 @@ limitations under the License.
 ## Related Projects
 
 - [llm-d-router](https://github.com/llm-d/llm-d-router) - llm-d inference router.
-- [gateway-api-inference-extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) - Kubernetes Gateway API extensions for inference workloads.
+- [llm-d-async](https://github.com/llm-d-incubation/llm-d-async) - Metrics-driven batch dispatch flow control (optional).
 
 ## Support
 
