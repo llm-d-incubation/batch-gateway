@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Common functions
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ is_demo_uninstall_all() {
 
 # Batch Gateway configuration
 BATCH_NAMESPACE="${BATCH_NAMESPACE:-batch-api}"
-BATCH_HELM_RELEASE="${BATCH_HELM_RELEASE:-batch-gateway}"
+BATCH_INSTANCE_NAME="${BATCH_INSTANCE_NAME:-batch-gateway}"
 BATCH_RELEASE_VERSION="${BATCH_RELEASE_VERSION:-}"
 BATCH_DEV_VERSION="${BATCH_DEV_VERSION:-}"
 if [ -n "${BATCH_RELEASE_VERSION}" ]; then
@@ -57,10 +57,10 @@ else
         BATCH_DEV_VERSION="${BATCH_DEV_VERSION:0:7}"
     fi
 fi
-BATCH_INFERENCE_SERVICE="${BATCH_INFERENCE_SERVICE:-${BATCH_HELM_RELEASE}-apiserver}"
+BATCH_INFERENCE_SERVICE="${BATCH_INFERENCE_SERVICE:-${BATCH_INSTANCE_NAME}-apiserver}"
 BATCH_INFERENCE_PORT="${BATCH_INFERENCE_PORT:-8000}"
-BATCH_APP_SECRET_NAME="${BATCH_APP_SECRET_NAME:-${BATCH_HELM_RELEASE}-secrets}"
-BATCH_FILES_PVC_NAME="${BATCH_FILES_PVC_NAME:-${BATCH_HELM_RELEASE}-files}"
+BATCH_APP_SECRET_NAME="${BATCH_APP_SECRET_NAME:-${BATCH_INSTANCE_NAME}-secrets}"
+BATCH_FILES_PVC_NAME="${BATCH_FILES_PVC_NAME:-${BATCH_INSTANCE_NAME}-files}"
 BATCH_DB_TYPE="${BATCH_DB_TYPE:-postgresql}"
 # Default HTTP settings for model gateway entries.
 # Each per-model entry must be fully specified (no inheritance).
@@ -93,7 +93,7 @@ BATCH_APISERVER_REPO="${BATCH_APISERVER_REPO:-}"
 BATCH_PROCESSOR_REPO="${BATCH_PROCESSOR_REPO:-}"
 BATCH_GC_REPO="${BATCH_GC_REPO:-}"
 
-# Temp directory cleanup (used by install_batch_gateway)
+# Temp directory cleanup (used by do_deploy_batch_gateway_helm)
 _BATCH_TMP_DIR=""
 _cleanup() {
     if [ -n "${_BATCH_TMP_DIR}" ]; then
@@ -107,10 +107,6 @@ trap _cleanup EXIT
 
 is_openshift() {
     kubectl api-resources --api-group=route.openshift.io &>/dev/null 2>&1
-}
-
-gen_id() {
-    uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "${RANDOM}-${RANDOM}-$$"
 }
 
 wait_for_deployment() {
@@ -365,10 +361,10 @@ create_batch_destinationrule() {
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
 metadata:
-  name: ${BATCH_HELM_RELEASE}-backend-tls
+  name: ${BATCH_INSTANCE_NAME}-backend-tls
   namespace: ${GATEWAY_NAMESPACE}
 spec:
-  host: ${BATCH_HELM_RELEASE}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local
+  host: ${BATCH_INSTANCE_NAME}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local
   trafficPolicy:
     portLevelSettings:
     - port:
@@ -571,88 +567,11 @@ get_batch_gateway_image_tag() {
     echo "$image_tag"
 }
 
-# install_batch_gateway [helm_args...]
-# Installs batch-gateway via helm chart. Callers pass the complete helm args array.
-install_batch_gateway() {
-    step "Installing batch-gateway via Helm..."
-
-    local chart version_args=()
-    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
-        # TODO: pre-graduation location; update to ghcr.io/llm-d in the next release
-        chart="oci://ghcr.io/llm-d-incubation/charts/batch-gateway"
-        version_args=(--version "${BATCH_RELEASE_VERSION#v}")
-    elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
-        local repo_root
-        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-        chart="${repo_root}/charts/batch-gateway"
-    else
-        # Download chart from GitHub at the specific commit
-        _BATCH_TMP_DIR=$(mktemp -d)
-        local tarball_url="https://github.com/llm-d/llm-d-batch-gateway/archive/${BATCH_DEV_VERSION}.tar.gz"
-        step "Downloading chart from commit ${BATCH_DEV_VERSION}..."
-        local http_code
-        http_code=$(curl -sL -o "${_BATCH_TMP_DIR}/archive.tar.gz" -w '%{http_code}' "${tarball_url}")
-        if [ "${http_code}" != "200" ]; then
-            die "Failed to download chart (HTTP ${http_code}). Is '${BATCH_DEV_VERSION}' a valid commit?"
-        fi
-        tar xz -C "${_BATCH_TMP_DIR}" --strip-components=1 -f "${_BATCH_TMP_DIR}/archive.tar.gz"
-        chart="${_BATCH_TMP_DIR}/charts/batch-gateway"
-        if [ ! -f "${chart}/Chart.yaml" ]; then
-            die "Chart not found at commit ${BATCH_DEV_VERSION}"
-        fi
-    fi
-
-    if helm status "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
-        log "Release '${BATCH_HELM_RELEASE}' already exists. Upgrading..."
-        helm upgrade "${BATCH_HELM_RELEASE}" "${chart}" --reset-values "${version_args[@]+"${version_args[@]}"}" "$@"
-    else
-        helm install "${BATCH_HELM_RELEASE}" "${chart}" "${version_args[@]+"${version_args[@]}"}" "$@"
-    fi
-
-    wait_for_deployment "${BATCH_HELM_RELEASE}-apiserver" "${BATCH_NAMESPACE}" 180s
-    wait_for_deployment "${BATCH_HELM_RELEASE}-processor" "${BATCH_NAMESPACE}" 180s
-    wait_for_deployment "${BATCH_HELM_RELEASE}-gc" "${BATCH_NAMESPACE}" 180s
-
-    # Print installed versions and verify image tags
-    local expected_tag=$(get_batch_gateway_image_tag)
-    step "Installed batch-gateway components:"
-    local mismatch=false
-    for component in apiserver processor gc; do
-        local actual_image
-        actual_image=$(kubectl get deploy "${BATCH_HELM_RELEASE}-${component}" -n "${BATCH_NAMESPACE}" \
-            -o jsonpath='{.spec.template.spec.containers[0].image}')
-        local actual_tag="${actual_image##*:}"
-        log "  ${component}: ${actual_image}"
-        if [ -n "${expected_tag}" ] && [ "${actual_tag}" != "${expected_tag}" ]; then
-            warn "  ${component} tag '${actual_tag}' does not match expected '${expected_tag}'"
-            mismatch=true
-        fi
-    done
-    if [ "${mismatch}" = "true" ]; then
-        die "Image tags do not match expected version."
-    fi
-
-    # Verify OCI chart version for release installs
-    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
-        local installed_ver
-        installed_ver=$(helm get metadata "${BATCH_HELM_RELEASE}" -n "${BATCH_NAMESPACE}" -o json 2>/dev/null \
-            | jq -r '.version // empty')
-        local expected_ver="${BATCH_RELEASE_VERSION#v}"
-        if [ "${installed_ver}" = "${expected_ver}" ]; then
-            log "Verified: OCI chart version ${installed_ver} matches release ${BATCH_RELEASE_VERSION}"
-        else
-            die "Chart version '${installed_ver}' does not match expected '${expected_ver}'"
-        fi
-    fi
-
-    log "batch-gateway installed."
-}
-
-# do_deploy_batch_gateway [extra_helm_args...]
+# do_deploy_batch_gateway_helm [extra_helm_args...]
 # Full batch-gateway deployment: databases, storage, helm chart and routing.
 # Common helm args are built here; callers only pass script-specific overrides
 # (e.g. modelGateways, passThroughHeaders).
-do_deploy_batch_gateway() {
+do_deploy_batch_gateway_helm() {
     kubectl get namespace "${BATCH_NAMESPACE}" &>/dev/null || kubectl create namespace "${BATCH_NAMESPACE}"
     kubectl label namespace "${BATCH_NAMESPACE}" llm-d.ai/gateway-route=true --overwrite
 
@@ -693,7 +612,7 @@ do_deploy_batch_gateway() {
         --set "apiserver.tls.certManager.enabled=true"
         --set "apiserver.tls.certManager.issuerName=${TLS_ISSUER_NAME}"
         --set "apiserver.tls.certManager.issuerKind=ClusterIssuer"
-        --set "apiserver.tls.certManager.dnsNames={${BATCH_HELM_RELEASE}-apiserver,${BATCH_HELM_RELEASE}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local,localhost}"
+        --set "apiserver.tls.certManager.dnsNames={${BATCH_INSTANCE_NAME}-apiserver,${BATCH_INSTANCE_NAME}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local,localhost}"
     )
 
     if [ "${BATCH_STORAGE_TYPE}" = "s3" ]; then
@@ -714,7 +633,214 @@ do_deploy_batch_gateway() {
     fi
 
     # Append caller-specific args (modelGateways, passThroughHeaders, etc.)
-    install_batch_gateway "${helm_args[@]}" "$@"
+    helm_args+=("$@")
+
+    step "Installing batch-gateway via Helm..."
+
+    local chart version_args=()
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        # TODO: pre-graduation location; update to ghcr.io/llm-d in the next release
+        chart="oci://ghcr.io/llm-d-incubation/charts/batch-gateway"
+        version_args=(--version "${BATCH_RELEASE_VERSION#v}")
+    elif [ "${BATCH_DEV_VERSION}" = "local" ]; then
+        local repo_root
+        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+        chart="${repo_root}/charts/batch-gateway"
+    else
+        # Download chart from GitHub at the specific commit
+        _BATCH_TMP_DIR=$(mktemp -d)
+        local tarball_url="https://github.com/llm-d/llm-d-batch-gateway/archive/${BATCH_DEV_VERSION}.tar.gz"
+        step "Downloading chart from commit ${BATCH_DEV_VERSION}..."
+        local http_code
+        http_code=$(curl -sL -o "${_BATCH_TMP_DIR}/archive.tar.gz" -w '%{http_code}' "${tarball_url}")
+        if [ "${http_code}" != "200" ]; then
+            die "Failed to download chart (HTTP ${http_code}). Is '${BATCH_DEV_VERSION}' a valid commit?"
+        fi
+        tar xz -C "${_BATCH_TMP_DIR}" --strip-components=1 -f "${_BATCH_TMP_DIR}/archive.tar.gz"
+        chart="${_BATCH_TMP_DIR}/charts/batch-gateway"
+        if [ ! -f "${chart}/Chart.yaml" ]; then
+            die "Chart not found at commit ${BATCH_DEV_VERSION}"
+        fi
+    fi
+
+    if helm status "${BATCH_INSTANCE_NAME}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "Release '${BATCH_INSTANCE_NAME}' already exists. Upgrading..."
+        helm upgrade "${BATCH_INSTANCE_NAME}" "${chart}" --reset-values "${version_args[@]+"${version_args[@]}"}" "${helm_args[@]}"
+    else
+        helm install "${BATCH_INSTANCE_NAME}" "${chart}" "${version_args[@]+"${version_args[@]}"}" "${helm_args[@]}"
+    fi
+
+    wait_for_deployment "${BATCH_INSTANCE_NAME}-apiserver" "${BATCH_NAMESPACE}" 180s
+    wait_for_deployment "${BATCH_INSTANCE_NAME}-processor" "${BATCH_NAMESPACE}" 180s
+    wait_for_deployment "${BATCH_INSTANCE_NAME}-gc" "${BATCH_NAMESPACE}" 180s
+
+    # Print installed versions and verify image tags
+    local expected_tag=$(get_batch_gateway_image_tag)
+    step "Installed batch-gateway components:"
+    local mismatch=false
+    for component in apiserver processor gc; do
+        local actual_image
+        actual_image=$(kubectl get deploy "${BATCH_INSTANCE_NAME}-${component}" -n "${BATCH_NAMESPACE}" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+        local actual_tag="${actual_image##*:}"
+        log "  ${component}: ${actual_image}"
+        if [ -n "${expected_tag}" ] && [ "${actual_tag}" != "${expected_tag}" ]; then
+            warn "  ${component} tag '${actual_tag}' does not match expected '${expected_tag}'"
+            mismatch=true
+        fi
+    done
+    if [ "${mismatch}" = "true" ]; then
+        die "Image tags do not match expected version."
+    fi
+
+    # Verify OCI chart version for release installs
+    if [ -n "${BATCH_RELEASE_VERSION}" ]; then
+        local installed_ver
+        installed_ver=$(helm get metadata "${BATCH_INSTANCE_NAME}" -n "${BATCH_NAMESPACE}" -o json 2>/dev/null \
+            | jq -r '.version // empty')
+        local expected_ver="${BATCH_RELEASE_VERSION#v}"
+        if [ "${installed_ver}" = "${expected_ver}" ]; then
+            log "Verified: OCI chart version ${installed_ver} matches release ${BATCH_RELEASE_VERSION}"
+        else
+            die "Chart version '${installed_ver}' does not match expected '${expected_ver}'"
+        fi
+    fi
+
+    log "batch-gateway installed."
+
+    create_batch_httproute
+    create_batch_destinationrule
+}
+
+# ── DSC-based Batch Gateway Deployment ──────────────────────────────────
+#
+# do_deploy_batch_gateway_dsc isvc_name [pass_through_headers]
+#
+# Deploys batch-gateway via the LLMBatchGateway CR (operator-managed).
+# Installs dependencies (Redis, PostgreSQL, MinIO/PVC), creates the CR,
+# waits for it to be ready, and sets up HTTPRoute + DestinationRule.
+#
+# Args:
+#   isvc_name             Model / InferenceService name (used in the model URL path)
+#   pass_through_headers  Comma-separated list of HTTP headers to forward (optional, empty = none)
+
+do_deploy_batch_gateway_dsc() {
+    local isvc_name="$1"
+    local pass_through_headers="${2:-}"
+
+    local operator_type="${OPERATOR_TYPE:-rhoai}"
+    local apps_namespace
+    case "${operator_type}" in
+        rhoai) apps_namespace="redhat-ods-applications" ;;
+        odh)   apps_namespace="opendatahub" ;;
+        *)     die "Unknown OPERATOR_TYPE: ${operator_type}" ;;
+    esac
+
+    step "Enabling aigateway + batchGateway in DataScienceCluster..."
+    kubectl patch datasciencecluster default-dsc --type=merge -p '{"spec":{"components":{"aigateway":{"managementState":"Managed","batchGateway":{"managementState":"Managed"}}}}}'
+
+    wait_for_deployment "ai-gateway-operator" "${apps_namespace}" 300s
+    wait_for_deployment "llm-d-batch-gateway-operator" "${apps_namespace}" 300s
+    wait_for_crd "llmbatchgateways.batch.llm-d.ai"
+
+    kubectl get namespace "${BATCH_NAMESPACE}" &>/dev/null || kubectl create namespace "${BATCH_NAMESPACE}"
+    kubectl label namespace "${BATCH_NAMESPACE}" llm-d.ai/gateway-route=true --overwrite
+
+    install_batch_exchange
+    install_batch_postgresql
+    if [ "${BATCH_STORAGE_TYPE}" = "s3" ]; then
+        install_batch_minio
+    else
+        create_batch_pvc
+    fi
+    create_batch_secret
+
+    local internal_gw_svc
+    internal_gw_svc=$(kubectl get svc -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" \
+        -l "gateway.networking.k8s.io/gateway-name=${BATCH_INTERNAL_GATEWAY_NAME}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    [ -z "${internal_gw_svc}" ] && die "No service found for Internal Gateway '${BATCH_INTERNAL_GATEWAY_NAME}'."
+    local model_url="http://${internal_gw_svc}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${isvc_name}"
+    log "Model URL (via Internal Gateway): ${model_url}"
+
+    local processor_config_yaml=""
+    if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
+        processor_config_yaml="    config:
+      inferenceObjective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
+        log "Flow control: processor will send x-gateway-inference-objective: ${BATCH_FLOW_CONTROL_OBJECTIVE}"
+    fi
+
+    local file_storage_yaml
+    if [ "${BATCH_STORAGE_TYPE}" = "s3" ]; then
+        local minio_endpoint="http://${BATCH_MINIO_RELEASE}.${BATCH_NAMESPACE}.svc.cluster.local:9000"
+        file_storage_yaml="    s3:
+      region: us-east-1
+      endpoint: ${minio_endpoint}
+      accessKeyId: ${MINIO_ROOT_USER}
+      prefix: ${MINIO_BUCKET}
+      usePathStyle: true
+      autoCreateBucket: true"
+    else
+        file_storage_yaml="    fs:
+      basePath: /tmp/batch-gateway
+      claimName: ${BATCH_FILES_PVC_NAME}"
+    fi
+
+    local apiserver_batch_api_yaml=""
+    if [ -n "${pass_through_headers}" ]; then
+        local header_items=""
+        IFS=',' read -ra _headers <<< "${pass_through_headers}"
+        for h in "${_headers[@]}"; do
+            header_items="${header_items}
+      - ${h}"
+        done
+        apiserver_batch_api_yaml="    batchAPI:
+      passThroughHeaders:${header_items}"
+    fi
+
+    step "Creating LLMBatchGateway CR..."
+    kubectl apply -f - <<EOF
+apiVersion: batch.llm-d.ai/v1alpha1
+kind: LLMBatchGateway
+metadata:
+  name: ${BATCH_INSTANCE_NAME}
+  namespace: ${BATCH_NAMESPACE}
+spec:
+  secretRef:
+    name: ${BATCH_APP_SECRET_NAME}
+  dbBackend: ${BATCH_DB_TYPE}
+  fileStorage:
+${file_storage_yaml}
+  apiServer:
+    replicas: 1
+${apiserver_batch_api_yaml}
+  processor:
+    replicas: 1
+    globalInferenceGateway:
+      url: ${model_url}
+      requestTimeout: ${GW_REQUEST_TIMEOUT}
+      maxRetries: ${GW_MAX_RETRIES}
+      initialBackoff: ${GW_INITIAL_BACKOFF}
+      maxBackoff: ${GW_MAX_BACKOFF}
+${processor_config_yaml}
+  gc:
+    interval: 30m
+  tls:
+    enabled: true
+    certManager:
+      issuerName: ${TLS_ISSUER_NAME}
+      issuerKind: ClusterIssuer
+      dnsNames:
+      - ${BATCH_INSTANCE_NAME}-apiserver
+      - ${BATCH_INSTANCE_NAME}-apiserver.${BATCH_NAMESPACE}.svc.cluster.local
+      - localhost
+EOF
+
+    step "Waiting for LLMBatchGateway to be ready..."
+    kubectl wait llmbatchgateway/${BATCH_INSTANCE_NAME} -n "${BATCH_NAMESPACE}" \
+        --for=condition=Ready --timeout=300s
+    log "LLMBatchGateway is ready."
+
     create_batch_httproute
     create_batch_destinationrule
 }
@@ -766,16 +892,6 @@ EOF
 
     log "Internal Gateway created (ClusterIP, no TLS, no rate limit)."
 }
-
-# ── Test Framework ────────────────────────────────────────────────────────────
-#
-# Usage:
-#   init_test_framework                          # reset counters
-#   test_group_header "LLM Authentication"       # print group header
-#   assert_http 401 "No auth -> 401" "${url}"    # simple HTTP code assertion
-#   assert_http 200 "Auth -> 200" -H "Authorization: Bearer ${t}" "${url}"
-#   run_batch_tests batch_url model authorized_header unauthorized_header [extra_headers...]
-#   finish_tests                                 # print summary + wait
 
 # Verifies the internal gateway is ClusterIP-only and not exposed externally.
 # Requires BATCH_INTERNAL_GATEWAY_NAME and BATCH_INTERNAL_GATEWAY_NAMESPACE.
@@ -843,6 +959,16 @@ check_batch_internal_gateway() {
     fi
     log "Internal Gateway isolation verified (${_ig_passed}/${_ig_passed} checks passed)."
 }
+
+# ── Test Framework ────────────────────────────────────────────────────────────
+#
+# Usage:
+#   init_test_framework                          # reset counters
+#   test_group_header "LLM Authentication"       # print group header
+#   assert_http 401 "No auth -> 401" "${url}"    # simple HTTP code assertion
+#   assert_http 200 "Auth -> 200" -H "Authorization: Bearer ${t}" "${url}"
+#   run_batch_tests batch_url model authorized_header unauthorized_header [extra_headers...]
+#   finish_tests                                 # print summary + wait
 
 # run_tests llm_url batch_url model_name authorized_header unauthorized_header \
 #           inference_payload [extra_headers...]

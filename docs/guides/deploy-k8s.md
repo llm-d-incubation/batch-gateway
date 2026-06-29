@@ -599,20 +599,6 @@ spec:
     - group: inference.networking.k8s.io
       kind: InferencePool
       name: ${LLMD_POOL_NAME}
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /${LLM_NS}/${MODEL_NAME}
-    filters:
-    - type: URLRewrite
-      urlRewrite:
-        path:
-          type: ReplacePrefixMatch
-          replacePrefixMatch: /
-    backendRefs:
-    - group: inference.networking.k8s.io
-      kind: InferencePool
-      name: ${LLMD_POOL_NAME}
 EOF
 ```
 
@@ -780,20 +766,6 @@ spec:
         path:
           type: ReplacePrefixMatch
           replacePrefixMatch: /v1/chat/completions
-    backendRefs:
-    - group: inference.networking.k8s.io
-      kind: InferencePool
-      name: ${LLMD_POOL_NAME}
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /${LLM_NS}/${MODEL_NAME}
-    filters:
-    - type: URLRewrite
-      urlRewrite:
-        path:
-          type: ReplacePrefixMatch
-          replacePrefixMatch: /
     backendRefs:
     - group: inference.networking.k8s.io
       kind: InferencePool
