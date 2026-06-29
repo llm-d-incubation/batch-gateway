@@ -847,7 +847,7 @@ def collect_aimd_metrics(context, namespace, start_time, end_time):
             metrics["aimd_concurrency_limit_series"] = values
 
     # Decrease events (multiplicative backoff on 429/5xx)
-    decrease_query = 'sum(rate(batch_processor_aimd_decrease_total[30s]))'
+    decrease_query = 'sum(rate(batch_processor_aimd_decreases_total[30s]))'
     results = query_prometheus(context, namespace, decrease_query, start_time, end_time)
     if results:
         values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
@@ -855,7 +855,7 @@ def collect_aimd_metrics(context, namespace, start_time, end_time):
             metrics["aimd_decrease_rate_avg"] = sum(values) / len(values)
 
     # Increase events (additive increase on success)
-    increase_query = 'sum(rate(batch_processor_aimd_increase_total[30s]))'
+    increase_query = 'sum(rate(batch_processor_aimd_increases_total[30s]))'
     results = query_prometheus(context, namespace, increase_query, start_time, end_time)
     if results:
         values = [float(v[1]) for v in results[0].get("values", []) if v[1] != "NaN"]
