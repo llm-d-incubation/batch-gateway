@@ -424,8 +424,6 @@ benchmark-gpu:
 		SCENARIO=$$scenario NAMESPACE=$(BENCHMARK_GPU_NAMESPACE) \
 			KUBE_CONTEXT=$(BENCHMARK_GPU_CONTEXT) \
 			bash benchmarks/teardown.sh || echo "  [WARNING] Teardown failed for scenario $$scenario"; \
-		echo "  Waiting for namespace RBAC restoration..."; \
-		sleep 30; \
 	done
 	@echo ""
 	@echo "=== GPU Benchmark complete ==="
