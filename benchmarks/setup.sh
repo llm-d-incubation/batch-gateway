@@ -16,6 +16,7 @@ set -euo pipefail
 #   LLM_D_REPO         — path to llm-d checkout (overrides downloading from LLM_D_TAG)
 #   ROUTER_REPO        — path to llm-d-router checkout (overrides OCI chart)
 #   ROUTER_CHART_VERSION — OCI chart version for llm-d-router (default: 0.9.2)
+#   ROUTER_EPP_TAG     — EPP image tag for local repo mode (default: v0.8.0)
 #   LLM_D_TAG          — git tag for llm-d guide values (default: v0.7.0)
 #   NAMESPACE          — override auto-generated namespace (default: batch-bench-s${SCENARIO})
 #   MODEL              — model to serve (default: Qwen/Qwen3-8B)
@@ -40,6 +41,7 @@ fi
 GUIDE_NAME="${GUIDE_NAME:-optimized-baseline}"
 NAMESPACE="${NAMESPACE:-batch-bench-s${SCENARIO}}"
 ROUTER_CHART_VERSION="${ROUTER_CHART_VERSION:-0.9.2}"
+ROUTER_EPP_TAG="${ROUTER_EPP_TAG:-v0.8.0}"
 LLM_D_TAG="${LLM_D_TAG:-v0.7.0}"
 SIM_IMAGE="${SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 SIM_TTFT="${SIM_TTFT:-50ms}"
@@ -321,7 +323,7 @@ else
             --set router.epp.replicas=1 \
             --set router.epp.image.registry=ghcr.io \
             --set router.epp.image.repository=llm-d/llm-d-inference-scheduler \
-            --set router.epp.image.tag=v0.8.0 \
+            --set router.epp.image.tag=${ROUTER_EPP_TAG} \
             --set router.epp.pluginsConfigFile=optimized-baseline-plugins.yaml \
             --set router.epp.resources.requests.cpu=4 \
             --set router.epp.resources.requests.memory=8Gi \
