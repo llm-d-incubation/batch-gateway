@@ -355,7 +355,7 @@ def submit_batches(cfg, namespace):
                 cfg.context, namespace, check=True)
         kubectl(["label", "configmap", f"{name}-data",
                  "batch-benchmark=true"],
-                cfg.context, namespace, check=False)
+                cfg.context, namespace, check=True)
         kubectl_apply(cm_yaml, cfg.context, namespace)
         kubectl_apply(job_yaml, cfg.context, namespace)
 
