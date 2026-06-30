@@ -113,6 +113,7 @@ func TestE2E(t *testing.T) {
 	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
 	t.Run("ProcessorGracefulShutdown", testProcessorGracefulShutdown)
+	t.Run("OrphanRecovery", testOrphanRecovery)
 	t.Run("FlowControl", testFlowControl)
 	t.Run("AIMD", testAIMD)
 	t.Run("HelmUpgrade", testHelmUpgrade)

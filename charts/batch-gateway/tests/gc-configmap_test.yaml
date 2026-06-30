@@ -21,6 +21,9 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'metrics_addr: ":9091"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'reconciler:\n\s+enabled: true\n\s+interval: "60m"'
 
   - it: should render custom maxConcurrency
     set:
@@ -45,6 +48,15 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'interval: "1h"'
+
+  - it: should render custom reconciler config
+    set:
+      gc.config.reconciler.enabled: false
+      gc.config.reconciler.interval: "5m"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'reconciler:\n\s+enabled: false\n\s+interval: "5m"'
 
   - it: should render file_client config
     asserts:

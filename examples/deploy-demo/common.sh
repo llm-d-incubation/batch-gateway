@@ -794,10 +794,11 @@ do_deploy_batch_gateway_dsc() {
         IFS=',' read -ra _headers <<< "${pass_through_headers}"
         for h in "${_headers[@]}"; do
             header_items="${header_items}
-      - ${h}"
+        - ${h}"
         done
-        apiserver_batch_api_yaml="    batchAPI:
-      passThroughHeaders:${header_items}"
+        apiserver_batch_api_yaml="    config:
+      batchAPI:
+        passThroughHeaders:${header_items}"
     fi
 
     step "Creating LLMBatchGateway CR..."
@@ -818,6 +819,13 @@ ${file_storage_yaml}
 ${apiserver_batch_api_yaml}
   processor:
     replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
     globalInferenceGateway:
       url: ${model_url}
       requestTimeout: ${GW_REQUEST_TIMEOUT}
