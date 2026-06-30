@@ -50,8 +50,20 @@ const (
 )
 
 // StartSpan creates a new span using the batch-gateway tracer.
+// When the span carries a valid trace context, the logger in the returned
+// context is enriched with trace_id and span_id so that all downstream
+// log lines emitted via logr.FromContextOrDiscard(ctx) are automatically
+// correlated with the active trace.
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	return otel.Tracer(defaultServiceName).Start(ctx, name, opts...)
+	ctx, span := otel.Tracer(defaultServiceName).Start(ctx, name, opts...)
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger := logr.FromContextOrDiscard(ctx).WithValues(
+			"trace_id", sc.TraceID().String(),
+			"span_id", sc.SpanID().String(),
+		)
+		ctx = logr.NewContext(ctx, logger)
+	}
+	return ctx, span
 }
 
 // SetAttr sets attributes on the span in the given context.
