@@ -286,15 +286,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		pollLogger.V(logging.TRACE).Info("Job item found in the DB")
 
-		// queue wait metrics recording
-		if jobPriorityData, err := batch_utils.GetJobPriorityDataFromQueueItem(task); err == nil {
-			queueWait := time.Since(time.Unix(jobPriorityData.CreatedAt, 0))
-			metrics.RecordQueueWaitDuration(queueWait)
-			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
-		} else {
-			pollLogger.Error(err, "Failed to get job priority data from queue item")
-		}
-
 		// db job item to job info object conversion
 		jobInfo, err := batch_utils.FromDBItemToJobInfoObject(jobItem)
 		if err != nil {
@@ -309,6 +300,12 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		pollLogger = pollLogger.WithValues("tenantId", jobInfo.TenantID)
 		pollCtx = logr.NewContext(pollCtx, pollLogger)
+
+		if jobInfo.BatchJob.CreatedAt > 0 {
+			queueWait := time.Since(time.Unix(jobInfo.BatchJob.CreatedAt, 0))
+			metrics.RecordQueueWaitDuration(queueWait)
+			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
+		}
 
 		pollLogger.V(logging.TRACE).Info("Job info object converted")
 

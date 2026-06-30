@@ -349,12 +349,13 @@ def submit_batches(cfg, namespace):
                     name: {name}-data
         """)
 
-        # Upload the JSONL as a ConfigMap (for small files) or use PVC for large ones
-        # For benchmark sizes (1000 requests), ConfigMap is fine
+        # Upload the JSONL as a ConfigMap
         kubectl(["create", "configmap", f"{name}-data",
-                 f"--from-file={name}.jsonl={jsonl_path}",
-                 "-l", "batch-benchmark=true"],
-                cfg.context, namespace, check=False)
+                 f"--from-file={name}.jsonl={jsonl_path}"],
+                cfg.context, namespace, check=True)
+        kubectl(["label", "configmap", f"{name}-data",
+                 "batch-benchmark=true"],
+                cfg.context, namespace, check=True)
         kubectl_apply(cm_yaml, cfg.context, namespace)
         kubectl_apply(job_yaml, cfg.context, namespace)
 

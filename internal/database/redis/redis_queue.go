@@ -23,7 +23,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +31,14 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
 )
+
+// pqMember is the canonical representation used as the Redis sorted set member.
+// Only identity fields are included so that all enqueue paths produce identical
+// member bytes for the same logical job, regardless of optional metadata.
+type pqMember struct {
+	ID  string    `json:"id"`
+	SLO time.Time `json:"slo"`
+}
 
 func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.BatchJobPriority) (err error) {
 
@@ -48,7 +55,7 @@ func (c *ExchangeDBClientRedis) PQEnqueue(ctx context.Context, item *db_api.Batc
 	}
 	logger = logger.WithValues("ID", item.ID)
 
-	data, lerr := json.Marshal(item)
+	data, lerr := json.Marshal(pqMember{ID: item.ID, SLO: item.SLO.UTC().Truncate(time.Microsecond)})
 	if lerr != nil {
 		err = lerr
 		return
@@ -98,10 +105,14 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	}
 	logger = logger.WithValues("ID", item.ID)
 
-	score := strconv.FormatInt(item.SLO.UnixMicro(), 10)
+	data, lerr := json.Marshal(pqMember{ID: item.ID, SLO: item.SLO.UTC().Truncate(time.Microsecond)})
+	if lerr != nil {
+		err = lerr
+		return
+	}
 	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
 	defer ccancel()
-	res := c.redisClient.ZRemRangeByScore(cctx, priorityQueueKeyName, score, score)
+	res := c.redisClient.ZRem(cctx, priorityQueueKeyName, data)
 	if res == nil {
 		err = fmt.Errorf("redis command result is nil")
 		return
