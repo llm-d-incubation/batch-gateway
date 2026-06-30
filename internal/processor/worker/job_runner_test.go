@@ -732,11 +732,10 @@ func TestRunJob_FinalizeFailedOver_PreservesFileIDsAndDoesNotCallHandleFailed(t 
 	}
 }
 
-// TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput verifies that when
-// errShutdown triggers a re-enqueue that fails, the fallback uploads partial output files
-// and preserves their file IDs in the DB. Before this fix, the fallback called handleFailed
-// with nil counts and empty file IDs, losing already-flushed results.
-func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.T) {
+// TestHandleJobError_Shutdown_LeavesJobInProgress verifies that errShutdown
+// does NOT re-enqueue or call handleFailed. The job stays in_progress for
+// the orphan reconciler to detect and transition to a terminal state.
+func TestHandleJobError_Shutdown_LeavesJobInProgress(t *testing.T) {
 	ctx := testLoggerCtx(t)
 
 	cfg := config.NewConfig()
@@ -745,7 +744,7 @@ func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.
 
 	dbClient := newMockBatchDBClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
-	pqClient := &errPQClient{err: errors.New("queue unavailable")}
+	pqClient := mockdb.NewMockBatchPriorityQueueClient()
 
 	p := mustNewProcessor(t, cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
@@ -758,7 +757,7 @@ func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.
 	})
 	p.poller = NewPoller(pqClient, dbClient)
 
-	jobID := "job-shutdown-enqueue-fail"
+	jobID := "job-shutdown-no-reenqueue"
 	tenantID := "tenant__tenantA"
 
 	jobItem := &db.BatchItem{
@@ -773,19 +772,6 @@ func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.
 
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
-
-	jobDir, _ := p.jobRootDir(jobID, tenantID)
-	if err := os.MkdirAll(jobDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	outputPath := filepath.Join(jobDir, "output.jsonl")
-	if err := os.WriteFile(outputPath, []byte(`{"custom_id":"r1"}`+"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile output: %v", err)
-	}
-	errorPath := filepath.Join(jobDir, "error.jsonl")
-	if err := os.WriteFile(errorPath, []byte(`{"custom_id":"e1"}`+"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 	params := &jobExecutionParams{
@@ -806,14 +792,7 @@ func TestHandleJobError_Shutdown_ReEnqueueFails_UploadsPartialOutput(t *testing.
 	if err := json.Unmarshal(items[0].Status, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Status != openai.BatchStatusFailed {
-		t.Fatalf("status = %s, want failed", got.Status)
-	}
-	if got.RequestCounts.Total != 5 || got.RequestCounts.Completed != 3 || got.RequestCounts.Failed != 2 {
-		t.Fatalf("request_counts = %+v, want {5,3,2}", got.RequestCounts)
-	}
-	// handleFailed uploads partial results when jobInfo is non-nil; at least one file ID should be present.
-	if got.OutputFileID == nil && got.ErrorFileID == nil {
-		t.Fatal("expected at least one file ID to be preserved from partial upload")
+	if got.Status != openai.BatchStatusInProgress {
+		t.Fatalf("status = %s, want in_progress (left for reconciler)", got.Status)
 	}
 }

@@ -428,7 +428,11 @@ func (p *Processor) heartbeat(ctx context.Context, jobID string, abortFn context
 	logger := logr.FromContextOrDiscard(ctx).WithValues("jobId", jobID)
 	logger.V(logging.INFO).Info("Heartbeat: started")
 
-	ticker := time.NewTicker(heartbeatInterval)
+	interval := p.cfg.HeartbeatInterval
+	if interval <= 0 {
+		interval = defaultHeartbeatInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
