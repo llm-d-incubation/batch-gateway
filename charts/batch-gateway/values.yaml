@@ -476,6 +476,12 @@ gc:
       maxConcurrency: 10
     # Metrics HTTP server listen address (must be ":PORT" format, e.g. ":9091")
     metricsAddr: ":9091"
+    # Orphan reconciler recovers batch jobs stuck in non-terminal states
+    # after processor crashes. Interval also serves as the staleness threshold
+    # for in-flight entries.
+    reconciler:
+      enabled: true
+      interval: "60m"
 
   # Per-component podSecurityContext override (optional).
   # If not set, inherits global.podSecurityContext.
