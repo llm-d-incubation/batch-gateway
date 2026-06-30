@@ -15,6 +15,7 @@ set -uo pipefail
 # Optional:
 #   NAMESPACE          — override auto-generated namespace
 #   GUIDE_NAME         — inference pool name (default: optimized-baseline)
+#   KEEP_NAMESPACE     — if set, don't delete the namespace (preserves RBAC on GPU clusters)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -58,9 +59,14 @@ teardown_namespace() {
 
     log "  ${NS}: resources deleted"
 
-    # Delete namespace
-    ${K} delete ns "${NS}" --ignore-not-found 2>/dev/null || true
-    log "  ${NS}: namespace deleted"
+    # Delete namespace (skip if KEEP_NAMESPACE is set — needed for GPU clusters
+    # where ArgoCD-managed RoleBindings take minutes to restore)
+    if [ -z "${KEEP_NAMESPACE:-}" ]; then
+        ${K} delete ns "${NS}" --ignore-not-found 2>/dev/null || true
+        log "  ${NS}: namespace deleted"
+    else
+        log "  ${NS}: namespace preserved (KEEP_NAMESPACE=1)"
+    fi
 }
 
 # Validate SCENARIO

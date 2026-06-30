@@ -434,8 +434,12 @@ benchmark-gpu:
 	@echo "Results: $(BENCHMARK_GPU_RESULTS_DIR)"
 	@echo "Run 'make benchmark-gpu-teardown' to delete the namespace."
 
-## benchmark-gpu-teardown: Teardown GPU benchmark environment for current scenario
+## benchmark-gpu-teardown: Teardown GPU benchmark resources (keeps namespace for RBAC preservation)
 benchmark-gpu-teardown:
+	@KEEP_NAMESPACE=1 KUBE_CONTEXT=$(BENCHMARK_GPU_CONTEXT) SCENARIO=$(BENCHMARK_SCENARIO) NAMESPACE=$(BENCHMARK_GPU_NAMESPACE) bash benchmarks/teardown.sh
+
+## benchmark-gpu-teardown-full: Full teardown including namespace deletion (RBAC will need ArgoCD re-sync)
+benchmark-gpu-teardown-full:
 	@KUBE_CONTEXT=$(BENCHMARK_GPU_CONTEXT) SCENARIO=$(BENCHMARK_SCENARIO) NAMESPACE=$(BENCHMARK_GPU_NAMESPACE) bash benchmarks/teardown.sh
 
 # Prometheus defaults for GPU benchmarks

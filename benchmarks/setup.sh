@@ -101,7 +101,7 @@ fi
 
 # --- Redis ---
 log "Installing Redis"
-${H} install redis oci://registry-1.docker.io/bitnamicharts/redis \
+${H} upgrade --install redis oci://registry-1.docker.io/bitnamicharts/redis \
     -n "${NAMESPACE}" \
     --set auth.enabled=false \
     --set master.persistence.size=1Gi \
@@ -112,7 +112,7 @@ ${H} install redis oci://registry-1.docker.io/bitnamicharts/redis \
 
 # --- PostgreSQL ---
 log "Installing PostgreSQL"
-${H} install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
+${H} upgrade --install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
     -n "${NAMESPACE}" \
     --set auth.database=batchgateway \
     --set auth.password=benchmarkpw \
