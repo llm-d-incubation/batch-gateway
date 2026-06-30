@@ -779,12 +779,83 @@ def parse_scenario_results(results_dir):
 # ---------------------------------------------------------------------------
 
 
+class PrometheusPortForward:
+    """Manages a kubectl port-forward to Prometheus."""
+
+    def __init__(self, context, namespace, service, local_port=9090):
+        self.context = context
+        self.namespace = namespace
+        self.service = service
+        self.local_port = local_port
+        self._process = None
+
+    def start(self):
+        cmd = [
+            "kubectl", f"--context={self.context}",
+            "-n", self.namespace,
+            "port-forward", f"svc/{self.service}",
+            f"{self.local_port}:9090",
+        ]
+        self._process = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(2)
+        if self._process.poll() is not None:
+            log(f"  WARNING: Prometheus port-forward failed to start (exit={self._process.returncode})")
+            self._process = None
+            return False
+        log(f"  Prometheus port-forward started (localhost:{self.local_port} → {self.service})")
+        return True
+
+    def stop(self):
+        if self._process:
+            self._process.terminate()
+            self._process.wait(timeout=5)
+            self._process = None
+
+    @property
+    def url(self):
+        return f"http://localhost:{self.local_port}"
+
+
+_prom_port_forward = None
+
+
+def get_prometheus_url():
+    """Return the Prometheus URL, starting a port-forward if configured."""
+    global _prom_port_forward
+    if _prom_port_forward and _prom_port_forward._process:
+        return _prom_port_forward.url
+    return os.environ.get("PROMETHEUS_URL", "")
+
+
+def start_prometheus_port_forward(context, namespace, service):
+    """Start a background port-forward to Prometheus if PROMETHEUS_URL is not set."""
+    global _prom_port_forward
+    if os.environ.get("PROMETHEUS_URL"):
+        return
+    pf = PrometheusPortForward(context, namespace, service)
+    if pf.start():
+        _prom_port_forward = pf
+        os.environ["PROMETHEUS_URL"] = pf.url
+
+
+def stop_prometheus_port_forward():
+    """Stop the background port-forward."""
+    global _prom_port_forward
+    if _prom_port_forward:
+        _prom_port_forward.stop()
+        _prom_port_forward = None
+
+
 def query_prometheus(context, namespace, query, start_time, end_time, step="15s"):
     """Query Prometheus for time-series metrics via port-forward."""
     import urllib.request
     import urllib.parse
 
-    prom_url = os.environ.get("PROMETHEUS_URL", "http://localhost:9091")
+    prom_url = get_prometheus_url()
+    if not prom_url:
+        return []
     params = urllib.parse.urlencode({
         "query": query,
         "start": start_time.isoformat() + "Z",
@@ -1683,6 +1754,14 @@ def main():
                         default=bench_cfg.get("warmup_cycles", 1),
                         help="Number of warmup cycles to exclude from results (default: 1)")
 
+    # Prometheus port-forward automation
+    parser.add_argument("--prometheus-namespace",
+                        default=os.environ.get("PROMETHEUS_NAMESPACE", "llm-d-monitoring"),
+                        help="Namespace where Prometheus is deployed (default: llm-d-monitoring)")
+    parser.add_argument("--prometheus-service",
+                        default=os.environ.get("PROMETHEUS_SERVICE", "llmd-kube-prometheus-stack-prometheus"),
+                        help="Prometheus service name (default: llmd-kube-prometheus-stack-prometheus)")
+
     # Multiple trials
     parser.add_argument("--trials", type=int, default=1,
                         help="Number of times to run each scenario (default: 1)")
@@ -1731,6 +1810,12 @@ def main():
         f"{cfg.idle_rate} req/s idle ({cfg.idle_seconds}s), {cfg.cycles} cycles")
     log(f"Batch: {cfg.num_jobs} jobs x {cfg.batch_size} requests")
     log(f"Results: {cfg.results_dir}")
+
+    # Start Prometheus port-forward if needed (for scenarios >= 3)
+    if any(s >= 3 for s in cfg.scenarios) and not os.environ.get("PROMETHEUS_URL"):
+        start_prometheus_port_forward(
+            args.context, args.prometheus_namespace, args.prometheus_service,
+        )
 
     # Validate scenarios
     for s in cfg.scenarios:
@@ -1917,6 +2002,8 @@ def main():
     log(f"Report:   {cfg.results_dir / 'report.html'}")
     log(f"Metadata: {metadata_path}")
     log(f"Data:     {results_json_path}")
+
+    stop_prometheus_port_forward()
 
 
 if __name__ == "__main__":

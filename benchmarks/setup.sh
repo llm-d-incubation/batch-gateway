@@ -27,6 +27,8 @@ set -euo pipefail
 #   SIM_ITL            — simulated inter-token-latency (default: 20ms)
 #   BG_IMAGE_REPO      — batch-gateway image repo override
 #   BG_IMAGE_TAG       — batch-gateway image tag override
+#   PROMETHEUS_RELEASE — Prometheus Operator release label for ServiceMonitor discovery (default: llmd-kube-prometheus-stack)
+#   PROMETHEUS_NAMESPACE — Namespace where Prometheus is deployed (default: llm-d-monitoring)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -46,6 +48,8 @@ LLM_D_TAG="${LLM_D_TAG:-v0.7.0}"
 SIM_IMAGE="${SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 SIM_TTFT="${SIM_TTFT:-50ms}"
 SIM_ITL="${SIM_ITL:-20ms}"
+PROMETHEUS_RELEASE="${PROMETHEUS_RELEASE:-llmd-kube-prometheus-stack}"
+PROMETHEUS_NAMESPACE="${PROMETHEUS_NAMESPACE:-llm-d-monitoring}"
 
 # Validate required vars
 for var in KUBE_CONTEXT SCENARIO; do
@@ -497,6 +501,45 @@ fi
 if [ -n "${VALUES_FILE}" ]; then
     ${K} -n "${NAMESPACE}" rollout status deploy/batch-gateway-apiserver --timeout=60s >/dev/null
     ${K} -n "${NAMESPACE}" rollout status deploy/batch-gateway-processor --timeout=60s >/dev/null
+fi
+
+# --- Prometheus ServiceMonitor (GPU mode, scenarios >= 3) ---
+if [ "${MODE}" = "gpu" ] && [ "${SCENARIO}" -ge 3 ] && [ -n "${VALUES_FILE}" ]; then
+    log "Creating Prometheus ServiceMonitor for batch-gateway-processor"
+    ${K} -n "${NAMESPACE}" apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: batch-gateway-processor-metrics
+  labels:
+    app: batch-gateway-processor
+spec:
+  selector:
+    app.kubernetes.io/component: processor
+    app.kubernetes.io/instance: batch-gateway
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: batch-gateway-processor
+  labels:
+    release: ${PROMETHEUS_RELEASE}
+spec:
+  namespaceSelector:
+    matchNames: ["${NAMESPACE}"]
+  selector:
+    matchLabels:
+      app: batch-gateway-processor
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+EOF
+    log "  ServiceMonitor created (discovery label: release=${PROMETHEUS_RELEASE})"
 fi
 
 log "=== Scenario ${SCENARIO} ready in namespace ${NAMESPACE} ==="
