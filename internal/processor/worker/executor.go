@@ -96,65 +96,133 @@ func (o *outputLine) isSuccess() bool {
 	return o.Error == nil && o.Response != nil && o.Response.StatusCode == 200
 }
 
-// progressUpdateInterval is the minimum time between Redis progress updates.
+// progressUpdateInterval is the minimum time between progress status updates.
 // Updates within this window are skipped — the next update after the interval
 // will include all accumulated progress. Declared as var so tests can override.
 var progressUpdateInterval = time.Second
 
-// executionProgress tracks per-request progress across goroutines
-// and pushes throttled updates to the status store.
+// executionProgress tracks per-request completion counts and pushes throttled
+// updates to the status store. It runs as a single goroutine — no atomics or locks needed.
+//
+// Usage:
+//
+//	progress := newExecutionProgress(updater, jobID, total, initialFailed)
+//	progress.start(ctx)
+//	// ... call progress.record(ctx, success) from any goroutine ...
+//	progress.flush(ctx) // stops goroutine, performs final push
+//	counts := progress.counts()
 type executionProgress struct {
-	completed  atomic.Int64
-	failed     atomic.Int64
-	total      int64
-	updater    *StatusUpdater
-	jobID      string
-	lastUpdate atomic.Int64 // unix nanoseconds of last Redis push
+	total     int64
+	completed int64
+	failed    int64
+	updater   *StatusUpdater
+	jobID     string
+	interval  time.Duration
+
+	ch   chan progressEvent
+	done chan struct{}
 }
 
-// record increments the appropriate counter and pushes a throttled progress
-// update to Redis. Updates are skipped if less than progressUpdateInterval
-// has elapsed since the last push, reducing Redis writes from O(requests)
-// to O(job_duration / interval).
-func (ep *executionProgress) record(ctx context.Context, success bool) {
-	if success {
-		ep.completed.Add(1)
-	} else {
-		ep.failed.Add(1)
-	}
-	now := time.Now().UnixNano()
-	last := ep.lastUpdate.Load()
-	if now-last < int64(progressUpdateInterval) {
-		return
-	}
-	// Best-effort CAS: if another goroutine raced us, skip this update.
-	if !ep.lastUpdate.CompareAndSwap(last, now) {
-		return
-	}
-	ep.push(ctx)
+// progressEvent signals one completed request to the execution progress tracker.
+type progressEvent struct {
+	success bool
 }
 
-// flush pushes the final progress to Redis unconditionally, ensuring the
-// last update reflects the true counts regardless of throttling.
-func (ep *executionProgress) flush(ctx context.Context) {
-	ep.push(ctx)
+func newExecutionProgress(updater *StatusUpdater, jobID string, total, initialFailed int64) *executionProgress {
+	return &executionProgress{
+		total:    total,
+		failed:   initialFailed,
+		updater:  updater,
+		jobID:    jobID,
+		interval: progressUpdateInterval,
+		ch:       make(chan progressEvent, 1024),
+		done:     make(chan struct{}),
+	}
+}
+
+// start launches the tracker goroutine.
+func (ep *executionProgress) start(ctx context.Context) {
+	go func() {
+		ep.run(ctx)
+		close(ep.done)
+	}()
+}
+
+// record sends a progress event to the tracker goroutine.
+func (ep *executionProgress) record(_ context.Context, success bool) {
+	ep.ch <- progressEvent{success: success}
+}
+
+// flush stops the tracker goroutine and performs a final push to the status
+// store, ensuring the last update reflects the true counts regardless of throttling.
+func (ep *executionProgress) flush(_ context.Context) {
+	close(ep.ch)
+	<-ep.done
+}
+
+// counts returns the current request counts. Safe to call after flush returns.
+func (ep *executionProgress) counts() *openai.BatchRequestCounts {
+	return &openai.BatchRequestCounts{
+		Total:     ep.total,
+		Completed: ep.completed,
+		Failed:    ep.failed,
+	}
+}
+
+func (ep *executionProgress) run(ctx context.Context) {
+	ticker := time.NewTicker(ep.interval)
+	defer ticker.Stop()
+	dirty := false
+
+	for {
+		select {
+		case ev, ok := <-ep.ch:
+			if !ok {
+				ep.push(ctx)
+				return
+			}
+			if ev.success {
+				ep.completed++
+			} else {
+				ep.failed++
+			}
+			dirty = true
+
+		case <-ticker.C:
+			if dirty {
+				ep.push(ctx)
+				dirty = false
+			}
+
+		case <-ctx.Done():
+			for {
+				select {
+				case ev, ok := <-ep.ch:
+					if !ok {
+						ep.push(context.Background())
+						return
+					}
+					if ev.success {
+						ep.completed++
+					} else {
+						ep.failed++
+					}
+				default:
+					ep.push(context.Background())
+					return
+				}
+			}
+		}
+	}
 }
 
 func (ep *executionProgress) push(ctx context.Context) {
 	if err := ep.updater.UpdateProgressCounts(ctx, ep.jobID, &openai.BatchRequestCounts{
 		Total:     ep.total,
-		Completed: ep.completed.Load(),
-		Failed:    ep.failed.Load(),
+		Completed: ep.completed,
+		Failed:    ep.failed,
 	}); err != nil {
 		logr.FromContextOrDiscard(ctx).Error(err, "Failed to update progress counts (best-effort)")
-	}
-}
-
-func (ep *executionProgress) counts() *openai.BatchRequestCounts {
-	return &openai.BatchRequestCounts{
-		Total:     ep.total,
-		Completed: ep.completed.Load(),
-		Failed:    ep.failed.Load(),
 	}
 }
 
@@ -247,13 +315,8 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	// requestAbortCtx and requestAbortFn are set in runJob before watchCancel starts,
 	// eliminating the race window where a cancel event could arrive before the fn is assigned.
 
-	progress := &executionProgress{
-		total:   modelMap.LineCount,
-		updater: params.updater,
-		jobID:   params.jobInfo.JobID,
-	}
-	// Seed with requests already rejected during ingestion (model not found).
-	progress.failed.Store(modelMap.RejectedCount)
+	progress := newExecutionProgress(params.updater, params.jobInfo.JobID, modelMap.LineCount, modelMap.RejectedCount)
+	progress.start(ctx)
 
 	errCh := make(chan error, len(modelMap.SafeToModel))
 

@@ -116,17 +116,15 @@ func TestResolveOutputExpiration_NilTags(t *testing.T) {
 
 func TestExecutionProgress_RecordAndCounts(t *testing.T) {
 	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400)
-	ep := &executionProgress{
-		total:   10,
-		updater: updater,
-		jobID:   "job-1",
-	}
+	ep := newExecutionProgress(updater, "job-1", 10, 0)
+	ep.start(testLoggerCtx(t))
 
 	ctx := testLoggerCtx(t)
 	ep.record(ctx, true)
 	ep.record(ctx, true)
 	ep.record(ctx, false)
 
+	ep.flush(ctx)
 	counts := ep.counts()
 	if counts.Total != 10 {
 		t.Fatalf("Total = %d, want 10", counts.Total)

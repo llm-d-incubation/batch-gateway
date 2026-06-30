@@ -805,11 +805,8 @@ func TestProcessModel_Success(t *testing.T) {
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
 
-	progress := &executionProgress{
-		total:   int64(len(requests)),
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+	progress.start(testLoggerCtx(t))
 
 	var errBuf bytes.Buffer
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
@@ -828,6 +825,7 @@ func TestProcessModel_Success(t *testing.T) {
 		t.Fatalf("inference calls = %d, want %d", callCount.Load(), len(requests))
 	}
 
+	progress.flush(ctx)
 	counts := progress.counts()
 	if counts.Completed != int64(len(requests)) {
 		t.Fatalf("completed = %d, want %d", counts.Completed, len(requests))
@@ -859,11 +857,9 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
 
-	progress := &executionProgress{
-		total:   1,
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, 1, 0)
+	progress.start(testLoggerCtx(t))
+	defer progress.flush(testLoggerCtx(t))
 
 	var errBuf bytes.Buffer
 	errWriter := bufio.NewWriter(&errBuf)
@@ -935,11 +931,8 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	errWriter := bufio.NewWriter(&errBuf)
 	writers := &outputWriters{output: outWriter, errors: errWriter}
 
-	progress := &executionProgress{
-		total:   1,
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, 1, 0)
+	progress.start(testLoggerCtx(t))
 
 	ctx := testLoggerCtx(t)
 	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
@@ -983,6 +976,7 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 		t.Errorf("expected nil response for cancelled entry, got %+v", entry.Response)
 	}
 
+	progress.flush(ctx)
 	counts := progress.counts()
 	if counts.Failed != 1 {
 		t.Errorf("failed count = %d, want 1", counts.Failed)
@@ -1014,11 +1008,9 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
 
-	progress := &executionProgress{
-		total:   int64(len(requests)),
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+	progress.start(testLoggerCtx(t))
+	defer progress.flush(testLoggerCtx(t))
 
 	var errBuf bytes.Buffer
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
@@ -1061,11 +1053,9 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 	var buf bytes.Buffer
 	writer := bufio.NewWriter(&buf)
 
-	progress := &executionProgress{
-		total:   int64(len(requests)),
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+	progress.start(testLoggerCtx(t))
+	defer progress.flush(testLoggerCtx(t))
 
 	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 
@@ -1125,11 +1115,9 @@ func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
 	var outBuf, errBuf bytes.Buffer
 	writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
 
-	progress := &executionProgress{
-		total:   int64(len(requests)),
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+	progress.start(testLoggerCtx(t))
+	defer progress.flush(testLoggerCtx(t))
 
 	err := env.p.processModel(mainCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
 	if !errors.Is(err, errShutdown) {
@@ -1163,11 +1151,9 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	var buf bytes.Buffer
 	writers := &outputWriters{output: bufio.NewWriter(&buf), errors: bufio.NewWriter(&buf)}
 
-	progress := &executionProgress{
-		total:   1,
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, 1, 0)
+	progress.start(testLoggerCtx(t))
+	defer progress.flush(testLoggerCtx(t))
 
 	// mainCtx is not cancelled — only requestAbortCtx is, simulating a sibling model calling
 	// requestAbortFn() on error. SLO and user-cancel signals are both absent.
@@ -2782,11 +2768,8 @@ func TestExecutionProgress_Throttle(t *testing.T) {
 	statusClient := &countingStatusClient{BatchStatusClient: mockdb.NewMockBatchStatusClient()}
 	updater := NewStatusUpdater(newMockBatchDBClient(), statusClient, 86400)
 
-	progress := &executionProgress{
-		total:   100,
-		updater: updater,
-		jobID:   "job-throttle",
-	}
+	progress := newExecutionProgress(updater, "job-throttle", 100, 0)
+	progress.start(testLoggerCtx(t))
 
 	ctx := testLoggerCtx(t)
 
@@ -2795,6 +2778,7 @@ func TestExecutionProgress_Throttle(t *testing.T) {
 		progress.record(ctx, true)
 	}
 
+	progress.flush(ctx)
 	throttled := statusClient.count.Load()
 	if throttled >= 100 {
 		t.Fatalf("expected throttled updates < 100, got %d (no throttling occurred)", throttled)
@@ -2813,11 +2797,8 @@ func TestExecutionProgress_Flush(t *testing.T) {
 	statusClient := &countingStatusClient{BatchStatusClient: mockdb.NewMockBatchStatusClient()}
 	updater := NewStatusUpdater(newMockBatchDBClient(), statusClient, 86400)
 
-	progress := &executionProgress{
-		total:   10,
-		updater: updater,
-		jobID:   "job-flush",
-	}
+	progress := newExecutionProgress(updater, "job-flush", 10, 0)
+	progress.start(testLoggerCtx(t))
 
 	ctx := testLoggerCtx(t)
 
@@ -3393,17 +3374,15 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 			output: bufio.NewWriter(&outBuf),
 			errors: bufio.NewWriter(&errBuf),
 		}
-		progress := &executionProgress{
-			total:   int64(len(requests)),
-			updater: env.updater,
-			jobID:   jobInfo.JobID,
-		}
+		progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+		progress.start(testLoggerCtx(t))
 
 		ctx := testLoggerCtx(t)
 		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
+		progress.flush(ctx)
 		return env.p
 	}
 
@@ -3552,17 +3531,15 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 			output: bufio.NewWriter(&outBuf),
 			errors: bufio.NewWriter(&errBuf),
 		}
-		progress := &executionProgress{
-			total:   int64(len(requests)),
-			updater: env.updater,
-			jobID:   jobInfo.JobID,
-		}
+		progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+		progress.start(testLoggerCtx(t))
 
 		ctx := testLoggerCtx(t)
 		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
+		progress.flush(ctx)
 
 		// If non-HTTP errors were incorrectly counted as RecordSuccess,
 		// the window (size=reducedLimit) would fill and push the limit
@@ -3676,12 +3653,15 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 		output: bufio.NewWriter(&outBuf),
 		errors: bufio.NewWriter(&errBuf),
 	}
-	progress := &executionProgress{total: 4, updater: updater, jobID: jobID}
+	progress := newExecutionProgress(updater, jobID, 4, 0)
+	progress.start(testLoggerCtx(t))
 
 	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, tenantID)
 
 	// Process m2 (200s) — should NOT affect m2's endpoint AIMD.
 	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil, tenantID)
+
+	progress.flush(ctx)
 
 	limitA := p.endpointLimits[clientA].aimd.Limit()
 	limitB := p.endpointLimits[clientB].aimd.Limit()
@@ -3736,17 +3716,15 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 		output: bufio.NewWriter(&outBuf),
 		errors: bufio.NewWriter(&errBuf),
 	}
-	progress := &executionProgress{
-		total:   int64(len(requests)),
-		updater: env.updater,
-		jobID:   jobInfo.JobID,
-	}
+	progress := newExecutionProgress(env.updater, jobInfo.JobID, int64(len(requests)), 0)
+	progress.start(testLoggerCtx(t))
 
 	ctx := testLoggerCtx(t)
 	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
+	progress.flush(ctx)
 
 	if err := writers.errors.Flush(); err != nil {
 		t.Fatalf("flush errors: %v", err)
