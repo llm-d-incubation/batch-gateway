@@ -87,12 +87,12 @@ ${K} create namespace "${NAMESPACE}" 2>/dev/null || true
 
 # Wait for RBAC to be ready (ArgoCD may take time to apply RoleBindings)
 if [ "${MODE}" = "gpu" ]; then
-    for i in $(seq 1 30); do
+    for i in $(seq 1 60); do
         if ${K} auth can-i create serviceaccounts -n "${NAMESPACE}" 2>/dev/null | grep -q "yes"; then
             break
         fi
-        if [ "$i" -eq 30 ]; then
-            echo "ERROR: RBAC not ready after 60s — cannot create ServiceAccounts in ${NAMESPACE}" >&2
+        if [ "$i" -eq 60 ]; then
+            echo "ERROR: RBAC not ready after 120s — cannot create ServiceAccounts in ${NAMESPACE}" >&2
             exit 1
         fi
         sleep 2

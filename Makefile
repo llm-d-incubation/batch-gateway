@@ -420,14 +420,19 @@ benchmark-gpu:
 			--prometheus-service $(PROMETHEUS_SERVICE) \
 			--results-dir $(BENCHMARK_GPU_RESULTS_DIR)/scenario-$$scenario || \
 			echo "  [WARNING] Benchmark failed for scenario $$scenario"; \
-		echo "  [teardown] Cleaning up..."; \
-		SCENARIO=$$scenario NAMESPACE=$(BENCHMARK_GPU_NAMESPACE) \
-			KUBE_CONTEXT=$(BENCHMARK_GPU_CONTEXT) \
-			bash benchmarks/teardown.sh || echo "  [WARNING] Teardown failed for scenario $$scenario"; \
+		echo "  [cleanup] Uninstalling releases (keeping namespace)..."; \
+		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall batch-gateway -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
+		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall optimized-baseline -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
+		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall epp-bench -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
+		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete job --all --ignore-not-found 2>/dev/null || true; \
+		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete configmap -l batch-benchmark=true --ignore-not-found 2>/dev/null || true; \
+		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete -k benchmarks/manifests/vllm/ --ignore-not-found 2>/dev/null || true; \
+		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete gateway llm-d-inference-gateway --ignore-not-found 2>/dev/null || true; \
 	done
 	@echo ""
 	@echo "=== GPU Benchmark complete ==="
 	@echo "Results: $(BENCHMARK_GPU_RESULTS_DIR)"
+	@echo "Run 'make benchmark-gpu-teardown' to delete the namespace."
 
 ## benchmark-gpu-teardown: Teardown GPU benchmark environment for current scenario
 benchmark-gpu-teardown:
