@@ -37,6 +37,7 @@ import (
 	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 	uredis "github.com/llm-d/llm-d-batch-gateway/internal/util/redis"
 	utls "github.com/llm-d/llm-d-batch-gateway/internal/util/tls"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 func setupRedisDSClients(t *testing.T, redisUrl, redisCaCert string) (
@@ -1327,7 +1328,7 @@ func TestRedisDSClient(t *testing.T) {
 			t.Fatalf("Failed to enqueue item with large data: %v", err)
 		}
 
-		// Dequeue and verify large data.
+		// Dequeue and verify item identity (Data is not stored in queue member).
 		items, err = exchClient.PQDequeue(context.Background(), 1*time.Second, 1)
 		if err != nil {
 			t.Fatalf("Failed to dequeue large item: %v", err)
@@ -1335,8 +1336,8 @@ func TestRedisDSClient(t *testing.T) {
 		if len(items) != 1 {
 			t.Fatalf("Expected 1 item, got %d", len(items))
 		}
-		if !bytes.Equal(items[0].Data, largeData) {
-			t.Fatalf("Large data mismatch")
+		if items[0].ID != largeItem.ID {
+			t.Fatalf("ID mismatch after large data enqueue")
 		}
 
 		// Test dequeue with maxItems=0 - should error.
@@ -2572,6 +2573,179 @@ func TestRedisDSClient(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("Queue - Duplicate enqueue with different Data is deduplicated", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		slo := time.Now().Add(time.Hour).UTC()
+		jobID := uuid.New().String()
+
+		itemWithData := &db_api.BatchJobPriority{
+			ID:   jobID,
+			SLO:  slo,
+			Data: []byte(`{"created_at":1719750896}`),
+			TTL:  1000,
+		}
+		if err := exchClient.PQEnqueue(context.Background(), itemWithData); err != nil {
+			t.Fatalf("Failed to enqueue with Data: %v", err)
+		}
+
+		itemWithoutData := &db_api.BatchJobPriority{
+			ID:  jobID,
+			SLO: slo,
+			TTL: 1000,
+		}
+		if err := exchClient.PQEnqueue(context.Background(), itemWithoutData); err != nil {
+			t.Fatalf("Failed to enqueue without Data: %v", err)
+		}
+
+		items, err := exchClient.PQDequeue(context.Background(), 1*time.Second, 10)
+		if err != nil {
+			t.Fatalf("Failed to dequeue: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 item (dedup), got %d", len(items))
+		}
+		if items[0].ID != jobID {
+			t.Fatalf("Expected ID %s, got %s", jobID, items[0].ID)
+		}
+	})
+
+	t.Run("Queue - Cancel-flow precision alignment", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		slo := time.Now().Add(time.Hour)
+		jobID := uuid.New().String()
+
+		item := &db_api.BatchJobPriority{
+			ID:   jobID,
+			SLO:  slo,
+			Data: []byte(`{"created_at":1719750896}`),
+			TTL:  1000,
+		}
+		if err := exchClient.PQEnqueue(context.Background(), item); err != nil {
+			t.Fatalf("Failed to enqueue: %v", err)
+		}
+
+		deleteItem := &db_api.BatchJobPriority{
+			ID:  jobID,
+			SLO: time.UnixMicro(slo.UnixMicro()).UTC(),
+		}
+		nDel, err := exchClient.PQDelete(context.Background(), deleteItem)
+		if err != nil {
+			t.Fatalf("PQDelete failed: %v", err)
+		}
+		if nDel != 1 {
+			t.Fatalf("Expected 1 deleted, got %d", nDel)
+		}
+	})
+
+	t.Run("Queue - Same-SLO delete targets only matching job", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		slo := time.Now().Add(time.Hour).UTC()
+		ids := make([]string, 3)
+		for i := range ids {
+			ids[i] = uuid.New().String()
+			item := &db_api.BatchJobPriority{
+				ID:  ids[i],
+				SLO: slo,
+				TTL: 1000,
+			}
+			if err := exchClient.PQEnqueue(context.Background(), item); err != nil {
+				t.Fatalf("Failed to enqueue item %d: %v", i, err)
+			}
+		}
+
+		deleteItem := &db_api.BatchJobPriority{
+			ID:  ids[1],
+			SLO: slo,
+		}
+		nDel, err := exchClient.PQDelete(context.Background(), deleteItem)
+		if err != nil {
+			t.Fatalf("PQDelete failed: %v", err)
+		}
+		if nDel != 1 {
+			t.Fatalf("Expected 1 deleted, got %d", nDel)
+		}
+
+		remaining, err := exchClient.PQGetIDs(context.Background())
+		if err != nil {
+			t.Fatalf("PQGetIDs failed: %v", err)
+		}
+		if len(remaining) != 2 {
+			t.Fatalf("Expected 2 remaining, got %d", len(remaining))
+		}
+		if remaining[ids[1]] {
+			t.Fatalf("Deleted job %s should not be in queue", ids[1])
+		}
+		if !remaining[ids[0]] || !remaining[ids[2]] {
+			t.Fatalf("Surviving jobs missing from queue")
+		}
+
+		_, _ = exchClient.PQDequeue(context.Background(), 1*time.Second, 10)
+	})
+
+	t.Run("Queue - Backward compat with old-format member", func(t *testing.T) {
+		if minirds != nil {
+			t.Skip("Miniredis model")
+		}
+		baseClient, _, _, exchClient := setupRedisDSClients(t, redisUrl, redisCaCert)
+		t.Cleanup(func() {
+			_ = baseClient.Close()
+		})
+
+		jobID := uuid.New().String()
+		slo := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
+		oldMember := fmt.Sprintf(`{"id":"%s","slo":"%s","data":"eyJjcmVhdGVkX2F0IjoxNzE5NzUwODk2fQ=="}`,
+			jobID, slo.Format(time.RFC3339Nano))
+		score := float64(slo.UnixMicro())
+
+		rawOpts, parseErr := goredis.ParseURL(redisUrl)
+		if parseErr != nil {
+			t.Fatalf("Failed to parse Redis URL: %v", parseErr)
+		}
+		rawClient := goredis.NewClient(rawOpts)
+		t.Cleanup(func() { _ = rawClient.Close() })
+		if err := rawClient.ZAdd(context.Background(), "llmd_batch:queue:priority", goredis.Z{
+			Score:  score,
+			Member: oldMember,
+		}).Err(); err != nil {
+			t.Fatalf("Failed to ZADD old-format member: %v", err)
+		}
+
+		items, err := exchClient.PQDequeue(context.Background(), 1*time.Second, 1)
+		if err != nil {
+			t.Fatalf("PQDequeue failed: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 item, got %d", len(items))
+		}
+		if items[0].ID != jobID {
+			t.Fatalf("Expected ID %s, got %s", jobID, items[0].ID)
+		}
+		if items[0].Data == nil {
+			t.Fatalf("Expected Data to be populated from old-format member")
+		}
+	})
 }
 
 func isSamePrio(t *testing.T, a, b *db_api.BatchJobPriority) bool {
@@ -2581,9 +2755,6 @@ func isSamePrio(t *testing.T, a, b *db_api.BatchJobPriority) bool {
 	}
 	if !a.SLO.Equal(b.SLO) {
 		t.Fatalf("SLO mismatch %v != %v", a.SLO, b.SLO)
-	}
-	if !bytes.EqualFold(a.Data, b.Data) {
-		t.Fatalf("Data mismatch %v != %v", a.Data, b.Data)
 	}
 	return true
 }

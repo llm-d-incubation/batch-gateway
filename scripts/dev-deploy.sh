@@ -1096,6 +1096,7 @@ install_batch_gateway() {
         --set "gc.image.pullPolicy=IfNotPresent"
         --set "gc.image.tag=${IMAGE_TAG}"
         --set "gc.config.collector.interval=5s"
+        --set "gc.config.reconciler.interval=60s"
         --namespace "${NAMESPACE}"
     )
 
