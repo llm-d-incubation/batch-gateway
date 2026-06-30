@@ -38,11 +38,11 @@ func newCapturingSink() *capturingSink {
 	return &capturingSink{values: make(map[string]any)}
 }
 
-func (s *capturingSink) Init(logr.RuntimeInfo)                          {}
-func (s *capturingSink) Enabled(int) bool                               { return true }
-func (s *capturingSink) Info(int, string, ...any)                       {}
-func (s *capturingSink) Error(error, string, ...any)                    {}
-func (s *capturingSink) WithName(string) logr.LogSink                   { return s }
+func (s *capturingSink) Init(logr.RuntimeInfo)        {}
+func (s *capturingSink) Enabled(int) bool             { return true }
+func (s *capturingSink) Info(int, string, ...any)     {}
+func (s *capturingSink) Error(error, string, ...any)  {}
+func (s *capturingSink) WithName(string) logr.LogSink { return s }
 func (s *capturingSink) WithValues(keysAndValues ...any) logr.LogSink {
 	next := &capturingSink{values: make(map[string]any, len(s.values)+len(keysAndValues)/2)}
 	for k, v := range s.values {
@@ -106,6 +106,38 @@ func TestStartSpan_NoOpProvider_NoTraceFields(t *testing.T) {
 	}
 	if _, ok := result.values["span_id"]; ok {
 		t.Error("span_id should not be present with no-op tracer provider")
+	}
+}
+
+func TestStartSpan_NestedSpans_NoDuplicateKeys(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer tp.Shutdown(context.Background()) //nolint:errcheck
+	original := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	defer otel.SetTracerProvider(original)
+
+	sink := newCapturingSink()
+	logger := logr.New(sink).WithValues("jobId", "job-123")
+	ctx := logr.NewContext(context.Background(), logger)
+
+	ctx, outerSpan := StartSpan(ctx, "outer-span")
+	defer outerSpan.End()
+
+	ctx, innerSpan := StartSpan(ctx, "inner-span")
+	defer innerSpan.End()
+
+	innerSC := innerSpan.SpanContext()
+	enriched := logr.FromContextOrDiscard(ctx).GetSink().(*capturingSink)
+
+	if got := enriched.values["span_id"]; got != innerSC.SpanID().String() {
+		t.Errorf("span_id = %q, want inner span's %q", got, innerSC.SpanID().String())
+	}
+	if got := enriched.values["trace_id"]; got != innerSC.TraceID().String() {
+		t.Errorf("trace_id = %q, want %q", got, innerSC.TraceID().String())
+	}
+	if got, ok := enriched.values["jobId"]; !ok || got != "job-123" {
+		t.Errorf("pre-existing jobId should be preserved, got %v", got)
 	}
 }
 
