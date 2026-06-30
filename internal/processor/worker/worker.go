@@ -405,13 +405,15 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 		jobLogger := logr.FromContextOrDiscard(jobBaseCtx).WithValues("jobId", task.ID, "tenantId", jobInfo.TenantID)
 		jobCtx := logr.NewContext(jobBaseCtx, jobLogger)
 
+		jr := &JobRunner{
+			processor: p,
+			updater:   p.updater,
+			jobItem:   jobItem,
+			jobInfo:   jobInfo,
+			task:      task,
+		}
 		p.wg.Add(1)
-		go p.runJob(jobCtx, &jobExecutionParams{
-			updater: p.updater,
-			jobItem: jobItem,
-			jobInfo: jobInfo,
-			task:    task,
-		})
+		go jr.Run(jobCtx)
 	}
 }
 

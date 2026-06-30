@@ -28,7 +28,7 @@ import (
 	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
-func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams) {
+func (jr *JobRunner) watchCancel(ctx context.Context) {
 	logger := logr.FromContextOrDiscard(ctx)
 	for {
 		select {
@@ -36,7 +36,7 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 			logger.V(logging.DEBUG).Info("watchCancel: context done")
 			return
 
-		case event, ok := <-params.eventWatcher.Events:
+		case event, ok := <-jr.eventWatcher.Events:
 			if !ok {
 				logger.V(logging.DEBUG).Info("watchCancel: event channel closed")
 				return
@@ -46,8 +46,8 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
 				// userCancelFn marks userCancelCtx as cancelled. requestAbortCtx is
-				// automatically cancelled via context.AfterFunc wired in runJob.
-				params.userCancelFn()
+				// automatically cancelled via context.AfterFunc wired in Run.
+				jr.userCancelFn()
 
 				// We don't update the DB status to 'cancelling' here because
 				// the API server already wrote 'cancelling' before sending this event.
@@ -59,11 +59,13 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 // handleCancelled finalizes a user-cancelled job.
 // When called after executeJob (execution), requestCounts is non-nil and partial results are
 // uploaded. When called before executeJob (ingestion), requestCounts is nil — only cleanup
-// and status transition are performed. jobInfo is always non-nil on the normal runJob path
+// and status transition are performed. jobInfo is always non-nil on the normal Run path
 // (it is populated before the job goroutine is launched).
 //
 // Uses a detached context so that a concurrent SIGTERM cannot abort the upload or DB write.
-func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionParams) error {
+func (jr *JobRunner) handleCancelled(ctx context.Context) error {
+	p := jr.processor
+
 	ioCtx, ioSpan := uotel.DetachedContext(ctx, "handle-cancelled")
 	ioCtx, ioCancel := context.WithTimeout(ioCtx, finalizationTimeout)
 	defer ioCancel()
@@ -72,32 +74,32 @@ func (p *Processor) handleCancelled(ctx context.Context, params *jobExecutionPar
 	logger := logr.FromContextOrDiscard(ctx)
 
 	var outputFileID, errorFileID string
-	if params.requestCounts != nil && params.jobInfo != nil {
+	if jr.requestCounts != nil && jr.jobInfo != nil {
 		logger.V(logging.INFO).Info("Job cancelled mid-execution, uploading partial results")
-		outputFileID, errorFileID = p.uploadPartialResults(ioCtx, params.jobInfo, params.jobItem)
+		outputFileID, errorFileID = p.uploadPartialResults(ioCtx, jr.jobInfo, jr.jobItem)
 	}
 
-	if err := params.updater.UpdateCancelledStatus(ioCtx, params.jobItem, params.requestCounts, outputFileID, errorFileID); err != nil {
+	if err := jr.updater.UpdateCancelledStatus(ioCtx, jr.jobItem, jr.requestCounts, outputFileID, errorFileID); err != nil {
 		ioSpan.RecordError(err)
 		logger.Error(err, "Failed to update cancelled status, falling back to failed with file IDs preserved")
-		if failErr := params.updater.UpdateFailedStatus(ioCtx, params.jobItem, params.requestCounts, outputFileID, errorFileID); failErr != nil {
+		if failErr := jr.updater.UpdateFailedStatus(ioCtx, jr.jobItem, jr.requestCounts, outputFileID, errorFileID); failErr != nil {
 			ioSpan.RecordError(failErr)
 			return fmt.Errorf("failed to update job status to cancelled (%w) and fallback to failed also failed: %w", err, failErr)
 		}
 		// Cleanup after fallback succeeded so startup recovery doesn't re-process.
-		p.cleanupJobArtifacts(ioCtx, params.jobItem.ID, params.jobItem.TenantID)
+		p.cleanupJobArtifacts(ioCtx, jr.jobItem.ID, jr.jobItem.TenantID)
 		return fmt.Errorf("cancelled status write failed: %w", errFinalizeFailedOver)
 	}
 
 	// Cleanup after terminal status write: if the write failed above, the local
 	// files survive for startup recovery to re-upload.
-	p.cleanupJobArtifacts(ioCtx, params.jobItem.ID, params.jobItem.TenantID)
+	p.cleanupJobArtifacts(ioCtx, jr.jobItem.ID, jr.jobItem.TenantID)
 
-	setRequestCountAttrs(ctx, params.requestCounts)
+	setRequestCountAttrs(ctx, jr.requestCounts)
 
-	recordE2ELatency(params.jobInfo, metrics.E2EStatusCancelled)
+	recordE2ELatency(jr.jobInfo, metrics.E2EStatusCancelled)
 
-	if params.requestCounts != nil {
+	if jr.requestCounts != nil {
 		metrics.RecordCancellation(metrics.CancelPhaseInProgress)
 	} else {
 		metrics.RecordCancellation(metrics.CancelPhaseQueued)

@@ -101,6 +101,23 @@ func (o *outputLine) isSuccess() bool {
 // will include all accumulated progress. Declared as var so tests can override.
 var progressUpdateInterval = time.Second
 
+// modelWorker holds per-model execution state for the inference dispatch phase.
+// One instance is created per model inside executeJob. Shared state (inputFile,
+// writers, progress) is concurrency-safe: inputFile uses ReadAt (no seek),
+// writers has internal mutexes, progress uses atomics.
+type modelWorker struct {
+	processor          *Processor
+	inputFile          *os.File
+	plansDir           string
+	writers            *outputWriters
+	progress           *executionProgress
+	abortFn            context.CancelFunc
+	safeModelID        string
+	modelID            string
+	passThroughHeaders map[string]string
+	tenantID           string
+}
+
 // executionProgress tracks per-request progress across goroutines
 // and pushes throttled updates to the status store.
 type executionProgress struct {
@@ -179,11 +196,12 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // userCancelCtx is a user-cancel-only signal derived from context.Background; it does not inherit
 // SLO expiry or SIGTERM. Its sole purpose is to let the drain phase distinguish user cancel from
 // SLO expiry.
-func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+func (jr *JobRunner) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context) (*openai.BatchRequestCounts, error) {
+	p := jr.processor
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
-	jobRootDir, err := p.jobRootDir(params.jobInfo.JobID, params.jobInfo.TenantID)
+	jobRootDir, err := p.jobRootDir(jr.jobInfo.JobID, jr.jobInfo.TenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve job root directory: %w", err)
 	}
@@ -203,7 +221,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 		return &openai.BatchRequestCounts{Total: modelMap.LineCount, Failed: modelMap.RejectedCount}, errExpired
 	}
 
-	inputFilePath, err := p.jobInputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
+	inputFilePath, err := p.jobInputFilePath(jr.jobInfo.JobID, jr.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +231,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	}
 	defer inputFile.Close()
 
-	outputFilePath, err := p.jobOutputFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
+	outputFilePath, err := p.jobOutputFilePath(jr.jobInfo.JobID, jr.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +241,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	}
 	defer outputFile.Close()
 
-	errorFilePath, err := p.jobErrorFilePath(params.jobInfo.JobID, params.jobInfo.TenantID)
+	errorFilePath, err := p.jobErrorFilePath(jr.jobInfo.JobID, jr.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +257,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 		errors: bufio.NewWriterSize(errorFile, 1024*1024),
 	}
 
-	plansDir, err := p.jobPlansDir(params.jobInfo.JobID, params.jobInfo.TenantID)
+	plansDir, err := p.jobPlansDir(jr.jobInfo.JobID, jr.jobInfo.TenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -249,15 +267,15 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 
 	progress := &executionProgress{
 		total:   modelMap.LineCount,
-		updater: params.updater,
-		jobID:   params.jobInfo.JobID,
+		updater: jr.updater,
+		jobID:   jr.jobInfo.JobID,
 	}
 	// Seed with requests already rejected during ingestion (model not found).
 	progress.failed.Store(modelMap.RejectedCount)
 
 	errCh := make(chan error, len(modelMap.SafeToModel))
 
-	passThroughHeaders := params.jobInfo.PassThroughHeaders
+	passThroughHeaders := jr.jobInfo.PassThroughHeaders
 	if len(passThroughHeaders) > 0 {
 		headerNames := make([]string, 0, len(passThroughHeaders))
 		for k := range passThroughHeaders {
@@ -272,40 +290,30 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	// from sloCtx (derived from context.Background), so SLO expiry and SIGTERM do
 	// not set it. processModel's drain phase checks sloCtx.Err() vs
 	// userCancelCtx.Err() to choose the right error code (errExpired vs errCancelled).
-	tenantID := params.jobInfo.TenantID
+	tenantID := jr.jobInfo.TenantID
 
 	for safeModelID, modelID := range modelMap.SafeToModel {
-		// Ordering guarantee: processModel returns → requestAbortFn → errCh send.
+		w := &modelWorker{
+			processor:          p,
+			inputFile:          inputFile,
+			plansDir:           plansDir,
+			writers:            writers,
+			progress:           progress,
+			abortFn:            jr.abortFn,
+			safeModelID:        safeModelID,
+			modelID:            modelID,
+			passThroughHeaders: passThroughHeaders,
+			tenantID:           tenantID,
+		}
+		// Ordering guarantee: processModel returns → abortFn → errCh send.
 		// This ensures the first real error reaches errCh before any context.Canceled
-		// from other models whose contexts were cancelled by requestAbortFn.
-		go func(safeModelID, modelID string) {
+		// from other models whose contexts were cancelled by abortFn.
+		go func() {
 			var err error
 			if p.asyncInference != nil {
-				err = p.processModelAsync(
-					requestAbortCtx,
-					ctx,
-					sloCtx,
-					userCancelCtx,
-					inputFile,
-					plansDir, safeModelID, modelID,
-					writers,
-					progress,
-					passThroughHeaders,
-					tenantID,
-				)
+				err = w.processModelAsync(requestAbortCtx, ctx, sloCtx, userCancelCtx)
 			} else {
-				err = p.processModel(
-					requestAbortCtx,
-					ctx,
-					sloCtx,
-					userCancelCtx,
-					inputFile,
-					plansDir, safeModelID, modelID,
-					writers,
-					progress,
-					passThroughHeaders,
-					tenantID,
-				)
+				err = w.processModel(requestAbortCtx, ctx, sloCtx, userCancelCtx)
 			}
 			// Abort all sibling models when any model hits a fatal I/O error
 			// (e.g. output file write failure). modelErr is only set for local
@@ -313,14 +321,13 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 			// in the error file. Since all models share the same output writers,
 			// a write failure in one model means the shared file is unusable
 			// and continuing other models would produce corrupt output.
-			// Guard against nil requestAbortFn for direct-call test paths.
 			if err != nil {
-				if fn := params.requestAbortFn; fn != nil {
+				if fn := w.abortFn; fn != nil {
 					fn()
 				}
 			}
 			errCh <- err
-		}(safeModelID, modelID)
+		}()
 	}
 
 	var firstErr error
@@ -402,25 +409,20 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 // propagated at the executeJob level (requestAbortFn), which stops dispatch across all models.
 // Already-dispatched goroutines may finish with errors or cancellation rather than successful
 // completion, depending on when requestAbortFn fires.
-func (p *Processor) processModel(
+func (w *modelWorker) processModel(
 	requestAbortCtx context.Context,
 	mainCtx context.Context,
 	sloCtx context.Context,
 	userCancelCtx context.Context,
-	inputFile *os.File,
-	plansDir, safeModelID, modelID string,
-	writers *outputWriters,
-	progress *executionProgress,
-	passThroughHeaders map[string]string,
-	tenantID string,
 ) error {
-	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
+	p := w.processor
+	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", w.modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
-	planPath := filepath.Join(plansDir, safeModelID+".plan")
+	planPath := filepath.Join(w.plansDir, w.safeModelID+".plan")
 	entries, err := readPlanEntries(planPath)
 	if err != nil {
-		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
+		return fmt.Errorf("model setup failed: read plan for model %s: %w", w.modelID, err)
 	}
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
@@ -430,11 +432,11 @@ func (p *Processor) processModel(
 	// ClientFor can return nil after gateway config changes between ingestion and
 	// execution, or during recovery when model_map/plan files predate the current
 	// resolver. In that case, drain all entries as model_not_found.
-	client := p.inference.ClientFor(modelID)
+	client := p.inference.ClientFor(w.modelID)
 	epLimit := p.endpointLimits[client]
 	if epLimit == nil {
 		logger.V(logging.INFO).Info("No endpoint limit for model (client not in resolver), draining as model_not_found")
-		p.drainUnprocessedRequests(requestAbortCtx, inputFile, entries, writers, progress,
+		w.drainUnprocessedRequests(requestAbortCtx, entries,
 			batch_types.BatchErrorCode(inference.ErrCodeModelNotFound))
 		return nil
 	}
@@ -475,7 +477,7 @@ dispatch:
 			defer endpointSem.Release()
 			defer p.globalSem.Release()
 
-			result, execErr := p.executeOneRequest(requestAbortCtx, sloCtx, inputFile, entry, modelID, passThroughHeaders, tenantID)
+			result, execErr := w.executeOneRequest(requestAbortCtx, sloCtx, entry)
 
 			// AIMD signal: adjust concurrency based on inference endpoint capacity.
 			//
@@ -527,7 +529,7 @@ dispatch:
 				shutdownCancelled.Add(1)
 			}
 
-			if err := writeResult(result, sloCtx, userCancelCtx, requestAbortCtx, writers, progress); err != nil {
+			if err := writeResult(result, sloCtx, userCancelCtx, requestAbortCtx, w.writers, w.progress); err != nil {
 				errOnce.Do(func() { modelErr = err })
 			}
 		}(entry)
@@ -535,43 +537,37 @@ dispatch:
 
 	wg.Wait()
 
-	return p.drainAndFinalize(requestAbortCtx, mainCtx, sloCtx, userCancelCtx,
-		inputFile, entries[dispatchedCount:], writers, progress, modelErr, logger, len(entries),
+	return w.drainAndFinalize(requestAbortCtx, mainCtx, sloCtx, userCancelCtx,
+		entries[dispatchedCount:], modelErr, logger, len(entries),
 		shutdownCancelled.Load())
 }
 
 // processModelAsync processes all plan entries for a single model using the
 // async submit/collect pattern. All requests are submitted to the queue first,
 // then results are collected as they arrive on a shared channel.
-func (p *Processor) processModelAsync(
+func (w *modelWorker) processModelAsync(
 	requestAbortCtx context.Context,
 	mainCtx context.Context,
 	sloCtx context.Context,
 	userCancelCtx context.Context,
-	inputFile *os.File,
-	plansDir, safeModelID, modelID string,
-	writers *outputWriters,
-	progress *executionProgress,
-	passThroughHeaders map[string]string,
-	tenantID string,
 ) error {
-	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
+	p := w.processor
+	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", w.modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
-	planPath := filepath.Join(plansDir, safeModelID+".plan")
+	planPath := filepath.Join(w.plansDir, w.safeModelID+".plan")
 	entries, err := readPlanEntries(planPath)
 	if err != nil {
-		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
+		return fmt.Errorf("model setup failed: read plan for model %s: %w", w.modelID, err)
 	}
 
 	logger.V(logging.INFO).Info("Processing requests for model (async)", "numEntries", len(entries))
 
-	asyncClient := p.asyncInference.ClientFor(modelID)
+	asyncClient := p.asyncInference.ClientFor(w.modelID)
 	if asyncClient == nil {
 		logger.V(logging.INFO).Info("No async client for model, draining as model_not_found")
-		p.drainUnprocessedRequests(
-			requestAbortCtx, inputFile, entries, writers, progress,
-			inference.ErrCodeModelNotFound)
+		w.drainUnprocessedRequests(requestAbortCtx, entries,
+			batch_types.BatchErrorCode(inference.ErrCodeModelNotFound))
 		return nil
 	}
 	defer func() {
@@ -595,7 +591,7 @@ func (p *Processor) processModelAsync(
 			break
 		}
 
-		req, batchReqID, parseErr, readErr := readRequestLine(inputFile, entry, logger)
+		req, batchReqID, parseErr, readErr := readRequestLine(w.inputFile, entry, logger)
 		if readErr != nil {
 			return readErr
 		}
@@ -605,10 +601,10 @@ func (p *Processor) processModelAsync(
 				return fmt.Errorf("marshal parse error line: %w", err)
 			}
 			lineBytes = append(lineBytes, '\n')
-			if err := writers.write(lineBytes, true); err != nil {
+			if err := w.writers.write(lineBytes, true); err != nil {
 				return fmt.Errorf("write parse error line: %w", err)
 			}
-			progress.record(requestAbortCtx, false)
+			w.progress.record(requestAbortCtx, false)
 			submitCount++
 			continue
 		}
@@ -617,8 +613,8 @@ func (p *Processor) processModelAsync(
 			break
 		}
 
-		headers := maps.Clone(passThroughHeaders)
-		headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), p.fairnessID(tenantID))
+		headers := maps.Clone(w.passThroughHeaders)
+		headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(w.modelID), p.fairnessID(w.tenantID))
 
 		inferReq := &inference.GenerateRequest{
 			RequestID: batchReqID,
@@ -635,10 +631,10 @@ func (p *Processor) processModelAsync(
 				return fmt.Errorf("marshal submit error line: %w", err)
 			}
 			lineBytes = append(lineBytes, '\n')
-			if err := writers.write(lineBytes, true); err != nil {
+			if err := w.writers.write(lineBytes, true); err != nil {
 				return fmt.Errorf("write submit error line: %w", err)
 			}
-			progress.record(requestAbortCtx, false)
+			w.progress.record(requestAbortCtx, false)
 			submitCount++
 			continue
 		}
@@ -671,8 +667,8 @@ func (p *Processor) processModelAsync(
 			continue
 		}
 
-		out := buildOutputLine(pr.batchReqID, pr.customID, modelID, resp.RequestID, resp, nil, logger)
-		if err := writeResult(out, sloCtx, userCancelCtx, requestAbortCtx, writers, progress); err != nil {
+		out := buildOutputLine(pr.batchReqID, pr.customID, w.modelID, resp.RequestID, resp, nil, logger)
+		if err := writeResult(out, sloCtx, userCancelCtx, requestAbortCtx, w.writers, w.progress); err != nil {
 			modelErr = err
 			break
 		}
@@ -689,27 +685,24 @@ func (p *Processor) processModelAsync(
 			return fmt.Errorf("marshal uncollected error line: %w", err)
 		}
 		lineBytes = append(lineBytes, '\n')
-		if err := writers.write(lineBytes, true); err != nil {
+		if err := w.writers.write(lineBytes, true); err != nil {
 			return fmt.Errorf("write uncollected error line: %w", err)
 		}
-		progress.record(requestAbortCtx, false)
+		w.progress.record(requestAbortCtx, false)
 	}
 
-	return p.drainAndFinalize(requestAbortCtx, mainCtx, sloCtx, userCancelCtx,
-		inputFile, entries[submitCount:], writers, progress, modelErr, logger, len(entries), 0)
+	return w.drainAndFinalize(requestAbortCtx, mainCtx, sloCtx, userCancelCtx,
+		entries[submitCount:], modelErr, logger, len(entries), 0)
 }
 
 // drainAndFinalize drains undispatched entries based on termination reason and
 // returns the appropriate sentinel error. Shared by processModel and processModelAsync.
-func (p *Processor) drainAndFinalize(
+func (w *modelWorker) drainAndFinalize(
 	requestAbortCtx context.Context,
 	mainCtx context.Context,
 	sloCtx context.Context,
 	userCancelCtx context.Context,
-	inputFile *os.File,
 	undispatched []planEntry,
-	writers *outputWriters,
-	progress *executionProgress,
 	modelErr error,
 	logger logr.Logger,
 	totalEntries int,
@@ -721,7 +714,7 @@ func (p *Processor) drainAndFinalize(
 		// SLO deadline fired during dispatch — record remaining requests as expired.
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("SLO expired: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+			w.drainUnprocessedRequests(requestAbortCtx, undispatched,
 				batch_types.ErrCodeBatchExpired)
 		}
 		returnErr = errExpired
@@ -730,7 +723,7 @@ func (p *Processor) drainAndFinalize(
 		// User-initiated cancel — record remaining requests as cancelled.
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Cancelled: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+			w.drainUnprocessedRequests(requestAbortCtx, undispatched,
 				batch_types.ErrCodeBatchCancelled)
 		}
 		returnErr = errCancelled
@@ -739,7 +732,7 @@ func (p *Processor) drainAndFinalize(
 		// System error in a model goroutine — record remaining requests as failed.
 		if len(undispatched) > 0 {
 			logger.V(logging.INFO).Info("Fatal error: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+			w.drainUnprocessedRequests(requestAbortCtx, undispatched,
 				batch_types.ErrCodeBatchFailed)
 		}
 		returnErr = modelErr
@@ -758,7 +751,7 @@ func (p *Processor) drainAndFinalize(
 			// Drain undispatched entries as batch_failed so that
 			// completed + failed == total holds for the job.
 			logger.V(logging.INFO).Info("Sibling abort: draining undispatched entries", "count", len(undispatched))
-			p.drainUnprocessedRequests(requestAbortCtx, inputFile, undispatched, writers, progress,
+			w.drainUnprocessedRequests(requestAbortCtx, undispatched,
 				batch_types.ErrCodeBatchFailed)
 		}
 	}
@@ -772,12 +765,9 @@ func (p *Processor) drainAndFinalize(
 // mid-execution (SLO expiry, cancellation, or systemic failure). For each plan entry, it reads
 // the original request from input.jsonl to extract the custom_id, then writes an error line with
 // the given error code and its canonical message.
-func (p *Processor) drainUnprocessedRequests(
+func (w *modelWorker) drainUnprocessedRequests(
 	ctx context.Context,
-	inputFile *os.File,
 	entries []planEntry,
-	writers *outputWriters,
-	progress *executionProgress,
 	errCode batch_types.BatchErrorCode,
 ) {
 	errMessage := errCode.Message()
@@ -794,7 +784,7 @@ func (p *Processor) drainUnprocessedRequests(
 
 	for _, entry := range entries {
 		customID := ""
-		if _, err := inputFile.ReadAt(buf[:entry.Length], entry.Offset); err == nil {
+		if _, err := w.inputFile.ReadAt(buf[:entry.Length], entry.Offset); err == nil {
 			var req batch_types.Request
 			if err := json.Unmarshal(bytes.TrimSuffix(buf[:entry.Length], []byte{'\n'}), &req); err == nil {
 				customID = req.CustomID
@@ -812,14 +802,14 @@ func (p *Processor) drainUnprocessedRequests(
 		}
 		lineBytes = append(lineBytes, '\n')
 
-		if writeErr := writers.write(lineBytes, true); writeErr != nil {
+		if writeErr := w.writers.write(lineBytes, true); writeErr != nil {
 			logger.Error(writeErr, "Failed to write drain entry", "errCode", errCode, "offset", entry.Offset)
 		}
 
 		// Context may be cancelled here (e.g. SLO deadline fired), so the Redis progress
 		// update inside record() may fail silently. The atomic counter still increments
 		// correctly and the final counts are committed by the terminal status update.
-		progress.record(ctx, false)
+		w.progress.record(ctx, false)
 	}
 }
 
@@ -913,17 +903,14 @@ func (p *Processor) fairnessID(tenantID string) string {
 
 // executeOneRequest reads a single input line from the input file at the given plan entry offset,
 // sends it to the inference gateway, and returns the formatted output line.
-func (p *Processor) executeOneRequest(
+func (w *modelWorker) executeOneRequest(
 	ctx context.Context,
 	sloCtx context.Context,
-	inputFile *os.File,
 	entry planEntry,
-	modelID string,
-	passThroughHeaders map[string]string,
-	tenantID string,
 ) (*outputLine, error) {
+	p := w.processor
 	logger := logr.FromContextOrDiscard(ctx)
-	req, batchReqID, parseErr, readErr := readRequestLine(inputFile, entry, logger)
+	req, batchReqID, parseErr, readErr := readRequestLine(w.inputFile, entry, logger)
 	if readErr != nil {
 		return nil, readErr
 	}
@@ -933,17 +920,17 @@ func (p *Processor) executeOneRequest(
 
 	logger = logger.WithValues("customId", req.CustomID, "requestId", batchReqID)
 
-	inferClient := p.inference.ClientFor(modelID)
+	inferClient := p.inference.ClientFor(w.modelID)
 	if inferClient == nil {
 		logger.V(logging.INFO).Info("ClientFor returned nil during execution (expected rejection at ingestion)",
-			"model", modelID)
-		metrics.RecordRequestError(modelID)
+			"model", w.modelID)
+		metrics.RecordRequestError(w.modelID)
 		return newErrorOutputLine(batchReqID, req.CustomID, inference.ErrCodeModelNotFound,
-			fmt.Sprintf("model %q is not configured in any gateway", modelID)), nil
+			fmt.Sprintf("model %q is not configured in any gateway", w.modelID)), nil
 	}
 
-	headers := maps.Clone(passThroughHeaders)
-	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), p.fairnessID(tenantID))
+	headers := maps.Clone(w.passThroughHeaders)
+	headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(w.modelID), p.fairnessID(w.tenantID))
 
 	inferReq := &inference.GenerateRequest{
 		RequestID: batchReqID,
@@ -956,22 +943,22 @@ func (p *Processor) executeOneRequest(
 		logger.V(logging.INFO).Info("SLO expired during execution, skipping request", "error", sloCtx.Err())
 		result := newErrorOutputLine(batchReqID, req.CustomID,
 			string(batch_types.ErrCodeBatchExpired), batch_types.ErrCodeBatchExpired.Message())
-		metrics.RecordRequestError(modelID)
+		metrics.RecordRequestError(w.modelID)
 		return result, nil
 	}
 
 	start := time.Now()
 	metrics.IncProcessorInflightRequests()
-	metrics.IncModelInflightRequests(modelID)
+	metrics.IncModelInflightRequests(w.modelID)
 	logger.V(logging.TRACE).Info("Dispatching inference request")
 
 	inferResp, inferErr := inferClient.Generate(ctx, inferReq)
 
-	metrics.DecModelInflightRequests(modelID)
+	metrics.DecModelInflightRequests(w.modelID)
 	metrics.DecProcessorInflightRequests()
-	metrics.RecordModelRequestExecutionDuration(time.Since(start), modelID)
+	metrics.RecordModelRequestExecutionDuration(time.Since(start), w.modelID)
 
-	result := buildOutputLine(batchReqID, req.CustomID, modelID, inferReq.RequestID, inferResp, inferErr, logger)
+	result := buildOutputLine(batchReqID, req.CustomID, w.modelID, inferReq.RequestID, inferResp, inferErr, logger)
 	return result, nil
 }
 

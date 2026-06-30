@@ -50,11 +50,13 @@ func TestRunJob_EventWatcherError_ReturnsSafely(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(testLoggerCtx(t), &jobExecutionParams{
-		updater: NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
-		jobItem: &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
-		jobInfo: &batch_types.JobInfo{JobID: "job-1"},
-	})
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400),
+		jobItem:   &db.BatchItem{BaseIndexes: db.BaseIndexes{ID: "job-1", TenantID: "tenantA"}},
+		jobInfo:   &batch_types.JobInfo{JobID: "job-1"},
+	}
+	jr.Run(testLoggerCtx(t))
 }
 
 func TestRunJob_EventWatcherAndReEnqueueBothFail_MarksJobFailed(t *testing.T) {
@@ -88,12 +90,14 @@ func TestRunJob_EventWatcherAndReEnqueueBothFail_MarksJobFailed(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-stuck"},
-		task:    &db.BatchJobPriority{ID: "job-stuck"},
-	})
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   &batch_types.JobInfo{JobID: "job-stuck"},
+		task:      &db.BatchJobPriority{ID: "job-stuck"},
+	}
+	jr.Run(ctx)
 
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-stuck"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -151,15 +155,17 @@ func TestRunJob_PreProcessError_HandlesFailedStatus(t *testing.T) {
 		t.Fatalf("expected token acquire before runJob")
 	}
 	p.wg.Add(1)
-	p.runJob(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: jobInfo,
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   jobInfo,
 		task: &db.BatchJobPriority{
 			ID:  "job-fail",
 			SLO: time.Now().Add(1 * time.Hour),
 		},
-	})
+	}
+	jr.Run(ctx)
 
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-fail"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -226,15 +232,17 @@ func TestRunJob_ReachesPreProcess(t *testing.T) {
 	}
 	p.wg.Add(1)
 
-	p.runJob(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: jobInfo,
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   jobInfo,
 		task: &db.BatchJobPriority{
 			ID:  "job-contract",
 			SLO: time.Now().Add(1 * time.Hour),
 		},
-	})
+	}
+	jr.Run(ctx)
 
 	// preProcessJob will fail (file doesn't exist on disk) and handleJobError marks it failed.
 	// The key assertion: we reached handleFailed (not a silent panic recovery).
@@ -288,11 +296,13 @@ func TestHandlePanicRecovery_BeforeInProgress_MarksFailed(t *testing.T) {
 	}
 
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
-	p.handlePanicRecovery(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-panic-pre"},
-	}, false, nil)
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   &batch_types.JobInfo{JobID: "job-panic-pre"},
+	}
+	jr.handlePanicRecovery(ctx, false, nil)
 
 	assertJobStatus(t, dbClient, "job-panic-pre", openai.BatchStatusFailed)
 }
@@ -312,11 +322,13 @@ func TestHandlePanicRecovery_AfterInProgress_WithCounts_MarksFailed(t *testing.T
 
 	counts := &openai.BatchRequestCounts{Total: 10, Completed: 3, Failed: 0}
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
-	p.handlePanicRecovery(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-panic-partial"},
-	}, true, counts)
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   &batch_types.JobInfo{JobID: "job-panic-partial"},
+	}
+	jr.handlePanicRecovery(ctx, true, counts)
 
 	assertJobStatus(t, dbClient, "job-panic-partial", openai.BatchStatusFailed)
 }
@@ -335,11 +347,13 @@ func TestHandlePanicRecovery_AfterInProgress_NilCounts_MarksFailed(t *testing.T)
 	}
 
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
-	p.handlePanicRecovery(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-panic-nocounts"},
-	}, true, nil)
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   &batch_types.JobInfo{JobID: "job-panic-nocounts"},
+	}
+	jr.handlePanicRecovery(ctx, true, nil)
 
 	assertJobStatus(t, dbClient, "job-panic-nocounts", openai.BatchStatusFailed)
 }
@@ -360,11 +374,13 @@ func TestHandlePanicRecovery_CancelledContext_StillMarksFailed(t *testing.T) {
 	}
 
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
-	p.handlePanicRecovery(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-panic-cancelled-ctx"},
-	}, true, nil)
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   &batch_types.JobInfo{JobID: "job-panic-cancelled-ctx"},
+	}
+	jr.handlePanicRecovery(ctx, true, nil)
 
 	assertJobStatus(t, dbClient, "job-panic-cancelled-ctx", openai.BatchStatusFailed)
 }
@@ -384,11 +400,13 @@ func TestHandlePanicRecovery_DBError_DoesNotCrash(t *testing.T) {
 
 	counts := &openai.BatchRequestCounts{Total: 10, Completed: 3, Failed: 0}
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{BatchDB: dbClient, Status: statusClient})
-	p.handlePanicRecovery(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: &batch_types.JobInfo{JobID: "job-panic-db-err"},
-	}, true, counts)
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   &batch_types.JobInfo{JobID: "job-panic-db-err"},
+	}
+	jr.handlePanicRecovery(ctx, true, counts)
 
 	assertJobStatus(t, dbClient, "job-panic-db-err", openai.BatchStatusInProgress)
 }
@@ -396,8 +414,10 @@ func TestHandlePanicRecovery_DBError_DoesNotCrash(t *testing.T) {
 func TestHandlePanicRecovery_NilParams_DoesNotPanic(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
-	p.handlePanicRecovery(ctx, nil, false, nil)
-	p.handlePanicRecovery(ctx, &jobExecutionParams{}, false, nil)
+	jr := &JobRunner{processor: p}
+	jr.handlePanicRecovery(ctx, false, nil)
+	jr = &JobRunner{processor: p}
+	jr.handlePanicRecovery(ctx, false, nil)
 }
 
 // dbBlockingUpdateWrapper blocks DBUpdate until its context is cancelled,
@@ -452,11 +472,13 @@ func TestHandlePanicRecovery_BlockingDB_ReturnsWithinTimeout(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.handlePanicRecovery(ctx, &jobExecutionParams{
-			updater: NewStatusUpdater(blockingDB, statusClient, 86400),
-			jobItem: jobItem,
-			jobInfo: &batch_types.JobInfo{JobID: "job-panic-block"},
-		}, false, nil)
+		jr := &JobRunner{
+			processor: p,
+			updater:   NewStatusUpdater(blockingDB, statusClient, 86400),
+			jobItem:   jobItem,
+			jobInfo:   &batch_types.JobInfo{JobID: "job-panic-block"},
+		}
+		jr.handlePanicRecovery(ctx, false, nil)
 		close(done)
 	}()
 
@@ -559,15 +581,17 @@ func TestRunJob_Success_CompletesAndCleansArtifacts(t *testing.T) {
 		t.Fatalf("expected token acquire before runJob")
 	}
 	p.wg.Add(1)
-	p.runJob(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: jobInfo,
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(dbClient, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   jobInfo,
 		task: &db.BatchJobPriority{
 			ID:  jobID,
 			SLO: time.Now().Add(1 * time.Hour),
 		},
-	})
+	}
+	jr.Run(ctx)
 
 	// Assert DB status is completed.
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -704,15 +728,17 @@ func TestRunJob_FinalizeFailedOver_PreservesFileIDsAndDoesNotCallHandleFailed(t 
 		t.Fatalf("expected token acquire before runJob")
 	}
 	p.wg.Add(1)
-	p.runJob(ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(failDB, statusClient, 86400),
-		jobItem: jobItem,
-		jobInfo: jobInfo,
+	jr := &JobRunner{
+		processor: p,
+		updater:   NewStatusUpdater(failDB, statusClient, 86400),
+		jobItem:   jobItem,
+		jobInfo:   jobInfo,
 		task: &db.BatchJobPriority{
 			ID:  jobID,
 			SLO: time.Now().Add(1 * time.Hour),
 		},
-	})
+	}
+	jr.Run(ctx)
 
 	// DB status must be "failed" (fallback), not "completed" (which was injected to fail).
 	items, _, _, getErr := innerDB.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
@@ -774,7 +800,8 @@ func TestHandleJobError_Shutdown_LeavesJobInProgress(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
-	params := &jobExecutionParams{
+	jr := &JobRunner{
+		processor:     p,
 		updater:       updater,
 		jobItem:       jobItem,
 		jobInfo:       jobInfo,
@@ -782,7 +809,7 @@ func TestHandleJobError_Shutdown_LeavesJobInProgress(t *testing.T) {
 		task:          &db.BatchJobPriority{ID: jobID},
 	}
 
-	p.handleJobError(ctx, params, errShutdown)
+	jr.handleError(ctx, errShutdown)
 
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {

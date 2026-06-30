@@ -63,7 +63,7 @@ Processor metrics intentionally omit unbounded identifiers such as tenant IDs. P
 
 **Job Lifecycle Metrics:**
 
-- `batch_job_e2e_latency_seconds{status}` (Histogram) - End-to-end job latency from submission (`created_at`) to terminal state. `status` values: `completed`, `cancelled`, `expired`, `failed`. In the execution path (`runJob`), the status label reflects the intended terminal state even if the DB write fails (matching the `jobs_processed_total` convention). In the polling loop and startup recovery, DB write failures are recorded as `failed` to avoid misrepresenting the actual outcome.
+- `batch_job_e2e_latency_seconds{status}` (Histogram) - End-to-end job latency from submission (`created_at`) to terminal state. `status` values: `completed`, `cancelled`, `expired`, `failed`. In the execution path (`JobRunner.Run`), the status label reflects the intended terminal state even if the DB write fails (matching the `jobs_processed_total` convention). In the polling loop and startup recovery, DB write failures are recorded as `failed` to avoid misrepresenting the actual outcome.
 
 **Cancellation Metrics:**
 

@@ -103,10 +103,10 @@ Call `InFlightSet(jobID, processorID)` immediately after `PQDequeue` succeeds. N
 
 > **Why not atomic with PQDequeue**: `PQDequeue` uses `BZMPOP` (blocking pop), which Redis forbids inside Lua scripts. The gap between the two calls is microseconds, while the reconciler runs every 60 minutes. Even if the reconciler scans in between, it would see a `validating` job and re-enqueue it — CAS prevents data corruption when a second processor picks up the duplicate.
 
-**Heartbeat** — in `runJob()` (`job_runner.go`):
+**Heartbeat** — in `JobRunner.Run()` (`job_runner.go`):
 A goroutine with a 5-minute ticker calls `InFlightSet` to refresh the timestamp. The goroutine stops when the job context is cancelled.
 
-**Cleanup** — deferred in `runJob()`:
+**Cleanup** — deferred in `JobRunner.Run()`:
 `InFlightDelete` as the first defer (LIFO = executes last, after terminal transitions and panic recovery).
 
 **Re-enqueue paths** (`worker.go`):

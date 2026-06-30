@@ -376,14 +376,15 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 	requestAbortCtx, requestAbortFn := context.WithCancel(ctx)
 	context.AfterFunc(userCancelCtx, requestAbortFn)
 
-	params := &jobExecutionParams{
-		eventWatcher:   evCh,
-		updater:        updater,
-		jobItem:        jobItem,
-		userCancelFn:   userCancelFn,
-		requestAbortFn: requestAbortFn,
+	jr := &JobRunner{
+		processor:    p,
+		eventWatcher: evCh,
+		updater:      updater,
+		jobItem:      jobItem,
+		userCancelFn: userCancelFn,
+		abortFn:      requestAbortFn,
 	}
-	go p.watchCancel(ctx, params)
+	go jr.watchCancel(ctx)
 
 	_, _ = eventClient.ECProducerSendEvents(ctx, []db.BatchEvent{
 		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
@@ -682,10 +683,12 @@ func TestHandleCancelled_CleansDir_UpdatesCancelled(t *testing.T) {
 
 	updater := NewStatusUpdater(dbClient, statusClient, 86400)
 
-	if err := p.handleCancelled(ctx, &jobExecutionParams{
-		updater: updater,
-		jobItem: jobItem,
-	}); err != nil {
+	jr := &JobRunner{
+		processor: p,
+		updater:   updater,
+		jobItem:   jobItem,
+	}
+	if err := jr.handleCancelled(ctx); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
 	}
 
@@ -1754,10 +1757,8 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 		t.Fatalf("plan files = %d, want 0", planFiles)
 	}
 
-	counts, execErr := p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: p, updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400), jobInfo: jobInfo}
+	counts, execErr := jr.executeJob(ctx, ctx, ctx, ctx)
 	if execErr != nil {
 		t.Fatalf("executeJob: %v", execErr)
 	}
@@ -1950,10 +1951,8 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	defer sloCancel()
 
-	counts, execErr := p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
-		updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: p, updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400), jobInfo: jobInfo}
+	counts, execErr := jr.executeJob(ctx, sloCtx, context.Background(), sloCtx)
 	if !errors.Is(execErr, errExpired) {
 		t.Fatalf("expected errExpired, got: %v", execErr)
 	}

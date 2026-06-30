@@ -74,7 +74,7 @@ func TestExecuteOneRequest_Success(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestExecuteOneRequest_SuccessWithCapacityRetry(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestExecuteOneRequest_NonHTTPError(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error for inference failure, got: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestExecuteOneRequest_NilInferenceClient(t *testing.T) {
 
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := p.executeOneRequest(ctx, sloCtx, inputFile, allEntries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, allEntries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestExecuteOneRequest_HTTPError(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestExecuteOneRequest_HTTPErrorEmptyBody(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestExecuteOneRequest_HTTPErrorNonJSONBody(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestExecuteOneRequest_NilResponse(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestExecuteOneRequest_BadJSONResponse(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest should not return error, got: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestExecuteOneRequest_BadOffset(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	_, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, badEntry, "m1", nil, "")
+	_, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, badEntry)
 	if err == nil {
 		t.Fatalf("expected error for bad offset")
 	}
@@ -555,7 +555,7 @@ func TestExecuteOneRequest_SLOExpiredBeforeExecution(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestExecuteOneRequest_SLOExpiredDuringExecution(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(10*time.Nanosecond))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestExecuteOneRequest_DroppedReasonTTLExpired(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestExecuteOneRequest_DroppedReasonOther(t *testing.T) {
 	ctx := testLoggerCtx(t)
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(1*time.Second))
 	defer sloCancel()
-	result, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "")
+	result, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1"}).executeOneRequest(ctx, sloCtx, entries[0])
 	if err != nil {
 		t.Fatalf("executeOneRequest error: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestExecuteOneRequest_FairnessHeader(t *testing.T) {
 		ctx := testLoggerCtx(t)
 		sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second))
 		defer cancel()
-		if _, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "tenant-x"); err != nil {
+		if _, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1", tenantID: "tenant-x"}).executeOneRequest(ctx, sloCtx, entries[0]); err != nil {
 			t.Fatalf("executeOneRequest error: %v", err)
 		}
 		if gotHeaders[fairnessIDHeader] != "tenant-x" {
@@ -764,7 +764,7 @@ func TestExecuteOneRequest_FairnessHeader(t *testing.T) {
 		ctx := testLoggerCtx(t)
 		sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second))
 		defer cancel()
-		if _, err := env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], "m1", nil, "tenant-x"); err != nil {
+		if _, err := (&modelWorker{processor: env.p, inputFile: inputFile, modelID: "m1", tenantID: "tenant-x"}).executeOneRequest(ctx, sloCtx, entries[0]); err != nil {
 			t.Fatalf("executeOneRequest error: %v", err)
 		}
 		if _, ok := gotHeaders[fairnessIDHeader]; ok {
@@ -815,7 +815,8 @@ func TestProcessModel_Success(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+	err := w.processModel(ctx, ctx, ctx, context.Background())
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -877,7 +878,8 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(baseCtx)
 	cancel()
 
-	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+	err := w.processModel(ctx, baseCtx, context.Background(), ctx)
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("expected errCancelled, got: %v", err)
 	}
@@ -942,7 +944,8 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+	modelErr := w.processModel(ctx, ctx, ctx, userCancelCtx)
 	if !errors.Is(modelErr, errCancelled) {
 		t.Fatalf("expected errCancelled from processModel, got: %v", modelErr)
 	}
@@ -1024,7 +1027,8 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+	err := w.processModel(ctx, ctx, ctx, context.Background())
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
@@ -1072,9 +1076,10 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 	var errBuf bytes.Buffer
 	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
 
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		done <- w.processModel(ctx, ctx, ctx, context.Background())
 	}()
 
 	<-started
@@ -1131,7 +1136,8 @@ func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
 		jobID:   jobInfo.JobID,
 	}
 
-	err := env.p.processModel(mainCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+	err := w.processModel(mainCtx, mainCtx, mainCtx, context.Background())
 	if !errors.Is(err, errShutdown) {
 		t.Fatalf("expected errShutdown when SIGTERM cancels all dispatched requests, got: %v", err)
 	}
@@ -1175,7 +1181,8 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	requestAbortCtx, requestAbortFn := context.WithCancel(mainCtx)
 	requestAbortFn() // simulate sibling model calling requestAbortFn
 
-	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+	err := w.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background())
 	// requestAbortCtx cancelled, but no SLO / user-cancel / SIGTERM → nil, not errShutdown
 	if err != nil {
 		t.Fatalf("expected nil when only requestAbortCtx is cancelled (sibling abort), got: %v", err)
@@ -1198,10 +1205,8 @@ func TestExecuteJob_SingleModel(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(ctx, ctx, ctx, ctx)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -1269,10 +1274,8 @@ func TestExecuteJob_MultipleModels(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1", "m2": "m2"})
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(ctx, ctx, ctx, ctx)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -1327,10 +1330,8 @@ func TestExecuteJob_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
-	_, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	_, err := jr.executeJob(ctx, ctx, ctx, ctx)
 	if err == nil {
 		t.Fatalf("expected error on cancelled context")
 	}
@@ -1370,10 +1371,8 @@ func TestExecuteJob_UserCancelFlag(t *testing.T) {
 
 	ctx := testLoggerCtx(t)
 
-	counts, err := env.p.executeJob(ctx, ctx, userCancelCtx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(ctx, ctx, userCancelCtx, ctx)
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("expected errCancelled, got: %v", err)
 	}
@@ -1410,10 +1409,8 @@ func TestExecuteJob_CancelAfterAllRequestsComplete(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx(t)
-	_, err := env.p.executeJob(ctx, ctx, userCancelCtx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	_, err := jr.executeJob(ctx, ctx, userCancelCtx, ctx)
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("expected errCancelled when cancel arrives after all requests complete, got: %v", err)
 	}
@@ -1443,10 +1440,8 @@ func TestExecuteJob_SIGTERMAfterAllComplete(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	userCancelCtx := context.Background()
-	counts, err := env.p.executeJob(mainCtx, mainCtx, userCancelCtx, mainCtx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(mainCtx, mainCtx, userCancelCtx, mainCtx)
 	if err != nil {
 		t.Fatalf("expected nil error when SIGTERM arrives after all requests complete, got: %v", err)
 	}
@@ -1495,18 +1490,14 @@ func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 	// flow where runJob sets requestAbortFn before starting watchCancel.
 	requestAbortCtx, requestAbortFn := context.WithCancel(ctx)
 
-	params := &jobExecutionParams{
-		updater:        env.updater,
-		jobInfo:        jobInfo,
-		requestAbortFn: requestAbortFn,
-	}
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo, abortFn: requestAbortFn}
 	type result struct {
 		counts *openai.BatchRequestCounts
 		err    error
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		counts, err := env.p.executeJob(ctx, ctx, userCancelCtx, requestAbortCtx, params)
+		counts, err := jr.executeJob(ctx, ctx, userCancelCtx, requestAbortCtx)
 		resCh <- result{counts, err}
 	}()
 
@@ -1556,10 +1547,8 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
-	counts, err := env.p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(ctx, sloCtx, context.Background(), sloCtx)
 	if !errors.Is(err, errExpired) {
 		t.Fatalf("expected errExpired, got: %v", err)
 	}
@@ -1637,11 +1626,9 @@ func TestExecuteJob_SLOExpiredDuringDispatch(t *testing.T) {
 		err    error
 	}
 	resCh := make(chan result, 1)
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
 	go func() {
-		counts, err := env.p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
-			updater: env.updater,
-			jobInfo: jobInfo,
-		})
+		counts, err := jr.executeJob(ctx, sloCtx, context.Background(), sloCtx)
 		resCh <- result{counts, err}
 	}()
 
@@ -1806,10 +1793,8 @@ func TestExecuteJob_SeparatesSuccessAndErrors(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(ctx, ctx, ctx, ctx)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -1886,10 +1871,8 @@ func TestExecuteJob_HTTPErrorGoesToOutputFile(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, mock, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx(t)
-	counts, err := env.p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobInfo: jobInfo,
-	})
+	jr := &JobRunner{processor: env.p, updater: env.updater, jobInfo: jobInfo}
+	counts, err := jr.executeJob(ctx, ctx, ctx, ctx)
 	if err != nil {
 		t.Fatalf("executeJob error: %v", err)
 	}
@@ -2081,11 +2064,13 @@ func TestHandleJobError_errCancelled(t *testing.T) {
 	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 
 	ctx := testLoggerCtx(t)
-	env.p.handleJobError(ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobItem: dbJob,
-		jobInfo: ji,
-	}, errCancelled)
+	jr := &JobRunner{
+		processor: env.p,
+		updater:   env.updater,
+		jobItem:   dbJob,
+		jobInfo:   ji,
+	}
+	jr.handleError(ctx, errCancelled)
 
 	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 	if delta := after - before; delta != 1 {
@@ -2119,12 +2104,14 @@ func TestHandleJobError_Shutdown_LeavesJobForReconciler(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	env.p.handleJobError(ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobItem: dbJob,
-		task:    task,
-		jobInfo: ji,
-	}, errShutdown)
+	jr := &JobRunner{
+		processor: env.p,
+		updater:   env.updater,
+		jobItem:   dbJob,
+		task:      task,
+		jobInfo:   ji,
+	}
+	jr.handleError(ctx, errShutdown)
 
 	// Job must NOT be re-enqueued — reconciler handles recovery.
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
@@ -2159,10 +2146,12 @@ func TestHandleJobError_Shutdown_NilTask(t *testing.T) {
 
 	ctx := testLoggerCtx(t)
 	// task is nil — should not panic, and job status should remain unchanged
-	env.p.handleJobError(ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobItem: dbJob,
-	}, errShutdown)
+	jr := &JobRunner{
+		processor: env.p,
+		updater:   env.updater,
+		jobItem:   dbJob,
+	}
+	jr.handleError(ctx, errShutdown)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-ctx-nil"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -2192,11 +2181,13 @@ func TestHandleJobError_Default_MarksFailed(t *testing.T) {
 	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 
 	ctx := testLoggerCtx(t)
-	env.p.handleJobError(ctx, &jobExecutionParams{
-		updater: env.updater,
-		jobItem: dbJob,
-		jobInfo: ji,
-	}, errors.New("some error"))
+	jr := &JobRunner{
+		processor: env.p,
+		updater:   env.updater,
+		jobItem:   dbJob,
+		jobInfo:   ji,
+	}
+	jr.handleError(ctx, errors.New("some error"))
 
 	after := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
 	if delta := after - before; delta != 1 {
@@ -2240,12 +2231,14 @@ func TestHandleJobError_ExpiredWithCancelledCtx_StillTransitionsExpired(t *testi
 	cancelledCtx, cancel := context.WithCancel(testLoggerCtx(t))
 	cancel()
 
-	env.p.handleJobError(cancelledCtx, &jobExecutionParams{
+	jr := &JobRunner{
+		processor:     env.p,
 		updater:       env.updater,
 		jobItem:       dbJob,
 		jobInfo:       ji,
 		requestCounts: counts,
-	}, errExpired)
+	}
+	jr.handleError(cancelledCtx, errExpired)
 
 	items, _, _, err := env.dbClient.DBGet(context.Background(), &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -2280,12 +2273,14 @@ func TestHandleJobError_ExpiredDuringIngestion_NilCountsTransitionsExpired(t *te
 	}
 
 	ctx := testLoggerCtx(t)
-	env.p.handleJobError(ctx, &jobExecutionParams{
+	jr := &JobRunner{
+		processor:     env.p,
 		updater:       env.updater,
 		jobItem:       dbJob,
 		jobInfo:       ji,
 		requestCounts: nil, // nil: SLO expired before executeJob ran
-	}, errExpired)
+	}
+	jr.handleError(ctx, errExpired)
 
 	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-expired-ingestion"}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {
@@ -2333,12 +2328,14 @@ func TestHandleCancelled_Execution_UploadsPartialOutput(t *testing.T) {
 	before := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "cancelled"})
 
 	ctx := testLoggerCtx(t)
-	if err := env.p.handleCancelled(ctx, &jobExecutionParams{
+	jr := &JobRunner{
+		processor:     env.p,
 		updater:       env.updater,
 		jobItem:       dbJob,
 		jobInfo:       jobInfo,
 		requestCounts: counts,
-	}); err != nil {
+	}
+	if err := jr.handleCancelled(ctx); err != nil {
 		t.Fatalf("handleCancelled: %v", err)
 	}
 
@@ -2413,12 +2410,14 @@ func TestHandleCancelled_CancelledWriteFails_FallsBackToFailed(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 5, Completed: 3, Failed: 2}
 
 	ctx := testLoggerCtx(t)
-	err := p.handleCancelled(ctx, &jobExecutionParams{
+	jr := &JobRunner{
+		processor:     p,
 		updater:       updater,
 		jobItem:       dbJob,
 		jobInfo:       jobInfo,
 		requestCounts: counts,
-	})
+	}
+	err := jr.handleCancelled(ctx)
 
 	if !errors.Is(err, errFinalizeFailedOver) {
 		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
@@ -3329,7 +3328,7 @@ func TestExecuteOneRequest_PerModelInferenceObjective(t *testing.T) {
 			sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(5*time.Second))
 			defer sloCancel()
 
-			_, err = env.p.executeOneRequest(ctx, sloCtx, inputFile, entries[0], tt.modelID, nil, jobInfo.TenantID)
+			_, err = (&modelWorker{processor: env.p, inputFile: inputFile, modelID: tt.modelID, tenantID: jobInfo.TenantID}).executeOneRequest(ctx, sloCtx, entries[0])
 			if err != nil {
 				t.Fatalf("executeOneRequest error: %v", err)
 			}
@@ -3400,7 +3399,8 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		}
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress, tenantID: jobInfo.TenantID}
+		err = w.processModel(ctx, ctx, ctx, context.Background())
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
@@ -3559,7 +3559,8 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		}
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress, tenantID: jobInfo.TenantID}
+		err = w.processModel(ctx, ctx, ctx, context.Background())
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
@@ -3678,10 +3679,12 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	}
 	progress := &executionProgress{total: 4, updater: updater, jobID: jobID}
 
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, tenantID)
+	w1 := &modelWorker{processor: p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress, tenantID: tenantID}
+	_ = w1.processModel(ctx, ctx, ctx, context.Background())
 
 	// Process m2 (200s) — should NOT affect m2's endpoint AIMD.
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil, tenantID)
+	w2 := &modelWorker{processor: p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m2", modelID: "m2", writers: writers, progress: progress, tenantID: tenantID}
+	_ = w2.processModel(ctx, ctx, ctx, context.Background())
 
 	limitA := p.endpointLimits[clientA].aimd.Limit()
 	limitB := p.endpointLimits[clientB].aimd.Limit()
@@ -3743,7 +3746,8 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 	}
 
 	ctx := testLoggerCtx(t)
-	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+	w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress, tenantID: jobInfo.TenantID}
+	err = w.processModel(ctx, ctx, ctx, context.Background())
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
@@ -3916,7 +3920,8 @@ func TestProcessModelAsync(t *testing.T) {
 		progress := &executionProgress{total: int64(len(requests)), updater: env.updater, jobID: jobInfo.JobID}
 
 		ctx := testLoggerCtx(t)
-		err := env.p.processModelAsync(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+		err := w.processModelAsync(ctx, ctx, ctx, context.Background())
 		if err != nil {
 			t.Fatalf("processModelAsync error: %v", err)
 		}
@@ -3992,7 +3997,8 @@ func TestProcessModelAsync(t *testing.T) {
 		// Run processModelAsync in a goroutine so we can intercept submitted IDs.
 		done := make(chan error, 1)
 		go func() {
-			done <- env.p.processModelAsync(abortCtx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+			w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+			done <- w.processModelAsync(abortCtx, ctx, ctx, context.Background())
 		}()
 
 		// Wait for all 3 submits, deliver 1 result using the real ID, then cancel.
@@ -4049,7 +4055,8 @@ func TestProcessModelAsync(t *testing.T) {
 		progress := &executionProgress{total: 1, updater: env.updater, jobID: jobInfo.JobID}
 
 		ctx := testLoggerCtx(t)
-		err := env.p.processModelAsync(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		w := &modelWorker{processor: env.p, inputFile: inputFile, plansDir: plansDir, safeModelID: "m1", modelID: "m1", writers: writers, progress: progress}
+		err := w.processModelAsync(ctx, ctx, ctx, context.Background())
 		if err != nil {
 			t.Fatalf("processModelAsync error: %v", err)
 		}
