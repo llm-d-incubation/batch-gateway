@@ -326,11 +326,13 @@ else
     # Scenario 4: include flow-control overlay for priority-based scheduling
     FLOW_CONTROL_OVERLAY=""
     if [ "${SCENARIO}" = "4" ]; then
-        FLOW_CONTROL_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay.yaml"
         log "  Flow control: enabling EPP priority bands (interactive=100, batch=-1)"
     fi
 
     if [ -n "${ROUTER_REPO:-}" ]; then
+        if [ "${SCENARIO}" = "4" ]; then
+            FLOW_CONTROL_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay-router.yaml"
+        fi
         # Local repo mode (development override)
         log "  Using local repo: ROUTER_REPO=${ROUTER_REPO}"
         chart_dir="${ROUTER_REPO}/config/charts/llm-d-router-gateway"
@@ -354,6 +356,9 @@ else
             --set httpRoute.create=true \
             --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
     else
+        if [ "${SCENARIO}" = "4" ]; then
+            FLOW_CONTROL_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay.yaml"
+        fi
         # OCI mode (default — reproducible, pinned versions)
         log "  Using OCI chart: ghcr.io/llm-d/llm-d-router-gateway:${ROUTER_CHART_VERSION}"
         log "  Using llm-d guide values from tag: ${LLM_D_TAG}"
