@@ -174,11 +174,20 @@ func (ep *executionProgress) run(ctx context.Context) {
 	defer ticker.Stop()
 	dirty := false
 
+	// pushCtx returns ctx if it is still active, otherwise context.Background()
+	// so that the final push after cancellation still reaches the status store.
+	pushCtx := func() context.Context {
+		if ctx.Err() != nil {
+			return context.Background()
+		}
+		return ctx
+	}
+
 	for {
 		select {
 		case ev, ok := <-ep.ch:
 			if !ok {
-				ep.push(ctx)
+				ep.push(pushCtx())
 				return
 			}
 			if ev.success {
@@ -190,27 +199,8 @@ func (ep *executionProgress) run(ctx context.Context) {
 
 		case <-ticker.C:
 			if dirty {
-				ep.push(ctx)
+				ep.push(pushCtx())
 				dirty = false
-			}
-
-		case <-ctx.Done():
-			for {
-				select {
-				case ev, ok := <-ep.ch:
-					if !ok {
-						ep.push(context.Background())
-						return
-					}
-					if ev.success {
-						ep.completed++
-					} else {
-						ep.failed++
-					}
-				default:
-					ep.push(context.Background())
-					return
-				}
 			}
 		}
 	}
