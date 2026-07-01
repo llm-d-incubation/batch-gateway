@@ -657,9 +657,11 @@ func (p *Processor) processModelAsync(
 
 	for len(pending) > 0 {
 		resp, err := asyncClient.GetResult(requestAbortCtx)
-		if err != nil && requestAbortCtx.Err() == nil {
-			logger.Error(err, "Failed to collect async result", "pendingCount", len(pending))
-			modelErr = fmt.Errorf("async result collection failed: %w", err)
+		if err != nil {
+			if requestAbortCtx.Err() == nil {
+				logger.Error(err, "Failed to collect async result", "pendingCount", len(pending))
+				modelErr = fmt.Errorf("async result collection failed: %w", err)
+			}
 			break
 		}
 

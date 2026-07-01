@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -26,6 +27,9 @@ import (
 )
 
 func TestDispatcherOTelTraces(t *testing.T) {
+	if os.Getenv("TEST_DISPATCHER") == "" {
+		t.Skip("skipping: requires dev-deploy-dispatcher (set TEST_DISPATCHER=1)")
+	}
 	waitForReady(t, testApiserverObsURL, 30*time.Second)
 
 	jaegerClient := &http.Client{Timeout: 5 * time.Second}
