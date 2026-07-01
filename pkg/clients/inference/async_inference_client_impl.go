@@ -68,11 +68,6 @@ func (d *resultDispatcher) ensureStarted() {
 
 func (d *resultDispatcher) run(ctx context.Context) {
 	defer d.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			d.logger.Error(fmt.Errorf("%v", r), "Panic in result dispatcher")
-		}
-	}()
 	for {
 		pollCtx, pollCancel := context.WithTimeout(ctx, time.Second)
 		result, err := d.producer.GetResult(pollCtx)
@@ -88,7 +83,11 @@ func (d *resultDispatcher) run(ctx context.Context) {
 		}
 
 		if val, ok := d.waiters.LoadAndDelete(result.ID); ok {
-			ch := val.(chan<- *GenerateResponse)
+			ch, ok := val.(chan<- *GenerateResponse)
+			if !ok {
+				d.logger.Error(fmt.Errorf("unexpected type %T in waiters map", val), "Type assertion failed")
+				continue
+			}
 			resp := &GenerateResponse{
 				RequestID: result.ID,
 				Response:  []byte(result.Payload),
@@ -96,7 +95,7 @@ func (d *resultDispatcher) run(ctx context.Context) {
 			select {
 			case ch <- resp:
 			default:
-				d.logger.Info("Result channel full, dropping result", "resultID", result.ID)
+				d.logger.Error(fmt.Errorf("result channel full"), "Dropping result", "resultID", result.ID)
 			}
 		} else {
 			d.logger.Info("Dropped result with no waiter", "resultID", result.ID)
@@ -124,6 +123,7 @@ func (d *resultDispatcher) Close() error {
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
+			return fmt.Errorf("result dispatcher did not shut down within 2s")
 		}
 	}
 	return nil

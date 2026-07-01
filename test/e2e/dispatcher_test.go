@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,9 @@ func newDispatcherProducer(t *testing.T, rdb *redis.Client, poolName string) *pr
 }
 
 func TestDispatcher(t *testing.T) {
+	if os.Getenv("TEST_DISPATCHER") == "" {
+		t.Skip("skipping: requires dev-deploy-dispatcher (set TEST_DISPATCHER=1)")
+	}
 	rdb := newDispatcherRedisClient(t)
 	defer rdb.Close()
 
