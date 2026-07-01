@@ -3771,3 +3771,308 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 		t.Fatalf("output buffer should be empty, got %d bytes", outBuf.Len())
 	}
 }
+
+// =====================================================================
+// Tests: processModelAsync
+// =====================================================================
+
+// newAsyncTestProcessorEnv creates a Processor wired for async dispatch testing.
+func newAsyncTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, asyncResolver *inference.AsyncGatewayResolver) *testProcessorEnv {
+	t.Helper()
+
+	dbClient := newMockBatchDBClient()
+	pqClient := mockdb.NewMockBatchPriorityQueueClient()
+	statusClient := mockdb.NewMockBatchStatusClient()
+
+	p, err := NewProcessor(cfg, &clientset.Clientset{
+		BatchDB:        dbClient,
+		FileDB:         newMockFileDBClient(),
+		File:           mockfiles.NewMockBatchFilesClient(t.TempDir()),
+		Queue:          pqClient,
+		Status:         statusClient,
+		Event:          mockdb.NewMockBatchEventChannelClient(),
+		InFlight:       mockdb.NewMockInFlightClient(),
+		AsyncInference: asyncResolver,
+	}, "test-processor", testLogger(t))
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
+	p.tokens, err = semaphore.New(cfg.NumWorkers, nil)
+	if err != nil {
+		t.Fatalf("worker semaphore: %v", err)
+	}
+	p.globalSem, err = semaphore.New(cfg.Concurrency.Global, nil)
+	if err != nil {
+		t.Fatalf("global semaphore: %v", err)
+	}
+	p.poller = NewPoller(pqClient, dbClient)
+
+	return &testProcessorEnv{
+		p:        p,
+		dbClient: dbClient,
+		pqClient: pqClient,
+		updater:  NewStatusUpdater(dbClient, statusClient, 86400),
+	}
+}
+
+// setupAsyncExecutionJob creates a complete job directory and wires an async resolver.
+func setupAsyncExecutionJob(
+	t *testing.T,
+	cfg *config.ProcessorConfig,
+	asyncResolver *inference.AsyncGatewayResolver,
+	requests []batch_types.Request,
+	modelToSafe map[string]string,
+) (*testProcessorEnv, *batch_types.JobInfo) {
+	t.Helper()
+
+	env := newAsyncTestProcessorEnv(t, cfg, asyncResolver)
+
+	jobID := "test-job"
+	tenantID := "tenant-1"
+
+	jobRootDir, err := env.p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatalf("jobRootDir: %v", err)
+	}
+	if err := os.MkdirAll(jobRootDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	inputPath := filepath.Join(jobRootDir, "input.jsonl")
+	rawInput := writeInputJSONL(t, inputPath, requests)
+
+	allEntries := planEntriesFromLines(rawInput)
+
+	safeToModel := make(map[string]string, len(modelToSafe))
+	modelEntries := make(map[string][]planEntry)
+	for model, safe := range modelToSafe {
+		safeToModel[safe] = model
+	}
+	for i, req := range requests {
+		safe := modelToSafe[req.Body["model"].(string)]
+		modelEntries[safe] = append(modelEntries[safe], allEntries[i])
+	}
+
+	plansDir := filepath.Join(jobRootDir, "plans")
+	for safe, entries := range modelEntries {
+		writePlanFile(t, plansDir, safe, entries)
+	}
+
+	writeModelMap(t, jobRootDir, modelMapFile{
+		ModelToSafe: modelToSafe,
+		SafeToModel: safeToModel,
+		LineCount:   int64(len(requests)),
+	})
+
+	return env, &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
+}
+
+func TestProcessModelAsync(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+
+		results := make(chan *inference.GenerateResponse, 5)
+		var submitted []string
+
+		resolver := inference.NewTestAsyncResolver(map[string]func() inference.AsyncInferenceClient{
+			"m1": func() inference.AsyncInferenceClient {
+				return &mockAsyncInferenceClient{
+					submitFn: func(_ context.Context, req *inference.GenerateRequest) *inference.ClientError {
+						submitted = append(submitted, req.RequestID)
+						results <- &inference.GenerateResponse{
+							RequestID: req.RequestID,
+							Response:  []byte(`{"choices":[{"message":{"content":"ok"}}]}`),
+						}
+						return nil
+					},
+					getResultFn: func(ctx context.Context) (*inference.GenerateResponse, error) {
+						select {
+						case r := <-results:
+							return r, nil
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						}
+					},
+				}
+			},
+		})
+
+		requests := []batch_types.Request{
+			{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+			{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+			{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		}
+		env, jobInfo := setupAsyncExecutionJob(t, cfg, resolver, requests, map[string]string{"m1": "m1"})
+
+		inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+		inputFile, _ := os.Open(inputPath)
+		defer inputFile.Close()
+
+		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+		var outBuf, errBuf bytes.Buffer
+		writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
+		progress := &executionProgress{total: int64(len(requests)), updater: env.updater, jobID: jobInfo.JobID}
+
+		ctx := testLoggerCtx(t)
+		err := env.p.processModelAsync(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		if err != nil {
+			t.Fatalf("processModelAsync error: %v", err)
+		}
+
+		_ = writers.output.Flush()
+		_ = writers.errors.Flush()
+
+		if len(submitted) != len(requests) {
+			t.Fatalf("submitted = %d, want %d", len(submitted), len(requests))
+		}
+
+		counts := progress.counts()
+		if counts.Completed != int64(len(requests)) {
+			t.Fatalf("completed = %d, want %d", counts.Completed, len(requests))
+		}
+
+		lines := bytes.Split(bytes.TrimSpace(outBuf.Bytes()), []byte{'\n'})
+		if len(lines) != len(requests) {
+			t.Fatalf("output lines = %d, want %d", len(lines), len(requests))
+		}
+
+		if errBuf.Len() != 0 {
+			t.Errorf("expected empty error file, got: %s", errBuf.String())
+		}
+	})
+
+	t.Run("CancelDuringCollect", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+
+		results := make(chan *inference.GenerateResponse, 5)
+		submittedIDs := make(chan string, 5)
+
+		resolver := inference.NewTestAsyncResolver(map[string]func() inference.AsyncInferenceClient{
+			"m1": func() inference.AsyncInferenceClient {
+				return &mockAsyncInferenceClient{
+					submitFn: func(_ context.Context, req *inference.GenerateRequest) *inference.ClientError {
+						submittedIDs <- req.RequestID
+						return nil
+					},
+					getResultFn: func(ctx context.Context) (*inference.GenerateResponse, error) {
+						select {
+						case r := <-results:
+							return r, nil
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						}
+					},
+				}
+			},
+		})
+
+		requests := []batch_types.Request{
+			{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+			{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+			{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		}
+		env, jobInfo := setupAsyncExecutionJob(t, cfg, resolver, requests, map[string]string{"m1": "m1"})
+
+		inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+		inputFile, _ := os.Open(inputPath)
+		defer inputFile.Close()
+
+		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+		var outBuf, errBuf bytes.Buffer
+		writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
+		progress := &executionProgress{total: int64(len(requests)), updater: env.updater, jobID: jobInfo.JobID}
+
+		ctx := testLoggerCtx(t)
+		abortCtx, abortFn := context.WithCancel(ctx)
+
+		// Run processModelAsync in a goroutine so we can intercept submitted IDs.
+		done := make(chan error, 1)
+		go func() {
+			done <- env.p.processModelAsync(abortCtx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		}()
+
+		// Wait for all 3 submits, deliver 1 result using the real ID, then cancel.
+		firstID := <-submittedIDs
+		<-submittedIDs
+		<-submittedIDs
+
+		results <- &inference.GenerateResponse{
+			RequestID: firstID,
+			Response:  []byte(`{"choices":[{"message":{"content":"ok"}}]}`),
+		}
+		// Give the collect loop time to process the result before cancelling.
+		time.Sleep(50 * time.Millisecond)
+		abortFn()
+
+		<-done
+
+		_ = writers.output.Flush()
+		_ = writers.errors.Flush()
+
+		counts := progress.counts()
+		// 1 completed + 2 expired = 3 total
+		if counts.Completed+counts.Failed != int64(len(requests)) {
+			t.Fatalf("completed+failed = %d, want %d", counts.Completed+counts.Failed, len(requests))
+		}
+		if counts.Completed != 1 {
+			t.Errorf("completed = %d, want 1", counts.Completed)
+		}
+		if counts.Failed != 2 {
+			t.Errorf("failed = %d, want 2", counts.Failed)
+		}
+	})
+
+	t.Run("UnknownModel", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+
+		// Resolver has no model "m1" → ClientFor returns nil.
+		resolver := inference.NewTestAsyncResolver(map[string]func() inference.AsyncInferenceClient{})
+
+		requests := []batch_types.Request{
+			{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		}
+		env, jobInfo := setupAsyncExecutionJob(t, cfg, resolver, requests, map[string]string{"m1": "m1"})
+
+		inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+		inputFile, _ := os.Open(inputPath)
+		defer inputFile.Close()
+
+		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+		var outBuf, errBuf bytes.Buffer
+		writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
+		progress := &executionProgress{total: 1, updater: env.updater, jobID: jobInfo.JobID}
+
+		ctx := testLoggerCtx(t)
+		err := env.p.processModelAsync(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		if err != nil {
+			t.Fatalf("processModelAsync error: %v", err)
+		}
+
+		_ = writers.output.Flush()
+		_ = writers.errors.Flush()
+
+		counts := progress.counts()
+		if counts.Failed != 1 {
+			t.Fatalf("failed = %d, want 1", counts.Failed)
+		}
+
+		errLines := bytes.Split(bytes.TrimSpace(errBuf.Bytes()), []byte{'\n'})
+		if len(errLines) != 1 {
+			t.Fatalf("error lines = %d, want 1", len(errLines))
+		}
+
+		var entry outputLine
+		if err := json.Unmarshal(errLines[0], &entry); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if entry.Error == nil || entry.Error.Code != string(inference.ErrCodeModelNotFound) {
+			t.Fatalf("expected error code %s, got %+v", inference.ErrCodeModelNotFound, entry.Error)
+		}
+	})
+}
