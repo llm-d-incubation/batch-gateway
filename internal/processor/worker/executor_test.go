@@ -802,27 +802,22 @@ func TestProcessModel_Success(t *testing.T) {
 
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
-	var buf bytes.Buffer
-	writer := bufio.NewWriter(&buf)
-
+	var outBuf, errBuf bytes.Buffer
 	progress := &executionProgress{
 		total:   int64(len(requests)),
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
-
-	var errBuf bytes.Buffer
-	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, "")
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
 
-	if err := writer.Flush(); err != nil {
-		t.Fatalf("flush: %v", err)
-	}
+	collector.flush()
 
 	if int(callCount.Load()) != len(requests) {
 		t.Fatalf("inference calls = %d, want %d", callCount.Load(), len(requests))
@@ -833,7 +828,7 @@ func TestProcessModel_Success(t *testing.T) {
 		t.Fatalf("completed = %d, want %d", counts.Completed, len(requests))
 	}
 
-	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte{'\n'})
+	lines := bytes.Split(bytes.TrimSpace(outBuf.Bytes()), []byte{'\n'})
 	if len(lines) != len(requests) {
 		t.Fatalf("output lines = %d, want %d", len(lines), len(requests))
 	}
@@ -856,18 +851,14 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
-	var buf bytes.Buffer
-	writer := bufio.NewWriter(&buf)
-
+	var outBuf, errBuf bytes.Buffer
 	progress := &executionProgress{
 		total:   1,
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
-
-	var errBuf bytes.Buffer
-	errWriter := bufio.NewWriter(&errBuf)
-	writers := &outputWriters{output: writer, errors: errWriter}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	// Cancel ctx to simulate requestAbortCtx being cancelled (by watchCancel calling requestAbortFn).
 	// Separately pass ctx as userCancelCtx so drain chooses errCancelled, not errShutdown.
@@ -877,15 +868,13 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(baseCtx)
 	cancel()
 
-	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(ctx, baseCtx, context.Background(), ctx, inputFile, plansDir, "m1", "m1", collector, nil, "")
 	if !errors.Is(err, errCancelled) {
 		t.Fatalf("expected errCancelled, got: %v", err)
 	}
 
 	// Verify that undispatched entry was drained as batch_cancelled.
-	if flushErr := errWriter.Flush(); flushErr != nil {
-		t.Fatalf("flush error writer: %v", flushErr)
-	}
+	collector.flush()
 	errLines := bytes.Split(bytes.TrimSpace(errBuf.Bytes()), []byte{'\n'})
 	if len(errLines) != 1 {
 		t.Fatalf("expected 1 drain entry in error output, got %d", len(errLines))
@@ -931,28 +920,21 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
 	var outBuf, errBuf bytes.Buffer
-	outWriter := bufio.NewWriter(&outBuf)
-	errWriter := bufio.NewWriter(&errBuf)
-	writers := &outputWriters{output: outWriter, errors: errWriter}
-
 	progress := &executionProgress{
 		total:   1,
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	ctx := testLoggerCtx(t)
-	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	modelErr := env.p.processModel(ctx, ctx, ctx, userCancelCtx, inputFile, plansDir, "m1", "m1", collector, nil, "")
 	if !errors.Is(modelErr, errCancelled) {
 		t.Fatalf("expected errCancelled from processModel, got: %v", modelErr)
 	}
 
-	if flushErr := outWriter.Flush(); flushErr != nil {
-		t.Fatalf("flush output: %v", flushErr)
-	}
-	if flushErr := errWriter.Flush(); flushErr != nil {
-		t.Fatalf("flush error: %v", flushErr)
-	}
+	collector.flush()
 
 	// Output file should be empty — cancelled requests go to error file.
 	if outBuf.Len() > 0 {
@@ -1011,23 +993,21 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
-	var buf bytes.Buffer
-	writer := bufio.NewWriter(&buf)
-
+	var outBuf, errBuf bytes.Buffer
 	progress := &executionProgress{
 		total:   int64(len(requests)),
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
-
-	var errBuf bytes.Buffer
-	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	ctx := testLoggerCtx(t)
-	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, "")
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
+	collector.flush()
 }
 
 func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
@@ -1058,23 +1038,20 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
-	var buf bytes.Buffer
-	writer := bufio.NewWriter(&buf)
-
+	var outBuf, errBuf bytes.Buffer
 	progress := &executionProgress{
 		total:   int64(len(requests)),
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	ctx, cancel := context.WithCancel(testLoggerCtx(t))
 
-	var errBuf bytes.Buffer
-	writers := &outputWriters{output: writer, errors: bufio.NewWriter(&errBuf)}
-
 	done := make(chan error, 1)
 	go func() {
-		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		done <- env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, "")
 	}()
 
 	<-started
@@ -1123,18 +1100,19 @@ func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
 	var outBuf, errBuf bytes.Buffer
-	writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
-
 	progress := &executionProgress{
 		total:   int64(len(requests)),
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
-	err := env.p.processModel(mainCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(mainCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, "")
 	if !errors.Is(err, errShutdown) {
 		t.Fatalf("expected errShutdown when SIGTERM cancels all dispatched requests, got: %v", err)
 	}
+	collector.flush()
 }
 
 // TestProcessModel_SiblingAbort_ReturnsNil verifies that when requestAbortCtx is cancelled
@@ -1160,14 +1138,14 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
-	var buf bytes.Buffer
-	writers := &outputWriters{output: bufio.NewWriter(&buf), errors: bufio.NewWriter(&buf)}
-
+	var outBuf, errBuf bytes.Buffer
 	progress := &executionProgress{
 		total:   1,
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	// mainCtx is not cancelled — only requestAbortCtx is, simulating a sibling model calling
 	// requestAbortFn() on error. SLO and user-cancel signals are both absent.
@@ -1175,11 +1153,12 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	requestAbortCtx, requestAbortFn := context.WithCancel(mainCtx)
 	requestAbortFn() // simulate sibling model calling requestAbortFn
 
-	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+	err := env.p.processModel(requestAbortCtx, mainCtx, mainCtx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, "")
 	// requestAbortCtx cancelled, but no SLO / user-cancel / SIGTERM → nil, not errShutdown
 	if err != nil {
 		t.Fatalf("expected nil when only requestAbortCtx is cancelled (sibling abort), got: %v", err)
 	}
+	collector.flush()
 }
 
 // =====================================================================
@@ -3382,21 +3361,20 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
 		var outBuf, errBuf bytes.Buffer
-		writers := &outputWriters{
-			output: bufio.NewWriter(&outBuf),
-			errors: bufio.NewWriter(&errBuf),
-		}
 		progress := &executionProgress{
 			total:   int64(len(requests)),
 			updater: env.updater,
 			jobID:   jobInfo.JobID,
 		}
+		collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+		collector.start()
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, jobInfo.TenantID)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
+		collector.flush()
 		return env.p
 	}
 
@@ -3541,21 +3519,20 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
 		var outBuf, errBuf bytes.Buffer
-		writers := &outputWriters{
-			output: bufio.NewWriter(&outBuf),
-			errors: bufio.NewWriter(&errBuf),
-		}
 		progress := &executionProgress{
 			total:   int64(len(requests)),
 			updater: env.updater,
 			jobID:   jobInfo.JobID,
 		}
+		collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+		collector.start()
 
 		ctx := testLoggerCtx(t)
-		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+		err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, jobInfo.TenantID)
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
+		collector.flush()
 
 		// If non-HTTP errors were incorrectly counted as RecordSuccess,
 		// the window (size=reducedLimit) would fill and push the limit
@@ -3664,17 +3641,21 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	ctx := testLoggerCtx(t)
 
 	// Process m1 (429s) — should decrease m1's endpoint AIMD.
-	var outBuf, errBuf bytes.Buffer
-	writers := &outputWriters{
-		output: bufio.NewWriter(&outBuf),
-		errors: bufio.NewWriter(&errBuf),
-	}
+	var outBuf1, errBuf1 bytes.Buffer
 	progress := &executionProgress{total: 4, updater: updater, jobID: jobID}
+	collector1 := newResultCollector(bufio.NewWriter(&outBuf1), bufio.NewWriter(&errBuf1), progress, logr.Discard(), func() {})
+	collector1.start()
 
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, tenantID)
+	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector1, nil, tenantID)
+	collector1.flush()
 
 	// Process m2 (200s) — should NOT affect m2's endpoint AIMD.
-	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", writers, progress, nil, tenantID)
+	var outBuf2, errBuf2 bytes.Buffer
+	collector2 := newResultCollector(bufio.NewWriter(&outBuf2), bufio.NewWriter(&errBuf2), progress, logr.Discard(), func() {})
+	collector2.start()
+
+	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", collector2, nil, tenantID)
+	collector2.flush()
 
 	limitA := p.endpointLimits[clientA].aimd.Limit()
 	limitB := p.endpointLimits[clientB].aimd.Limit()
@@ -3725,28 +3706,21 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 	plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
 
 	var outBuf, errBuf bytes.Buffer
-	writers := &outputWriters{
-		output: bufio.NewWriter(&outBuf),
-		errors: bufio.NewWriter(&errBuf),
-	}
 	progress := &executionProgress{
 		total:   int64(len(requests)),
 		updater: env.updater,
 		jobID:   jobInfo.JobID,
 	}
+	collector := newResultCollector(bufio.NewWriter(&outBuf), bufio.NewWriter(&errBuf), progress, logr.Discard(), func() {})
+	collector.start()
 
 	ctx := testLoggerCtx(t)
-	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, jobInfo.TenantID)
+	err = env.p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", collector, nil, jobInfo.TenantID)
 	if err != nil {
 		t.Fatalf("processModel error: %v", err)
 	}
 
-	if err := writers.errors.Flush(); err != nil {
-		t.Fatalf("flush errors: %v", err)
-	}
-	if err := writers.output.Flush(); err != nil {
-		t.Fatalf("flush output: %v", err)
-	}
+	collector.flush()
 
 	// All requests should appear in the error file as model_not_found.
 	errLines := strings.Split(strings.TrimSpace(errBuf.String()), "\n")
