@@ -236,7 +236,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 		logger,
 		abortFn,
 	)
-	collector.start()
+	collector.start(ctx)
 
 	passThroughHeaders := params.jobInfo.PassThroughHeaders
 	if len(passThroughHeaders) > 0 {

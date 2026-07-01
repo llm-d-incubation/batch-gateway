@@ -65,12 +65,13 @@ func resultToOutputLine(r *ResultItem) *outputLine {
 // JSONL, writes to the appropriate file (output or error), and records progress.
 // It runs as a single goroutine.
 //
-// Write/marshal errors are logged and the result is skipped — the collector
-// keeps draining so senders never block.
+// On write/marshal errors the collector calls abortFn to stop dispatch, logs
+// the error, and continues draining so senders don't deadlock. The channel
+// buffer (1024) absorbs bursts, but senders will block if it fills.
 //
 // Usage:
 //
-//	c := newResultCollector(outputBuf, errorBuf, progress, logger)
+//	c := newResultCollector(outputBuf, errorBuf, progress, logger, abortFn)
 //	c.start()
 //	// ... call c.collect(result) from any goroutine ...
 //	c.flush() // closes channel, waits for goroutine to finish
@@ -101,10 +102,11 @@ func newResultCollector(outputWriter, errorWriter *bufio.Writer, progress *execu
 	}
 }
 
-// start launches the collector goroutine.
-func (c *resultCollector) start() {
+// start launches the collector goroutine. The context is used for progress
+// updates to the status store.
+func (c *resultCollector) start(ctx context.Context) {
 	go func() {
-		c.run()
+		c.run(ctx)
 		close(c.done)
 	}()
 }
@@ -125,7 +127,7 @@ func (c *resultCollector) abort() {
 	c.abortOnce.Do(c.abortFn)
 }
 
-func (c *resultCollector) run() {
+func (c *resultCollector) run(ctx context.Context) {
 	for result := range c.ch {
 		line := resultToOutputLine(result)
 
@@ -148,7 +150,7 @@ func (c *resultCollector) run() {
 			continue
 		}
 
-		c.progress.record(context.Background(), result.isSuccess())
+		c.progress.record(ctx, result.isSuccess())
 	}
 
 	if err := c.outputWriter.Flush(); err != nil {
