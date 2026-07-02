@@ -17,11 +17,11 @@ ap:
   redis:
     enabled: true
     url: "redis://redis-master.default.svc.cluster.local:6379"
-    resultQueueName: "llm-d-async:results:sim-pool-prom"
     pollIntervalMs: 500
     batchSize: 10
     queuesConfig:
       - queue_name: "llm-d-async:requests:sim-pool-prom"
+        result_queue_name: "llm-d-async:results:sim-pool-prom"
         request_path_url: "/v1/completions"
         igw_base_url: "http://vllm-sim.default.svc.cluster.local:8000"
         gate_type: "prometheus-query"
