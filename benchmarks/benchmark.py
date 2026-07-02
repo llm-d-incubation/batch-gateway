@@ -272,17 +272,61 @@ def _batch_submit_script():
     """)
 
 
+def _upload_jsonl_to_pvc(cfg, namespace, job_names):
+    """Upload JSONL files to the benchmark-results PVC via a helper pod."""
+    helper_name = "data-loader"
+    helper_yaml = textwrap.dedent(f"""\
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: {helper_name}
+      labels:
+        batch-benchmark: "true"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      restartPolicy: Never
+      containers:
+        - name: loader
+          image: busybox
+          securityContext:
+            allowPrivilegeEscalation: false
+          command: ["sleep", "300"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: benchmark-results
+    """)
+    kubectl_apply(helper_yaml, cfg.context, namespace)
+    kubectl(["wait", "pod", helper_name, "--for=condition=Ready",
+             "--timeout=60s"], cfg.context, namespace)
+
+    for name in job_names:
+        jsonl_path = cfg.results_dir / f"{name}.jsonl"
+        kubectl(["cp", str(jsonl_path),
+                 f"{namespace}/{helper_name}:/data/{name}.jsonl"],
+                cfg.context, namespace=None, check=True)
+
+    kubectl(["delete", "pod", helper_name, "--ignore-not-found"],
+            cfg.context, namespace)
+
+
 def submit_batches(cfg, namespace):
-    """Submit batch jobs using pre-generated JSONL files."""
+    """Submit batch jobs using pre-generated JSONL files stored on PVC."""
     if cfg.num_jobs == 0:
         return
 
     completion_windows = ["30m", "2h", "24h"]
     job_names = ["job-a", "job-b", "job-c"]
+    active_jobs = []
 
     for i in range(min(cfg.num_jobs, 3)):
         name = job_names[i]
-        window = completion_windows[i]
         jsonl_path = cfg.results_dir / f"{name}.jsonl"
 
         if not jsonl_path.exists():
@@ -296,7 +340,13 @@ def submit_batches(cfg, namespace):
                 "--seed", str(42 + i),
                 "--output", str(jsonl_path),
             ], check=True)
+        active_jobs.append(name)
 
+    log("  Uploading JSONL files to PVC...")
+    _upload_jsonl_to_pvc(cfg, namespace, active_jobs)
+
+    for i, name in enumerate(active_jobs):
+        window = completion_windows[i]
         log(f"  Submitting {name} (window={window}, size={cfg.batch_size})")
         script = _batch_submit_script()
         indented = "\n".join("          " + line for line in script.splitlines())
@@ -355,17 +405,10 @@ def submit_batches(cfg, namespace):
                   configMap:
                     name: {name}-script
                 - name: data
-                  configMap:
-                    name: {name}-data
+                  persistentVolumeClaim:
+                    claimName: benchmark-results
         """)
 
-        # Upload the JSONL as a ConfigMap
-        kubectl(["create", "configmap", f"{name}-data",
-                 f"--from-file={name}.jsonl={jsonl_path}"],
-                cfg.context, namespace, check=True)
-        kubectl(["label", "configmap", f"{name}-data",
-                 "batch-benchmark=true"],
-                cfg.context, namespace, check=True)
         kubectl_apply(cm_yaml, cfg.context, namespace)
         kubectl_apply(job_yaml, cfg.context, namespace)
 
@@ -426,7 +469,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: guidellm
-          image: ghcr.io/vllm-project/guidellm:v0.6.0
+          image: ghcr.io/vllm-project/guidellm:v0.6.1
           env:
             - name: USER
               value: "guidellm"
@@ -491,7 +534,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: guidellm
-          image: ghcr.io/vllm-project/guidellm:v0.6.0
+          image: ghcr.io/vllm-project/guidellm:v0.6.1
           env:
             - name: USER
               value: "guidellm"
@@ -820,7 +863,11 @@ class PrometheusPortForward:
     def stop(self):
         if self._process:
             self._process.terminate()
-            self._process.wait(timeout=5)
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
             self._process = None
 
     @property
