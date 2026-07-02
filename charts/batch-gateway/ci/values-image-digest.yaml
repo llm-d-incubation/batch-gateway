@@ -1,0 +1,18 @@
+# Exercises: image digest template branches (_helpers.tpl:124-130, 184-190, 239-245).
+# Default uses tag; this tests the digest path (repo@sha256:... instead of repo:tag).
+global:
+  fileClient:
+    fs:
+      pvcName: "batch-data"
+
+apiserver:
+  image:
+    digest: "sha256:abc123"
+
+processor:
+  image:
+    digest: "sha256:def456"
+
+gc:
+  image:
+    digest: "sha256:789ghi"

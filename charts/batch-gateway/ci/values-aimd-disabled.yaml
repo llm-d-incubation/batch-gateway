@@ -1,0 +1,12 @@
+# Exercises: static concurrency path with AIMD disabled.
+# Default has aimd.enabled: true; this tests the false branch.
+global:
+  fileClient:
+    fs:
+      pvcName: "batch-data"
+
+processor:
+  config:
+    concurrency:
+      aimd:
+        enabled: false

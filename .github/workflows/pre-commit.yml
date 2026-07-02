@@ -46,4 +46,8 @@ jobs:
         run: make test-integration
 
       - name: Lint Helm chart
-        run: helm lint charts/batch-gateway
+        run: |
+          helm lint charts/batch-gateway
+          for f in charts/batch-gateway/ci/values-*.yaml; do
+            helm lint charts/batch-gateway -f "$f"
+          done

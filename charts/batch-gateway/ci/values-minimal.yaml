@@ -1,0 +1,6 @@
+# Exercises: default values with only the minimum required override.
+# Validates that all templates render with near-default configuration.
+global:
+  fileClient:
+    fs:
+      pvcName: "batch-data"
