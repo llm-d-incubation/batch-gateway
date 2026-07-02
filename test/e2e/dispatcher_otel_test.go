@@ -27,8 +27,8 @@ import (
 )
 
 func TestDispatcherOTelTraces(t *testing.T) {
-	if os.Getenv("TEST_DISPATCHER") == "" {
-		t.Skip("skipping: requires dev-deploy-dispatcher (set TEST_DISPATCHER=1)")
+	if os.Getenv("ENABLE_DISPATCHER") == "" {
+		t.Skip("skipping: requires dispatcher (set ENABLE_DISPATCHER=true)")
 	}
 	waitForReady(t, testApiserverObsURL, 30*time.Second)
 

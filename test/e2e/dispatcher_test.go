@@ -84,8 +84,8 @@ func newDispatcherProducer(t *testing.T, rdb *redis.Client, poolName string) *pr
 }
 
 func TestDispatcher(t *testing.T) {
-	if os.Getenv("TEST_DISPATCHER") == "" {
-		t.Skip("skipping: requires dev-deploy-dispatcher (set TEST_DISPATCHER=1)")
+	if os.Getenv("ENABLE_DISPATCHER") == "" {
+		t.Skip("skipping: requires dispatcher (set ENABLE_DISPATCHER=true)")
 	}
 	rdb := newDispatcherRedisClient(t)
 	defer rdb.Close()
