@@ -1089,8 +1089,8 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 
 // TestProcessModel_SIGTERMCancelsAllDispatched verifies that when SIGTERM arrives after all
 // requests have been dispatched as goroutines, processModel returns errShutdown so the job
-// is re-enqueued. This covers the case where undispatched is empty but in-flight requests
-// were cancelled by context propagation.
+// is left for the orphan reconciler. This covers the case where undispatched is empty but
+// in-flight requests were cancelled by context propagation.
 func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -1142,8 +1142,8 @@ func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
 //
 // P1c regression: Before the fix, the drain-switch default checked ctx.Err() (which is
 // requestAbortCtx), so a sibling abort looked like a pod shutdown and returned errShutdown.
-// executeJob would then route the job to re-enqueue instead of failed-with-partial, breaking
-// retry safety for batches with partial results. After the fix, the default checks mainCtx
+// executeJob would then route the job to the errShutdown path instead of failed-with-partial,
+// breaking retry safety for batches with partial results. After the fix, the default checks mainCtx
 // (the main processor context), which is only cancelled on SIGTERM.
 func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	cfg := config.NewConfig()
@@ -1422,7 +1422,7 @@ func TestExecuteJob_CancelAfterAllRequestsComplete(t *testing.T) {
 // TestExecuteJob_SIGTERMAfterAllComplete verifies that when all requests finish successfully
 // and SIGTERM arrives before executeJob returns, the function returns nil (not errShutdown).
 // This ensures the caller proceeds to finalizeJob (which uses a detached context) rather than
-// re-enqueueing a fully-complete job.
+// taking the errShutdown path (which leaves the job for the orphan reconciler).
 func TestExecuteJob_SIGTERMAfterAllComplete(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -2105,7 +2105,7 @@ func TestHandleJobError_errCancelled(t *testing.T) {
 	}
 }
 
-func TestHandleJobError_Shutdown_ReEnqueues(t *testing.T) {
+func TestHandleJobError_Shutdown_LeavesJobForReconciler(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -2118,8 +2118,6 @@ func TestHandleJobError_Shutdown_ReEnqueues(t *testing.T) {
 		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{CreatedAt: time.Now().Add(-10 * time.Second).Unix()}},
 	}
 
-	beforeFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
-
 	ctx := testLoggerCtx(t)
 	env.p.handleJobError(ctx, &jobExecutionParams{
 		updater: env.updater,
@@ -2128,17 +2126,26 @@ func TestHandleJobError_Shutdown_ReEnqueues(t *testing.T) {
 		jobInfo: ji,
 	}, errShutdown)
 
-	afterFailed := gatherHistogramSampleCount(t, "batch_job_e2e_latency_seconds", map[string]string{"status": "failed"})
-	if delta := afterFailed - beforeFailed; delta != 0 {
-		t.Fatalf("E2E latency failed: delta=%d, want 0 (re-enqueue succeeded, not terminal)", delta)
-	}
-
+	// Job must NOT be re-enqueued — reconciler handles recovery.
 	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
 	if err != nil {
 		t.Fatalf("PQDequeue: %v", err)
 	}
-	if len(tasks) == 0 {
-		t.Fatalf("expected re-enqueued task, got none")
+	if len(tasks) != 0 {
+		t.Fatalf("expected no re-enqueued tasks, got %d", len(tasks))
+	}
+
+	// Job status must remain in_progress (not transitioned by the processor).
+	items, _, _, err := env.dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-ctx"}}}, true, 0, 1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("DBGet: err=%v len=%d", err, len(items))
+	}
+	var got openai.BatchStatusInfo
+	if err := json.Unmarshal(items[0].Status, &got); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if got.Status != openai.BatchStatusInProgress {
+		t.Fatalf("status = %s, want %s (unchanged, left for reconciler)", got.Status, openai.BatchStatusInProgress)
 	}
 }
 

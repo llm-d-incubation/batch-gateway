@@ -34,6 +34,11 @@ terminate_on_observability_failure: false
 # Shutdown timeout for processor (should be less than k8s terminationGracePeriodSeconds)
 shutdown_timeout: "30s"
 
+# Heartbeat interval for in-flight entry refresh.
+# Must be shorter than the GC reconciler's interval so active jobs are not
+# mistaken for orphans. Default: 5m (matches GC default of 60m).
+heartbeat_interval: "5m"
+
 # Work directory for processor
 work_dir: "/var/lib/batch-gateway/processor"
 
