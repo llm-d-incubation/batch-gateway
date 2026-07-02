@@ -1,10 +1,12 @@
 #!/bin/bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-source "${SCRIPT_DIR}/dev-common.sh"
+# This script can be run standalone or sourced from dev-deploy.sh.
+# When sourced, SCRIPT_DIR, REPO_ROOT, and dev-common.sh are already set.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    set -euo pipefail
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    source "${SCRIPT_DIR}/dev-common.sh"
+fi
 
 # ── Configuration ────────────────────────────────────────────────────────────
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
@@ -17,26 +19,28 @@ DISPATCHER_REDIS_PORT="${DISPATCHER_REDIS_PORT:-6399}"
 PID_FILE="${REPO_ROOT}/.dispatcher-port-forward.pid"
 # Set DISPATCHER_SOURCE to a local llm-d-async checkout to build from source
 # instead of pulling a released image. The local chart is used automatically.
-# Example: DISPATCHER_SOURCE=~/src/llm-d-async make dev-deploy-dispatcher
+# Example: DISPATCHER_SOURCE=~/src/llm-d-async ENABLE_DISPATCHER=true make dev-deploy
 DISPATCHER_SOURCE="${DISPATCHER_SOURCE:-}"
 
-# ── Prerequisites ────────────────────────────────────────────────────────────
-for cmd in kubectl helm kind jq nc; do
-    command -v "$cmd" &>/dev/null || die "Missing required tool: $cmd"
-done
+# ── Prerequisites (standalone only — dev-deploy.sh already checks these) ─────
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    for cmd in kubectl helm kind jq nc; do
+        command -v "$cmd" &>/dev/null || die "Missing required tool: $cmd"
+    done
 
-if [[ -n "${CONTAINER_TOOL:-}" ]]; then
-    : # caller specified
-elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    CONTAINER_TOOL="docker"
-elif command -v podman &>/dev/null; then
-    CONTAINER_TOOL="podman"
-else
-    die "Neither docker (running) nor podman found. Please install one."
-fi
+    if [[ -n "${CONTAINER_TOOL:-}" ]]; then
+        : # caller specified
+    elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        CONTAINER_TOOL="docker"
+    elif command -v podman &>/dev/null; then
+        CONTAINER_TOOL="podman"
+    else
+        die "Neither docker (running) nor podman found. Please install one."
+    fi
 
-if ! kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
-    die "Kind cluster '${KIND_CLUSTER_NAME}' not found. Run 'make dev-deploy' first."
+    if ! kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
+        die "Kind cluster '${KIND_CLUSTER_NAME}' not found. Run 'make dev-deploy' first."
+    fi
 fi
 
 # ── Build or pull dispatcher image ────────────────────────────────────────────
@@ -268,13 +272,13 @@ log ""
 log "Dispatcher is ready."
 log ""
 log "Usage:"
-log "  make test-e2e-dispatcher"
-log "  TEST_REDIS_URL=redis://localhost:${DISPATCHER_REDIS_PORT} go test ./test/e2e/ -run TestDispatcher -v -count=1"
+log "  ENABLE_DISPATCHER=true make test-e2e"
+log "  ENABLE_DISPATCHER=true TEST_REDIS_URL=redis://localhost:${DISPATCHER_REDIS_PORT} go test ./test/e2e/ -run TestDispatcher -v -count=1"
 log ""
 log "Jaeger UI: http://localhost:${JAEGER_PORT}  (traces from both batch-gateway and async-processor)"
 log "To stop port-forwards: make dev-clean"
 log ""
 if [[ -n "${DISPATCHER_SOURCE}" ]]; then
     log "Built from local source: ${DISPATCHER_SOURCE}"
-    log "To rebuild after changes: DISPATCHER_SOURCE=${DISPATCHER_SOURCE} make dev-deploy-dispatcher"
+    log "To rebuild after changes: DISPATCHER_SOURCE=${DISPATCHER_SOURCE} ENABLE_DISPATCHER=true make dev-deploy"
 fi
