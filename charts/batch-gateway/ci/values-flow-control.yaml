@@ -1,0 +1,20 @@
+# Exercises: inferenceObjective conditional (processor-configmap.yaml:47-49),
+# sendFairnessHeader conditional (line 103-104),
+# and OTel env var block (apiserver/processor-deployment.yaml)
+global:
+  fileClient:
+    fs:
+      pvcName: "batch-data"
+  otel:
+    endpoint: "http://otel-collector:4317"
+
+processor:
+  config:
+    globalInferenceGateway:
+      url: "http://inference-gateway:8000"
+      inferenceObjective: "batch-sheddable"
+      requestTimeout: "5m"
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "60s"
+    sendFairnessHeader: true

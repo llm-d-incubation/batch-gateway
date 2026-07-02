@@ -344,6 +344,7 @@ processor:
       count: 12
     terminateOnObservabilityFailure: false
     shutdownTimeout: "30s"
+    heartbeatInterval: "5m"
     workDir: "/var/lib/batch-gateway/processor"
     # REQUIRED: Configure exactly one of globalInferenceGateway or modelGateways.
     # The processor will fail to start if neither is set.

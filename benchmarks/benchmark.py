@@ -416,7 +416,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: guidellm
-          image: ghcr.io/vllm-project/guidellm:latest
+          image: ghcr.io/vllm-project/guidellm:v0.6.1
           env:
             - name: USER
               value: "guidellm"
@@ -481,7 +481,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: guidellm
-          image: ghcr.io/vllm-project/guidellm:latest
+          image: ghcr.io/vllm-project/guidellm:v0.6.1
           env:
             - name: USER
               value: "guidellm"

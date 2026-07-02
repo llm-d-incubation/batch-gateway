@@ -168,8 +168,8 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 //   - SLO expired:    (counts, errExpired)   — undispatched drained as batch_expired
 //   - User cancel:    (counts, errCancelled) — undispatched drained as batch_cancelled
 //   - System error:   (counts, firstErr)     — undispatched drained as batch_failed
-//   - Pod shutdown:   (counts, errShutdown)  — caller re-enqueues; counts reflect work done
-//     before SIGTERM, flush preserves partial output for startup recovery
+//   - Pod shutdown:   (counts, errShutdown)  — job left for orphan reconciler; counts reflect
+//     work done before SIGTERM
 //
 // requestAbortCtx controls the dispatch loop and all in-flight inference calls: cancelling it
 // stops dispatch and aborts in-flight requests. It is derived from sloCtx in runJob, so SLO
@@ -600,10 +600,10 @@ dispatch:
 	default:
 		if mainCtx.Err() != nil && (len(undispatched) > 0 || shutdownCancelled.Load() > 0) {
 			// Pod shutdown (SIGTERM): main processor context is cancelled.
-			// Do not drain here — the re-enqueued worker will process the
-			// entire job from scratch. The undispatched check catches SIGTERM
-			// arriving during dispatch; shutdownCancelled catches SIGTERM
-			// cancelling already-dispatched in-flight requests.
+			// Do not drain here — the job will be left for the orphan
+			// reconciler to transition to a terminal state. The undispatched
+			// check catches SIGTERM arriving during dispatch; shutdownCancelled
+			// catches SIGTERM cancelling already-dispatched in-flight requests.
 			returnErr = errShutdown
 		} else if requestAbortCtx.Err() != nil && len(undispatched) > 0 {
 			// Sibling model abort: requestAbortCtx was cancelled by another

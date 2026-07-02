@@ -25,6 +25,7 @@ data:
 
     terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
     shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}
+    heartbeat_interval: {{ .Values.processor.config.heartbeatInterval | quote }}
     work_dir: {{ .Values.processor.config.workDir | quote }}
 
     db_client:

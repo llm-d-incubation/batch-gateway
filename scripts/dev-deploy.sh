@@ -1090,13 +1090,14 @@ install_batch_gateway() {
         --set "global.dbClient.type=${DB_CLIENT_TYPE}"
         --set "apiserver.config.enablePprof=true"
         --set "processor.config.enablePprof=true"
+        --set "processor.config.heartbeatInterval=10s"
         --set "processor.resources.requests.memory=256Mi"
         --set "gc.enabled=true"
         --set "gc.image.repository=${GC_IMG%:*}"
         --set "gc.image.pullPolicy=IfNotPresent"
         --set "gc.image.tag=${IMAGE_TAG}"
         --set "gc.config.collector.interval=5s"
-        --set "gc.config.reconciler.interval=60s"
+        --set "gc.config.reconciler.interval=30s"
         --namespace "${NAMESPACE}"
     )
 
