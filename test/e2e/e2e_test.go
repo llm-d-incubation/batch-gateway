@@ -54,6 +54,7 @@ var (
 
 	// testSimService* hold the Kubernetes service names for the simulators.
 	// Must match VLLM_SIM_*_NAME in dev-common.sh (overridable via env).
+	testSimService     = getEnvOrDefault("TEST_SIM_SERVICE", "vllm-sim")
 	testSimService429  = getEnvOrDefault("TEST_SIM_SERVICE_429", "vllm-sim-429")
 	testSimServiceAIMD = getEnvOrDefault("TEST_SIM_SERVICE_AIMD", "vllm-sim-aimd")
 

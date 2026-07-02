@@ -96,16 +96,30 @@ func doTestPodDeleteMidJob(t *testing.T) {
 		finalBatch.RequestCounts.Total)
 }
 
-// doTestRollingRestartReEnqueue submits a batch with the same slow-request
-// pattern as doTestPodDeleteMidJob, triggers a rolling restart of the processor
-// deployment, and verifies the GC reconciler transitions the orphaned job to
-// failed. Same SIGTERM -> orphan -> reconciler path, different trigger.
+// doTestRollingRestartReEnqueue submits a batch, triggers a rolling restart of
+// the processor deployment, and verifies the GC reconciler transitions the
+// orphaned job to failed. Same SIGTERM -> orphan -> reconciler path as
+// PodDeleteMidJob, different trigger.
+//
+// Rolling restart delivers SIGTERM only after the new pod is Ready (~12s).
+// To guarantee requests are still in-flight when SIGTERM arrives, we set the
+// simulator's inter-token latency to 30s via /admin/config. This makes even a
+// single generated token take longer than the new-pod startup delay, eliminating
+// the race between request completion and SIGTERM delivery.
 func doTestRollingRestartReEnqueue(t *testing.T) {
 	t.Helper()
 
 	if !testKubectlAvailable {
 		t.Skip("kubectl not available, skipping rolling restart test")
 	}
+
+	// Slow down the simulator so requests cannot complete before SIGTERM arrives.
+	setSimAdminConfig(t, testSimService, `{"inter-token-latency":"30s"}`)
+	t.Cleanup(func() {
+		if err := trySetSimAdminConfig(t, testSimService, `{"inter-token-latency":"100ms"}`); err != nil {
+			t.Errorf("cleanup: failed to restore %s inter-token-latency: %v", testSimService, err)
+		}
+	})
 
 	var lines []string
 	for i := 1; i <= 10; i++ {
