@@ -118,12 +118,9 @@ func TestSemaphoreGuard_JobBaseCtxSurvives(t *testing.T) {
 }
 
 func TestHeartbeat_StopsOnContextCancel(t *testing.T) {
-	origInterval := heartbeatInterval
-	heartbeatInterval = 10 * time.Millisecond
-	t.Cleanup(func() { heartbeatInterval = origInterval })
-
 	mock := newCountingInFlightClient()
 	cfg := config.NewConfig()
+	cfg.HeartbeatInterval = 10 * time.Millisecond
 	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 	p.inflight = mock
 
@@ -163,11 +160,8 @@ func TestHeartbeat_StopsOnContextCancel(t *testing.T) {
 }
 
 func TestHeartbeat_AbortsWhenReconcilerActs(t *testing.T) {
-	origInterval := heartbeatInterval
-	heartbeatInterval = 10 * time.Millisecond
-	t.Cleanup(func() { heartbeatInterval = origInterval })
-
 	cfg := config.NewConfig()
+	cfg.HeartbeatInterval = 10 * time.Millisecond
 	p := mustNewProcessor(t, cfg, validProcessorClients(t))
 
 	statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusFailed})
