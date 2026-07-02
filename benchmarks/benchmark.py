@@ -322,11 +322,21 @@ def submit_batches(cfg, namespace):
         spec:
           backoffLimit: 0
           template:
+            metadata:
+              labels:
+                batch-benchmark: "true"
+                app.kubernetes.io/part-of: batch-gateway
             spec:
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                fsGroup: 1000
               restartPolicy: Never
               containers:
                 - name: batch-submit
                   image: python:3.12-slim
+                  securityContext:
+                    allowPrivilegeEscalation: false
                   env:
                     - name: BATCH_GATEWAY_URL
                       value: "http://batch-gateway-apiserver:8000"
@@ -416,7 +426,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: guidellm
-          image: ghcr.io/vllm-project/guidellm:latest
+          image: ghcr.io/vllm-project/guidellm:v0.6.0
           env:
             - name: USER
               value: "guidellm"
@@ -481,7 +491,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: guidellm
-          image: ghcr.io/vllm-project/guidellm:latest
+          image: ghcr.io/vllm-project/guidellm:v0.6.0
           env:
             - name: USER
               value: "guidellm"

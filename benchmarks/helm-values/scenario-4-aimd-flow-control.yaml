@@ -10,12 +10,12 @@ processor:
   config:
     dispatchMode: sync
     concurrency:
-      global: 100
-      perEndpoint: 20
+      global: 30
+      perEndpoint: 10
       recovery: 5
       aimd:
         enabled: true
-        min: 5
+        min: 2
         backoffFactor: 0.5
         additiveIncrease: 1
     globalInferenceGateway:

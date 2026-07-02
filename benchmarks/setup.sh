@@ -137,7 +137,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: batch-gateway-files
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteMany]
   resources:
     requests:
       storage: 10Gi
@@ -338,7 +338,7 @@ else
         chart_dir="${ROUTER_REPO}/config/charts/llm-d-router-gateway"
         rm -f "${chart_dir}/Chart.lock"
         (cd "${chart_dir}" && helm dependency build >/dev/null 2>&1)
-        ${H} install "${GUIDE_NAME}" "${chart_dir}" \
+        ${H} upgrade --install "${GUIDE_NAME}" "${chart_dir}" \
             -n "${NAMESPACE}" \
             --set router.epp.replicas=1 \
             --set router.epp.image.registry=ghcr.io \
@@ -424,7 +424,7 @@ if [ "${MODE}" = "sim" ]; then
 else
     log "Waiting for vLLM to be ready..."
     ${K} -n "${NAMESPACE}" wait pod -l llm-d.ai/role=decode \
-        --for=condition=Ready --timeout=300s >/dev/null
+        --for=condition=Ready --timeout=600s >/dev/null
 fi
 
 # --- Batch Gateway (scenarios 2-5 only) ---
@@ -538,8 +538,8 @@ spec:
     app.kubernetes.io/instance: batch-gateway
   ports:
     - name: metrics
-      port: 8080
-      targetPort: 8080
+      port: 9090
+      targetPort: 9090
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

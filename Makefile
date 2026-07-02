@@ -403,23 +403,26 @@ benchmark-gpu:
 		echo ""; \
 		echo "━━━ Scenario $$scenario ━━━"; \
 		echo "  [setup] Deploying infrastructure..."; \
+		setup_ok=true; \
 		SCENARIO=$$scenario MODE=gpu NAMESPACE=$(BENCHMARK_GPU_NAMESPACE) \
 			KUBE_CONTEXT=$(BENCHMARK_GPU_CONTEXT) \
 			GHCR_USER=$(GHCR_USER) GHCR_TOKEN=$(GHCR_TOKEN) \
 			ROUTER_REPO=$(ROUTER_REPO) \
 			PROMETHEUS_RELEASE=$(PROMETHEUS_RELEASE) \
-			bash benchmarks/setup.sh || { echo "  [ERROR] Setup failed for scenario $$scenario"; continue; }; \
-		echo "  [benchmark] Running scenario $$scenario..."; \
-		python3 benchmarks/benchmark.py \
-			--context $(BENCHMARK_GPU_CONTEXT) \
-			--namespace $(BENCHMARK_GPU_NAMESPACE) \
-			--scenarios $$scenario \
-			--model $(BENCHMARK_GPU_MODEL) \
-			--batch-size $(BENCHMARK_GPU_BATCH_SIZE) \
-			--prometheus-namespace $(PROMETHEUS_NAMESPACE) \
-			--prometheus-service $(PROMETHEUS_SERVICE) \
-			--results-dir $(BENCHMARK_GPU_RESULTS_DIR)/scenario-$$scenario || \
-			echo "  [WARNING] Benchmark failed for scenario $$scenario"; \
+			bash benchmarks/setup.sh || { echo "  [ERROR] Setup failed for scenario $$scenario"; setup_ok=false; }; \
+		if [ "$$setup_ok" = "true" ]; then \
+			echo "  [benchmark] Running scenario $$scenario..."; \
+			python3 benchmarks/benchmark.py \
+				--context $(BENCHMARK_GPU_CONTEXT) \
+				--namespace $(BENCHMARK_GPU_NAMESPACE) \
+				--scenarios $$scenario \
+				--model $(BENCHMARK_GPU_MODEL) \
+				--batch-size $(BENCHMARK_GPU_BATCH_SIZE) \
+				--prometheus-namespace $(PROMETHEUS_NAMESPACE) \
+				--prometheus-service $(PROMETHEUS_SERVICE) \
+				--results-dir $(BENCHMARK_GPU_RESULTS_DIR)/scenario-$$scenario || \
+				echo "  [WARNING] Benchmark failed for scenario $$scenario"; \
+		fi; \
 		echo "  [cleanup] Uninstalling releases (keeping namespace)..."; \
 		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall batch-gateway -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
 		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall optimized-baseline -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
