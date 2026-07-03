@@ -20,7 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -83,9 +83,30 @@ func newDispatcherProducer(t *testing.T, rdb *redis.Client, poolName string) *pr
 	return p
 }
 
+// detectDispatcherDeployed checks whether at least one async-processor
+// deployment exists in the test namespace.
+func detectDispatcherDeployed(t *testing.T) bool {
+	t.Helper()
+
+	out, err := exec.Command("kubectl", "get", "deployments",
+		"-n", testNamespace,
+		"-o", "name",
+	).CombinedOutput()
+	if err != nil {
+		t.Logf("kubectl get deployments failed: %v", err)
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "async-processor") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDispatcher(t *testing.T) {
-	if os.Getenv("ENABLE_DISPATCHER") == "" {
-		t.Skip("skipping: requires dispatcher (set ENABLE_DISPATCHER=true)")
+	if !detectDispatcherDeployed(t) {
+		t.Skip("skipping: dispatcher not deployed")
 	}
 	rdb := newDispatcherRedisClient(t)
 	defer rdb.Close()

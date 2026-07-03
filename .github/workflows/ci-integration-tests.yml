@@ -73,8 +73,6 @@ jobs:
 
       - name: Run integration tests
         run: make test-e2e
-        env:
-          ENABLE_DISPATCHER: ${{ matrix.enable_dispatcher || 'false' }}
 
       - name: Open issue on failure
         if: failure()

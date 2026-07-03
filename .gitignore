@@ -9,3 +9,5 @@ __pycache__/
 *.pyc
 benchmarks/results/*
 !benchmarks/results/.gitkeep
+.dispatcher-port-forward.pid
+.dispatcher-sim-port-forward.pid
