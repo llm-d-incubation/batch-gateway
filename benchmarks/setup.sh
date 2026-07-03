@@ -27,6 +27,7 @@ set -euo pipefail
 #   SIM_ITL            — simulated inter-token-latency (default: 20ms)
 #   BG_IMAGE_REPO      — batch-gateway image repo override
 #   BG_IMAGE_TAG       — batch-gateway image tag override
+#   BENCH_DB_PASSWORD  — PostgreSQL password (default: random 24-char string)
 #   PROMETHEUS_RELEASE — Prometheus Operator release label for ServiceMonitor discovery (default: llmd-kube-prometheus-stack)
 #   PROMETHEUS_NAMESPACE — Namespace where Prometheus is deployed (default: llm-d-monitoring)
 
@@ -112,10 +113,11 @@ ${H} upgrade --install redis oci://registry-1.docker.io/bitnamicharts/redis \
 
 # --- PostgreSQL ---
 log "Installing PostgreSQL"
+BENCH_DB_PASSWORD="${BENCH_DB_PASSWORD:-$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 24)}"
 ${H} upgrade --install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
     -n "${NAMESPACE}" \
     --set auth.database=batchgateway \
-    --set auth.password=benchmarkpw \
+    --set auth.password="${BENCH_DB_PASSWORD}" \
     --set primary.persistence.size=5Gi \
     --set networkPolicy.enabled=false \
     --wait --timeout 120s >/dev/null
@@ -124,7 +126,7 @@ ${H} upgrade --install postgresql oci://registry-1.docker.io/bitnamicharts/postg
 log "Creating secrets"
 ${K} -n "${NAMESPACE}" create secret generic batch-gateway-secrets \
     --from-literal=redis-url="redis://redis-master.${NAMESPACE}.svc.cluster.local:6379" \
-    --from-literal=postgresql-url="postgresql://postgres:benchmarkpw@postgresql.${NAMESPACE}.svc.cluster.local:5432/batchgateway?sslmode=disable" \
+    --from-literal=postgresql-url="postgresql://postgres:${BENCH_DB_PASSWORD}@postgresql.${NAMESPACE}.svc.cluster.local:5432/batchgateway?sslmode=disable" \
     --from-literal=inference-api-key="" \
     --from-literal=s3-secret-access-key="" \
     2>/dev/null || true

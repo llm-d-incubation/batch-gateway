@@ -165,12 +165,23 @@ def cleanup_namespace(context, namespace):
              "--replicas=0"], context, namespace, check=False)
     time.sleep(8)
 
-    # Truncate PostgreSQL
-    kubectl(["run", "--rm", "-i", "pg-nuke", "--image=postgres:16",
-             "--restart=Never", "--env=PGPASSWORD=benchmarkpw", "--",
-             "psql", "-h", "postgresql", "-U", "postgres", "-d", "batchgateway",
-             "-c", "TRUNCATE batch_items, file_items CASCADE;"],
-            context, namespace, check=False)
+    # Truncate PostgreSQL (extract password from the deployed secret)
+    try:
+        pg_url = kubectl(
+            ["get", "secret", "batch-gateway-secrets",
+             "-o", "jsonpath={.data.postgresql-url}"],
+            context, namespace, check=True)
+        import base64
+        pg_conn = base64.b64decode(pg_url).decode()
+        pg_pass = pg_conn.split("://")[1].split(":")[1].split("@")[0]
+    except Exception:
+        pg_pass = ""
+    if pg_pass:
+        kubectl(["run", "--rm", "-i", "pg-nuke", "--image=postgres:16",
+                 "--restart=Never", f"--env=PGPASSWORD={pg_pass}", "--",
+                 "psql", "-h", "postgresql", "-U", "postgres", "-d", "batchgateway",
+                 "-c", "TRUNCATE batch_items, file_items CASCADE;"],
+                context, namespace, check=False)
 
     # Flush Redis
     kubectl(["run", "--rm", "-i", "redis-del", "--image=redis",
