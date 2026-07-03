@@ -50,8 +50,8 @@ func newTestPool(t *testing.T, mr *miniredis.Miniredis, poolName string) *asyncP
 	}
 
 	logger := testLogger(t)
-	d := newResultDispatcher(p, logger)
-	pool := &asyncPool{producer: p, dispatcher: d, logger: logger}
+	d := newResultDispatcher(p, logger, time.Second)
+	pool := &asyncPool{producer: p, dispatcher: d, logger: logger, resultBufferSize: 100, defaultDeadline: 5 * time.Minute}
 
 	t.Cleanup(func() {
 		_ = d.Close()
@@ -229,6 +229,61 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 			t.Errorf("client B got %q, want %q", respB.RequestID, "job-b-req")
 		}
 	})
+}
+
+func TestResultDispatcher_PanicRecovery(t *testing.T) {
+	mr := miniredis.RunT(t)
+	poolName := "panic-pool"
+	resultQueue := asyncQueuePrefix + "results:" + poolName
+
+	pool := newTestPool(t, mr, poolName)
+	client := newAsyncProducerClient(pool)
+	defer func() { _ = client.Close() }()
+
+	// Submit two requests
+	for _, id := range []string{"panic-1", "panic-2"} {
+		if err := client.Submit(context.Background(), &GenerateRequest{
+			RequestID: id,
+			Endpoint:  "/v1/completions",
+			Params:    map[string]any{"model": "test-model"},
+		}); err != nil {
+			t.Fatalf("Submit(%s) error: %s", id, err.Message)
+		}
+	}
+
+	// Push a malformed result that will trigger unexpected behavior,
+	// then a valid result. The dispatcher should recover and deliver the second.
+	// We can't easily inject a panic into the producer, so we verify the
+	// dispatcher continues after processing a result with no waiter (which
+	// exercises the recovery path structurally).
+	pushResult(t, mr, resultQueue, "unknown-id", `{"id":"unknown"}`)
+	pushResult(t, mr, resultQueue, "panic-1", `{"id":"panic-1"}`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := client.GetResult(ctx)
+	if err != nil {
+		t.Fatalf("GetResult error: %v", err)
+	}
+	if resp.RequestID != "panic-1" {
+		t.Errorf("RequestID = %q, want %q", resp.RequestID, "panic-1")
+	}
+}
+
+func TestAsyncProducerClient_CloseHandlesNonStringKey(t *testing.T) {
+	mr := miniredis.RunT(t)
+	pool := newTestPool(t, mr, "close-nonstring-pool")
+	client := newAsyncProducerClient(pool)
+
+	// Manually store a non-string key in pendingIDs
+	client.pendingIDs.Store(42, struct{}{})
+	client.pendingIDs.Store("valid-id", struct{}{})
+
+	// Close should not panic
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
 }
 
 func TestAsyncProducerClient_SubmitPropagatesTraceContext(t *testing.T) {

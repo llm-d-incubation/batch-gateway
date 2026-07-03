@@ -95,6 +95,10 @@ var (
 )
 
 func TestE2E(t *testing.T) {
+	if detectDispatcherDeployed(t) {
+		t.Skip("skipping: processor is in async dispatch mode (dispatcher tests cover this configuration)")
+	}
+
 	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
 		t.Logf("kubectl not available, some checks will be skipped: %v\n%s", err, out)
 	} else {

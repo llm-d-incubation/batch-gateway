@@ -31,9 +31,11 @@ const asyncQueuePrefix = "llm-d-async:"
 
 // AsyncClientConfig holds the resolved configuration for async dispatch.
 type AsyncClientConfig struct {
-	RedisURL        string
-	Models          map[string]string // model name -> pool name
-	DefaultDeadline time.Duration     // fallback deadline when ctx has none; 0 defaults to 5m
+	RedisURL          string
+	Models            map[string]string // model name -> pool name
+	DefaultDeadline   time.Duration     // fallback deadline when ctx has none
+	ResultPollTimeout time.Duration     // per-poll timeout in the result dispatcher loop
+	ResultBufferSize  int               // per-job channel capacity for async results
 }
 
 // AsyncGatewayResolver routes models to per-job AsyncInferenceClient instances.
@@ -117,8 +119,14 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 		}
 
 		poolLogger := logger.WithName("async-inference").WithValues("pool", poolName)
-		d := newResultDispatcher(p, poolLogger)
-		pool := &asyncPool{producer: p, dispatcher: d, logger: poolLogger, defaultDeadline: config.DefaultDeadline}
+		d := newResultDispatcher(p, poolLogger, config.ResultPollTimeout)
+		pool := &asyncPool{
+			producer:         p,
+			dispatcher:       d,
+			logger:           poolLogger,
+			defaultDeadline:  config.DefaultDeadline,
+			resultBufferSize: config.ResultBufferSize,
+		}
 
 		pools[model] = pool
 		closers = append(closers, d, p)

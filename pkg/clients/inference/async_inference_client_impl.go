@@ -34,26 +34,25 @@ import (
 
 var _ AsyncInferenceClient = (*asyncProducerClient)(nil)
 
-// defaultResultBufferSize is the per-job channel capacity for async results.
-const defaultResultBufferSize = 100
-
 // resultDispatcher reads results from the producer's shared result queue and
 // routes them to the correct caller by request ID. The processor dispatches
 // multiple requests per model concurrently, and results arrive in any order,
 // so a single reader must demux them.
 type resultDispatcher struct {
-	producer producer.Producer
-	logger   logr.Logger
-	waiters  sync.Map // requestID -> chan<- *GenerateResponse
-	once     sync.Once
-	wg       sync.WaitGroup
-	cancel   context.CancelFunc
+	producer    producer.Producer
+	logger      logr.Logger
+	pollTimeout time.Duration
+	waiters     sync.Map // requestID -> chan<- *GenerateResponse
+	once        sync.Once
+	wg          sync.WaitGroup
+	cancel      context.CancelFunc
 }
 
-func newResultDispatcher(p producer.Producer, logger logr.Logger) *resultDispatcher {
+func newResultDispatcher(p producer.Producer, logger logr.Logger, pollTimeout time.Duration) *resultDispatcher {
 	return &resultDispatcher{
-		producer: p,
-		logger:   logger,
+		producer:    p,
+		logger:      logger,
+		pollTimeout: pollTimeout,
 	}
 }
 
@@ -68,38 +67,49 @@ func (d *resultDispatcher) ensureStarted() {
 
 func (d *resultDispatcher) run(ctx context.Context) {
 	defer d.wg.Done()
-	for {
-		pollCtx, pollCancel := context.WithTimeout(ctx, time.Second)
-		result, err := d.producer.GetResult(pollCtx)
-		pollCancel()
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			if !errors.Is(err, context.DeadlineExceeded) {
-				d.logger.Error(err, "Failed to read from result queue")
-			}
-			continue
-		}
+	for ctx.Err() == nil {
+		d.processNext(ctx)
+	}
+}
 
-		if val, ok := d.waiters.LoadAndDelete(result.ID); ok {
-			ch, ok := val.(chan<- *GenerateResponse)
-			if !ok {
-				d.logger.Error(fmt.Errorf("unexpected type %T in waiters map", val), "Type assertion failed")
-				continue
-			}
-			resp := &GenerateResponse{
-				RequestID: result.ID,
-				Response:  []byte(result.Payload),
-			}
-			select {
-			case ch <- resp:
-			default:
-				d.logger.Error(fmt.Errorf("result channel full"), "Dropping result", "resultID", result.ID)
-			}
-		} else {
-			d.logger.Info("Dropped result with no waiter", "resultID", result.ID)
+// processNext polls for a single result and routes it. A deferred recover
+// keeps the dispatcher goroutine alive if a library bug or unexpected nil
+// causes a panic — without this, sync.Once would prevent a restart.
+func (d *resultDispatcher) processNext(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			d.logger.Error(fmt.Errorf("panic: %v", r), "resultDispatcher recovered from panic")
 		}
+	}()
+
+	pollCtx, pollCancel := context.WithTimeout(ctx, d.pollTimeout)
+	result, err := d.producer.GetResult(pollCtx)
+	pollCancel()
+	if err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			d.logger.Error(err, "Failed to read from result queue")
+		}
+		return
+	}
+
+	val, ok := d.waiters.LoadAndDelete(result.ID)
+	if !ok {
+		d.logger.Info("Dropped result with no waiter", "resultID", result.ID)
+		return
+	}
+	ch, ok := val.(chan<- *GenerateResponse)
+	if !ok {
+		d.logger.Error(fmt.Errorf("unexpected type %T in waiters map", val), "Type assertion failed")
+		return
+	}
+	resp := &GenerateResponse{
+		RequestID: result.ID,
+		Response:  []byte(result.Payload),
+	}
+	select {
+	case ch <- resp:
+	default:
+		d.logger.Error(fmt.Errorf("result channel full"), "Dropping result", "resultID", result.ID)
 	}
 }
 
@@ -132,10 +142,11 @@ func (d *resultDispatcher) Close() error {
 // asyncPool holds the shared resources for one inference pool.
 // Multiple per-job clients share the same pool.
 type asyncPool struct {
-	producer        producer.Producer
-	dispatcher      *resultDispatcher
-	logger          logr.Logger
-	defaultDeadline time.Duration
+	producer         producer.Producer
+	dispatcher       *resultDispatcher
+	logger           logr.Logger
+	defaultDeadline  time.Duration
+	resultBufferSize int
 }
 
 // asyncProducerClient is a per-job client that submits requests and collects
@@ -151,7 +162,7 @@ type asyncProducerClient struct {
 func newAsyncProducerClient(pool *asyncPool) *asyncProducerClient {
 	return &asyncProducerClient{
 		pool:    pool,
-		results: make(chan *GenerateResponse, defaultResultBufferSize),
+		results: make(chan *GenerateResponse, pool.resultBufferSize),
 		logger:  pool.logger,
 	}
 }
@@ -160,11 +171,7 @@ func newAsyncProducerClient(pool *asyncPool) *asyncProducerClient {
 // to this client's internal channel by the shared dispatcher.
 func (c *asyncProducerClient) Submit(ctx context.Context, req *GenerateRequest) *ClientError {
 	now := time.Now()
-	fallback := c.pool.defaultDeadline
-	if fallback == 0 {
-		fallback = 5 * time.Minute
-	}
-	deadline := now.Add(fallback)
+	deadline := now.Add(c.pool.defaultDeadline)
 	if dl, ok := ctx.Deadline(); ok {
 		deadline = dl
 	}
@@ -213,7 +220,11 @@ func (c *asyncProducerClient) GetResult(ctx context.Context) (*GenerateResponse,
 // Close unregisters all pending waiters from the shared dispatcher.
 func (c *asyncProducerClient) Close() error {
 	c.pendingIDs.Range(func(key, _ any) bool {
-		c.pool.dispatcher.unregister(key.(string))
+		id, ok := key.(string)
+		if !ok {
+			return true
+		}
+		c.pool.dispatcher.unregister(id)
 		return true
 	})
 	return nil

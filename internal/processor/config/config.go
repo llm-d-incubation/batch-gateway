@@ -92,6 +92,13 @@ type AsyncDispatchConfig struct {
 	// ResultPollTimeout is the timeout per GetResult poll cycle.
 	// Controls how long each blocking poll waits before retrying.
 	ResultPollTimeout time.Duration `yaml:"result_poll_timeout"`
+
+	// DefaultDeadline is the fallback deadline for async requests when the
+	// caller's context has no deadline set.
+	DefaultDeadline time.Duration `yaml:"default_deadline"`
+
+	// ResultBufferSize is the per-job channel capacity for async results.
+	ResultBufferSize int `yaml:"result_buffer_size"`
 }
 
 type ProcessorConfig struct {
@@ -321,6 +328,8 @@ func NewConfig() *ProcessorConfig {
 		DispatchMode:      DispatchModeSync,
 		AsyncDispatchConfig: AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
+			DefaultDeadline:   5 * time.Minute,
+			ResultBufferSize:  100,
 		},
 	}
 }
@@ -417,6 +426,12 @@ func (c *ProcessorConfig) validateSyncDispatchConfig() error {
 func (c *ProcessorConfig) validateAsyncDispatchConfig() error {
 	if c.AsyncDispatchConfig.ResultPollTimeout <= 0 {
 		return fmt.Errorf("async_dispatch.result_poll_timeout must be > 0")
+	}
+	if c.AsyncDispatchConfig.DefaultDeadline <= 0 {
+		return fmt.Errorf("async_dispatch.default_deadline must be > 0")
+	}
+	if c.AsyncDispatchConfig.ResultBufferSize <= 0 {
+		return fmt.Errorf("async_dispatch.result_buffer_size must be > 0")
 	}
 	if c.GlobalInferenceGateway != nil {
 		return fmt.Errorf("global_inference_gateway is not supported with dispatch_mode %q; use model_gateways with inference_pool_name", DispatchModeAsync)
@@ -574,7 +589,10 @@ func ResolveModelGateways(cfg *ProcessorConfig) (*ResolvedGateways, error) {
 			models[model] = gw.InferencePoolName
 		}
 		result.Async = &inference.AsyncClientConfig{
-			Models: models,
+			Models:            models,
+			DefaultDeadline:   cfg.AsyncDispatchConfig.DefaultDeadline,
+			ResultPollTimeout: cfg.AsyncDispatchConfig.ResultPollTimeout,
+			ResultBufferSize:  cfg.AsyncDispatchConfig.ResultBufferSize,
 		}
 		return result, nil
 	}
