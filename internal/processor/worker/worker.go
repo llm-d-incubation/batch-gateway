@@ -70,11 +70,12 @@ type Processor struct {
 	poller  *Poller
 	updater *StatusUpdater
 
-	batchDB   db.BatchDBClient           // job status lookups (heartbeat DB check)
-	event     db.BatchEventChannelClient // cancel-event subscription
-	inflight  db.InFlightClient          // in-flight job tracking for orphan recovery
-	inference *inference.GatewayResolver // model → gateway routing
-	files     *fileManager
+	batchDB        db.BatchDBClient                // job status lookups (heartbeat DB check)
+	event          db.BatchEventChannelClient      // cancel-event subscription
+	inflight       db.InFlightClient               // in-flight job tracking for orphan recovery
+	inference      *inference.GatewayResolver      // model → gateway routing (sync)
+	asyncInference *inference.AsyncGatewayResolver // model → async client routing
+	files          *fileManager
 }
 
 func NewProcessor(
@@ -92,15 +93,16 @@ func NewProcessor(
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
 	return &Processor{
-		cfg:         cfg,
-		processorID: processorID,
-		poller:      poller,
-		updater:     updater,
-		batchDB:     clients.BatchDB,
-		event:       clients.Event,
-		inflight:    clients.InFlight,
-		inference:   clients.Inference,
-		files:       newFileManager(clients.File, clients.FileDB),
+		cfg:            cfg,
+		processorID:    processorID,
+		poller:         poller,
+		updater:        updater,
+		batchDB:        clients.BatchDB,
+		event:          clients.Event,
+		inflight:       clients.InFlight,
+		inference:      clients.Inference,
+		asyncInference: clients.AsyncInference,
+		files:          newFileManager(clients.File, clients.FileDB),
 	}, nil
 }
 
@@ -128,6 +130,17 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 
 	logger := logr.FromContextOrDiscard(ctx)
 
+	if err := p.initConcurrencyControls(logger, stopAccepting); err != nil {
+		return err
+	}
+
+	return p.runPollingLoop(pollingCtx, ctx)
+}
+
+// initConcurrencyControls creates semaphores and per-endpoint AIMD controllers.
+// In async mode (p.inference == nil), only the job-level worker semaphore is
+// created — inference concurrency is controlled by the llm-d-async dispatcher.
+func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting context.CancelFunc) error {
 	// Create semaphores here (not in NewProcessor) so the double-release guard
 	// callback can capture stopAccepting. This keeps semaphores immutable after
 	// construction — no mutex, no OnDoubleRelease method.
@@ -142,6 +155,16 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
 	}
+
+	if p.asyncInference != nil {
+		logger.V(logging.INFO).Info(
+			"Processor run started (async dispatch)",
+			"loopInterval", p.cfg.PollInterval,
+			"maxWorkers", p.cfg.NumWorkers,
+		)
+		return nil
+	}
+
 	cc := &p.cfg.Concurrency
 	p.globalSem, err = semaphore.New(cc.Global, makeGuard("global-concurrency"))
 	if err != nil {
@@ -191,8 +214,7 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 		"concurrency.aimd.enabled", cc.AIMD.Enabled,
 		"num_endpoints", len(clients),
 	)
-
-	return p.runPollingLoop(pollingCtx, ctx)
+	return nil
 }
 
 // Stop gracefully stops the processor, waiting for all workers to finish.
@@ -286,15 +308,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		pollLogger.V(logging.TRACE).Info("Job item found in the DB")
 
-		// queue wait metrics recording
-		if jobPriorityData, err := batch_utils.GetJobPriorityDataFromQueueItem(task); err == nil {
-			queueWait := time.Since(time.Unix(jobPriorityData.CreatedAt, 0))
-			metrics.RecordQueueWaitDuration(queueWait)
-			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
-		} else {
-			pollLogger.Error(err, "Failed to get job priority data from queue item")
-		}
-
 		// db job item to job info object conversion
 		jobInfo, err := batch_utils.FromDBItemToJobInfoObject(jobItem)
 		if err != nil {
@@ -309,6 +322,12 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		pollLogger = pollLogger.WithValues("tenantId", jobInfo.TenantID)
 		pollCtx = logr.NewContext(pollCtx, pollLogger)
+
+		if jobInfo.BatchJob.CreatedAt > 0 {
+			queueWait := time.Since(time.Unix(jobInfo.BatchJob.CreatedAt, 0))
+			metrics.RecordQueueWaitDuration(queueWait)
+			pollLogger.V(logging.TRACE).Info("Queue wait duration recorded", "duration", queueWait)
+		}
 
 		pollLogger.V(logging.TRACE).Info("Job info object converted")
 
@@ -431,7 +450,11 @@ func (p *Processor) heartbeat(ctx context.Context, jobID string, abortFn context
 	logger := logr.FromContextOrDiscard(ctx).WithValues("jobId", jobID)
 	logger.V(logging.INFO).Info("Heartbeat: started")
 
-	ticker := time.NewTicker(heartbeatInterval)
+	interval := p.cfg.HeartbeatInterval
+	if interval <= 0 {
+		interval = defaultHeartbeatInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -515,8 +538,11 @@ func (p *Processor) validate() error {
 	if p.inflight == nil {
 		return fmt.Errorf("in-flight client is missing")
 	}
-	if p.inference == nil {
+	if p.inference == nil && p.asyncInference == nil {
 		return fmt.Errorf("inference client is missing")
+	}
+	if p.inference != nil && p.asyncInference != nil {
+		return fmt.Errorf("sync and async inference clients are mutually exclusive")
 	}
 	if p.files == nil {
 		return fmt.Errorf("file manager is missing")

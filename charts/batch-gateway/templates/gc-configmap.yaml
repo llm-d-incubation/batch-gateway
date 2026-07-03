@@ -41,4 +41,7 @@ data:
         max_retries: {{ .Values.global.fileClient.retry.maxRetries }}
         initial_backoff: {{ .Values.global.fileClient.retry.initialBackoff | quote }}
         max_backoff: {{ .Values.global.fileClient.retry.maxBackoff | quote }}
+    reconciler:
+      enabled: {{ .Values.gc.config.reconciler.enabled }}
+      interval: {{ .Values.gc.config.reconciler.interval | quote }}
 {{- end }}

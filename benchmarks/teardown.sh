@@ -46,7 +46,7 @@ teardown_namespace() {
     ${K} -n "${NS}" delete pod -l batch-benchmark=true --ignore-not-found 2>/dev/null || true
 
     # Helm releases
-    for release in batch-gateway async-processor "${GUIDE_NAME}" redis postgresql; do
+    for release in batch-gateway async-processor "${GUIDE_NAME}" epp-bench redis postgresql; do
         ${H} uninstall "${release}" -n "${NS}" 2>/dev/null || true
     done
 

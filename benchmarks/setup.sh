@@ -16,6 +16,7 @@ set -euo pipefail
 #   LLM_D_REPO         — path to llm-d checkout (overrides downloading from LLM_D_TAG)
 #   ROUTER_REPO        — path to llm-d-router checkout (overrides OCI chart)
 #   ROUTER_CHART_VERSION — OCI chart version for llm-d-router (default: 0.9.2)
+#   ROUTER_EPP_TAG     — EPP image tag for local repo mode (default: v0.8.0)
 #   LLM_D_TAG          — git tag for llm-d guide values (default: v0.7.0)
 #   NAMESPACE          — override auto-generated namespace (default: batch-bench-s${SCENARIO})
 #   MODEL              — model to serve (default: Qwen/Qwen3-8B)
@@ -40,6 +41,7 @@ fi
 GUIDE_NAME="${GUIDE_NAME:-optimized-baseline}"
 NAMESPACE="${NAMESPACE:-batch-bench-s${SCENARIO}}"
 ROUTER_CHART_VERSION="${ROUTER_CHART_VERSION:-0.9.2}"
+ROUTER_EPP_TAG="${ROUTER_EPP_TAG:-v0.8.0}"
 LLM_D_TAG="${LLM_D_TAG:-v0.7.0}"
 SIM_IMAGE="${SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
 SIM_TTFT="${SIM_TTFT:-50ms}"
@@ -86,6 +88,8 @@ ${H} install redis oci://registry-1.docker.io/bitnamicharts/redis \
     --set auth.enabled=false \
     --set master.persistence.size=1Gi \
     --set replica.replicaCount=0 \
+    --set networkPolicy.enabled=false \
+    --set pdb.create=false \
     --wait --timeout 120s >/dev/null
 
 # --- PostgreSQL ---
@@ -95,6 +99,7 @@ ${H} install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
     --set auth.database=batchgateway \
     --set auth.password=benchmarkpw \
     --set primary.persistence.size=5Gi \
+    --set networkPolicy.enabled=false \
     --wait --timeout 120s >/dev/null
 
 # --- Secrets ---
@@ -121,6 +126,11 @@ spec:
 EOF
 ${K} -n "${NAMESPACE}" apply -f "${SCRIPT_DIR}/manifests/results-pvc.yaml"
 
+# GIE (flow control) settings for sim mode scenario 4
+GIE_VERSION="${GIE_VERSION:-v1.5.0}"
+GIE_REPO="${GIE_REPO:-}"
+GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
+
 # --- Inference backend ---
 if [ "${MODE}" = "sim" ]; then
     # Sim mode: deploy inference-sim (no GPU, no router, no Istio)
@@ -132,15 +142,17 @@ metadata:
   name: inference-sim
   labels:
     llm-d.ai/role: decode
+    app: inference-sim
 spec:
   replicas: 1
   selector:
     matchLabels:
-      llm-d.ai/role: decode
+      app: inference-sim
   template:
     metadata:
       labels:
         llm-d.ai/role: decode
+        app: inference-sim
     spec:
       containers:
         - name: vllm-sim
@@ -175,12 +187,118 @@ metadata:
   name: inference-sim
 spec:
   selector:
-    llm-d.ai/role: decode
+    app: inference-sim
   ports:
     - port: 8000
       targetPort: 8000
       name: http
 EOF
+
+    # --- Scenario 4 sim mode: deploy GIE EPP with flow control ---
+    if [ "${SCENARIO}" = "4" ]; then
+        log "Deploying GIE EPP with flow control (sim mode, scenario 4)"
+
+        # Ensure GIE repo is available
+        if [ -z "${GIE_REPO}" ] || [ ! -d "${GIE_REPO}" ]; then
+            GIE_REPO="$(mktemp -d)/gateway-api-inference-extension"
+            log "  Cloning GIE ${GIE_VERSION}..."
+            git clone --depth 1 --branch "${GIE_VERSION}" "${GIE_UPSTREAM_REPO}" "${GIE_REPO}" >/dev/null 2>&1
+        fi
+
+        # Install GIE CRDs
+        log "  Installing GIE CRDs"
+        ${K} apply -f "${GIE_REPO}/config/crd/bases/" >/dev/null
+
+        # Build Helm dependencies for standalone chart
+        chart_dir="${GIE_REPO}/config/charts/standalone"
+        (cd "${chart_dir}" && helm dependency build >/dev/null 2>&1)
+
+        # Create flow-control values
+        values_file="$(mktemp)"
+        cat > "${values_file}" <<'VALUESEOF'
+inferenceExtension:
+  pluginsCustomConfig:
+    flow-control-plugins.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      featureGates:
+        - "flowControl"
+      plugins:
+        - type: round-robin-fairness-policy
+        - type: global-strict-fairness-policy
+        - type: slo-deadline-ordering-policy
+        - type: utilization-detector
+          parameters:
+            queueDepthThreshold: 5
+            kvCacheUtilThreshold: 0.8
+      flowControl:
+        maxBytes: 4294967296
+        defaultRequestTTL: 30s
+        priorityBands:
+          - priority: 100
+            maxBytes: 1073741824
+            fairnessPolicyRef: round-robin-fairness-policy
+            orderingPolicyRef: fcfs-ordering-policy
+          - priority: -1
+            maxBytes: 3221225472
+            fairnessPolicyRef: global-strict-fairness-policy
+            orderingPolicyRef: slo-deadline-ordering-policy
+        defaultPriorityBand:
+          maxBytes: 536870912
+          fairnessPolicyRef: global-strict-fairness-policy
+          orderingPolicyRef: fcfs-ordering-policy
+      saturationDetector:
+        pluginRef: utilization-detector
+VALUESEOF
+
+        # Install EPP standalone chart
+        epp_release="epp-bench"
+        log "  Installing EPP (release: ${epp_release})"
+        ${H} install "${epp_release}" "${chart_dir}" \
+            -n "${NAMESPACE}" \
+            --set "inferenceExtension.image.tag=${GIE_VERSION}" \
+            --set inferenceExtension.monitoring.prometheus.auth.enabled=false \
+            --set inferenceExtension.sidecar.enabled=false \
+            --set inferenceExtension.endpointsServer.createInferencePool=true \
+            --set "inferencePool.modelServers.matchLabels.app=inference-sim" \
+            --set "inferencePool.targetPorts[0].number=8000" \
+            --set inferencePool.modelServerType=vllm \
+            --set inferenceExtension.pluginsConfigFile=flow-control-plugins.yaml \
+            --set inferenceExtension.resources.requests.cpu=100m \
+            --set inferenceExtension.resources.requests.memory=256Mi \
+            --set inferenceExtension.resources.limits.memory=512Mi \
+            -f "${values_file}" >/dev/null
+        rm -f "${values_file}"
+
+        # Wait for EPP deployment
+        log "  Waiting for EPP to be ready..."
+        ${K} -n "${NAMESPACE}" wait --for=condition=available deployment/${epp_release}-epp --timeout=120s
+
+        # Create InferenceObjective CRDs
+        log "  Creating InferenceObjective CRDs"
+        ${K} -n "${NAMESPACE}" apply -f - <<EOOBJ
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: interactive-default
+spec:
+  priority: 100
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${epp_release}
+---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: batch-sheddable
+spec:
+  priority: -1
+  poolRef:
+    group: inference.networking.k8s.io
+    name: ${epp_release}
+EOOBJ
+        log "  Flow control ready: EPP at ${epp_release}-epp:8081"
+    fi
 else
     # GPU mode: deploy real vLLM + llm-d Router + Istio Gateway
 
@@ -194,18 +312,25 @@ else
         log "  Flow control: enabling EPP priority bands (interactive=100, batch=-1)"
     fi
 
-    if [ -n "${ROUTER_REPO:-}" ] && [ -n "${LLM_D_REPO:-}" ]; then
+    if [ -n "${ROUTER_REPO:-}" ]; then
         # Local repo mode (development override)
-        log "  Using local repos: ROUTER_REPO=${ROUTER_REPO}, LLM_D_REPO=${LLM_D_REPO}"
-        if [ ! -f "${ROUTER_REPO}/config/charts/llm-d-router-gateway/charts/router-0.0.0.tgz" ]; then
-            (cd "${ROUTER_REPO}/config/charts/llm-d-router-gateway" && helm dependency build >/dev/null 2>&1)
-        fi
-        ${H} install "${GUIDE_NAME}" \
-            "${ROUTER_REPO}/config/charts/llm-d-router-gateway/" \
+        log "  Using local repo: ROUTER_REPO=${ROUTER_REPO}"
+        chart_dir="${ROUTER_REPO}/config/charts/llm-d-router-gateway"
+        rm -f "${chart_dir}/Chart.lock"
+        (cd "${chart_dir}" && helm dependency build >/dev/null 2>&1)
+        ${H} install "${GUIDE_NAME}" "${chart_dir}" \
             -n "${NAMESPACE}" \
-            -f "${LLM_D_REPO}/guides/recipes/router/base.values.yaml" \
-            -f "${LLM_D_REPO}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml" \
-            -f "${LLM_D_REPO}/guides/recipes/router/features/monitoring.values.yaml" \
+            --set router.epp.replicas=1 \
+            --set router.epp.image.registry=ghcr.io \
+            --set router.epp.image.repository=llm-d/llm-d-inference-scheduler \
+            --set router.epp.image.tag=${ROUTER_EPP_TAG} \
+            --set router.epp.pluginsConfigFile=optimized-baseline-plugins.yaml \
+            --set router.epp.resources.requests.cpu=4 \
+            --set router.epp.resources.requests.memory=8Gi \
+            --set router.epp.resources.limits.memory=16Gi \
+            --set router.modelServers.matchLabels.llm-d\\.ai/guide=optimized-baseline \
+            --set router.inferencePool.modelServerProtocol=http \
+            --set router.monitoring.prometheus.auth.enabled=true \
             ${FLOW_CONTROL_OVERLAY} \
             --set provider.name=istio \
             --set httpRoute.create=true \
@@ -303,11 +428,20 @@ if [ -n "${VALUES_FILE}" ]; then
         )
     fi
 
-    # In sim mode, replace all model gateways with a single entry pointing to inference-sim
+    # In sim mode, replace all model gateways with a single entry
     if [ "${MODE}" = "sim" ]; then
-        BG_EXTRA_ARGS+=(
-            --set-json "processor.config.modelGateways={\"${MODEL}\":{\"url\":\"http://inference-sim.${NAMESPACE}.svc.cluster.local:8000\",\"requestTimeout\":\"5m\",\"maxRetries\":3,\"initialBackoff\":\"1s\",\"maxBackoff\":\"60s\"}}"
-        )
+        if [ "${SCENARIO}" = "4" ]; then
+            # Scenario 4: route through EPP for flow control; null out globalInferenceGateway from values file
+            BG_EXTRA_ARGS+=(
+                --set-json "processor.config.globalInferenceGateway=null"
+                --set-json "processor.config.modelGateways={\"${MODEL}\":{\"url\":\"http://epp-bench-epp.${NAMESPACE}.svc.cluster.local:8081\",\"requestTimeout\":\"5m\",\"maxRetries\":3,\"initialBackoff\":\"2s\",\"maxBackoff\":\"30s\",\"inferenceObjective\":\"batch-sheddable\"}}"
+            )
+        else
+            # Other scenarios: direct to inference-sim
+            BG_EXTRA_ARGS+=(
+                --set-json "processor.config.modelGateways={\"${MODEL}\":{\"url\":\"http://inference-sim.${NAMESPACE}.svc.cluster.local:8000\",\"requestTimeout\":\"5m\",\"maxRetries\":3,\"initialBackoff\":\"1s\",\"maxBackoff\":\"60s\"}}"
+            )
+        fi
     fi
 
     ${H} install batch-gateway \

@@ -35,7 +35,8 @@ var (
 	errRequestInputRead = errors.New("failed to read request from input file")
 
 	// errShutdown signals that the processor is shutting down (SIGTERM).
-	// The job is re-enqueued so another worker can pick it up.
+	// The job is left in its current non-terminal state for the orphan
+	// reconciler to detect and transition to a terminal state.
 	errShutdown = errors.New("processor shutting down")
 
 	// errFinalizeFailedOver signals that a terminal status transition (completed,

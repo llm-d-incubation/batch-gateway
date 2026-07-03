@@ -47,11 +47,9 @@ import (
 // Declared as var (not const) so tests can shorten it.
 var panicRecoveryTimeout = time.Minute
 
-// heartbeatInterval controls how often the processor refreshes its in-flight
-// entry for a running job. The orphan reconciler uses staleness (no heartbeat
-// for > reconciler interval) to detect abandoned jobs.
-// Declared as var (not const) so tests can shorten it.
-var heartbeatInterval = 5 * time.Minute
+// defaultHeartbeatInterval is the fallback heartbeat interval used when
+// the config value is zero. Matches ProcessorConfig.HeartbeatInterval default.
+const defaultHeartbeatInterval = 5 * time.Minute
 
 func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Clean up in-flight entry on exit (first defer = last to run via LIFO),
@@ -323,35 +321,15 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 		}
 
 	case errors.Is(err, errShutdown):
-		// SIGTERM received — re-enqueue so another worker can pick up the job.
-		// Use a detached context because ctx is already cancelled.
+		// SIGTERM received — leave the job in its current state for the orphan
+		// reconciler to handle. The reconciler detects non-terminal jobs that
+		// are not in the queue and have a stale (or missing) in-flight entry,
+		// then transitions them to a terminal state (failed, cancelled, etc.).
 		//
-		// Known limitation: there is no way at SIGTERM time to distinguish a container
-		// restart (emptyDir survives, startup recovery can upload partial output) from a
-		// pod deletion (emptyDir destroyed, startup recovery cannot help). Re-enqueueing
-		// is therefore unconditional, which introduces a known race: if this was a
-		// container restart, startup recovery and the worker that picks up the re-enqueued
-		// job compete — startup recovery may mark the job failed while another worker
-		// runs it fresh.
-		// This race is accepted as a known limit until orphan reconciliation is
-		// implemented. Once it is, re-enqueue should be removed here and pod-deletion
-		// recovery delegated to the reconciler. (TODO: orphan reconciliation task)
-		if params.task != nil {
-			bgCtx, bgSpan := uotel.DetachedContext(ctx, "re-enqueue")
-			defer bgSpan.End()
-			if enqErr := p.poller.enqueueOne(bgCtx, params.task); enqErr != nil {
-				logger.Error(enqErr, "Failed to re-enqueue the job to the queue")
-				// executeJob flushed partial output/error files to disk before returning
-				// errShutdown. Upload them so the user can retrieve whatever completed
-				// before SIGTERM, rather than losing those results silently.
-				if failErr := p.handleFailed(bgCtx, params.updater, params.jobItem, params.requestCounts, params.jobInfo); failErr != nil {
-					logger.Error(failErr, "Failed to mark job as failed after re-enqueue failure")
-				}
-			} else {
-				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonSystemError)
-				logger.V(logging.INFO).Info("Re-enqueued the job to the queue")
-			}
-		}
+		// The in-flight entry is cleaned up by the defer at the top of runJob.
+		// If the process is killed (SIGKILL) before that defer runs, the entry
+		// remains and becomes stale, which the reconciler also handles.
+		logger.V(logging.INFO).Info("SIGTERM received, leaving job for orphan reconciler")
 
 	default:
 		if failErr := p.handleFailed(ctx, params.updater, params.jobItem, params.requestCounts, params.jobInfo); failErr != nil {

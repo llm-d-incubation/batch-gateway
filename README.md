@@ -4,9 +4,9 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25-blue.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://llm-d.slack.com/archives/C0AA8772H7T)
-[![apiserver](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-apiserver/latest_tag?trim=major&label=apiserver)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-apiserver)
-[![processor](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-processor/latest_tag?trim=major&label=processor)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-processor)
-[![gc](https://ghcr-badge.egpl.dev/llm-d/batch-gateway-gc/latest_tag?trim=major&label=gc)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-gc)
+[![apiserver](https://img.shields.io/github/v/release/llm-d/llm-d-batch-gateway?label=apiserver)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-apiserver)
+[![processor](https://img.shields.io/github/v/release/llm-d/llm-d-batch-gateway?label=processor)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-processor)
+[![gc](https://img.shields.io/github/v/release/llm-d/llm-d-batch-gateway?label=gc)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-gc)
 
 ## Overview
 
@@ -30,8 +30,8 @@ The system is designed to facilitate efficient processing of batch workloads in 
 - **Large-Scale Processing**: Support for up to 50,000 requests per job.
 - **Progress Tracking**: Real-time job status progress updates.
 - **Job Management and Control**: Enables to manage and control batch jobs, before, during, and after their processing.
-- **Model-Aware Scheduling**: Groups and orders requests by model and system prompt for optimal downstream utilization.
-- **Intelligent inference dispatching**: Monitors downstream metrics to determine the flow volume of batch inference requests.
+- **Model-Aware Scheduling**: Groups and orders requests by model and system-prompt hash for prefix cache optimization, keeping KV-cache entries hot and avoiding eviction-triggered prefill reconstruction.
+- **Adaptive Concurrency Control**: AIMD-based flow control dynamically adjusts batch request dispatch rate based on downstream success/failure signals, protecting interactive traffic without manual tuning.
 
 ### System Design
 
@@ -74,11 +74,10 @@ The system is designed to facilitate efficient processing of batch workloads in 
      - Priority queue, event channels, and status updates: `Redis` or `Valkey`.
      - File storage: `S3`, `filesystem`.
 
-4. **Batch Dispatcher** (also called **Async Processor**, implemented in [llm-d-incubation/llm-d-async](https://github.com/llm-d-incubation/llm-d-async))
-   - Implements intelligent flow control to balance batch and interactive workloads.
-   - Monitors downstream inference system metrics (e.g. queue depth, latency, utilization).
-   - Dynamically adjusts dispatch flow of batch requests based on downstream system load, to minimize interference with interactive requests while meeting batch jobs SLOs.
-   - Provides backpressure mechanisms to prevent overwhelming downstream inference engines.
+4. **Batch Dispatcher** *(optional, future component)* — implemented in [llm-d-incubation/llm-d-async](https://github.com/llm-d-incubation/llm-d-async)
+   - An optional component that provides metrics-driven flow control for batch request dispatching.
+   - Monitors downstream inference system metrics (e.g. queue depth, latency, utilization) and dynamically adjusts dispatch flow to minimize interference with interactive requests while meeting batch job SLOs.
+   - Not required for batch processing — the batch processor includes built-in AIMD-based adaptive concurrency control.
 
 ### Processing Flow
 
@@ -115,43 +114,36 @@ For detailed architecture information see the [design directory](docs/design/).
 
 ```text
 batch-gateway/
+├── benchmarks/                   # Benchmark tooling, profiles, and results
 ├── cmd/                          # Application entry points
 │   ├── apiserver/                # API server binary
 │   ├── batch-processor/          # Batch processor binary
 │   └── batch-gc/                 # Garbage collector binary
-├── internal/                     # Private application code
-│   ├── apiserver/                # API server implementation
-│   │   ├── batch/                # Batch job handlers
-│   │   ├── file/                 # File handlers
-│   │   ├── common/               # Shared handler utilities
-│   │   ├── health/               # Health check handler
-│   │   ├── middleware/           # HTTP middleware
-│   │   ├── readiness/            # Readiness handler
-│   │   ├── metrics/              # Metrics mechanism
-│   │   └── server/               # Server initialization
-│   ├── processor/                # Batch processor implementation
-│   │   ├── worker/               # Worker pool, planning, and execution
-│   │   ├── config/               # Processor configuration
-│   │   └── metrics/              # Prometheus metrics
-│   ├── gc/                       # Garbage collector implementation
-│   ├── database/                 # Database clients
-│   │   ├── api/                  # Database interfaces
-│   │   ├── mock/                 # Mock implementation (testing)
-│   │   ├── redis/                # Redis implementation
-│   │   └── postgresql/           # PostgreSQL implementation
-│   ├── files_store/              # File storage clients (S3, FS)
-│   ├── shared/                   # Shared types and utilities
-│   └── util/                     # Common utilities (logging, TLS, etc.)
-├── pkg/                          # Public library code
 ├── charts/                       # Helm charts
 │   └── batch-gateway/            # Kubernetes deployment manifests
+├── docker/                       # Dockerfiles
 ├── docs/                         # Documentation
 │   ├── design/                   # Architecture and design documents
 │   └── guides/                   # Developer and user guides
-├── test/                         # Test suites
-│   └── e2e/                      # End-to-end tests
-├── docker/                       # Dockerfiles
+├── examples/                     # Deployment examples
+│   ├── deploy-demo/              # Demo deployment resources
+│   └── poc/                      # Proof-of-concept local demo
+├── internal/                     # Private application code
+│   ├── apiserver/                # API server implementation
+│   ├── database/                 # Database clients (PostgreSQL, Redis)
+│   ├── files_store/              # File storage clients (S3, filesystem)
+│   ├── gc/                       # Garbage collector implementation
+│   ├── processor/                # Batch processor implementation
+│   ├── shared/                   # Shared types and utilities
+│   └── util/                     # Common utilities (logging, TLS, etc.)
+├── pkg/                          # Public library code
+│   └── clients/                  # Reusable client libraries
 ├── scripts/                      # Development and deployment scripts
+├── test/                         # Test suites
+│   ├── e2e/                      # End-to-end tests
+│   ├── integration/              # Integration tests
+│   └── regression/               # Regression tests
+├── tools/                        # Development tooling
 ├── Makefile                      # Build and development targets
 └── go.mod                        # Go module dependencies
 ```
@@ -163,7 +155,8 @@ batch-gateway/
 - **`pkg/`**: Public library code.
 - **`charts/`**: Helm chart for deploying the components in Kubernetes.
 - **`docs/`**: Contains architecture documents and development / usage guides.
-- **`test/`**: Integration and E2E test suites for validating the full system.
+- **`examples/`**: Deployment examples and proof-of-concept demos.
+- **`test/`**: Unit, integration, regression, and E2E test suites.
 
 ## Getting Started
 
@@ -468,8 +461,8 @@ limitations under the License.
 
 ## Related Projects
 
-- [llm-d-inference-scheduler](https://github.com/llm-d/llm-d-inference-scheduler) - Inference request scheduler.
-- [gateway-api-inference-extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension) - Kubernetes Gateway API extensions for inference workloads.
+- [llm-d-router](https://github.com/llm-d/llm-d-router) - llm-d inference router.
+- [llm-d-async](https://github.com/llm-d-incubation/llm-d-async) - Metrics-driven batch dispatch flow control (optional).
 
 ## Support
 

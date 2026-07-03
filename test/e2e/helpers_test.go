@@ -311,6 +311,41 @@ func waitForIngestionFailure(t *testing.T, batchID string, timeout time.Duration
 	return nil
 }
 
+// waitForOrphanTerminal polls a batch until it reaches the specified terminal
+// status. Unlike waitForBatchStatus, it skips validateTerminalBatch and
+// validateBatchResults because the reconciler's state transition preserves
+// whatever request counts existed at crash time (Completed+Failed != Total)
+// and does not upload output/error files.
+func waitForOrphanTerminal(t *testing.T, batchID string, timeout time.Duration, target openai.BatchStatus) *openai.Batch {
+	t.Helper()
+
+	client := newClient()
+	deadline := time.Now().Add(timeout)
+	if d, ok := t.Deadline(); ok && d.Before(deadline) {
+		deadline = d.Add(-5 * time.Second)
+	}
+
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(context.Background(), batchID)
+		if err != nil {
+			t.Fatalf("retrieve batch failed: %v", err)
+		}
+		t.Logf("batch %s status: %s (completed=%d, failed=%d, total=%d)",
+			batchID, b.Status,
+			b.RequestCounts.Completed, b.RequestCounts.Failed, b.RequestCounts.Total)
+
+		if b.Status == target {
+			return b
+		}
+		if terminalBatchStatuses[b.Status] {
+			t.Fatalf("batch %s reached terminal status %q instead of %q", batchID, b.Status, target)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("batch %s did not reach %q within %v", batchID, target, timeout)
+	return nil
+}
+
 // ── Batch validation ─────────────────────────────────────────────────────
 
 // validateTerminalBatch checks invariants that must hold for any batch in a terminal state:

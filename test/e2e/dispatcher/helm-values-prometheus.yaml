@@ -1,0 +1,32 @@
+ap:
+  imagePullPolicy: Never
+  messageQueueImpl: "redis-sortedset"
+  concurrency: 1
+  prometheusURL: "http://prometheus.default.svc.cluster.local:9090"
+  prometheusCacheTTL: "0s"
+  otel:
+    endpoint: "http://jaeger.default.svc.cluster.local:4317"
+    insecure: true
+    sampler: "always_on"
+    samplerArg: "1.0"
+    redisTracing: false
+  metrics:
+    enabled: true
+    port: 9092
+    secure: false
+  redis:
+    enabled: true
+    url: "redis://redis-master.default.svc.cluster.local:6379"
+    pollIntervalMs: 500
+    batchSize: 10
+    queuesConfig:
+      - queue_name: "llm-d-async:requests:sim-pool-prom"
+        result_queue_name: "llm-d-async:results:sim-pool-prom"
+        request_path_url: "/v1/completions"
+        igw_base_url: "http://vllm-sim.default.svc.cluster.local:8000"
+        gate_type: "prometheus-query"
+        gate_params:
+          query: "1 - clamp_max(vllm:num_requests_waiting / 5, 1)"
+          fallback: "1.0"
+  modelServerMonitor:
+    enabled: false

@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/go-logr/logr"
 	dbapi "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
@@ -41,14 +42,15 @@ import (
 
 // Clientset holds all clients.
 type Clientset struct {
-	File      fsapi.BatchFilesClient
-	BatchDB   dbapi.BatchDBClient
-	FileDB    dbapi.FileDBClient
-	Queue     dbapi.BatchPriorityQueueClient
-	Event     dbapi.BatchEventChannelClient
-	Status    dbapi.BatchStatusClient
-	InFlight  dbapi.InFlightClient
-	Inference *inference.GatewayResolver
+	File           fsapi.BatchFilesClient
+	BatchDB        dbapi.BatchDBClient
+	FileDB         dbapi.FileDBClient
+	Queue          dbapi.BatchPriorityQueueClient
+	Event          dbapi.BatchEventChannelClient
+	Status         dbapi.BatchStatusClient
+	InFlight       dbapi.InFlightClient
+	Inference      *inference.GatewayResolver
+	AsyncInference *inference.AsyncGatewayResolver
 }
 
 // NewFSFileClient creates a filesystem-based file storage client.
@@ -150,6 +152,7 @@ type clientsetConfig struct {
 	exchangeRedisCfg  *uredis.RedisClientConfig
 	inferenceGlobal   *inference.GatewayClientConfig
 	inferencePerModel map[string]inference.GatewayClientConfig
+	asyncInference    *inference.AsyncClientConfig
 }
 
 // WithDB enables creation of batch and file database clients.
@@ -181,6 +184,13 @@ func WithPerModelInference(cfgs map[string]inference.GatewayClientConfig) Option
 		copied[k] = v
 	}
 	return func(c *clientsetConfig) { c.inferencePerModel = copied }
+}
+
+// WithAsyncInference enables async dispatch via llm-d-async queues.
+func WithAsyncInference(cfg inference.AsyncClientConfig) Option {
+	copied := cfg
+	copied.Models = maps.Clone(cfg.Models)
+	return func(c *clientsetConfig) { c.asyncInference = &copied }
 }
 
 // NewClientset creates the clients specified by the given options.
@@ -266,6 +276,19 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 
 	// build inference client(s)
 	switch {
+	case cfg.asyncInference != nil:
+		if cfg.asyncInference.RedisURL == "" {
+			if cfg.exchangeRedisCfg == nil {
+				return nil, fmt.Errorf("async inference requires a Redis URL (set RedisURL or use WithExchange)")
+			}
+			cfg.asyncInference.RedisURL = cfg.exchangeRedisCfg.Url
+		}
+		resolver, err := inference.NewAsyncResolver(*cfg.asyncInference, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create async inference clients: %w", err)
+		}
+		logger.Info("Async inference clients created", "count", len(cfg.asyncInference.Models))
+		cs.AsyncInference = resolver
 	case cfg.inferenceGlobal != nil:
 		resolver, err := inference.NewGlobalResolver(*cfg.inferenceGlobal, logger)
 		if err != nil {
@@ -319,6 +342,16 @@ func (cs *Clientset) Close() error {
 	}
 	if cs.InFlight != nil {
 		if err := cs.InFlight.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if cs.Inference != nil {
+		if err := cs.Inference.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if cs.AsyncInference != nil {
+		if err := cs.AsyncInference.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

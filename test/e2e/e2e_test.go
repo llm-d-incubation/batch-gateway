@@ -54,6 +54,7 @@ var (
 
 	// testSimService* hold the Kubernetes service names for the simulators.
 	// Must match VLLM_SIM_*_NAME in dev-common.sh (overridable via env).
+	testSimService     = getEnvOrDefault("TEST_SIM_SERVICE", "vllm-sim")
 	testSimService429  = getEnvOrDefault("TEST_SIM_SERVICE_429", "vllm-sim-429")
 	testSimServiceAIMD = getEnvOrDefault("TEST_SIM_SERVICE_AIMD", "vllm-sim-aimd")
 
@@ -113,6 +114,7 @@ func TestE2E(t *testing.T) {
 	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
 	t.Run("ProcessorGracefulShutdown", testProcessorGracefulShutdown)
+	t.Run("OrphanRecovery", testOrphanRecovery)
 	t.Run("FlowControl", testFlowControl)
 	t.Run("AIMD", testAIMD)
 	t.Run("HelmUpgrade", testHelmUpgrade)
