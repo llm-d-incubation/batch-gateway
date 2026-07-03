@@ -139,14 +139,17 @@ func (d *resultDispatcher) Close() error {
 	return nil
 }
 
+const (
+	defaultResultBufferSize = 100
+	defaultDeadline         = 5 * time.Minute
+)
+
 // asyncPool holds the shared resources for one inference pool.
 // Multiple per-job clients share the same pool.
 type asyncPool struct {
-	producer         producer.Producer
-	dispatcher       *resultDispatcher
-	logger           logr.Logger
-	defaultDeadline  time.Duration
-	resultBufferSize int
+	producer   producer.Producer
+	dispatcher *resultDispatcher
+	logger     logr.Logger
 }
 
 // asyncProducerClient is a per-job client that submits requests and collects
@@ -162,7 +165,7 @@ type asyncProducerClient struct {
 func newAsyncProducerClient(pool *asyncPool) *asyncProducerClient {
 	return &asyncProducerClient{
 		pool:    pool,
-		results: make(chan *GenerateResponse, pool.resultBufferSize),
+		results: make(chan *GenerateResponse, defaultResultBufferSize),
 		logger:  pool.logger,
 	}
 }
@@ -171,7 +174,7 @@ func newAsyncProducerClient(pool *asyncPool) *asyncProducerClient {
 // to this client's internal channel by the shared dispatcher.
 func (c *asyncProducerClient) Submit(ctx context.Context, req *GenerateRequest) *ClientError {
 	now := time.Now()
-	deadline := now.Add(c.pool.defaultDeadline)
+	deadline := now.Add(defaultDeadline)
 	if dl, ok := ctx.Deadline(); ok {
 		deadline = dl
 	}

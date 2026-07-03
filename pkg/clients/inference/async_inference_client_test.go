@@ -51,7 +51,7 @@ func newTestPool(t *testing.T, mr *miniredis.Miniredis, poolName string) *asyncP
 
 	logger := testLogger(t)
 	d := newResultDispatcher(p, logger, time.Second)
-	pool := &asyncPool{producer: p, dispatcher: d, logger: logger, resultBufferSize: 100, defaultDeadline: 5 * time.Minute}
+	pool := &asyncPool{producer: p, dispatcher: d, logger: logger}
 
 	t.Cleanup(func() {
 		_ = d.Close()

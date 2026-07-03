@@ -31,8 +31,6 @@ func TestNewAsyncResolver(t *testing.T) {
 			RedisURL:          "redis://" + mr.Addr(),
 			Models:            map[string]string{"model-a": "pool-a", "model-b": "pool-b"},
 			ResultPollTimeout: time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}
 
 		r, err := NewAsyncResolver(cfg, testLogger(t))
@@ -58,8 +56,6 @@ func TestNewAsyncResolver(t *testing.T) {
 			RedisURL:          "redis://" + mr.Addr(),
 			Models:            map[string]string{"model-a": "pool-a"},
 			ResultPollTimeout: time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}, testLogger(t))
 		if err != nil {
 			t.Fatalf("NewAsyncResolver: %v", err)
@@ -77,8 +73,6 @@ func TestNewAsyncResolver(t *testing.T) {
 			RedisURL:          "redis://" + mr.Addr(),
 			Models:            map[string]string{"model-a": "shared-pool", "model-b": "shared-pool"},
 			ResultPollTimeout: time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}, testLogger(t))
 		if err == nil {
 			t.Fatal("expected error for duplicate pool mapping")
@@ -90,8 +84,6 @@ func TestNewAsyncResolver(t *testing.T) {
 			RedisURL:          "not-a-url",
 			Models:            map[string]string{"model-a": "pool-a"},
 			ResultPollTimeout: time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}, testLogger(t))
 		if err == nil {
 			t.Fatal("expected error for invalid Redis URL")
@@ -105,8 +97,6 @@ func TestNewAsyncResolver(t *testing.T) {
 			RedisURL:          "redis://" + mr.Addr(),
 			Models:            map[string]string{"model-a": "pool-a"},
 			ResultPollTimeout: time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}, testLogger(t))
 		if err != nil {
 			t.Fatalf("NewAsyncResolver: %v", err)
@@ -124,8 +114,6 @@ func TestNewAsyncResolver(t *testing.T) {
 			RedisURL:          "redis://" + mr.Addr(),
 			Models:            map[string]string{"model-a": "pool-a"},
 			ResultPollTimeout: time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}, testLogger(t))
 		if err != nil {
 			t.Fatalf("NewAsyncResolver: %v", err)

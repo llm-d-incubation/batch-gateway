@@ -103,12 +103,6 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.AsyncDispatchConfig.ResultPollTimeout != 5*time.Second {
 		t.Fatalf("AsyncDispatchConfig.ResultPollTimeout = %v, want %v", c.AsyncDispatchConfig.ResultPollTimeout, 5*time.Second)
 	}
-	if c.AsyncDispatchConfig.DefaultDeadline != 5*time.Minute {
-		t.Fatalf("AsyncDispatchConfig.DefaultDeadline = %v, want %v", c.AsyncDispatchConfig.DefaultDeadline, 5*time.Minute)
-	}
-	if c.AsyncDispatchConfig.ResultBufferSize != 100 {
-		t.Fatalf("AsyncDispatchConfig.ResultBufferSize = %d, want %d", c.AsyncDispatchConfig.ResultBufferSize, 100)
-	}
 }
 
 func TestProcessorConfig_Validate_WorkDirEmpty(t *testing.T) {
@@ -663,8 +657,6 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		c.DispatchMode = DispatchModeAsync
 		c.AsyncDispatchConfig = AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
-			DefaultDeadline:   5 * time.Minute,
-			ResultBufferSize:  100,
 		}
 		return c
 	}
@@ -776,26 +768,6 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 					"mistral": {URL: "http://gw-b:8000"},
 				}
 			},
-			wantErr: true,
-		},
-		{
-			name:    "async zero default_deadline",
-			mutate:  func(c *ProcessorConfig) { c.AsyncDispatchConfig.DefaultDeadline = 0 },
-			wantErr: true,
-		},
-		{
-			name:    "async negative default_deadline",
-			mutate:  func(c *ProcessorConfig) { c.AsyncDispatchConfig.DefaultDeadline = -1 * time.Minute },
-			wantErr: true,
-		},
-		{
-			name:    "async zero result_buffer_size",
-			mutate:  func(c *ProcessorConfig) { c.AsyncDispatchConfig.ResultBufferSize = 0 },
-			wantErr: true,
-		},
-		{
-			name:    "async negative result_buffer_size",
-			mutate:  func(c *ProcessorConfig) { c.AsyncDispatchConfig.ResultBufferSize = -1 },
 			wantErr: true,
 		},
 	}
@@ -945,8 +917,6 @@ func TestResolveModelGateways_Async(t *testing.T) {
 		cfg.DispatchMode = DispatchModeAsync
 		cfg.AsyncDispatchConfig = AsyncDispatchConfig{
 			ResultPollTimeout: 10 * time.Second,
-			DefaultDeadline:   3 * time.Minute,
-			ResultBufferSize:  200,
 		}
 		cfg.ModelGateways = map[string]ModelGatewayConfig{
 			"model-a": {InferencePoolName: "pool-a"},
@@ -976,14 +946,8 @@ func TestResolveModelGateways_Async(t *testing.T) {
 		if resolved.Async.Models["model-b"] != "pool-b" {
 			t.Errorf("Models[model-b] = %q, want %q", resolved.Async.Models["model-b"], "pool-b")
 		}
-		if resolved.Async.DefaultDeadline != 3*time.Minute {
-			t.Errorf("DefaultDeadline = %v, want %v", resolved.Async.DefaultDeadline, 3*time.Minute)
-		}
 		if resolved.Async.ResultPollTimeout != 10*time.Second {
 			t.Errorf("ResultPollTimeout = %v, want %v", resolved.Async.ResultPollTimeout, 10*time.Second)
-		}
-		if resolved.Async.ResultBufferSize != 200 {
-			t.Errorf("ResultBufferSize = %d, want %d", resolved.Async.ResultBufferSize, 200)
 		}
 	})
 
