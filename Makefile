@@ -218,6 +218,12 @@ tidy:
 	@echo "Tidying go modules..."
 	$(GO) mod tidy
 
+## update-deps: Upgrade all dependencies to latest and tidy
+update-deps:
+	@echo "Upgrading all dependencies..."
+	$(GO) get -u ./...
+	$(GO) mod tidy
+
 ## clean: Remove build artifacts and coverage files
 clean:
 	@echo "Cleaning..."
