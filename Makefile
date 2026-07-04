@@ -385,56 +385,51 @@ BENCHMARK_GPU_NAMESPACE ?= batch-bench-gpu
 BENCHMARK_GPU_SCENARIOS ?= 0 1 2 3 4
 BENCHMARK_GPU_RESULTS_DIR ?= benchmarks/results/gpu-run
 BENCHMARK_GPU_MODEL ?= Qwen/Qwen3-8B
-BENCHMARK_GPU_BATCH_SIZE ?= 50
+BENCHMARK_GPU_BATCH_SIZE ?= 3000
+BENCHMARK_GPU_NUM_JOBS ?= 3
+BENCHMARK_GPU_BURST_RATE ?= 35
+BENCHMARK_GPU_PROMPT_TOKENS ?= 256
+BENCHMARK_GPU_CYCLES ?= 4
+BENCHMARK_GPU_WARMUP ?= 2
 
-## benchmark-gpu: Run benchmark e2e on a GPU cluster for all scenarios (setup → benchmark → teardown per scenario)
-##                Required: BENCHMARK_GPU_CONTEXT, GHCR_USER, GHCR_TOKEN
-##                Optional: ROUTER_REPO, BENCHMARK_GPU_SCENARIOS, BENCHMARK_GPU_NAMESPACE, BENCHMARK_GPU_MODEL
+## benchmark-gpu: Run benchmark e2e on a GPU cluster (single command, unified report)
+##                Uses --managed mode: setup → benchmark → teardown per scenario in one process.
+##                Required: BENCHMARK_GPU_CONTEXT (or BENCHMARK_CONTEXT)
+##                Optional: ROUTER_REPO, PROMETHEUS_URL, BENCHMARK_GPU_SCENARIOS, BENCHMARK_GPU_NAMESPACE
+##
+##                Example:
+##                  make benchmark-gpu BENCHMARK_GPU_CONTEXT=coreweave-waldorf BENCHMARK_GPU_NAMESPACE=my-ns
+##                  # With Prometheus already port-forwarded:
+##                  make benchmark-gpu BENCHMARK_GPU_CONTEXT=coreweave-waldorf PROMETHEUS_URL=http://localhost:9090
 benchmark-gpu:
-	@if [ -z "$(GHCR_USER)" ] || [ -z "$(GHCR_TOKEN)" ]; then \
-		echo "ERROR: GHCR_USER and GHCR_TOKEN must be set for GPU cluster benchmarks"; exit 1; \
+	@if [ -z "$(BENCHMARK_GPU_CONTEXT)" ]; then \
+		echo "ERROR: BENCHMARK_GPU_CONTEXT must be set (or set BENCHMARK_CONTEXT)"; exit 1; \
 	fi
 	@echo "=== Benchmark GPU e2e (scenarios: $(BENCHMARK_GPU_SCENARIOS)) ==="
 	@echo "Context: $(BENCHMARK_GPU_CONTEXT)"
 	@echo "Namespace: $(BENCHMARK_GPU_NAMESPACE)"
 	@echo "Model: $(BENCHMARK_GPU_MODEL)"
+	@echo "Burst rate: $(BENCHMARK_GPU_BURST_RATE) req/s"
+	@echo "Batch: $(BENCHMARK_GPU_NUM_JOBS) jobs x $(BENCHMARK_GPU_BATCH_SIZE) requests"
 	@echo "Results: $(BENCHMARK_GPU_RESULTS_DIR)"
-	@for scenario in $(BENCHMARK_GPU_SCENARIOS); do \
-		echo ""; \
-		echo "━━━ Scenario $$scenario ━━━"; \
-		echo "  [setup] Deploying infrastructure..."; \
-		setup_ok=true; \
-		SCENARIO=$$scenario MODE=gpu NAMESPACE=$(BENCHMARK_GPU_NAMESPACE) \
-			KUBE_CONTEXT=$(BENCHMARK_GPU_CONTEXT) \
-			GHCR_USER=$(GHCR_USER) GHCR_TOKEN=$(GHCR_TOKEN) \
-			ROUTER_REPO=$(ROUTER_REPO) \
-			PROMETHEUS_RELEASE=$(PROMETHEUS_RELEASE) \
-			bash benchmarks/setup.sh || { echo "  [ERROR] Setup failed for scenario $$scenario"; setup_ok=false; }; \
-		if [ "$$setup_ok" = "true" ]; then \
-			echo "  [benchmark] Running scenario $$scenario..."; \
-			python3 benchmarks/benchmark.py \
-				--context $(BENCHMARK_GPU_CONTEXT) \
-				--namespace $(BENCHMARK_GPU_NAMESPACE) \
-				--scenarios $$scenario \
-				--model $(BENCHMARK_GPU_MODEL) \
-				--batch-size $(BENCHMARK_GPU_BATCH_SIZE) \
-				--prometheus-namespace $(PROMETHEUS_NAMESPACE) \
-				--prometheus-service $(PROMETHEUS_SERVICE) \
-				--results-dir $(BENCHMARK_GPU_RESULTS_DIR)/scenario-$$scenario || \
-				echo "  [WARNING] Benchmark failed for scenario $$scenario"; \
-		fi; \
-		echo "  [cleanup] Uninstalling releases (keeping namespace)..."; \
-		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall batch-gateway -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
-		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall optimized-baseline -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
-		helm --kube-context=$(BENCHMARK_GPU_CONTEXT) uninstall epp-bench -n $(BENCHMARK_GPU_NAMESPACE) 2>/dev/null || true; \
-		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete job --all --ignore-not-found 2>/dev/null || true; \
-		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete configmap -l batch-benchmark=true --ignore-not-found 2>/dev/null || true; \
-		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete -k benchmarks/manifests/vllm/ --ignore-not-found 2>/dev/null || true; \
-		kubectl --context=$(BENCHMARK_GPU_CONTEXT) -n $(BENCHMARK_GPU_NAMESPACE) delete gateway llm-d-inference-gateway --ignore-not-found 2>/dev/null || true; \
-	done
+	@rm -rf $(BENCHMARK_GPU_RESULTS_DIR)
+	python3 benchmarks/benchmark.py \
+		--managed \
+		--context $(BENCHMARK_GPU_CONTEXT) \
+		--namespace $(BENCHMARK_GPU_NAMESPACE) \
+		--scenarios $(BENCHMARK_GPU_SCENARIOS) \
+		--model $(BENCHMARK_GPU_MODEL) \
+		--batch-size $(BENCHMARK_GPU_BATCH_SIZE) \
+		--num-jobs $(BENCHMARK_GPU_NUM_JOBS) \
+		--burst-rate $(BENCHMARK_GPU_BURST_RATE) \
+		--prompt-tokens $(BENCHMARK_GPU_PROMPT_TOKENS) \
+		--cycles $(BENCHMARK_GPU_CYCLES) \
+		--warmup $(BENCHMARK_GPU_WARMUP) \
+		--results-dir $(BENCHMARK_GPU_RESULTS_DIR)
 	@echo ""
 	@echo "=== GPU Benchmark complete ==="
-	@echo "Results: $(BENCHMARK_GPU_RESULTS_DIR)"
+	@echo "Report:  $(BENCHMARK_GPU_RESULTS_DIR)/report.html"
+	@echo "Results: $(BENCHMARK_GPU_RESULTS_DIR)/results.json"
 	@echo "Run 'make benchmark-gpu-teardown' to delete the namespace."
 
 ## benchmark-gpu-teardown: Teardown GPU benchmark resources (keeps namespace for RBAC preservation)

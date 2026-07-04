@@ -14,12 +14,12 @@ prompt:
     stdev: 400
     max: 2048
 benchmark:
-  burst_rate: 15
+  burst_rate: 35
   idle_rate: 1
   burst_seconds: 90
   idle_seconds: 90
-  cycles: 3
-  warmup_cycles: 1
-  batch_size: 1000
+  cycles: 4
+  warmup_cycles: 2
+  batch_size: 3000
   num_jobs: 3
   model: Qwen/Qwen3-8B

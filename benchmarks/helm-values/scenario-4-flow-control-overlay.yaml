@@ -20,8 +20,8 @@ inferenceExtension:
         - type: slo-deadline-ordering-policy
         - type: utilization-detector
           parameters:
-            queueDepthThreshold: 5
-            kvCacheUtilThreshold: 0.8
+            queueDepthThreshold: 2
+            kvCacheUtilThreshold: 0.5
       flowControl:
         maxBytes: 4294967296
         defaultRequestTTL: 30s
