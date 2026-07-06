@@ -229,6 +229,21 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 			t.Errorf("client B got %q, want %q", respB.RequestID, "job-b-req")
 		}
 	})
+
+	t.Run("close handles non-string key without panic", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		pool := newTestPool(t, mr, "close-nonstring-pool")
+		client := newAsyncProducerClient(pool)
+
+		// Manually store a non-string key in pendingIDs
+		client.pendingIDs.Store(42, struct{}{})
+		client.pendingIDs.Store("valid-id", struct{}{})
+
+		// Close should not panic
+		if err := client.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	})
 }
 
 func TestResultDispatcher_PanicRecovery(t *testing.T) {
@@ -268,21 +283,6 @@ func TestResultDispatcher_PanicRecovery(t *testing.T) {
 	}
 	if resp.RequestID != "panic-1" {
 		t.Errorf("RequestID = %q, want %q", resp.RequestID, "panic-1")
-	}
-}
-
-func TestAsyncProducerClient_CloseHandlesNonStringKey(t *testing.T) {
-	mr := miniredis.RunT(t)
-	pool := newTestPool(t, mr, "close-nonstring-pool")
-	client := newAsyncProducerClient(pool)
-
-	// Manually store a non-string key in pendingIDs
-	client.pendingIDs.Store(42, struct{}{})
-	client.pendingIDs.Store("valid-id", struct{}{})
-
-	// Close should not panic
-	if err := client.Close(); err != nil {
-		t.Fatalf("Close() error: %v", err)
 	}
 }
 

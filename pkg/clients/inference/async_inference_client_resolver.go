@@ -97,6 +97,11 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 		poolToModel[poolName] = model
 	}
 
+	if config.ResultPollTimeout <= 0 {
+		_ = rdb.Close()
+		return nil, fmt.Errorf("ResultPollTimeout must be > 0")
+	}
+
 	pools := make(map[string]*asyncPool, len(config.Models))
 	var closers []io.Closer
 
