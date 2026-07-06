@@ -25,6 +25,7 @@ data:
 
     terminate_on_observability_failure: {{ .Values.processor.config.terminateOnObservabilityFailure }}
     shutdown_timeout: {{ .Values.processor.config.shutdownTimeout | quote }}
+    heartbeat_interval: {{ .Values.processor.config.heartbeatInterval | quote }}
     work_dir: {{ .Values.processor.config.workDir | quote }}
 
     db_client:
@@ -41,11 +42,22 @@ data:
         conn_max_idle_time: {{ .Values.global.dbClient.redis.connMaxIdleTime | quote }}
         conn_max_lifetime: {{ .Values.global.dbClient.redis.connMaxLifetime | quote }}
 
+    {{- if .Values.processor.config.dispatchMode }}
+    dispatch_mode: {{ .Values.processor.config.dispatchMode | quote }}
+    {{- end }}
+    {{- if .Values.processor.config.asyncDispatch }}
+    async_dispatch:
+      result_poll_timeout: {{ .Values.processor.config.asyncDispatch.resultPollTimeout | quote }}
+    {{- end }}
+
     {{- with .Values.processor.config.globalInferenceGateway }}
     global_inference_gateway:
       url: {{ .url | quote }}
       {{- if .inferenceObjective }}
       inference_objective: {{ .inferenceObjective | quote }}
+      {{- end }}
+      {{- if .inferencePoolName }}
+      inference_pool_name: {{ .inferencePoolName | quote }}
       {{- end }}
       request_timeout: {{ .requestTimeout | quote }}
       max_retries: {{ .maxRetries }}
@@ -73,15 +85,20 @@ data:
     model_gateways:
       {{- range $model, $cfg := .Values.processor.config.modelGateways }}
       {{ $model | quote }}:
-        url: {{ $cfg.url | quote }}
-        {{- if $cfg.inferenceObjective }}
-        inference_objective: {{ $cfg.inferenceObjective | quote }}
+        {{- if $cfg.inferencePoolName }}
+        inference_pool_name: {{ $cfg.inferencePoolName | quote }}
         {{- end }}
+        {{- if $cfg.url }}
+        url: {{ $cfg.url | quote }}
         request_timeout: {{ $cfg.requestTimeout | quote }}
         max_retries: {{ $cfg.maxRetries }}
         initial_backoff: {{ $cfg.initialBackoff | quote }}
         max_backoff: {{ $cfg.maxBackoff | quote }}
         tls_insecure_skip_verify: {{ $cfg.tlsInsecureSkipVerify | default false }}
+        {{- end }}
+        {{- if $cfg.inferenceObjective }}
+        inference_objective: {{ $cfg.inferenceObjective | quote }}
+        {{- end }}
         {{- if $cfg.apiKeyName }}
         api_key_name: {{ $cfg.apiKeyName | quote }}
         {{- end }}

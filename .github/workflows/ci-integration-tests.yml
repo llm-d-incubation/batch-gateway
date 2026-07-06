@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   integration-tests:
-    name: Integration Tests (${{ matrix.file_client_type }}, ${{ matrix.db_client_type }}, ${{ matrix.exchange_client_type }}${{ matrix.enable_gie == 'true' && ', gie' || '' }})
+    name: Integration Tests (${{ matrix.file_client_type }}, ${{ matrix.db_client_type }}, ${{ matrix.exchange_client_type }}${{ matrix.enable_gie == 'true' && ', gie' || '' }}${{ matrix.enable_dispatcher == 'true' && ', dispatcher' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -45,6 +45,10 @@ jobs:
             db_client_type: postgresql
             exchange_client_type: redis
             enable_gie: "true"
+          - file_client_type: s3
+            db_client_type: postgresql
+            exchange_client_type: redis
+            enable_dispatcher: "true"
     steps:
       - uses: actions/checkout@v7
 
@@ -65,6 +69,7 @@ jobs:
           DB_CLIENT_TYPE: ${{ matrix.db_client_type }}
           EXCHANGE_CLIENT_TYPE: ${{ matrix.exchange_client_type }}
           ENABLE_GIE: ${{ matrix.enable_gie || 'false' }}
+          ENABLE_DISPATCHER: ${{ matrix.enable_dispatcher || 'false' }}
 
       - name: Run integration tests
         run: make test-e2e

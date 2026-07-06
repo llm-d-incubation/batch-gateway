@@ -218,6 +218,12 @@ tidy:
 	@echo "Tidying go modules..."
 	$(GO) mod tidy
 
+## update-deps: Upgrade all dependencies to latest and tidy
+update-deps:
+	@echo "Upgrading all dependencies..."
+	$(GO) get -u ./...
+	$(GO) mod tidy
+
 ## clean: Remove build artifacts and coverage files
 clean:
 	@echo "Cleaning..."
@@ -356,7 +362,7 @@ BENCHMARK_RESULTS_DIR ?= benchmarks/results/local-run
 benchmark-local:
 	@kind get clusters 2>/dev/null | grep -q $(KIND_CLUSTER_NAME) || \
 		{ echo "ERROR: Kind cluster '$(KIND_CLUSTER_NAME)' not found. Run 'make dev-deploy' first."; exit 1; }
-	@docker exec $(KIND_CLUSTER_NAME)-control-plane crictl images 2>/dev/null | grep -q batch-gateway-apiserver || \
+	@$(CONTAINER_TOOL) exec $(KIND_CLUSTER_NAME)-control-plane crictl images 2>/dev/null | grep -q batch-gateway-apiserver || \
 		{ echo "ERROR: batch-gateway images not loaded in Kind. Run 'make dev-deploy' first."; exit 1; }
 	@echo "=== Benchmark local e2e (MODE=sim, scenario $(BENCHMARK_SCENARIO)) ==="
 	@echo "Step 1/4: Setting up infrastructure..."
@@ -451,7 +457,7 @@ test-e2e:
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
 	echo "Processor observability endpoint: auto-resolved by the e2e test helpers"; \
-	cd test/e2e && $(GO) test -v -count=1 $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
+	cd test/e2e && $(GO) test -v -count=1 -timeout=20m $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
 	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
 	FAIL_COUNT=$$(grep -- '--- FAIL:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \

@@ -1,0 +1,8 @@
+processor:
+  config:
+    dispatchMode: async
+    asyncDispatch:
+      resultPollTimeout: "30s"
+    modelGateways:
+      sim-model:
+        inferencePoolName: "sim-pool"

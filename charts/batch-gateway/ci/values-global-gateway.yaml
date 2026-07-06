@@ -1,0 +1,14 @@
+# Exercises: globalInferenceGateway template path (processor-configmap.yaml:44-70)
+global:
+  fileClient:
+    fs:
+      pvcName: "batch-data"
+
+processor:
+  config:
+    globalInferenceGateway:
+      url: "http://inference-gateway:8000"
+      requestTimeout: "5m"
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "60s"

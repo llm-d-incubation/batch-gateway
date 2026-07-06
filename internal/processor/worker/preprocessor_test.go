@@ -490,8 +490,8 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 
 // TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled verifies that when both userCancelCtx
 // and ctx (SIGTERM) are cancelled, preProcessJob returns errCancelled — not errShutdown.
-// This matches processModel's priority (SLO > cancel > shutdown) and prevents re-enqueueing
-// a job the user asked to cancel.
+// This matches processModel's priority (SLO > cancel > shutdown) and ensures the job
+// is cancelled rather than left for the orphan reconciler.
 func TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled(t *testing.T) {
 	ctx := testLoggerCtx(t)
 

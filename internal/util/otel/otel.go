@@ -49,9 +49,31 @@ const (
 	AttrRequestFailed    = "batch.request.failed"
 )
 
+// baseLoggerKey stores the logger captured before the first trace enrichment.
+// Nested StartSpan calls enrich from this base rather than from the
+// accumulated context logger, preventing duplicate trace_id/span_id fields.
+type baseLoggerKey struct{}
+
 // StartSpan creates a new span using the batch-gateway tracer.
+// When the span carries a valid trace context, the logger in the returned
+// context is enriched with trace_id and span_id so that all downstream
+// log lines emitted via logr.FromContextOrDiscard(ctx) are automatically
+// correlated with the active trace.
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	return otel.Tracer(defaultServiceName).Start(ctx, name, opts...)
+	ctx, span := otel.Tracer(defaultServiceName).Start(ctx, name, opts...)
+	if sc := span.SpanContext(); sc.IsValid() {
+		base, ok := ctx.Value(baseLoggerKey{}).(logr.Logger)
+		if !ok {
+			base = logr.FromContextOrDiscard(ctx)
+			ctx = context.WithValue(ctx, baseLoggerKey{}, base)
+		}
+		logger := base.WithValues(
+			"trace_id", sc.TraceID().String(),
+			"span_id", sc.SpanID().String(),
+		)
+		ctx = logr.NewContext(ctx, logger)
+	}
+	return ctx, span
 }
 
 // SetAttr sets attributes on the span in the given context.
@@ -70,6 +92,9 @@ func DetachedContext(ctx context.Context, name string) (context.Context, trace.S
 		links = append(links, trace.Link{SpanContext: sc})
 	}
 	bgCtx := logr.NewContext(context.Background(), logr.FromContextOrDiscard(ctx))
+	if base, ok := ctx.Value(baseLoggerKey{}).(logr.Logger); ok {
+		bgCtx = context.WithValue(bgCtx, baseLoggerKey{}, base)
+	}
 	return StartSpan(bgCtx, name, trace.WithLinks(links...))
 }
 

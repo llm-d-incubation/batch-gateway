@@ -296,19 +296,29 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	if len(resolved.PerModel) > 0 {
 		opts = append(opts, clientset.WithPerModelInference(resolved.PerModel))
 	}
+	if resolved.Async != nil {
+		opts = append(opts, clientset.WithAsyncInference(*resolved.Async))
+	}
 	clients, err := clientset.NewClientset(ctx, ucom.ComponentProcessor, opts...)
 	if err != nil {
 		logger.Error(err, "Failed to create clients")
 		return nil, err
 	}
 
-	// Validate() guarantees exactly one of resolved.Global or resolved.PerModel is set.
-	if resolved.Global != nil {
+	// ResolveModelGateways populates exactly one of Async, Global, or PerModel
+	// based on the dispatch mode validated by Validate().
+	switch {
+	case resolved.Async != nil:
+		logger.V(logging.INFO).Info("Processor clients initialized",
+			"mode", "async",
+			"numModels", len(resolved.Async.Models),
+			"fileClientType", cfg.FileClientCfg.Type)
+	case resolved.Global != nil:
 		logger.V(logging.INFO).Info("Processor clients initialized",
 			"mode", "global",
 			"gatewayURL", resolved.Global.URL,
 			"fileClientType", cfg.FileClientCfg.Type)
-	} else {
+	default:
 		logger.V(logging.INFO).Info("Processor clients initialized",
 			"mode", "per-model",
 			"numModelGateways", len(resolved.PerModel),

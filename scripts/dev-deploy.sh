@@ -60,6 +60,12 @@ USE_KIND="${USE_KIND:-true}"
 #                           batch-sheddable                      (non-GIE mode)
 #   Managed-by label:       app.kubernetes.io/managed-by=batch-gateway-dev
 ENABLE_GIE="${ENABLE_GIE:-false}"
+
+# ── Async dispatcher (llm-d-async) support ──────────────────────────────────
+# Set ENABLE_DISPATCHER=true to deploy llm-d-async dispatcher instances
+# alongside the batch-gateway. The processor is reconfigured for async dispatch.
+# Set DISPATCHER_SOURCE to a local llm-d-async checkout to build from source.
+ENABLE_DISPATCHER="${ENABLE_DISPATCHER:-false}"
 GIE_REPO="${GIE_REPO:-}"
 GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
 GIE_VERSION="${GIE_VERSION:-v1.5.0}"
@@ -135,6 +141,9 @@ nodes:
     protocol: TCP
   - containerPort: ${MINIO_NODE_PORT}
     hostPort: ${MINIO_PORT}
+    protocol: TCP
+  - containerPort: ${REDIS_NODE_PORT:-30479}
+    hostPort: ${REDIS_PORT:-6399}
     protocol: TCP
 EOF
         fi
@@ -1090,13 +1099,14 @@ install_batch_gateway() {
         --set "global.dbClient.type=${DB_CLIENT_TYPE}"
         --set "apiserver.config.enablePprof=true"
         --set "processor.config.enablePprof=true"
+        --set "processor.config.heartbeatInterval=10s"
         --set "processor.resources.requests.memory=256Mi"
         --set "gc.enabled=true"
         --set "gc.image.repository=${GC_IMG%:*}"
         --set "gc.image.pullPolicy=IfNotPresent"
         --set "gc.image.tag=${IMAGE_TAG}"
         --set "gc.config.collector.interval=5s"
-        --set "gc.config.reconciler.interval=60s"
+        --set "gc.config.reconciler.interval=30s"
         --namespace "${NAMESPACE}"
     )
 
@@ -1338,6 +1348,12 @@ print_usage() {
     echo "       - Each model has its own InferencePool and InferenceObjective"
     echo "       - InferenceObjectives: interactive-default (priority 100), ${GIE_OBJECTIVE_PREFIX} (priority -1)"
     fi
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+    echo ""
+    echo "     Async dispatcher is enabled:"
+    echo "       - Processor is configured for async dispatch via llm-d-async"
+    echo "       - Run dispatcher tests: ENABLE_DISPATCHER=true make test-e2e"
+    fi
     echo ""
     echo "  3. Create a batch (replace FILE_ID with the id from step 2):"
     echo ""
@@ -1446,6 +1462,9 @@ main() {
     verify_deployment
     if [ "${USE_KIND}" = true ]; then
         create_nodeport_services
+    fi
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+        source "${SCRIPT_DIR}/dev-deploy-dispatcher.sh"
     fi
     print_usage
 
