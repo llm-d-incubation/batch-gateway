@@ -851,6 +851,15 @@ EOF
         --for=condition=Ready --timeout=300s
     log "LLMBatchGateway is ready."
 
+    step "Waiting for AIGateway to be ready..."
+    kubectl wait aigateway/default-aigateway --for=condition=Ready --timeout=300s
+    log "AIGateway is ready."
+
+    # TODO: Change to die once https://github.com/opendatahub-io/ai-gateway-operator/issues/47 is fixed.
+    step "Waiting for DataScienceCluster to be ready..."
+    kubectl wait dsc/default-dsc --for=condition=Ready --timeout=60s \
+        || warn "DataScienceCluster is not Ready (known issue: github.com/opendatahub-io/ai-gateway-operator/issues/47)"
+
     create_batch_httproute
     create_batch_destinationrule
 }
@@ -901,6 +910,8 @@ EOF
         || die "Internal Gateway '${BATCH_INTERNAL_GATEWAY_NAME}' not programmed after 300s."
 
     log "Internal Gateway created (ClusterIP, no TLS, no rate limit)."
+
+    check_batch_internal_gateway
 }
 
 # Verifies the internal gateway is ClusterIP-only and not exposed externally.
@@ -1073,6 +1084,7 @@ JSONL
             _BATCH_FILE_ID=$(_jval id "$body")
             echo "  File uploaded: ${_BATCH_FILE_ID}"
         else
+            echo "  File upload failed (HTTP ${http_code}): ${body}"
             return 1
         fi
 
@@ -1089,6 +1101,7 @@ JSONL
             _BATCH_ID=$(_jval id "$body")
             echo "  Batch created: ${_BATCH_ID}"
         else
+            echo "  Batch creation failed (HTTP ${http_code}): ${body}"
             return 1
         fi
     }
@@ -1263,4 +1276,5 @@ JSONL
     fi
     echo "  Passed: ${_TEST_PASSED}  Failed: ${_TEST_FAILED}  Total: ${_TEST_TOTAL}"
 
+    return "${_TEST_FAILED}"
 }

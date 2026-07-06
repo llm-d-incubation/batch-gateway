@@ -846,7 +846,6 @@ cmd_install() {
     create_batch_internal_gateway
     create_batch_llm_route
     apply_batch_llm_auth_policy
-    check_batch_internal_gateway
 
     deploy_batch_gateway_k8s
     apply_batch_auth_policy
@@ -926,16 +925,18 @@ EOF
     local llm_url="${GATEWAY_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions"
     local inference_payload="{\"model\":\"${MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":10}"
 
-    check_batch_internal_gateway
-
+    local test_failures=0
     run_tests "${llm_url}" "${GATEWAY_URL}" "${MODEL_NAME}" \
         "Authorization: Bearer ${token}" \
         "Authorization: Bearer ${unauth_token}" \
-        "${inference_payload}"
+        "${inference_payload}" \
+        || test_failures=$?
 
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         verify_flow_control_runtime
     fi
+
+    return "${test_failures}"
 }
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
