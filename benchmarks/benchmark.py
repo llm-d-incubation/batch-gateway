@@ -117,6 +117,16 @@ class ScenarioResult:
 
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+JOB_SLO_WINDOWS = {
+    "job-a": {"label": "A", "display": "30m", "seconds": 1800},
+    "job-b": {"label": "B", "display": "2h", "seconds": 7200},
+    "job-c": {"label": "C", "display": "24h", "seconds": 86400},
+}
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -347,8 +357,7 @@ def submit_batches(cfg, namespace):
     if cfg.num_jobs == 0:
         return
 
-    completion_windows = ["30m", "2h", "24h"]
-    job_names = ["job-a", "job-b", "job-c"]
+    job_names = list(JOB_SLO_WINDOWS.keys())
     active_jobs = []
 
     for i in range(min(cfg.num_jobs, 3)):
@@ -372,7 +381,7 @@ def submit_batches(cfg, namespace):
     _upload_jsonl_to_pvc(cfg, namespace, active_jobs)
 
     for i, name in enumerate(active_jobs):
-        window = completion_windows[i]
+        window = JOB_SLO_WINDOWS[name]["display"]
         log(f"  Submitting {name} (window={window}, size={cfg.batch_size})")
         script = _batch_submit_script()
         indented = "\n".join("          " + line for line in script.splitlines())
@@ -608,7 +617,7 @@ def get_batch_progress(context, namespace):
 def get_per_job_progress(context, namespace):
     """Get per-job batch progress: {job_name: {completed, total, status}}."""
     jobs = {}
-    for name in ["job-a", "job-b", "job-c"]:
+    for name in list(JOB_SLO_WINDOWS.keys()):
         try:
             out = kubectl(["logs", f"job/{name}", "--tail=10"],
                          context, namespace, check=False)
@@ -624,8 +633,8 @@ def get_per_job_progress(context, namespace):
                     job_total = int(parts[1])
                     break
             jobs[name] = {"completed": job_completed, "total": job_total, "status": status}
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"  DEBUG: Failed to parse progress for {name}: {e}")
     return jobs
 
 
@@ -1120,29 +1129,18 @@ def _format_slo_completion(result):
 
     Returns e.g. 'A: ✓ 8m/30m<br>B: ✓ 15m/2h<br>C: ✓ 25m/24h'
     """
-    job_labels = {"job-a": "A", "job-b": "B", "job-c": "C"}
-    windows = {"job-a": "30m", "job-b": "2h", "job-c": "24h"}
-    window_seconds = {"job-a": 1800, "job-b": 7200, "job-c": 86400}
-
     parts = []
-    for job_name, label in job_labels.items():
-        target = windows[job_name]
+    for job_name, info in JOB_SLO_WINDOWS.items():
+        label = info["label"]
+        target = info["display"]
         if job_name in result.job_completion_times:
             elapsed_s = result.job_completion_times[job_name]
-            passed = elapsed_s <= window_seconds[job_name]
+            passed = elapsed_s <= info["seconds"]
             indicator = "✓" if passed else "✗"
             actual = _format_duration(elapsed_s)
             parts.append(f"{label}: {indicator} {actual}/{target}")
         else:
             parts.append(f"{label}: — /{target}")
-
-    if not parts:
-        if result.batch_timeline:
-            final = result.batch_timeline[-1]
-            completed = final.get("completed", 0)
-            total = final.get("total", 0)
-            return f"{completed}/{total}" if total > 0 else "N/A"
-        return "N/A"
 
     return "<br>".join(parts)
 
@@ -1201,7 +1199,6 @@ def _generate_narrative(results, cfg):
                          f"with proactive Router-side batch shedding.")
 
     # Batch completion summary with per-job SLO status
-    window_seconds = {"job-a": 1800, "job-b": 7200, "job-c": 86400}
     for r in results:
         if r.scenario >= 2 and r.batch_timeline:
             final = r.batch_timeline[-1]
@@ -1213,7 +1210,7 @@ def _generate_narrative(results, cfg):
                 if r.job_completion_times:
                     slo_met = sum(
                         1 for jn, jt in r.job_completion_times.items()
-                        if jt <= window_seconds.get(jn, float("inf"))
+                        if jt <= JOB_SLO_WINDOWS.get(jn, {}).get("seconds", float("inf"))
                     )
                     lines.append(
                         f"S{r.scenario} ({r.name}) completed {pct:.0f}% of batch in "
