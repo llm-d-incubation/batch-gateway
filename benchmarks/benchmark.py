@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import ast
+import atexit
 import csv
 import datetime
 import json
@@ -318,25 +319,26 @@ def _upload_jsonl_to_pvc(cfg, namespace, job_names):
     kubectl(["delete", "pod", helper_name, "--ignore-not-found", "--wait"],
             cfg.context, namespace, check=False)
     kubectl_apply(helper_yaml, cfg.context, namespace)
-    kubectl(["wait", "pod", helper_name, "--for=condition=Ready",
-             "--timeout=60s"], cfg.context, namespace)
-    time.sleep(2)
+    try:
+        kubectl(["wait", "pod", helper_name, "--for=condition=Ready",
+                 "--timeout=60s"], cfg.context, namespace)
+        time.sleep(2)
 
-    for name in job_names:
-        jsonl_path = cfg.results_dir / f"{name}.jsonl"
-        for attempt in range(3):
-            try:
-                kubectl(["cp", str(jsonl_path),
-                         f"{namespace}/{helper_name}:/data/{name}.jsonl"],
-                        cfg.context, namespace=None, check=True)
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 2:
-                    raise
-                time.sleep(5)
-
-    kubectl(["delete", "pod", helper_name, "--ignore-not-found"],
-            cfg.context, namespace)
+        for name in job_names:
+            jsonl_path = cfg.results_dir / f"{name}.jsonl"
+            for attempt in range(3):
+                try:
+                    kubectl(["cp", str(jsonl_path),
+                             f"{namespace}/{helper_name}:/data/{name}.jsonl"],
+                            cfg.context, namespace=None, check=True)
+                    break
+                except subprocess.CalledProcessError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(5)
+    finally:
+        kubectl(["delete", "pod", helper_name, "--ignore-not-found"],
+                cfg.context, namespace, check=False)
 
 
 def submit_batches(cfg, namespace):
@@ -918,6 +920,7 @@ def start_prometheus_port_forward(context, namespace, service):
     if pf.start():
         _prom_port_forward = pf
         os.environ["PROMETHEUS_URL"] = pf.url
+        atexit.register(stop_prometheus_port_forward)
 
 
 def stop_prometheus_port_forward():
@@ -1749,6 +1752,7 @@ def _managed_setup(args, scenario):
         "GHCR_TOKEN": ghcr_token,
         "ROUTER_REPO": router_repo,
         "PROMETHEUS_RELEASE": prometheus_release,
+        "PROMETHEUS_NAMESPACE": getattr(args, "prometheus_namespace", "") or "",
     }
 
     setup_script = str(SCRIPT_DIR / "setup.sh")
@@ -1762,9 +1766,9 @@ def _managed_setup(args, scenario):
         log(f"  [managed] WARNING: setup.sh exited with code {result.returncode}")
 
 
-def _managed_teardown(args):
+def _managed_teardown(args, scenario):
     """Tear down all benchmark resources in the namespace."""
-    namespace = _NAMESPACE_OVERRIDE or "batch-bench"
+    namespace = _NAMESPACE_OVERRIDE or f"batch-bench-s{scenario}"
     context = args.context
 
     log(f"  [managed] Tearing down resources in {namespace}")
@@ -1910,7 +1914,7 @@ def run_scenario(cfg, scenario):
         start_time = end_time - datetime.timedelta(seconds=cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds))
         gpu_metrics = collect_gpu_metrics(cfg.context, namespace, start_time, end_time)
         if gpu_metrics:
-            log(f"  GPU: cache_usage avg={gpu_metrics.get('gpu_cache_usage_avg', 0):.1f}%, "
+            log(f"  GPU: cache_usage avg={gpu_metrics.get('gpu_cache_usage_avg', 0) * 100:.1f}%, "
                 f"running avg={gpu_metrics.get('requests_running_avg', 0):.1f}")
 
     return ScenarioResult(scenario=scenario, name=name, phases=phases,
@@ -2418,13 +2422,13 @@ def main():
                     _managed_setup(args, scenario)
                 result = run_scenario(trial_cfg, scenario)
                 if args.managed:
-                    _managed_teardown(args)
+                    _managed_teardown(args, scenario)
             else:
                 if args.managed:
                     _managed_setup(args, scenario)
                 result = run_scenario(cfg, scenario)
                 if args.managed:
-                    _managed_teardown(args)
+                    _managed_teardown(args, scenario)
             trial_results.append(result)
 
         if trials > 1:

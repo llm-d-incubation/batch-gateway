@@ -373,7 +373,7 @@ else
         curl -sL "${local_base}/guides/${GUIDE_NAME}/router/${GUIDE_NAME}.values.yaml" -o "${LLM_D_VALUES_DIR}/guide.values.yaml"
         curl -sL "${local_base}/guides/recipes/router/features/monitoring.values.yaml" -o "${LLM_D_VALUES_DIR}/monitoring.values.yaml"
 
-        ${H} install "${GUIDE_NAME}" \
+        ${H} upgrade --install "${GUIDE_NAME}" \
             oci://ghcr.io/llm-d/llm-d-router-gateway \
             --version "${ROUTER_CHART_VERSION}" \
             -n "${NAMESPACE}" \
