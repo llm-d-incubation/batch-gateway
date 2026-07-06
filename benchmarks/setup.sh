@@ -274,7 +274,7 @@ VALUESEOF
         # Install EPP standalone chart
         epp_release="epp-bench"
         log "  Installing EPP (release: ${epp_release})"
-        ${H} install "${epp_release}" "${chart_dir}" \
+        ${H} upgrade --install "${epp_release}" "${chart_dir}" \
             -n "${NAMESPACE}" \
             --set "inferenceExtension.image.tag=${GIE_VERSION}" \
             --set inferenceExtension.monitoring.prometheus.auth.enabled=false \

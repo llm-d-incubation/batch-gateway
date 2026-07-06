@@ -110,6 +110,7 @@ class ScenarioResult:
     name: str
     phases: list = field(default_factory=list)
     batch_timeline: list = field(default_factory=list)
+    job_completion_times: dict = field(default_factory=dict)
     aimd_metrics: dict = field(default_factory=dict)
     flow_control_metrics: dict = field(default_factory=dict)
     gpu_metrics: dict = field(default_factory=dict)
@@ -604,6 +605,30 @@ def get_batch_progress(context, namespace):
     return completed, total
 
 
+def get_per_job_progress(context, namespace):
+    """Get per-job batch progress: {job_name: {completed, total, status}}."""
+    jobs = {}
+    for name in ["job-a", "job-b", "job-c"]:
+        try:
+            out = kubectl(["logs", f"job/{name}", "--tail=10"],
+                         context, namespace, check=False)
+            job_completed, job_total = 0, 0
+            status = "in_progress"
+            for line in reversed(out.split("\n")):
+                if "Terminal:" in line:
+                    status = line.split("Terminal:")[1].strip()
+                    break
+                if "completed=" in line and "/" in line.split("completed=")[1]:
+                    parts = line.split("completed=")[1].split()[0].split("/")
+                    job_completed = int(parts[0])
+                    job_total = int(parts[1])
+                    break
+            jobs[name] = {"completed": job_completed, "total": job_total, "status": status}
+        except Exception:
+            pass
+    return jobs
+
+
 def get_current_phase(context, namespace):
     """Get current guidellm phase from job logs."""
     try:
@@ -621,6 +646,7 @@ def get_current_phase(context, namespace):
 def monitor_scenario(cfg, scenario, namespace):
     """Monitor batch progress during interactive traffic, return timeline."""
     timeline = []
+    job_completion_times = {}
     start = time.time()
     total_duration = cfg.cycles * (cfg.burst_seconds + cfg.idle_seconds) + 300
 
@@ -629,6 +655,11 @@ def monitor_scenario(cfg, scenario, namespace):
 
         completed, total = get_batch_progress(cfg.context, namespace)
         phase = get_current_phase(cfg.context, namespace)
+
+        per_job = get_per_job_progress(cfg.context, namespace)
+        for jname, jinfo in per_job.items():
+            if jname not in job_completion_times and jinfo["status"] == "completed":
+                job_completion_times[jname] = round(elapsed)
 
         timeline.append({
             "elapsed": round(elapsed),
@@ -656,7 +687,7 @@ def monitor_scenario(cfg, scenario, namespace):
 
         time.sleep(10)
 
-    return timeline
+    return timeline, job_completion_times
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1115,52 @@ def _aggregate_phases(phases, phase_filter=None):
     }
 
 
+def _format_slo_completion(result):
+    """Format batch SLO as per-job actual/target with pass/fail indicators.
+
+    Returns e.g. 'A: ✓ 8m/30m<br>B: ✓ 15m/2h<br>C: ✓ 25m/24h'
+    """
+    job_labels = {"job-a": "A", "job-b": "B", "job-c": "C"}
+    windows = {"job-a": "30m", "job-b": "2h", "job-c": "24h"}
+    window_seconds = {"job-a": 1800, "job-b": 7200, "job-c": 86400}
+
+    parts = []
+    for job_name, label in job_labels.items():
+        target = windows[job_name]
+        if job_name in result.job_completion_times:
+            elapsed_s = result.job_completion_times[job_name]
+            passed = elapsed_s <= window_seconds[job_name]
+            indicator = "✓" if passed else "✗"
+            actual = _format_duration(elapsed_s)
+            parts.append(f"{label}: {indicator} {actual}/{target}")
+        else:
+            parts.append(f"{label}: — /{target}")
+
+    if not parts:
+        if result.batch_timeline:
+            final = result.batch_timeline[-1]
+            completed = final.get("completed", 0)
+            total = final.get("total", 0)
+            return f"{completed}/{total}" if total > 0 else "N/A"
+        return "N/A"
+
+    return "<br>".join(parts)
+
+
+def _format_duration(seconds):
+    """Format seconds into human-readable duration (e.g. '8m', '1h 15m')."""
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    remaining_min = minutes % 60
+    if remaining_min == 0:
+        return f"{hours}h"
+    return f"{hours}h {remaining_min}m"
+
+
 def _generate_narrative(results, cfg):
     """Auto-generate a narrative conclusion based on metric comparisons."""
     baseline = next((r for r in results if r.scenario == 0), None)
@@ -1123,7 +1200,8 @@ def _generate_narrative(results, cfg):
                          f"{overhead:.0f}% above baseline ({fc_burst['ttft_p99']:.0f} ms) "
                          f"with proactive Router-side batch shedding.")
 
-    # Batch completion summary
+    # Batch completion summary with per-job SLO status
+    window_seconds = {"job-a": 1800, "job-b": 7200, "job-c": 86400}
     for r in results:
         if r.scenario >= 2 and r.batch_timeline:
             final = r.batch_timeline[-1]
@@ -1132,8 +1210,18 @@ def _generate_narrative(results, cfg):
             elapsed = final.get("elapsed", 0)
             if total > 0:
                 pct = completed / total * 100
-                lines.append(f"S{r.scenario} ({r.name}) completed {pct:.0f}% of batch "
-                             f"({completed}/{total}) in {elapsed}s.")
+                if r.job_completion_times:
+                    slo_met = sum(
+                        1 for jn, jt in r.job_completion_times.items()
+                        if jt <= window_seconds.get(jn, float("inf"))
+                    )
+                    lines.append(
+                        f"S{r.scenario} ({r.name}) completed {pct:.0f}% of batch in "
+                        f"{_format_duration(elapsed)}, {slo_met}/{len(r.job_completion_times)} "
+                        f"jobs met their SLO windows.")
+                else:
+                    lines.append(f"S{r.scenario} ({r.name}) completed {pct:.0f}% of batch "
+                                 f"({completed}/{total}) in {_format_duration(elapsed)}.")
 
     if not lines:
         return "Insufficient data for narrative conclusion. Run on GPU cluster to generate."
@@ -1261,8 +1349,10 @@ def generate_html_report(cfg, results):
                 "name": result.name,
                 "cache_series": result.gpu_metrics.get("gpu_cache_usage_series", []),
                 "running_series": result.gpu_metrics.get("requests_running_series", []),
+                "waiting_series": result.gpu_metrics.get("requests_waiting_series", []),
                 "cache_avg": result.gpu_metrics.get("gpu_cache_usage_avg", 0),
                 "running_avg": result.gpu_metrics.get("requests_running_avg", 0),
+                "waiting_avg": result.gpu_metrics.get("requests_waiting_avg", 0),
             })
 
     # Build summary comparison table (one row per scenario)
@@ -1277,8 +1367,10 @@ def generate_html_report(cfg, results):
 
         if result.scenario <= 1:
             batch_slo = "N/A"
+        elif result.job_completion_times:
+            batch_slo = _format_slo_completion(result)
         elif result.batch_timeline:
-            final = result.batch_timeline[-1] if result.batch_timeline else {}
+            final = result.batch_timeline[-1]
             completed = final.get("completed", 0)
             total = final.get("total", 0)
             batch_slo = f"{completed}/{total}" if total > 0 else "N/A"
@@ -1450,6 +1542,9 @@ def generate_html_report(cfg, results):
             </div>
             <div class="chart-container">
                 <canvas id="requestsRunningChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="requestsWaitingChart"></canvas>
             </div>
         </div>
 
@@ -1638,6 +1733,28 @@ def generate_html_report(cfg, results):
                 options: {{
                     responsive: true,
                     plugins: {{ title: {{ display: true, text: 'vLLM Requests Running' }} }},
+                    scales: {{
+                        x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
+                        y: {{ title: {{ display: true, text: 'Requests' }}, beginAtZero: true }}
+                    }}
+                }}
+            }});
+        }}
+
+        // Requests waiting chart
+        if (gpuData.length > 0 && gpuData.some(d => (d.waiting_series || []).length > 0)) {{
+            const waitingDatasets = gpuData.filter(d => (d.waiting_series || []).length > 0).map((d, i) => ({{
+                label: d.scenario + ' (' + d.name + ') avg=' + (d.waiting_avg || 0).toFixed(1),
+                data: d.waiting_series.map((v, j) => ({{x: j * 15, y: v}})),
+                borderColor: colors[i % colors.length],
+                fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2,
+            }}));
+            new Chart(document.getElementById('requestsWaitingChart'), {{
+                type: 'line',
+                data: {{ datasets: waitingDatasets }},
+                options: {{
+                    responsive: true,
+                    plugins: {{ title: {{ display: true, text: 'vLLM Requests Waiting (Queue Pressure)' }} }},
                     scales: {{
                         x: {{ type: 'linear', title: {{ display: true, text: 'Time (s)' }} }},
                         y: {{ title: {{ display: true, text: 'Requests' }}, beginAtZero: true }}
@@ -1847,8 +1964,9 @@ def run_scenario(cfg, scenario):
     time.sleep(30)  # Let guidellm validate and start
 
     # Monitor
+    job_completion_times = {}
     if scenario >= 2:
-        timeline = monitor_scenario(cfg, scenario, namespace)
+        timeline, job_completion_times = monitor_scenario(cfg, scenario, namespace)
     else:
         # Scenarios 0-1: wait for guidellm job(s) to finish
         timeline = []
@@ -1918,7 +2036,9 @@ def run_scenario(cfg, scenario):
                 f"running avg={gpu_metrics.get('requests_running_avg', 0):.1f}")
 
     return ScenarioResult(scenario=scenario, name=name, phases=phases,
-                          batch_timeline=timeline, aimd_metrics=aimd_metrics,
+                          batch_timeline=timeline,
+                          job_completion_times=job_completion_times,
+                          aimd_metrics=aimd_metrics,
                           flow_control_metrics=flow_control_metrics,
                           gpu_metrics=gpu_metrics)
 
@@ -1997,10 +2117,12 @@ def _aggregate_trials(trial_results):
     aimd = next((r.aimd_metrics for r in trial_results if r.aimd_metrics), {})
     fc = next((r.flow_control_metrics for r in trial_results if r.flow_control_metrics), {})
     gpu = next((r.gpu_metrics for r in trial_results if r.gpu_metrics), {})
+    jct = next((r.job_completion_times for r in trial_results if r.job_completion_times), {})
 
     result = ScenarioResult(
         scenario=scenario, name=name,
         phases=aggregated_phases, batch_timeline=best_timeline,
+        job_completion_times=jct,
         aimd_metrics=aimd, flow_control_metrics=fc,
         gpu_metrics=gpu,
     )
@@ -2492,6 +2614,7 @@ def main():
             "name": result.name,
             "phases": [],
             "batch_timeline": result.batch_timeline,
+            "job_completion_times": result.job_completion_times,
             "summary": {},
         }
 
