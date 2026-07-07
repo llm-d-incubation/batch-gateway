@@ -139,6 +139,12 @@ type BatchPriorityQueueClient interface {
 	PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
 		jobPriorities []*BatchJobPriority, err error)
 
+	// PQDequeueAndClaim atomically removes the highest-priority job from the
+	// queue and records an in-flight entry (see InFlightClient) owned by
+	// processorID. Returns (nil, nil) when the queue is empty.
+	PQDequeueAndClaim(ctx context.Context, processorID string) (
+		jobPriority *BatchJobPriority, err error)
+
 	// PQDelete deletes a job priority object from the queue.
 	// Specify the ID and SLO values for deleting. Other values are not required.
 	// It returns the number of deleted objects.

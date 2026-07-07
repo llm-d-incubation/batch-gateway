@@ -251,7 +251,7 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 
 		// check queue for available tasks
 		logger.V(logging.DEBUG).Info("Checking queue for available tasks")
-		task, err := p.poller.dequeueOne(pollingCtx)
+		task, err := p.poller.dequeueAndClaimOne(pollingCtx, p.processorID)
 
 		// when there's no waiting tasks in the queue or poller returned an error
 		if task == nil || err != nil {
@@ -260,13 +260,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				return nil
 			}
 			continue
-		}
-
-		// Record in-flight entry immediately after dequeue so the orphan
-		// reconciler can track this job. Non-fatal on error: the reconciler
-		// can still detect orphans via DB + queue cross-reference.
-		if err := p.inflight.InFlightSet(pollingCtx, task.ID, p.processorID); err != nil {
-			logr.FromContextOrDiscard(pollingCtx).Error(err, "Failed to set in-flight entry", "jobId", task.ID)
 		}
 
 		// Pre-launch: use pollingCtx so guard cancel / SIGTERM interrupts

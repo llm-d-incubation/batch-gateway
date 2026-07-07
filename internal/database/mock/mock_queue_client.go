@@ -19,6 +19,7 @@ package mock
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -29,14 +30,23 @@ import (
 var _ api.BatchPriorityQueueClient = (*MockBatchPriorityQueueClient)(nil)
 
 type MockBatchPriorityQueueClient struct {
-	mu    sync.Mutex
-	queue []*api.BatchJobPriority
+	mu       sync.Mutex
+	queue    []*api.BatchJobPriority
+	inflight *MockInFlightClient
 }
 
 func NewMockBatchPriorityQueueClient() *MockBatchPriorityQueueClient {
 	return &MockBatchPriorityQueueClient{
 		queue: make([]*api.BatchJobPriority, 0),
 	}
+}
+
+// LinkInFlight connects an in-flight client so PQDequeueAndClaim records
+// claims in it. Without a link, claims are dropped.
+func (m *MockBatchPriorityQueueClient) LinkInFlight(inflight *MockInFlightClient) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inflight = inflight
 }
 
 func (m *MockBatchPriorityQueueClient) PQEnqueue(ctx context.Context, jobPriority *api.BatchJobPriority) error {
@@ -99,6 +109,28 @@ func (m *MockBatchPriorityQueueClient) PQDequeue(ctx context.Context, timeout ti
 			// Small sleep before checking again
 		}
 	}
+}
+
+func (m *MockBatchPriorityQueueClient) PQDequeueAndClaim(ctx context.Context, processorID string) (*api.BatchJobPriority, error) {
+	if processorID == "" {
+		return nil, fmt.Errorf("processorID is empty")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.queue) == 0 {
+		return nil, nil
+	}
+	item := m.queue[0]
+	m.queue = m.queue[1:]
+
+	if m.inflight != nil {
+		if err := m.inflight.InFlightSet(ctx, item.ID, processorID); err != nil {
+			return nil, err
+		}
+	}
+	return item, nil
 }
 
 func (m *MockBatchPriorityQueueClient) PQDelete(ctx context.Context, jobPriority *api.BatchJobPriority) (nDeleted int, err error) {

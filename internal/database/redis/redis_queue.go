@@ -22,6 +22,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -193,6 +194,55 @@ func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Dura
 
 	logger.Info("PQDequeue: succeeded", "nItems", len(jobPriorities))
 	return
+}
+
+func (c *ExchangeDBClientRedis) PQDequeueAndClaim(ctx context.Context, processorID string) (
+	*db_api.BatchJobPriority, error) {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := logr.FromContextOrDiscard(ctx)
+	if processorID == "" {
+		return nil, fmt.Errorf("processorID is empty")
+	}
+
+	entry := db_api.InFlightEntry{
+		ProcessorID: processorID,
+		LastSeen:    time.Now().Unix(),
+	}
+	entryData, err := json.Marshal(entry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal in-flight entry: %w", err)
+	}
+
+	cctx, ccancel := context.WithTimeout(ctx, c.timeout)
+	defer ccancel()
+	raw, err := redisScriptPQDequeueClaim.Run(cctx, c.redisClient,
+		[]string{priorityQueueKeyName, inFlightKeyName}, entryData).Result()
+	if err != nil {
+		// The script returns false on an empty queue, which go-redis maps to Nil.
+		if errors.Is(err, goredis.Nil) {
+			if time.Since(c.idleLogLast) >= c.idleLogFreq {
+				logger.Info("PQDequeueAndClaim: no items")
+				c.idleLogLast = time.Now()
+			}
+			return nil, nil
+		}
+		return nil, fmt.Errorf("PQDequeueAndClaim: %w", err)
+	}
+
+	member, ok := raw.(string)
+	if !ok {
+		return nil, fmt.Errorf("PQDequeueAndClaim: unexpected member type: %T", raw)
+	}
+	item := &db_api.BatchJobPriority{}
+	if err := json.Unmarshal([]byte(member), item); err != nil {
+		return nil, fmt.Errorf("PQDequeueAndClaim: unmarshal member: %w", err)
+	}
+
+	logger.Info("PQDequeueAndClaim: succeeded", "ID", item.ID)
+	return item, nil
 }
 
 func (c *ExchangeDBClientRedis) PQGetIDs(ctx context.Context) (map[string]bool, error) {

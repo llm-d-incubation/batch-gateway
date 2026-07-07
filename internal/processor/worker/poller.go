@@ -48,8 +48,10 @@ func (p *Poller) validate() error {
 	return nil
 }
 
-func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
-	tasks, err := p.pq.PQDequeue(ctx, 0, 1) // get only one job without blocking the queue
+// dequeueAndClaimOne atomically pops one job from the queue (non-blocking)
+// and records processorID as its in-flight owner.
+func (p *Poller) dequeueAndClaimOne(ctx context.Context, processorID string) (*db.BatchJobPriority, error) {
+	task, err := p.pq.PQDequeueAndClaim(ctx, processorID)
 	if err != nil {
 		return nil, err
 	}
@@ -57,13 +59,13 @@ func (p *Poller) dequeueOne(ctx context.Context) (*db.BatchJobPriority, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	// there's no backlog
-	if len(tasks) == 0 {
+	if task == nil {
 		logger.V(logging.TRACE).Info("No jobs to fetch")
 		return nil, nil
 	}
 
-	logger.V(logging.DEBUG).Info("Successfully fetched a job", "jobID", tasks[0].ID)
-	return tasks[0], nil
+	logger.V(logging.DEBUG).Info("Successfully fetched a job", "jobID", task.ID)
+	return task, nil
 }
 
 func (p *Poller) enqueueOne(ctx context.Context, task *db.BatchJobPriority) error {

@@ -100,6 +100,10 @@ var (
 	pqGetIDsLua         string
 	redisScriptPQGetIDs = goredis.NewScript(pqGetIDsLua)
 
+	//go:embed redis_pq_dequeue_claim.lua
+	pqDequeueClaimLua         string
+	redisScriptPQDequeueClaim = goredis.NewScript(pqDequeueClaimLua)
+
 	_ db_api.BatchDBClient            = (*BatchDBClientRedis)(nil)
 	_ db_api.FileDBClient             = (*FileDBClientRedis)(nil)
 	_ db_api.BatchPriorityQueueClient = (*ExchangeDBClientRedis)(nil)

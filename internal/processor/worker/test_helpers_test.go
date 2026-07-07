@@ -239,6 +239,13 @@ func (s *spyPQ) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs in
 	}
 	return items, err
 }
+func (s *spyPQ) PQDequeueAndClaim(ctx context.Context, processorID string) (*db.BatchJobPriority, error) {
+	task, err := s.inner.PQDequeueAndClaim(ctx, processorID)
+	if err == nil && task != nil && s.afterDequeueFn != nil {
+		s.afterDequeueFn()
+	}
+	return task, err
+}
 func (s *spyPQ) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) (int, error) {
 	s.mu.Lock()
 	s.delN++
@@ -377,14 +384,17 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 
 func validProcessorClients(t testing.TB) *clientset.Clientset {
 	t.Helper()
+	queue := mockdb.NewMockBatchPriorityQueueClient()
+	inflight := mockdb.NewMockInFlightClient()
+	queue.LinkInFlight(inflight)
 	return &clientset.Clientset{
 		BatchDB:   newMockBatchDBClient(),
 		FileDB:    newMockFileDBClient(),
 		File:      mockfiles.NewMockBatchFilesClient(t.TempDir()),
-		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
+		Queue:     queue,
 		Status:    mockdb.NewMockBatchStatusClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
+		InFlight:  inflight,
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}
 }
@@ -405,6 +415,8 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 	dbClient := newMockBatchDBClient()
 	pqClient := mockdb.NewMockBatchPriorityQueueClient()
 	statusClient := mockdb.NewMockBatchStatusClient()
+	inflightClient := mockdb.NewMockInFlightClient()
+	pqClient.LinkInFlight(inflightClient)
 
 	p, err := NewProcessor(cfg, &clientset.Clientset{
 		BatchDB:   dbClient,
@@ -413,7 +425,7 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Queue:     pqClient,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
+		InFlight:  inflightClient,
 		Inference: inference.NewSingleClientResolver(inferClient),
 	}, "test-processor", testLogger(t))
 	if err != nil {

@@ -48,6 +48,13 @@ func (p *pqSpy) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs in
 	return p.inner.PQDequeue(ctx, timeout, maxObjs)
 }
 
+func (p *pqSpy) PQDequeueAndClaim(ctx context.Context, processorID string) (*db.BatchJobPriority, error) {
+	if p.dequeueErr != nil {
+		return nil, p.dequeueErr
+	}
+	return p.inner.PQDequeueAndClaim(ctx, processorID)
+}
+
 func (p *pqSpy) PQDelete(ctx context.Context, jobPriority *db.BatchJobPriority) (int, error) {
 	p.deleteCalled++
 	return p.inner.PQDelete(ctx, jobPriority)
@@ -99,7 +106,7 @@ func (d *dbGetErrWrapper) Close() error {
 }
 
 // tests
-func TestPoller_DequeueOne_EmptyQueue_ReturnsNil(t *testing.T) {
+func TestPoller_DequeueAndClaimOne_EmptyQueue_ReturnsNil(t *testing.T) {
 	ctx := context.Background()
 
 	pq := &pqSpy{inner: mockdb.NewMockBatchPriorityQueueClient()}
@@ -110,16 +117,16 @@ func TestPoller_DequeueOne_EmptyQueue_ReturnsNil(t *testing.T) {
 
 	p := NewPoller(pq, dbClient)
 
-	task, err := p.dequeueOne(ctx)
+	task, err := p.dequeueAndClaimOne(ctx, "proc-1")
 	if err != nil {
-		t.Fatalf("DequeueOne() err=%v, want nil", err)
+		t.Fatalf("dequeueAndClaimOne() err=%v, want nil", err)
 	}
 	if task != nil {
-		t.Fatalf("DequeueOne() task=%v, want nil", task)
+		t.Fatalf("dequeueAndClaimOne() task=%v, want nil", task)
 	}
 }
 
-func TestPoller_DequeueOne_PQError_ReturnsError(t *testing.T) {
+func TestPoller_DequeueAndClaimOne_PQError_ReturnsError(t *testing.T) {
 	ctx := context.Background()
 
 	pq := &pqSpy{
@@ -133,19 +140,22 @@ func TestPoller_DequeueOne_PQError_ReturnsError(t *testing.T) {
 
 	p := NewPoller(pq, dbClient)
 
-	task, err := p.dequeueOne(ctx)
+	task, err := p.dequeueAndClaimOne(ctx, "proc-1")
 	if err == nil {
-		t.Fatalf("DequeueOne() err=nil, want error")
+		t.Fatalf("dequeueAndClaimOne() err=nil, want error")
 	}
 	if task != nil {
-		t.Fatalf("DequeueOne() task=%v, want nil", task)
+		t.Fatalf("dequeueAndClaimOne() task=%v, want nil", task)
 	}
 }
 
-func TestPoller_DequeueOne_ReturnsFirstTask(t *testing.T) {
+func TestPoller_DequeueAndClaimOne_ReturnsFirstTaskAndClaimsIt(t *testing.T) {
 	ctx := context.Background()
 
-	pq := &pqSpy{inner: mockdb.NewMockBatchPriorityQueueClient()}
+	inner := mockdb.NewMockBatchPriorityQueueClient()
+	inflight := mockdb.NewMockInFlightClient()
+	inner.LinkInFlight(inflight)
+	pq := &pqSpy{inner: inner}
 	dbClient := mockdb.NewMockDBClient(
 		func(b *db.BatchItem) string { return b.ID },
 		func(q *db.BatchQuery) *db.BaseQuery { return &q.BaseQuery },
@@ -162,16 +172,28 @@ func TestPoller_DequeueOne_ReturnsFirstTask(t *testing.T) {
 
 	p := NewPoller(pq, dbClient)
 
-	task, err := p.dequeueOne(ctx)
+	task, err := p.dequeueAndClaimOne(ctx, "proc-1")
 	if err != nil {
-		t.Fatalf("DequeueOne() err=%v, want nil", err)
+		t.Fatalf("dequeueAndClaimOne() err=%v, want nil", err)
 	}
 	if task == nil {
-		t.Fatalf("DequeueOne() task=nil, want non-nil")
+		t.Fatalf("dequeueAndClaimOne() task=nil, want non-nil")
 		return
 	}
 	if task.ID != wantID {
-		t.Fatalf("DequeueOne() id=%q, want %q", task.ID, wantID)
+		t.Fatalf("dequeueAndClaimOne() id=%q, want %q", task.ID, wantID)
+	}
+
+	entries, err := inflight.InFlightGetAll(ctx)
+	if err != nil {
+		t.Fatalf("InFlightGetAll() err=%v", err)
+	}
+	entry, ok := entries[wantID]
+	if !ok {
+		t.Fatalf("dequeued job %q has no in-flight claim", wantID)
+	}
+	if entry.ProcessorID != "proc-1" {
+		t.Fatalf("in-flight claim owner=%q, want %q", entry.ProcessorID, "proc-1")
 	}
 }
 
