@@ -17,18 +17,21 @@
 -- KEYS[1] = priority queue sorted set
 -- KEYS[2] = in-flight hash
 -- ARGV[1] = in-flight entry JSON (marshaled by the caller)
--- Returns the popped member JSON, or false when the queue is empty.
+-- Returns the popped member JSON, false when the queue is empty, or an error
+-- if the popped member is corrupt.
 
 local popped = redis.call("ZPOPMIN", KEYS[1])
 if #popped == 0 then
     return false
 end
 local member = popped[1]
+local score = popped[2]
 local ok, decoded = pcall(cjson.decode, member)
-if not ok or type(decoded) ~= "table" or decoded.id == nil then
-    -- Corrupt member: script effects are not rolled back on error, so raising
-    -- would eat the popped member. Return it unclaimed; the caller logs it.
-    return member
+if not ok or type(decoded) ~= "table" or type(decoded.id) ~= "string" or decoded.id == "" then
+    -- Redis scripts are not rolled back on error, so restore the popped member
+    -- before surfacing the corrupt queue entry to the caller.
+    redis.call("ZADD", KEYS[1], score, member)
+    return redis.error_reply("corrupt priority queue member")
 end
 redis.call("HSET", KEYS[2], decoded.id, ARGV[1])
 return member

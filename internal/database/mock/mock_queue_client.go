@@ -32,7 +32,7 @@ var _ api.BatchPriorityQueueClient = (*MockBatchPriorityQueueClient)(nil)
 type MockBatchPriorityQueueClient struct {
 	mu       sync.Mutex
 	queue    []*api.BatchJobPriority
-	inflight *MockInFlightClient
+	inflight api.InFlightClient
 }
 
 func NewMockBatchPriorityQueueClient() *MockBatchPriorityQueueClient {
@@ -41,9 +41,9 @@ func NewMockBatchPriorityQueueClient() *MockBatchPriorityQueueClient {
 	}
 }
 
-// LinkInFlight connects an in-flight client so PQDequeueAndClaim records
-// claims in it. Without a link, claims are dropped.
-func (m *MockBatchPriorityQueueClient) LinkInFlight(inflight *MockInFlightClient) {
+// LinkInFlight connects an in-flight client so PQDequeueAndClaim records claims
+// in it.
+func (m *MockBatchPriorityQueueClient) LinkInFlight(inflight api.InFlightClient) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.inflight = inflight
@@ -123,13 +123,17 @@ func (m *MockBatchPriorityQueueClient) PQDequeueAndClaim(ctx context.Context, pr
 		return nil, nil
 	}
 	item := m.queue[0]
+	if item == nil {
+		return nil, fmt.Errorf("queued item is nil")
+	}
+	if m.inflight == nil {
+		return nil, fmt.Errorf("in-flight client is missing")
+	}
+	if err := m.inflight.InFlightSet(ctx, item.ID, processorID); err != nil {
+		return nil, err
+	}
 	m.queue = m.queue[1:]
 
-	if m.inflight != nil {
-		if err := m.inflight.InFlightSet(ctx, item.ID, processorID); err != nil {
-			return nil, err
-		}
-	}
 	return item, nil
 }
 

@@ -150,44 +150,63 @@ func TestPQDequeueAndClaim(t *testing.T) {
 	})
 
 	t.Run("corrupt queue member returns error without claiming", func(t *testing.T) {
-		t.Parallel()
-		minirds, exch := newExchangeClient(t)
-		ctx := context.Background()
+		for _, tc := range []struct {
+			name   string
+			member string
+		}{
+			{name: "malformed JSON", member: "not-json"},
+			{name: "empty ID", member: `{"id":""}`},
+		} {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				minirds, exch := newExchangeClient(t)
+				ctx := context.Background()
 
-		// Discover the (unexported) queue key by enqueueing a real job, then
-		// replace its contents with a non-JSON member.
-		if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
-			ID:  "job-probe",
-			SLO: time.Now().Add(time.Hour),
-		}); err != nil {
-			t.Fatalf("PQEnqueue() err=%v", err)
-		}
-		var queueKey string
-		for _, key := range minirds.Keys() {
-			if strings.Contains(key, "priority") {
-				queueKey = key
-				break
-			}
-		}
-		if queueKey == "" {
-			t.Fatal("could not find priority queue key in miniredis")
-		}
-		minirds.Del(queueKey)
-		if _, err := minirds.ZAdd(queueKey, 1, "not-json"); err != nil {
-			t.Fatalf("ZAdd() err=%v", err)
-		}
+				// Discover the (unexported) queue key by enqueueing a real job,
+				// then replace its contents with the corrupt member.
+				if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
+					ID:  "job-probe",
+					SLO: time.Now().Add(time.Hour),
+				}); err != nil {
+					t.Fatalf("PQEnqueue() err=%v", err)
+				}
+				var queueKey string
+				for _, key := range minirds.Keys() {
+					if strings.Contains(key, "priority") {
+						queueKey = key
+						break
+					}
+				}
+				if queueKey == "" {
+					t.Fatal("could not find priority queue key in miniredis")
+				}
+				minirds.Del(queueKey)
+				if _, err := minirds.ZAdd(queueKey, 1, tc.member); err != nil {
+					t.Fatalf("ZAdd() err=%v", err)
+				}
 
-		task, err := exch.PQDequeueAndClaim(ctx, "proc-1")
-		if err == nil {
-			t.Fatalf("PQDequeueAndClaim() err=nil, want unmarshal error (task=%v)", task)
-		}
+				task, err := exch.PQDequeueAndClaim(ctx, "proc-1")
+				if err == nil {
+					t.Fatalf("PQDequeueAndClaim() err=nil, want error (task=%v)", task)
+				}
 
-		entries, err := exch.InFlightGetAll(ctx)
-		if err != nil {
-			t.Fatalf("InFlightGetAll() err=%v", err)
-		}
-		if len(entries) != 0 {
-			t.Fatalf("corrupt member produced in-flight entries: %v", entries)
+				members, err := minirds.ZMembers(queueKey)
+				if err != nil {
+					t.Fatalf("ZMembers() err=%v", err)
+				}
+				if len(members) != 1 || members[0] != tc.member {
+					t.Fatalf("queue members=%v, want [%s]", members, tc.member)
+				}
+
+				entries, err := exch.InFlightGetAll(ctx)
+				if err != nil {
+					t.Fatalf("InFlightGetAll() err=%v", err)
+				}
+				if len(entries) != 0 {
+					t.Fatalf("corrupt member produced in-flight entries: %v", entries)
+				}
+			})
 		}
 	})
 }

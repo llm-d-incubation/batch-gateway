@@ -363,6 +363,7 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	if clients.InFlight == nil {
 		clients.InFlight = mockdb.NewMockInFlightClient()
 	}
+	linkMockQueueInFlight(clients.Queue, clients.InFlight)
 	p, err := NewProcessor(cfg, clients, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
@@ -380,6 +381,15 @@ func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *client
 	}
 	initTestEndpointLimits(t, p, cfg)
 	return p
+}
+
+func linkMockQueueInFlight(queue db.BatchPriorityQueueClient, inflight db.InFlightClient) {
+	switch q := queue.(type) {
+	case *mockdb.MockBatchPriorityQueueClient:
+		q.LinkInFlight(inflight)
+	case *spyPQ:
+		linkMockQueueInFlight(q.inner, inflight)
+	}
 }
 
 func validProcessorClients(t testing.TB) *clientset.Clientset {
