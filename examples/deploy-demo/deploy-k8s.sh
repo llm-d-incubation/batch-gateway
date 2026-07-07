@@ -576,25 +576,27 @@ verify_flow_control_runtime() {
         die "EPP metrics response body is empty."
     fi
 
-    # 1. Interactive requests enqueued (priority 0)
+    echo "${metrics_body}" | grep 'inference_extension_flow_control_request_queue_duration_seconds_count'
+
+    # 1. Interactive requests dispatched (priority 0)
     step "Checking flow control metrics for interactive requests (priority 0)..."
     local interactive_count
-    interactive_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_enqueue_duration_seconds_count' \
-        | grep 'priority="0"' | grep -oE '[0-9]+$' || echo "0")
+    interactive_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_queue_duration_seconds_count' \
+        | grep 'priority="0"' | grep 'outcome="Dispatched"' | grep -oE '[0-9]+$' || echo "0")
     if [ "${interactive_count}" -gt 0 ] 2>/dev/null; then
-        log "Flow control enqueued ${interactive_count} interactive request(s) (priority 0)."
+        log "Flow control dispatched ${interactive_count} interactive request(s) (priority 0)."
     else
         warn "No interactive requests (priority 0) found in flow control metrics."
         errors=$((errors + 1))
     fi
 
-    # 2. Batch requests enqueued (priority -1)
+    # 2. Batch requests dispatched (priority -1)
     step "Checking flow control metrics for batch requests (priority -1)..."
     local batch_count
-    batch_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_enqueue_duration_seconds_count' \
-        | grep 'priority="-1"' | grep -oE '[0-9]+$' || echo "0")
+    batch_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_queue_duration_seconds_count' \
+        | grep 'priority="-1"' | grep 'outcome="Dispatched"' | grep -oE '[0-9]+$' || echo "0")
     if [ "${batch_count}" -gt 0 ] 2>/dev/null; then
-        log "Flow control enqueued ${batch_count} batch request(s) (priority -1)."
+        log "Flow control dispatched ${batch_count} batch request(s) (priority -1)."
     else
         warn "No batch requests (priority -1) found in flow control metrics."
         errors=$((errors + 1))
