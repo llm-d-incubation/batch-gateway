@@ -460,6 +460,18 @@ def start_interactive_traffic(cfg, namespace):
         f"burst@{cfg.burst_rate}/s for {cfg.burst_seconds}s, "
         f"idle@{cfg.idle_rate}/s for {cfg.idle_seconds}s")
 
+    backend_json = json.dumps({
+        "kind": "openai_http",
+        "target": cfg.target,
+        "model": cfg.model,
+        "request_format": "text_completions",
+        "extras": {
+            "headers": {
+                "x-gateway-inference-objective": "interactive-default",
+            },
+        },
+    })
+
     cycle_lines = []
     for c in range(1, cfg.cycles + 1):
         suffix = "warmup" if c <= cfg.warmup_cycles else ""
@@ -469,20 +481,19 @@ def start_interactive_traffic(cfg, namespace):
 
         cycle_lines.extend([
             f'echo "=== Phase {c}: IDLE ({cfg.idle_rate} req/s, {cfg.idle_seconds}s){label} ==="',
-            f'guidellm benchmark run --target "$T" $COMMON '
+            f'guidellm benchmark run --backend "$BACKEND" $COMMON '
             f'--profile constant --rate {cfg.idle_rate} --max-seconds {cfg.idle_seconds} '
             f'--output-dir /results --outputs "{idle_output}"',
             f'echo "=== Phase {c}: BURST ({cfg.burst_rate} req/s, {cfg.burst_seconds}s){label} ==="',
-            f'guidellm benchmark run --target "$T" $COMMON '
+            f'guidellm benchmark run --backend "$BACKEND" $COMMON '
             f'--profile constant --rate {cfg.burst_rate} --max-seconds {cfg.burst_seconds} '
             f'--output-dir /results --outputs "{burst_output}"',
         ])
 
     script_lines = [
-        f'T="{cfg.target}"',
+        f"BACKEND='{backend_json}'",
         f'M="{cfg.model}"',
-        f'COMMON="--request-format text_completions --model $M '
-        f'--data prompt_tokens={cfg.prompt_tokens},output_tokens=512 '
+        f'COMMON="--data prompt_tokens={cfg.prompt_tokens},output_tokens=512 '
         f'--processor $M --disable-console-interactive"',
         'mkdir -p /results',
     ] + cycle_lines + ['echo "=== Done ==="']
@@ -539,16 +550,27 @@ def start_batch_as_interactive_traffic(cfg, namespace):
     log(f"  Starting batch-as-interactive traffic: {total_requests} requests "
         f"at ~{rate} req/s over {total_duration}s")
 
+    backend_json = json.dumps({
+        "kind": "openai_http",
+        "target": cfg.target,
+        "model": cfg.model,
+        "request_format": "text_completions",
+        "extras": {
+            "headers": {
+                "x-gateway-inference-objective": "interactive-default",
+            },
+        },
+    })
+
     indent = " " * 14
     script_lines = [
-        f'T="{cfg.target}"',
+        f"BACKEND='{backend_json}'",
         f'M="{cfg.model}"',
-        f'COMMON="--request-format text_completions --model $M '
-        f'--data prompt_tokens={cfg.prompt_tokens},output_tokens=512 '
+        f'COMMON="--data prompt_tokens={cfg.prompt_tokens},output_tokens=512 '
         f'--processor $M --disable-console-interactive"',
         'mkdir -p /results',
         f'echo "=== Batch-as-interactive: {total_requests} requests at {rate} req/s ==="',
-        f'guidellm benchmark run --target "$T" $COMMON '
+        f'guidellm benchmark run --backend "$BACKEND" $COMMON '
         f'--profile constant --rate {rate} --max-seconds {total_duration} '
         f'--output-dir /results --outputs "batch-traffic.csv"',
         'echo "=== Batch-as-interactive done ==="',
