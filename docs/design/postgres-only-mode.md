@@ -129,7 +129,6 @@ clientset/config/Helm wiring, tests mirroring the existing postgres test harness
 plus a postgres-only e2e profile. **~1-2 weeks.**
 
 Strategic note: the Postgres queue is the natural place to later add claim/lease
-semantics (`SKIP LOCKED` claims are already lease-shaped) — exactly phase 3 of
-[stateless-workers-chunk-checkpointing](stateless-workers-chunk-checkpointing.md).
-Build it contract-compatible now, but keep the schema amenable to a
+semantics (`SKIP LOCKED` claims are already lease-shaped). Build it
+contract-compatible now, but keep the schema amenable to a
 `claimed_by / lease_expires_at` column pair later.
