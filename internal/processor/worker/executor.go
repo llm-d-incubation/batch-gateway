@@ -902,8 +902,6 @@ func newErrorOutputLine(batchReqID, customID, code, message string) *outputLine 
 	}
 }
 
-
-
 // buildOutputLine converts an inference response and/or error into an outputLine.
 // Used by both executeOneRequest (sync path) and processModelAsync (async path).
 func buildOutputLine(
