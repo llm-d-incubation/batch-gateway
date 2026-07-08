@@ -38,10 +38,6 @@ const (
 	sqlStatusGet = `SELECT data FROM batch_status WHERE job_id = $1 AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT`
 
 	sqlStatusDelete = `DELETE FROM batch_status WHERE job_id = $1`
-
-	// sqlStatusSweep removes rows whose TTL has elapsed. Reads never see these (they
-	// filter expiry inline); this is a safety-net reclaim called by the gc binary.
-	sqlStatusSweep = `DELETE FROM batch_status WHERE expires_at <= EXTRACT(EPOCH FROM NOW())::BIGINT`
 )
 
 // StatusSet stores or updates the status payload for a job. A non-positive TTL falls
@@ -106,21 +102,4 @@ func (c *PostgresExchangeClient) StatusDelete(ctx context.Context, ID string) (n
 	}
 
 	return int(tag.RowsAffected()), nil
-}
-
-// SweepExpiredStatus deletes expired rows from the batch_status table and returns the
-// number removed. Correctness does not depend on it (reads filter expiry inline); it is
-// a safety-net reclaim invoked by the gc binary. Exported for that caller; gc wiring is
-// out of scope here.
-func (c *PostgresExchangeClient) SweepExpiredStatus(ctx context.Context) (nDeleted int, err error) {
-	tag, err := c.pool.Exec(ctx, sqlStatusSweep)
-	if err != nil {
-		return 0, fmt.Errorf("SweepExpiredStatus: %w", err)
-	}
-
-	nDeleted = int(tag.RowsAffected())
-	if nDeleted > 0 {
-		c.logger.V(logging.INFO).Info("SweepExpiredStatus: reclaimed expired rows", "nDeleted", nDeleted)
-	}
-	return nDeleted, nil
 }

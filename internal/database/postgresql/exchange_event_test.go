@@ -36,7 +36,6 @@ func TestECProducerSendEvents(t *testing.T) {
 
 	t.Run("sends a single event", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		mock.ExpectExec("INSERT INTO batch_events").
 			WithArgs("job-1", int(db_api.BatchEventCancel), pgxmock.AnyArg()).
@@ -59,7 +58,6 @@ func TestECProducerSendEvents(t *testing.T) {
 
 	t.Run("sends multiple events in order", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		mock.ExpectExec("INSERT INTO batch_events").
 			WithArgs("job-1", int(db_api.BatchEventPause), pgxmock.AnyArg()).
@@ -85,8 +83,7 @@ func TestECProducerSendEvents(t *testing.T) {
 	})
 
 	t.Run("returns error for empty events", func(t *testing.T) {
-		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if _, err := client.ECProducerSendEvents(ctx, nil); err == nil {
 			t.Fatal("expected error for empty events")
@@ -95,7 +92,6 @@ func TestECProducerSendEvents(t *testing.T) {
 
 	t.Run("returns error for invalid event", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		// Missing TTL fails IsValid; no Exec should be issued.
 		if _, err := client.ECProducerSendEvents(ctx, []db_api.BatchEvent{
@@ -111,7 +107,6 @@ func TestECProducerSendEvents(t *testing.T) {
 
 	t.Run("returns partial sentIDs on exec error", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		mock.ExpectExec("INSERT INTO batch_events").
 			WithArgs("job-1", int(db_api.BatchEventCancel), pgxmock.AnyArg()).
@@ -142,9 +137,8 @@ func TestDeliverJobEvents(t *testing.T) {
 
 	t.Run("drains and delivers events to the subscriber in FIFO order", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
-		sub := &eventSub{id: "job-1", ch: make(chan db_api.BatchEvent, eventChanBufSize)}
+		sub := &eventSub{ch: make(chan db_api.BatchEvent, eventChanBufSize)}
 		client.eventSubs["job-1"] = sub
 
 		rows := pgxmock.NewRows([]string{"event_type"}).
@@ -174,7 +168,6 @@ func TestDeliverJobEvents(t *testing.T) {
 
 	t.Run("no-op when the job is not subscribed", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		// No subscription registered and no query expected; must not touch the DB.
 		client.deliverJobEvents(ctx, "job-unknown")
@@ -186,9 +179,8 @@ func TestDeliverJobEvents(t *testing.T) {
 
 	t.Run("delivers nothing when the table has no rows", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
-		sub := &eventSub{id: "job-1", ch: make(chan db_api.BatchEvent, eventChanBufSize)}
+		sub := &eventSub{ch: make(chan db_api.BatchEvent, eventChanBufSize)}
 		client.eventSubs["job-1"] = sub
 
 		mock.ExpectQuery("DELETE FROM batch_events").
@@ -209,8 +201,7 @@ func TestDeliverJobEvents(t *testing.T) {
 
 func TestECConsumerGetChannelValidation(t *testing.T) {
 	t.Run("returns error for empty ID", func(t *testing.T) {
-		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if _, err := client.ECConsumerGetChannel(context.Background(), ""); err == nil {
 			t.Fatal("expected error for empty ID")

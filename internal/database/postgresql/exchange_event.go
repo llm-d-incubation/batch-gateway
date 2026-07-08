@@ -80,7 +80,6 @@ RETURNING event_type`
 // holds one of these per active consumer. closeOnce guards the channel close so
 // CloseFn is idempotent.
 type eventSub struct {
-	id        string
 	ch        chan db_api.BatchEvent
 	closeOnce sync.Once
 }
@@ -131,7 +130,6 @@ func (c *PostgresExchangeClient) ECConsumerGetChannel(ctx context.Context, ID st
 	}
 
 	sub := &eventSub{
-		id: ID,
 		ch: make(chan db_api.BatchEvent, eventChanBufSize),
 	}
 

@@ -42,10 +42,11 @@ import (
 var exchangeSchemaSql string
 
 const (
-	// pollIntervalDefault is the dequeue/event poll fallback interval. Every
+	// DefaultPollInterval is the dequeue/event poll fallback interval. Every
 	// consumer re-drains on each poll tick, so this bounds worst-case latency when
-	// a NOTIFY is missed. Tests inject a much smaller value.
-	pollIntervalDefault = 1 * time.Second
+	// a NOTIFY is missed. Exported so the integration tests can calibrate their
+	// NOTIFY-vs-fallback timing against the real value.
+	DefaultPollInterval = 1 * time.Second
 
 	// statusTTLDefaultSec matches the redis default (ttlSecDefault): 60 days.
 	statusTTLDefaultSec = 60 * 60 * 24 * 60
@@ -61,11 +62,10 @@ const (
 // *pgxpool.Pool in prod, pgxmock in unit tests). listener is the shared
 // LISTEN/NOTIFY dispatcher; it is nil in pure-CRUD unit tests.
 type PostgresExchangeClient struct {
-	pool         pgxPool
-	listener     *pgListener
-	logger       logr.Logger
-	pollInterval time.Duration
-	closeOnce    sync.Once
+	pool      pgxPool
+	listener  *pgListener
+	logger    logr.Logger
+	closeOnce sync.Once
 
 	// events dispatcher state, guarded by eventsMu (see exchange_event.go).
 	eventsMu      sync.Mutex
@@ -130,16 +130,15 @@ func NewPostgresExchangeClient(ctx context.Context, config *PostgreSQLConfig, lo
 		return nil, fmt.Errorf("failed to apply exchange schema: %w", err)
 	}
 
-	listener := newPGListener(pgPool, pollIntervalDefault, logger)
+	listener := newPGListener(pgPool, DefaultPollInterval, logger)
 	// The listener runs for the client's whole lifetime; close() stops it.
 	listener.start(context.Background())
 
 	c := &PostgresExchangeClient{
-		pool:         pgPool,
-		listener:     listener,
-		logger:       logger,
-		pollInterval: pollIntervalDefault,
-		eventSubs:    make(map[string]*eventSub),
+		pool:      pgPool,
+		listener:  listener,
+		logger:    logger,
+		eventSubs: make(map[string]*eventSub),
 	}
 
 	logger.Info("NewPostgresExchangeClient: client created successfully",
@@ -178,8 +177,8 @@ func (c *PostgresExchangeClient) Close() error {
 
 // SweepExpired deletes expired rows from batch_queue, batch_status, and
 // batch_events. Correctness does not depend on it (every read filters expired rows
-// inline); it is a safety-net reclaim for the gc binary. It is additive and not
-// wired into gc here.
+// inline); it is a safety-net reclaim. The gc binary runs it periodically via
+// runExchangeSweepLoop (cmd/batch-gc), gated by the exchangeSweeper type assertion.
 func (c *PostgresExchangeClient) SweepExpired(ctx context.Context) (err error) {
 	if ctx == nil {
 		ctx = context.Background()

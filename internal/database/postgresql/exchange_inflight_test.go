@@ -20,36 +20,15 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/pashagolub/pgxmock/v4"
 )
-
-func newTestInFlightClient(t *testing.T) (*PostgresExchangeClient, pgxmock.PgxPoolIface) {
-	t.Helper()
-
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatalf("failed to create pgxmock pool: %v", err)
-	}
-
-	client := &PostgresExchangeClient{
-		pool:         mock,
-		pollInterval: 5 * time.Millisecond,
-		eventSubs:    make(map[string]*eventSub),
-		logger:       logr.Discard(),
-	}
-
-	return client, mock
-}
 
 func TestInFlightSet(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("upserts entry successfully", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		mock.ExpectExec("INSERT INTO batch_inflight").
 			WithArgs("job-1", "proc-1", pgxmock.AnyArg()).
@@ -64,8 +43,7 @@ func TestInFlightSet(t *testing.T) {
 	})
 
 	t.Run("returns error for empty jobID", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		if err := client.InFlightSet(ctx, "", "proc-1"); err == nil {
 			t.Fatal("expected error for empty jobID, got nil")
@@ -76,8 +54,7 @@ func TestInFlightSet(t *testing.T) {
 	})
 
 	t.Run("returns error for empty processorID", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		if err := client.InFlightSet(ctx, "job-1", ""); err == nil {
 			t.Fatal("expected error for empty processorID, got nil")
@@ -88,8 +65,7 @@ func TestInFlightSet(t *testing.T) {
 	})
 
 	t.Run("propagates exec error", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		wantErr := errors.New("boom")
 		mock.ExpectExec("INSERT INTO batch_inflight").
@@ -113,8 +89,7 @@ func TestInFlightDelete(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("deletes entry successfully", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		mock.ExpectExec("DELETE FROM batch_inflight").
 			WithArgs("job-1").
@@ -129,8 +104,7 @@ func TestInFlightDelete(t *testing.T) {
 	})
 
 	t.Run("returns error for empty jobID", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		if err := client.InFlightDelete(ctx, ""); err == nil {
 			t.Fatal("expected error for empty jobID, got nil")
@@ -141,8 +115,7 @@ func TestInFlightDelete(t *testing.T) {
 	})
 
 	t.Run("propagates exec error", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		wantErr := errors.New("boom")
 		mock.ExpectExec("DELETE FROM batch_inflight").
@@ -166,8 +139,7 @@ func TestInFlightGetAll(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns all entries", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		rows := pgxmock.NewRows([]string{"job_id", "processor_id", "last_seen"}).
 			AddRow("job-1", "proc-1", int64(100)).
@@ -203,8 +175,7 @@ func TestInFlightGetAll(t *testing.T) {
 	})
 
 	t.Run("returns empty non-nil map when no rows", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		rows := pgxmock.NewRows([]string{"job_id", "processor_id", "last_seen"})
 
@@ -227,8 +198,7 @@ func TestInFlightGetAll(t *testing.T) {
 	})
 
 	t.Run("propagates query error", func(t *testing.T) {
-		client, mock := newTestInFlightClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		wantErr := errors.New("boom")
 		mock.ExpectQuery("SELECT job_id, processor_id, last_seen FROM batch_inflight").

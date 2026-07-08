@@ -42,10 +42,11 @@ import (
 // Run locally with: make test-integration-postgres
 // Or point POSTGRES_TEST_URL at any Postgres whose user can CREATE DATABASE.
 //
-// Timing note: the exchange client's poll fallback fires every ~1s
-// (pollIntervalDefault). The NOTIFY wakeup test below is calibrated against
-// that interval to prove wakeups arrive via NOTIFY, not the fallback tick.
-const pollFallbackInterval = 1 * time.Second
+// Timing note: the exchange client's poll fallback fires every
+// postgresql.DefaultPollInterval. The NOTIFY wakeup test below is calibrated
+// against that interval to prove wakeups arrive via NOTIFY, not the fallback
+// tick, and stays calibrated if the interval is ever tuned.
+const pollFallbackInterval = postgresql.DefaultPollInterval
 
 // newExchangeTestClient creates a throwaway database on the server named by
 // POSTGRES_TEST_URL, opens a PostgresExchangeClient against it (which applies
@@ -148,9 +149,10 @@ func TestPostgresExchangeQueue(t *testing.T) {
 		}()
 
 		// Wait past the first poll-fallback tick so the consumer is provably
-		// parked, then enqueue mid-interval: the next fallback tick is ~700ms
-		// away, so receipt within 500ms can only be a NOTIFY wakeup.
-		time.Sleep(pollFallbackInterval + 300*time.Millisecond)
+		// parked, then enqueue a third of the way into the next interval: the
+		// next fallback tick is ~2/3 of an interval away, so receipt within
+		// half an interval can only be a NOTIFY wakeup.
+		time.Sleep(pollFallbackInterval + pollFallbackInterval/3)
 		select {
 		case r := <-done:
 			t.Fatalf("dequeue returned before enqueue: items=%v err=%v", r.items, r.err)
@@ -170,7 +172,7 @@ func TestPostgresExchangeQueue(t *testing.T) {
 			if len(r.items) != 1 || r.items[0].ID != "wake-job" {
 				t.Fatalf("expected [wake-job], got %v", r.items)
 			}
-			if wake := time.Since(enqueuedAt); wake > 500*time.Millisecond {
+			if wake := time.Since(enqueuedAt); wake > pollFallbackInterval/2 {
 				t.Errorf("wakeup took %v — likely the poll fallback fired, not NOTIFY", wake)
 			}
 		case <-time.After(5 * time.Second):

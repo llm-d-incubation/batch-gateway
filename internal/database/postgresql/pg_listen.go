@@ -70,7 +70,7 @@ type pgListener struct {
 // dispatcher goroutine; call start.
 func newPGListener(pool *pgxpool.Pool, pollInterval time.Duration, logger logr.Logger) *pgListener {
 	if pollInterval <= 0 {
-		pollInterval = pollIntervalDefault
+		pollInterval = DefaultPollInterval
 	}
 	return &pgListener{
 		pool:         pool,

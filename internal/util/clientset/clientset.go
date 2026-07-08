@@ -169,8 +169,9 @@ func WithFile(cfg sharedcfg.FileClientConfig) Option {
 }
 
 // WithExchange enables creation of the exchange client (Queue, Event, Status, InFlight).
-// The backend is selected by cfg.Type; connection settings are reused from the db_client
-// config (redisCfg for a Redis exchange, pgCfg for a PostgreSQL exchange).
+// The backend is selected by cfg.Type. A Redis exchange uses redisCfg; a PostgreSQL
+// exchange uses pgCfg, whose connection URL is resolved from the mounted secret inside
+// NewPostgresExchangeClient (the same secret the postgres db_client reads).
 func WithExchange(cfg sharedcfg.ExchangeClientConfig, redisCfg uredis.RedisClientConfig, pgCfg postgresql.PostgreSQLConfig) Option {
 	redisCfg = redisCfg.DeepCopy()
 	return func(c *clientsetConfig) {
@@ -242,10 +243,9 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 			if cfg.asyncInference != nil {
 				return nil, fmt.Errorf("postgres-only mode does not support async dispatch; use sync inference or a redis exchange")
 			}
+			// Copy: NewPostgresExchangeClient mutates its config (URL from the
+			// secret, ReserveConnForListen).
 			pgCfg := *cfg.exchangePgCfg
-			if pgCfg.Url == "" {
-				pgCfg.Url = cfg.dbCfg.PostgreSQLCfg.Url
-			}
 			pgClient, err := postgresql.NewPostgresExchangeClient(ctx, &pgCfg, logger)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create postgresql exchange client: %w", err)

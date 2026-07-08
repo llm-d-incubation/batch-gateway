@@ -20,34 +20,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/go-logr/logr"
 	"github.com/pashagolub/pgxmock/v4"
 )
-
-// newTestExchangeClient builds a PostgresExchangeClient backed by a pgxmock pool for
-// pure-CRUD unit tests. The listener is left nil (status paths never touch it).
-func newTestExchangeStatusClient(t *testing.T) (*PostgresExchangeClient, pgxmock.PgxPoolIface) {
-	t.Helper()
-
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatalf("failed to create pgxmock pool: %v", err)
-	}
-
-	client := &PostgresExchangeClient{
-		pool:   mock,
-		logger: logr.Discard(),
-	}
-
-	return client, mock
-}
 
 func TestStatusSet(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("sets status with explicit TTL", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		data := []byte(`{"status":"in_progress"}`)
 
@@ -65,8 +45,7 @@ func TestStatusSet(t *testing.T) {
 	})
 
 	t.Run("defaults TTL when non-positive", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		data := []byte(`{"status":"finalizing"}`)
 
@@ -85,8 +64,7 @@ func TestStatusSet(t *testing.T) {
 	})
 
 	t.Run("returns error for empty ID", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if err := client.StatusSet(ctx, "", 3600, []byte("x")); err == nil {
 			t.Fatal("expected error for empty ID")
@@ -94,8 +72,7 @@ func TestStatusSet(t *testing.T) {
 	})
 
 	t.Run("returns error for empty data", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if err := client.StatusSet(ctx, "job-1", 3600, nil); err == nil {
 			t.Fatal("expected error for empty data")
@@ -107,8 +84,7 @@ func TestStatusGet(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns data when present and unexpired", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		want := []byte(`{"status":"completed"}`)
 		rows := pgxmock.NewRows([]string{"data"}).AddRow(want)
@@ -131,8 +107,7 @@ func TestStatusGet(t *testing.T) {
 	})
 
 	t.Run("returns nil when missing or expired", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		rows := pgxmock.NewRows([]string{"data"})
 
@@ -154,8 +129,7 @@ func TestStatusGet(t *testing.T) {
 	})
 
 	t.Run("returns error for empty ID", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if _, err := client.StatusGet(ctx, ""); err == nil {
 			t.Fatal("expected error for empty ID")
@@ -167,8 +141,7 @@ func TestStatusDelete(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("deletes and returns count", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		mock.ExpectExec("DELETE FROM batch_status WHERE job_id").
 			WithArgs("job-1").
@@ -188,8 +161,7 @@ func TestStatusDelete(t *testing.T) {
 	})
 
 	t.Run("returns zero when absent", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, mock := newTestExchangeClient(t)
 
 		mock.ExpectExec("DELETE FROM batch_status WHERE job_id").
 			WithArgs("job-absent").
@@ -209,55 +181,10 @@ func TestStatusDelete(t *testing.T) {
 	})
 
 	t.Run("returns error for empty ID", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if _, err := client.StatusDelete(ctx, ""); err == nil {
 			t.Fatal("expected error for empty ID")
-		}
-	})
-}
-
-func TestSweepExpiredStatus(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("reclaims expired rows", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
-
-		mock.ExpectExec("DELETE FROM batch_status WHERE expires_at").
-			WillReturnResult(pgxmock.NewResult("DELETE", 3))
-
-		n, err := client.SweepExpiredStatus(ctx)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if n != 3 {
-			t.Fatalf("expected 3 reclaimed, got %d", n)
-		}
-
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatalf("unmet expectations: %v", err)
-		}
-	})
-
-	t.Run("returns zero when nothing expired", func(t *testing.T) {
-		client, mock := newTestExchangeStatusClient(t)
-		defer mock.Close()
-
-		mock.ExpectExec("DELETE FROM batch_status WHERE expires_at").
-			WillReturnResult(pgxmock.NewResult("DELETE", 0))
-
-		n, err := client.SweepExpiredStatus(ctx)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if n != 0 {
-			t.Fatalf("expected 0 reclaimed, got %d", n)
-		}
-
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatalf("unmet expectations: %v", err)
 		}
 	})
 }

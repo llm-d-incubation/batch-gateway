@@ -30,7 +30,7 @@ import (
 // newTestExchangeClient builds a PostgresExchangeClient backed by a pgxmock
 // pool. The listener is intentionally left nil: every path exercised here is
 // either non-blocking or returns items on the first drain, so it must never be
-// dereferenced. pollInterval is tiny so any poll-driven code is fast.
+// dereferenced. The mock pool is closed automatically via t.Cleanup.
 func newTestExchangeClient(t *testing.T) (*PostgresExchangeClient, pgxmock.PgxPoolIface) {
 	t.Helper()
 
@@ -38,12 +38,12 @@ func newTestExchangeClient(t *testing.T) (*PostgresExchangeClient, pgxmock.PgxPo
 	if err != nil {
 		t.Fatalf("failed to create pgxmock pool: %v", err)
 	}
+	t.Cleanup(mock.Close)
 
 	client := &PostgresExchangeClient{
-		pool:         mock,
-		pollInterval: 5 * time.Millisecond,
-		eventSubs:    make(map[string]*eventSub),
-		logger:       logr.Discard(),
+		pool:      mock,
+		eventSubs: make(map[string]*eventSub),
+		logger:    logr.Discard(),
 	}
 
 	return client, mock
@@ -54,7 +54,6 @@ func TestPQEnqueue(t *testing.T) {
 
 	t.Run("enqueues with TTL", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		item := &db_api.BatchJobPriority{
 			ID:   "job-1",
@@ -77,7 +76,6 @@ func TestPQEnqueue(t *testing.T) {
 
 	t.Run("enqueues without TTL (nil expires_at)", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		item := &db_api.BatchJobPriority{
 			ID:  "job-2",
@@ -97,8 +95,7 @@ func TestPQEnqueue(t *testing.T) {
 	})
 
 	t.Run("returns error for nil item", func(t *testing.T) {
-		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if err := client.PQEnqueue(ctx, nil); err == nil {
 			t.Fatal("expected error for nil item")
@@ -106,8 +103,7 @@ func TestPQEnqueue(t *testing.T) {
 	})
 
 	t.Run("returns error for invalid item (zero SLO)", func(t *testing.T) {
-		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if err := client.PQEnqueue(ctx, &db_api.BatchJobPriority{ID: "job-3"}); err == nil {
 			t.Fatal("expected error for zero SLO")
@@ -120,7 +116,6 @@ func TestPQDelete(t *testing.T) {
 
 	t.Run("deletes matching job", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		item := &db_api.BatchJobPriority{ID: "job-1", SLO: time.Now().Add(time.Hour)}
 
@@ -142,7 +137,6 @@ func TestPQDelete(t *testing.T) {
 
 	t.Run("no rows deleted returns 0", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		item := &db_api.BatchJobPriority{ID: "job-x", SLO: time.Now().Add(time.Hour)}
 
@@ -163,8 +157,7 @@ func TestPQDelete(t *testing.T) {
 	})
 
 	t.Run("returns error for nil item", func(t *testing.T) {
-		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
+		client, _ := newTestExchangeClient(t)
 
 		if _, err := client.PQDelete(ctx, nil); err == nil {
 			t.Fatal("expected error for nil item")
@@ -177,7 +170,6 @@ func TestPQDequeue(t *testing.T) {
 
 	t.Run("non-blocking drain returns items", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		slo := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
 		rows := pgxmock.NewRows([]string{"job_id", "slo_score", "data"}).
@@ -211,7 +203,6 @@ func TestPQDequeue(t *testing.T) {
 
 	t.Run("non-blocking drain with no items returns nil", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		rows := pgxmock.NewRows([]string{"job_id", "slo_score", "data"})
 
@@ -235,7 +226,6 @@ func TestPQDequeue(t *testing.T) {
 	// returned immediately without ever consulting the (nil) listener.
 	t.Run("blocking timeout returns first-drain items without listener", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		slo := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
 		rows := pgxmock.NewRows([]string{"job_id", "slo_score", "data"}).
@@ -263,7 +253,6 @@ func TestPQGetIDs(t *testing.T) {
 
 	t.Run("returns all queued IDs", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		rows := pgxmock.NewRows([]string{"job_id"}).
 			AddRow("job-1").
@@ -286,7 +275,6 @@ func TestPQGetIDs(t *testing.T) {
 
 	t.Run("returns empty map when queue empty", func(t *testing.T) {
 		client, mock := newTestExchangeClient(t)
-		defer mock.Close()
 
 		mock.ExpectQuery("SELECT job_id FROM batch_queue").
 			WillReturnRows(pgxmock.NewRows([]string{"job_id"}))
