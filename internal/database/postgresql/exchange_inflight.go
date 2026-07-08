@@ -14,9 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements the InFlightClient interface on PostgresExchangeClient.
-// In-flight entries record which processor owns a dequeued job and when it last
-// reported liveness. Storage is the batch_inflight table (job_id PK).
+// InFlightClient over the batch_inflight table: which processor owns a dequeued
+// job and when it last reported liveness.
 
 package postgresql
 
@@ -28,9 +27,21 @@ import (
 	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 )
 
-// InFlightSet records or refreshes the in-flight entry for a job. The upsert
-// keeps a single row per job_id, updating the owning processor and heartbeat.
+const (
+	inflightSetSQL = `INSERT INTO batch_inflight (job_id, processor_id, last_seen)
+VALUES ($1, $2, $3)
+ON CONFLICT (job_id) DO UPDATE SET processor_id = EXCLUDED.processor_id, last_seen = EXCLUDED.last_seen`
+
+	inflightDeleteSQL = `DELETE FROM batch_inflight WHERE job_id = $1`
+
+	inflightGetAllSQL = `SELECT job_id, processor_id, last_seen FROM batch_inflight`
+)
+
+// InFlightSet records or refreshes the in-flight entry for a job.
 func (c *PostgresExchangeClient) InFlightSet(ctx context.Context, jobID, processorID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if jobID == "" {
 		return fmt.Errorf("jobID is empty")
 	}
@@ -40,11 +51,7 @@ func (c *PostgresExchangeClient) InFlightSet(ctx context.Context, jobID, process
 
 	lastSeen := time.Now().Unix()
 
-	const sql = `INSERT INTO batch_inflight (job_id, processor_id, last_seen)
-VALUES ($1, $2, $3)
-ON CONFLICT (job_id) DO UPDATE SET processor_id = EXCLUDED.processor_id, last_seen = EXCLUDED.last_seen`
-
-	if _, err := c.pool.Exec(ctx, sql, jobID, processorID, lastSeen); err != nil {
+	if _, err := c.pool.Exec(ctx, inflightSetSQL, jobID, processorID, lastSeen); err != nil {
 		return fmt.Errorf("InFlightSet: %w", err)
 	}
 
@@ -53,11 +60,14 @@ ON CONFLICT (job_id) DO UPDATE SET processor_id = EXCLUDED.processor_id, last_se
 
 // InFlightDelete removes the in-flight entry for a job.
 func (c *PostgresExchangeClient) InFlightDelete(ctx context.Context, jobID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if jobID == "" {
 		return fmt.Errorf("jobID is empty")
 	}
 
-	if _, err := c.pool.Exec(ctx, "DELETE FROM batch_inflight WHERE job_id = $1", jobID); err != nil {
+	if _, err := c.pool.Exec(ctx, inflightDeleteSQL, jobID); err != nil {
 		return fmt.Errorf("InFlightDelete: %w", err)
 	}
 
@@ -67,7 +77,11 @@ func (c *PostgresExchangeClient) InFlightDelete(ctx context.Context, jobID strin
 // InFlightGetAll returns all in-flight entries keyed by job ID. An empty (non-nil)
 // map is returned when no entries exist, matching the redis implementation.
 func (c *PostgresExchangeClient) InFlightGetAll(ctx context.Context) (map[string]*db_api.InFlightEntry, error) {
-	rows, err := c.pool.Query(ctx, "SELECT job_id, processor_id, last_seen FROM batch_inflight")
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	rows, err := c.pool.Query(ctx, inflightGetAllSQL)
 	if err != nil {
 		return nil, fmt.Errorf("InFlightGetAll: %w", err)
 	}

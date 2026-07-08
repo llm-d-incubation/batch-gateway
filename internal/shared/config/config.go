@@ -47,12 +47,10 @@ const (
 	ExchangeTypePostgreSQL = "postgresql"
 )
 
-// ExchangeClientConfig selects the exchange backend. Connection settings are
-// reused from DBClientConfig (validation forces them to match the db backend),
-// so only the type is configurable here.
+// ExchangeClientConfig selects the exchange backend; connection settings come
+// from DBClientConfig, so only the type is configurable.
 type ExchangeClientConfig struct {
-	// Type specifies the exchange backend: ExchangeTypeRedis or ExchangeTypePostgreSQL.
-	Type string `yaml:"type"`
+	Type string `yaml:"type"` // ExchangeTypeRedis or ExchangeTypePostgreSQL
 }
 
 // DBClientConfig holds database client configuration shared by all components.

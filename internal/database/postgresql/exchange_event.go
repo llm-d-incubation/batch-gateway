@@ -14,13 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements the PostgreSQL BatchEventChannelClient methods on
-// PostgresExchangeClient. The batch_events table is the source of truth
-// (durable-until-consumed, late-attach-safe); the batch_events NOTIFY channel is
-// a latency hint only. A single shared dispatcher goroutine (started lazily on
-// the first consumer) drains rows destructively via
-// DELETE ... RETURNING ... ORDER BY id FOR UPDATE SKIP LOCKED and fans them out
-// to per-job Go channels, reproducing the Redis BLMPop semantics.
+// BatchEventChannelClient over PostgreSQL. The batch_events table is the source
+// of truth (durable-until-consumed, late-attach-safe); NOTIFY is a latency hint
+// only. One shared dispatcher goroutine drains rows destructively and fans them
+// out to per-job Go channels, reproducing the Redis BLMPop semantics.
 //
 //	producer ──INSERT+pg_notify──▶ batch_events table ◀──DELETE RETURNING── dispatcher
 //	                                     ▲                                      │
@@ -37,24 +34,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
-// eventChanBufSize is the per-consumer buffer depth, matching the Redis
-// implementation's eventChanSize. Control events (cancel/pause/resume) are
-// low-frequency, so this buffer effectively never fills.
+// Per-consumer buffer depth, matching the Redis implementation's eventChanSize.
 const eventChanBufSize = 100
 
-// errEventChannelFull is logged (never returned) when a consumer's buffer is
-// full at delivery time. The event has already been removed from the table, so
-// this is a genuine drop; the deep buffer makes it practically unreachable.
+// Logged (never returned) when a consumer's buffer is full at delivery time: the
+// event was already deleted from the table, so this is a genuine drop.
 var errEventChannelFull = errors.New("event channel full")
 
-// ecSendEventSQL inserts one event and fires the batch_events NOTIFY carrying the
-// job_id, all in a single statement so no transaction is needed (the narrow
-// pgxPool interface exposes no Begin). The NOTIFY is a latency hint only; the row
-// itself is the durable source of truth.
+// Insert + NOTIFY in one statement, so no transaction is needed (the narrow
+// pgxPool interface exposes no Begin).
 const ecSendEventSQL = `WITH ins AS (
 	INSERT INTO batch_events (job_id, event_type, expires_at)
 	VALUES ($1, $2, $3)
@@ -62,10 +56,8 @@ const ecSendEventSQL = `WITH ins AS (
 )
 SELECT pg_notify('` + channelEvents + `', (SELECT job_id FROM ins))`
 
-// ecDrainEventsSQL destructively pops all live events for a job in FIFO (id)
-// order. FOR UPDATE SKIP LOCKED keeps concurrent drainers from handing the same
-// row to two consumers. Expired rows are filtered inline so correctness never
-// depends on the safety-net GC.
+// Destructive FIFO pop. FOR UPDATE SKIP LOCKED keeps concurrent drainers from
+// handing the same row to two consumers.
 const ecDrainEventsSQL = `DELETE FROM batch_events
 WHERE id IN (
 	SELECT id FROM batch_events
@@ -75,18 +67,14 @@ WHERE id IN (
 )
 RETURNING event_type`
 
-// eventSub is a single consumer's subscription. The eventSubs map on
-// PostgresExchangeClient (declared in exchange_db.go) is keyed by job ID and
-// holds one of these per active consumer. closeOnce guards the channel close so
-// CloseFn is idempotent.
+// eventSub is one consumer's subscription; closeOnce makes CloseFn idempotent.
 type eventSub struct {
 	ch        chan db_api.BatchEvent
 	closeOnce sync.Once
 }
 
-// ECProducerSendEvents inserts each event and fires a NOTIFY per insert. Rows are
-// durable, so a consumer that attaches after this returns still receives the
-// events. Returns the IDs that were successfully inserted.
+// ECProducerSendEvents inserts each event and fires a NOTIFY per insert. Returns
+// the IDs that were successfully inserted.
 func (c *PostgresExchangeClient) ECProducerSendEvents(ctx context.Context, events []db_api.BatchEvent) (
 	sentIDs []string, err error) {
 	if ctx == nil {
@@ -111,15 +99,12 @@ func (c *PostgresExchangeClient) ECProducerSendEvents(ctx context.Context, event
 		sentIDs = append(sentIDs, event.ID)
 	}
 
-	c.logger.V(logging.INFO).Info("ECProducerSendEvents: succeeded", "nIDs", len(sentIDs))
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("ECProducerSendEvents: succeeded", "nIDs", len(sentIDs))
 	return sentIDs, nil
 }
 
-// ECConsumerGetChannel registers a consumer for the job's events and returns a
-// channel plus a CloseFn. It lazily starts the single shared dispatcher goroutine
-// on the first call, then immediately drains any events already stored for the
-// job so a late-attaching consumer never misses an event that was produced
-// before it subscribed.
+// ECConsumerGetChannel registers a consumer for the job's events, then drains
+// events already stored for the job so a late-attaching consumer misses nothing.
 func (c *PostgresExchangeClient) ECConsumerGetChannel(ctx context.Context, ID string) (
 	batchEventsChan *db_api.BatchEventsChan, err error) {
 	if ctx == nil {
@@ -134,13 +119,9 @@ func (c *PostgresExchangeClient) ECConsumerGetChannel(ctx context.Context, ID st
 	}
 
 	c.eventsMu.Lock()
-	if !c.eventsStarted {
-		c.startEventDispatcherLocked()
-	}
 	c.eventSubs[ID] = sub
 	c.eventsMu.Unlock()
 
-	// Drain events already durably stored for this job (late-attach safety).
 	c.deliverJobEvents(ctx, ID)
 
 	closeFn := func() {
@@ -149,32 +130,29 @@ func (c *PostgresExchangeClient) ECConsumerGetChannel(ctx context.Context, ID st
 			delete(c.eventSubs, ID)
 		}
 		c.eventsMu.Unlock()
-		// Closed exactly once; the delete above (under the same lock a delivering
-		// dispatcher must also hold) guarantees no send races this close.
+		// The delete above (under the same lock a delivering dispatcher must hold)
+		// guarantees no send races this close.
 		sub.closeOnce.Do(func() { close(sub.ch) })
 	}
 
-	c.logger.V(logging.INFO).Info("ECConsumerGetChannel: succeeded", "ID", ID)
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("ECConsumerGetChannel: succeeded", "ID", ID)
 	return &db_api.BatchEventsChan{ID: ID, Events: sub.ch, CloseFn: closeFn}, nil
 }
 
-// startEventDispatcherLocked launches the one shared dispatcher goroutine. Caller
-// must hold c.eventsMu. The dispatcher lives on a background-derived context so it
-// is independent of any single caller's ctx; Close() cancels it via eventsCancel.
-func (c *PostgresExchangeClient) startEventDispatcherLocked() {
+// startEventDispatcher runs once from the constructor. The dispatcher lives on a
+// background-derived context (the construction ctx may carry a deadline); Close()
+// cancels it via eventsCancel.
+func (c *PostgresExchangeClient) startEventDispatcher() {
 	dispCtx, cancel := context.WithCancel(context.Background())
 	c.eventsCancel = cancel
 	c.eventsDone = make(chan struct{})
-	c.eventsStarted = true
 
 	wake, unsubscribe := c.listener.subscribe(channelEvents)
 	go c.runEventDispatcher(dispCtx, wake, unsubscribe)
 }
 
-// runEventDispatcher is the single shared consumer loop. A wake carrying a job_id
-// drains that job; an empty poll-fallback tick drains every subscribed job. Both
-// the table and the re-drain-on-every-wake behavior make a dropped NOTIFY at most
-// a latency hit, never lost work.
+// runEventDispatcher drains one job per job_id wake, or every subscribed job on
+// an empty poll-fallback tick, so a dropped NOTIFY is a latency hit, never lost work.
 func (c *PostgresExchangeClient) runEventDispatcher(ctx context.Context, wake <-chan string, unsubscribe func()) {
 	defer close(c.eventsDone)
 	defer unsubscribe()
@@ -189,9 +167,8 @@ func (c *PostgresExchangeClient) runEventDispatcher(ctx context.Context, wake <-
 			if !ok {
 				return
 			}
-			// A buffered wake may be picked even after cancellation (Go select is
-			// random). Bail before draining so we never query a pool that Close is
-			// about to shut down.
+			// Select is random: a buffered wake may win even after cancellation. Bail
+			// before draining so we never query a pool Close is about to shut down.
 			if ctx.Err() != nil {
 				c.logger.V(logging.INFO).Info("event dispatcher: stop")
 				return
@@ -205,8 +182,6 @@ func (c *PostgresExchangeClient) runEventDispatcher(ctx context.Context, wake <-
 	}
 }
 
-// deliverAllJobEvents drains every currently subscribed job. Used on poll-fallback
-// ticks, where the wake carries no specific job_id.
 func (c *PostgresExchangeClient) deliverAllJobEvents(ctx context.Context) {
 	c.eventsMu.Lock()
 	jobIDs := make([]string, 0, len(c.eventSubs))
@@ -220,12 +195,10 @@ func (c *PostgresExchangeClient) deliverAllJobEvents(ctx context.Context) {
 	}
 }
 
-// deliverJobEvents destructively drains one job's events and fans them out to its
-// subscriber. The DB drain runs without the lock (SKIP LOCKED never blocks); the
-// non-blocking fan-out runs under eventsMu with a re-check that the same
-// subscription is still registered, so it can never send on a channel CloseFn has
-// already closed. If the consumer closed mid-drain the events are dropped, which
-// is fine: CloseFn means the job finished and no longer cares.
+// deliverJobEvents drains one job's events and fans them out. The fan-out runs
+// under eventsMu with a same-subscription re-check, so it can never send on a
+// channel CloseFn already closed; events for a mid-drain-closed consumer are
+// dropped (CloseFn means the job no longer cares).
 func (c *PostgresExchangeClient) deliverJobEvents(ctx context.Context, jobID string) {
 	c.eventsMu.Lock()
 	sub, ok := c.eventSubs[jobID]
@@ -257,8 +230,6 @@ func (c *PostgresExchangeClient) deliverJobEvents(ctx context.Context, jobID str
 	}
 }
 
-// drainJobEvents runs the destructive FIFO pop for a single job and rebuilds the
-// consumer-facing events (which carry no TTL).
 func (c *PostgresExchangeClient) drainJobEvents(ctx context.Context, jobID string) ([]db_api.BatchEvent, error) {
 	rows, err := c.pool.Query(ctx, ecDrainEventsSQL, jobID)
 	if err != nil {

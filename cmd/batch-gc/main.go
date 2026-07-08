@@ -131,9 +131,6 @@ func run() error {
 		}
 		g.Go(func() error { return rec.RunLoop(gCtx) })
 
-		// Exchange backends without native TTL (PostgreSQL) need their expired
-		// queue/status/event rows physically reclaimed. Redis expires natively and
-		// does not implement exchangeSweeper, so this simply no-ops there.
 		if sweeper, ok := clients.Queue.(exchangeSweeper); ok {
 			logger.Info("Exchange sweep loop enabled", "interval", cfg.Reconciler.Interval)
 			g.Go(func() error { return runExchangeSweepLoop(gCtx, sweeper, cfg.Reconciler.Interval, logger) })
@@ -151,17 +148,16 @@ func run() error {
 	return nil
 }
 
-// exchangeSweeper is implemented by exchange backends that need a periodic reclaim
-// of expired rows because they lack native TTL (PostgreSQL). Redis expires keys
-// itself and does not implement this, so the type assertion in run() skips the loop.
+// exchangeSweeper is implemented by exchange backends that lack native TTL
+// (PostgreSQL) and need expired rows physically reclaimed; Redis expires keys
+// itself and does not implement it.
 type exchangeSweeper interface {
 	SweepExpired(ctx context.Context) error
 }
 
-// runExchangeSweepLoop periodically deletes expired exchange rows. Correctness never
-// depends on it (every read filters expired rows inline); it bounds table growth on
-// backends without native TTL. It returns nil on shutdown so it does not trip the
-// errgroup's failure path.
+// runExchangeSweepLoop bounds table growth; correctness never depends on it
+// (reads filter expired rows inline). Returns nil on shutdown so it does not trip
+// the errgroup's failure path.
 func runExchangeSweepLoop(ctx context.Context, sweeper exchangeSweeper, interval time.Duration, logger logr.Logger) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -100,7 +100,7 @@ func tokenAfter(tokens []string, keyword string) string {
 }
 
 // newPool creates a new pgxpool.Pool from a PostgreSQLConfig.
-func newPool(ctx context.Context, config *PostgreSQLConfig) (pgxPool, error) {
+func newPool(ctx context.Context, config *PostgreSQLConfig) (*pgxpool.Pool, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is nil")
 	}

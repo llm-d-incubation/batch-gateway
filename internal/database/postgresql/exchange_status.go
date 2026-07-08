@@ -14,9 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements the BatchStatusClient interface for PostgresExchangeClient,
-// backed by the UNLOGGED batch_status table. Status data is volatile and TTL'd, so
-// every read filters out expired rows inline (DB-side NOW() avoids app/db clock skew).
+// BatchStatusClient over the UNLOGGED batch_status table. Reads filter expired
+// rows inline; DB-side NOW() avoids app/db clock skew.
 
 package postgresql
 
@@ -25,29 +24,32 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
 const (
-	// sqlStatusSet upserts the status payload, refreshing data and expiry on conflict.
-	sqlStatusSet = `INSERT INTO batch_status (job_id, data, expires_at) VALUES ($1, $2, $3)
+	statusSetSQL = `INSERT INTO batch_status (job_id, data, expires_at) VALUES ($1, $2, $3)
 		ON CONFLICT (job_id) DO UPDATE SET data = EXCLUDED.data, expires_at = EXCLUDED.expires_at`
 
-	// sqlStatusGet reads the payload for a job, filtering out expired rows so a stale
-	// entry reads as a miss (matches the redis TTL-expiry contract).
-	sqlStatusGet = `SELECT data FROM batch_status WHERE job_id = $1 AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT`
+	// An expired row reads as a miss, matching the redis TTL contract.
+	statusGetSQL = `SELECT data FROM batch_status WHERE job_id = $1 AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT`
 
-	sqlStatusDelete = `DELETE FROM batch_status WHERE job_id = $1`
+	statusDeleteSQL = `DELETE FROM batch_status WHERE job_id = $1`
 )
 
 // StatusSet stores or updates the status payload for a job. A non-positive TTL falls
 // back to statusTTLDefaultSec to match the redis default.
 func (c *PostgresExchangeClient) StatusSet(ctx context.Context, ID string, TTL int, data []byte) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(ID) == 0 {
-		return fmt.Errorf("StatusSet: ID is empty")
+		return fmt.Errorf("ID is empty")
 	}
 	if len(data) == 0 {
-		return fmt.Errorf("StatusSet: data is empty for ID %s", ID)
+		return fmt.Errorf("data is empty for ID %s", ID)
 	}
 
 	if TTL <= 0 {
@@ -55,23 +57,26 @@ func (c *PostgresExchangeClient) StatusSet(ctx context.Context, ID string, TTL i
 	}
 	expiresAt := time.Now().Unix() + int64(TTL)
 
-	if _, err = c.pool.Exec(ctx, sqlStatusSet, ID, data, expiresAt); err != nil {
+	if _, err = c.pool.Exec(ctx, statusSetSQL, ID, data, expiresAt); err != nil {
 		return fmt.Errorf("StatusSet: %w", err)
 	}
 
-	c.logger.V(logging.INFO).Info("StatusSet: succeeded", "id", ID)
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("StatusSet: succeeded", "id", ID)
 	return nil
 }
 
 // StatusGet returns the status payload for a job, or (nil, nil) when the job has no
 // entry or its entry has expired.
 func (c *PostgresExchangeClient) StatusGet(ctx context.Context, ID string) (data []byte, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(ID) == 0 {
-		return nil, fmt.Errorf("StatusGet: ID is empty")
+		return nil, fmt.Errorf("ID is empty")
 	}
 
 	// The narrow pgxPool interface exposes no QueryRow, so mirror db_core's row loop.
-	rows, err := c.pool.Query(ctx, sqlStatusGet, ID)
+	rows, err := c.pool.Query(ctx, statusGetSQL, ID)
 	if err != nil {
 		return nil, fmt.Errorf("StatusGet: %w", err)
 	}
@@ -92,11 +97,14 @@ func (c *PostgresExchangeClient) StatusGet(ctx context.Context, ID string) (data
 
 // StatusDelete removes the status entry for a job and reports how many rows were removed.
 func (c *PostgresExchangeClient) StatusDelete(ctx context.Context, ID string) (nDeleted int, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(ID) == 0 {
-		return 0, fmt.Errorf("StatusDelete: ID is empty")
+		return 0, fmt.Errorf("ID is empty")
 	}
 
-	tag, err := c.pool.Exec(ctx, sqlStatusDelete, ID)
+	tag, err := c.pool.Exec(ctx, statusDeleteSQL, ID)
 	if err != nil {
 		return 0, fmt.Errorf("StatusDelete: %w", err)
 	}

@@ -14,16 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements the shared LISTEN/NOTIFY dispatcher for the PostgreSQL
-// exchange client. It owns exactly ONE dedicated pooled connection and LISTENs on
-// both fixed exchange channels (channelQueueWake, channelEvents). NOTIFY payloads
-// and poll-fallback ticks are fanned out to per-channel subscribers.
+// Shared LISTEN/NOTIFY dispatcher: one dedicated pooled connection LISTENing on
+// both exchange channels, fanning wakes out to per-channel subscribers.
 //
-// The exchange tables are the source of truth; NOTIFY is only a latency hint. A
-// subscriber treats every wake (real notification OR poll tick) as "re-drain the
-// table", so a dropped/at-most-once NOTIFY, or a pool that cannot hand out a
-// dedicated connection (pgxmock's Acquire returns "not implemented"), degrades to
-// ~pollInterval latency, never to lost work.
+// The exchange tables are the source of truth; NOTIFY is only a latency hint.
+// Subscribers treat every wake (real notification OR poll tick) as "re-drain the
+// table", so a dropped NOTIFY or an unavailable dedicated connection degrades to
+// ~pollInterval latency, never lost work.
 //
 //	pool ──Acquire(1 conn)──▶ LISTEN both channels ──WaitForNotification──▶ deliver
 //	                                                        │
@@ -43,10 +40,8 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
-// pgListener fans NOTIFY payloads (and poll-fallback ticks) from one dedicated
-// connection out to per-channel subscribers. Delivery is non-blocking on
-// buffered(1) channels: a pending wake is idempotent, so coalescing wakes is
-// harmless (the subscriber always re-drains the underlying table).
+// Delivery is non-blocking on buffered(1) channels: a pending wake is idempotent,
+// so coalescing wakes is harmless (the subscriber always re-drains the table).
 type pgListener struct {
 	pool         *pgxpool.Pool
 	pollInterval time.Duration
@@ -60,40 +55,32 @@ type pgListener struct {
 	closeOnce sync.Once
 	done      chan struct{}
 
-	// listenErrLogged suppresses repeat ERROR logs when LISTEN keeps failing (e.g.
-	// behind a transaction-pooling pgbouncer that rejects LISTEN). Touched only by
-	// the single run goroutine, so it needs no lock. Reset once LISTEN succeeds.
+	// Suppresses repeat ERROR logs when LISTEN keeps failing (e.g. a
+	// transaction-pooling pgbouncer rejects it every acquire). Touched only by the
+	// run goroutine, so no lock.
 	listenErrLogged bool
 }
 
-// newPGListener builds a listener over the given pool. It does not start the
-// dispatcher goroutine; call start.
+// newPGListener launches the dispatcher goroutine. Its lifetime is deliberately
+// not tied to a caller context (which may carry a startup deadline); it ends only
+// when close() cancels it.
 func newPGListener(pool *pgxpool.Pool, pollInterval time.Duration, logger logr.Logger) *pgListener {
-	if pollInterval <= 0 {
-		pollInterval = DefaultPollInterval
-	}
-	return &pgListener{
+	l := &pgListener{
 		pool:         pool,
 		pollInterval: pollInterval,
 		logger:       logger,
 		subs:         make(map[string]map[int]chan string),
 		done:         make(chan struct{}),
 	}
-}
-
-// start launches the single dispatcher goroutine and stores its cancel func so
-// close can stop it.
-func (l *pgListener) start(ctx context.Context) {
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(context.Background())
 	l.cancel = cancel
 	go l.run(runCtx)
+	return l
 }
 
-// subscribe registers a subscriber for a channel and returns its delivery channel
-// plus an unsubscribe func. Multiple subscribers per channel are allowed. The
-// delivery channel is never closed by the listener (the dispatcher may still try
-// to send under the lock); unsubscribe just detaches it so it is GC'd once the
-// caller drops it.
+// subscribe returns a delivery channel plus an unsubscribe func. The delivery
+// channel is never closed (the dispatcher may still try to send under the lock);
+// unsubscribe just detaches it.
 func (l *pgListener) subscribe(channel string) (<-chan string, func()) {
 	ch := make(chan string, 1)
 
@@ -119,15 +106,12 @@ func (l *pgListener) subscribe(channel string) (<-chan string, func()) {
 // close stops the dispatcher goroutine and waits for it to exit. Idempotent.
 func (l *pgListener) close() error {
 	l.closeOnce.Do(func() {
-		if l.cancel != nil {
-			l.cancel()
-		}
+		l.cancel()
 		<-l.done
 	})
 	return nil
 }
 
-// deliver sends payload non-blockingly to every subscriber of one channel.
 func (l *pgListener) deliver(channel, payload string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -139,8 +123,7 @@ func (l *pgListener) deliver(channel, payload string) {
 	}
 }
 
-// deliverAll sends payload non-blockingly to every subscriber of every channel.
-// Used for poll-fallback ticks, which carry no specific channel/job.
+// deliverAll is used for poll-fallback ticks, which carry no specific channel.
 func (l *pgListener) deliverAll(payload string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -154,9 +137,8 @@ func (l *pgListener) deliverAll(payload string) {
 	}
 }
 
-// run is the single dispatcher loop. It keeps one dedicated connection parked in
-// WaitForNotification. If it cannot acquire a connection it falls to POLL-ONLY
-// mode (emit ticks every pollInterval), so consumers still make progress.
+// run parks one dedicated connection in WaitForNotification. If it cannot acquire
+// a connection it degrades to poll-only ticks, so consumers still make progress.
 func (l *pgListener) run(ctx context.Context) {
 	defer close(l.done)
 
@@ -167,8 +149,6 @@ func (l *pgListener) run(ctx context.Context) {
 
 		conn, err := l.pool.Acquire(ctx)
 		if err != nil {
-			// POLL-ONLY: no dedicated conn (pgxmock returns "not implemented", or
-			// the pool is momentarily exhausted). Tick, then retry.
 			l.logger.V(logging.INFO).Info("pgListener: acquire failed, poll-only tick", "err", err.Error())
 			l.deliverAll("")
 			select {
@@ -184,8 +164,7 @@ func (l *pgListener) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// listenLoop returned on a connection error; back off then re-acquire,
-		// ticking in the meantime so consumers keep draining.
+		// Connection error: tick then re-acquire so consumers keep draining.
 		l.deliverAll("")
 		select {
 		case <-ctx.Done():
@@ -196,10 +175,8 @@ func (l *pgListener) run(ctx context.Context) {
 }
 
 // logListenErr reports a LISTEN failure once at ERROR, then downgrades repeats to
-// V(INFO). A pooler in transaction/statement mode rejects LISTEN on every acquire,
-// so without this de-dup the loop would flood ERROR logs every pollInterval. The
-// data path still works: run() falls back to poll-only ticks, so consumers re-drain
-// the tables and only lose the NOTIFY latency optimization, never work.
+// V(INFO): a pooler in transaction mode rejects LISTEN on every acquire, which
+// would otherwise flood ERROR logs every pollInterval.
 func (l *pgListener) logListenErr(err error, channel string) {
 	if l.listenErrLogged {
 		l.logger.V(logging.INFO).Info("pgListener: LISTEN still failing, poll-only fallback", "channel", channel, "err", err.Error())
@@ -209,12 +186,10 @@ func (l *pgListener) logListenErr(err error, channel string) {
 	l.logger.Error(err, "pgListener: LISTEN failed, falling back to poll-only (NOTIFY disabled, e.g. a transaction-pooling pgbouncer)", "channel", channel)
 }
 
-// listenLoop LISTENs on both channels then blocks on notifications with a
-// pollInterval timeout. It returns on a connection-level error (so run
-// re-acquires) or on parent-context cancellation (shutdown).
+// listenLoop returns on a connection-level error (so run re-acquires) or on
+// parent-context cancellation.
 func (l *pgListener) listenLoop(ctx context.Context, conn *pgxpool.Conn) {
-	// Channel names are compile-time constants, not user input, so there is no
-	// injection concern; LISTEN cannot be parameterized.
+	// LISTEN cannot be parameterized; channel names are compile-time constants.
 	if _, err := conn.Exec(ctx, "LISTEN "+channelQueueWake); err != nil {
 		l.logListenErr(err, channelQueueWake)
 		return
@@ -223,8 +198,7 @@ func (l *pgListener) listenLoop(ctx context.Context, conn *pgxpool.Conn) {
 		l.logListenErr(err, channelEvents)
 		return
 	}
-	// LISTEN succeeded: re-arm the one-shot error log so a later transient failure
-	// (that then recovers) is reported again.
+	// Re-arm the one-shot error log so a later transient failure is reported.
 	l.listenErrLogged = false
 	l.logger.V(logging.INFO).Info("pgListener: listening", "channels", []string{channelQueueWake, channelEvents})
 
@@ -244,10 +218,9 @@ func (l *pgListener) listenLoop(ctx context.Context, conn *pgxpool.Conn) {
 			// Poll-fallback tick: everyone re-drains their table.
 			l.deliverAll("")
 		case ctx.Err() != nil:
-			// Parent context cancelled -> shutdown.
 			return
 		default:
-			// Connection-level error: bail so run re-acquires a fresh connection.
+			// Connection-level error: bail so run re-acquires.
 			l.logger.Error(err, "pgListener: WaitForNotification failed")
 			return
 		}

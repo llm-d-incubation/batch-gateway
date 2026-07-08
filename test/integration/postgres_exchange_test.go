@@ -34,25 +34,13 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/database/postgresql"
 )
 
-// These tests exercise the Postgres exchange backend against a REAL database —
-// the paths that are deliberately not unit-testable under pgxmock:
-// LISTEN/NOTIFY blocking-dequeue wakeup, SKIP LOCKED exclusivity under
-// contention, durable late-attach event delivery, and TTL expiry/sweep.
-//
-// Run locally with: make test-integration-postgres
-// Or point POSTGRES_TEST_URL at any Postgres whose user can CREATE DATABASE.
-//
-// Timing note: the exchange client's poll fallback fires every
-// postgresql.DefaultPollInterval. The NOTIFY wakeup test below is calibrated
-// against that interval to prove wakeups arrive via NOTIFY, not the fallback
-// tick, and stays calibrated if the interval is ever tuned.
+// Real-database coverage for the paths pgxmock cannot exercise: LISTEN/NOTIFY
+// wakeup, SKIP LOCKED exclusivity, late-attach event delivery, TTL expiry/sweep.
+// Run with: make test-integration-postgres (needs CREATE DATABASE privileges).
 const pollFallbackInterval = postgresql.DefaultPollInterval
 
-// newExchangeTestClient creates a throwaway database on the server named by
-// POSTGRES_TEST_URL, opens a PostgresExchangeClient against it (which applies
-// exchange_schema.sql), and tears both down on test cleanup. Each test gets a
-// fresh database so the shared batch_queue/batch_events/batch_status tables
-// can never leak state across tests.
+// newExchangeTestClient gives each test a throwaway database so the shared
+// exchange tables can never leak state across tests.
 func newExchangeTestClient(t testing.TB) *postgresql.PostgresExchangeClient {
 	t.Helper()
 

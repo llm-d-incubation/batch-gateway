@@ -168,10 +168,8 @@ func WithFile(cfg sharedcfg.FileClientConfig) Option {
 	return func(c *clientsetConfig) { c.fileCfg = &cfg }
 }
 
-// WithExchange enables creation of the exchange client (Queue, Event, Status, InFlight).
-// The backend is selected by cfg.Type. A Redis exchange uses redisCfg; a PostgreSQL
-// exchange uses pgCfg, whose connection URL is resolved from the mounted secret inside
-// NewPostgresExchangeClient (the same secret the postgres db_client reads).
+// WithExchange enables creation of the exchange client (Queue, Event, Status,
+// InFlight), backed by redisCfg or pgCfg per cfg.Type.
 func WithExchange(cfg sharedcfg.ExchangeClientConfig, redisCfg uredis.RedisClientConfig, pgCfg postgresql.PostgreSQLConfig) Option {
 	redisCfg = redisCfg.DeepCopy()
 	return func(c *clientsetConfig) {
@@ -234,8 +232,7 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 			cs.Status = redisClient
 			cs.InFlight = redisClient
 		case sharedcfg.ExchangeTypePostgreSQL:
-			// A PostgreSQL exchange requires a PostgreSQL db_client: the exchange reuses the
-			// same connection URL and this keeps deployments to a single datastore.
+			// Requiring a postgres db_client keeps deployments to a single datastore.
 			if cfg.dbCfg == nil || cfg.dbCfg.Type != sharedcfg.DBTypePostgreSQL {
 				return nil, fmt.Errorf("exchange_client.type=postgresql requires db_client.type=postgresql")
 			}
@@ -243,9 +240,15 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 			if cfg.asyncInference != nil {
 				return nil, fmt.Errorf("postgres-only mode does not support async dispatch; use sync inference or a redis exchange")
 			}
-			// Copy: NewPostgresExchangeClient mutates its config (URL from the
-			// secret, ReserveConnForListen).
+			// Copy: NewPostgresExchangeClient sets ReserveConnForListen on its config.
 			pgCfg := *cfg.exchangePgCfg
+			if pgCfg.Url == "" {
+				postgreSQLURL, err := ucom.ReadSecretFile(ucom.SecretKeyPostgreSQLURL)
+				if err != nil {
+					return nil, err
+				}
+				pgCfg.Url = postgreSQLURL
+			}
 			pgClient, err := postgresql.NewPostgresExchangeClient(ctx, &pgCfg, logger)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create postgresql exchange client: %w", err)

@@ -14,11 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file implements the PostgreSQL BatchPriorityQueueClient methods on
-// PostgresExchangeClient. The batch_queue table is the source of truth; the
-// batch_queue_wake NOTIFY channel is a latency hint only. Dequeue is an atomic
-// destructive DELETE ... RETURNING (FOR UPDATE SKIP LOCKED) so a job is handed
-// to exactly one caller, honoring the interface's exclusive-dequeue contract.
+// BatchPriorityQueueClient over PostgreSQL. The batch_queue table is the source
+// of truth; NOTIFY is a latency hint only. Dequeue is destructive and atomic so a
+// job is handed to exactly one caller (the interface's exclusive-dequeue contract).
 
 package postgresql
 
@@ -27,13 +25,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
-// pqEnqueueSQL inserts a job idempotently (ON CONFLICT DO NOTHING mirrors Redis
-// ZAddNX) and fires the wake NOTIFY only when a row was actually inserted, so a
-// duplicate enqueue is a silent no-op that does not wake dequeuers needlessly.
+// Idempotent insert (mirrors Redis ZAddNX); the wake NOTIFY fires only when a row
+// was actually inserted.
 const pqEnqueueSQL = `WITH ins AS (
 	INSERT INTO batch_queue (job_id, slo_score, data, expires_at)
 	VALUES ($1, $2, $3, $4)
@@ -42,11 +41,9 @@ const pqEnqueueSQL = `WITH ins AS (
 )
 SELECT pg_notify('` + channelQueueWake + `', '') FROM ins`
 
-// pqDrainSQL atomically removes up to $1 highest-priority (lowest slo_score)
-// non-expired jobs and returns them. FOR UPDATE SKIP LOCKED lets concurrent
-// processors drain disjoint heads without blocking each other. The outer
-// SELECT re-sorts because DELETE ... RETURNING emits rows in arbitrary
-// physical order, not the inner subquery's ORDER BY.
+// FOR UPDATE SKIP LOCKED lets concurrent processors drain disjoint heads without
+// blocking. The outer SELECT re-sorts because DELETE ... RETURNING emits rows in
+// arbitrary physical order, not the inner subquery's ORDER BY.
 const pqDrainSQL = `WITH drained AS (
 	DELETE FROM batch_queue
 	WHERE job_id IN (
@@ -69,7 +66,7 @@ func (c *PostgresExchangeClient) PQEnqueue(ctx context.Context, item *db_api.Bat
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := c.logger
+	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		return fmt.Errorf("empty item")
 	}
@@ -78,8 +75,7 @@ func (c *PostgresExchangeClient) PQEnqueue(ctx context.Context, item *db_api.Bat
 	}
 	logger = logger.WithValues("ID", item.ID)
 
-	// expires_at is unix seconds; nil means no TTL (the per-row equivalent of
-	// Redis' whole-key Expire), leaving cleanup to the safety-net GC.
+	// nil expires_at means no TTL, the per-row equivalent of Redis' whole-key Expire.
 	var expiresAt *int64
 	if item.TTL > 0 {
 		exp := time.Now().Unix() + int64(item.TTL)
@@ -99,7 +95,7 @@ func (c *PostgresExchangeClient) PQDelete(ctx context.Context, item *db_api.Batc
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := c.logger
+	logger := logr.FromContextOrDiscard(ctx)
 	if item == nil {
 		return 0, fmt.Errorf("empty item")
 	}
@@ -123,10 +119,8 @@ func (c *PostgresExchangeClient) PQDequeue(ctx context.Context, timeout time.Dur
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	logger := c.logger
+	logger := logr.FromContextOrDiscard(ctx)
 
-	// First drain is always attempted. For the non-blocking contract (timeout<=0)
-	// this is the whole operation, matching Redis ZMPop.
 	jobPriorities, err = c.drainQueue(ctx, maxItems)
 	if err != nil {
 		return nil, err
@@ -135,23 +129,21 @@ func (c *PostgresExchangeClient) PQDequeue(ctx context.Context, timeout time.Dur
 		return jobPriorities, nil
 	}
 
-	// Blocking path: wait for a wake (real NOTIFY or ~pollInterval fallback tick)
-	// and re-drain until we get items or the timeout elapses. The GUARD above
-	// guarantees the listener is only touched when timeout>0 AND the first drain
-	// was empty, so nil-listener CRUD tests never reach here.
+	// Blocking path: wait for a wake and re-drain until items arrive or the timeout
+	// elapses. Only reached when timeout>0 and the first drain was empty, so
+	// nil-listener CRUD tests never get here.
 	wake, unsubscribe := c.listener.subscribe(channelQueueWake)
 	defer unsubscribe()
 
-	// One timer for the whole wait. Re-creating time.After each iteration would leak
-	// a live runtime timer per wake until the deadline (a busy queue fires many).
+	// One timer for the whole wait; time.After per iteration would leak a live
+	// runtime timer per wake until the deadline.
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Shutdown/cancellation is not an error for the caller; mirror Redis,
-			// which folds context cancellation into a no-items result.
+			// Mirror Redis: context cancellation folds into a no-items result.
 			return nil, nil
 		case <-timer.C:
 			return nil, nil
@@ -168,9 +160,8 @@ func (c *PostgresExchangeClient) PQDequeue(ctx context.Context, timeout time.Dur
 	}
 }
 
-// drainQueue runs the atomic destructive dequeue once and reconstructs the
-// dequeued jobs. slo_score is the SLO as unix microseconds; the Data column is
-// preserved on the way out (harmless, since Data is optional).
+// drainQueue runs the atomic destructive dequeue once. slo_score is the SLO as
+// unix microseconds.
 func (c *PostgresExchangeClient) drainQueue(ctx context.Context, maxItems int) ([]*db_api.BatchJobPriority, error) {
 	rows, err := c.pool.Query(ctx, pqDrainSQL, maxItems)
 	if err != nil {

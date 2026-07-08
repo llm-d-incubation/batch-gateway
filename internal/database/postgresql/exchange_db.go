@@ -14,13 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file defines PostgresExchangeClient, the single struct that implements all
-// four exchange interfaces (BatchPriorityQueueClient, BatchEventChannelClient,
-// BatchStatusClient, InFlightClient) over PostgreSQL, mirroring the redis
-// ExchangeDBClientRedis. It owns the connection pool, the shared LISTEN/NOTIFY
-// dispatcher, and the lazily-started events dispatcher state. The per-interface
-// methods live in exchange_queue.go, exchange_event.go, exchange_status.go, and
-// exchange_inflight.go.
+// PostgresExchangeClient implements the four exchange interfaces over PostgreSQL,
+// mirroring the redis ExchangeDBClientRedis. Per-interface methods live in
+// exchange_queue.go, exchange_event.go, exchange_status.go, exchange_inflight.go.
 
 package postgresql
 
@@ -32,48 +28,40 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
-	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 )
 
 //go:embed exchange_schema.sql
 var exchangeSchemaSql string
 
 const (
-	// DefaultPollInterval is the dequeue/event poll fallback interval. Every
-	// consumer re-drains on each poll tick, so this bounds worst-case latency when
-	// a NOTIFY is missed. Exported so the integration tests can calibrate their
-	// NOTIFY-vs-fallback timing against the real value.
+	// DefaultPollInterval bounds worst-case latency when a NOTIFY is missed.
+	// Exported so integration tests can calibrate NOTIFY-vs-fallback timing.
 	DefaultPollInterval = 1 * time.Second
 
 	// statusTTLDefaultSec matches the redis default (ttlSecDefault): 60 days.
 	statusTTLDefaultSec = 60 * 60 * 24 * 60
 
-	// channelQueueWake and channelEvents are the two fixed LISTEN/NOTIFY channels.
-	// They are compile-time constants (never interpolated from user input).
+	// The two fixed LISTEN/NOTIFY channels; never interpolated from user input.
 	channelQueueWake = "batch_queue_wake"
 	channelEvents    = "batch_events"
 )
 
-// PostgresExchangeClient is the single struct implementing all four exchange
-// interfaces. All CRUD goes through pool (the narrow pgxPool interface: a
-// *pgxpool.Pool in prod, pgxmock in unit tests). listener is the shared
-// LISTEN/NOTIFY dispatcher; it is nil in pure-CRUD unit tests.
+// PostgresExchangeClient implements all four exchange interfaces. pool is a
+// *pgxpool.Pool in prod, pgxmock in unit tests (which leave listener nil and
+// build the struct directly, so Close nil-guards the constructor-set fields).
 type PostgresExchangeClient struct {
 	pool      pgxPool
 	listener  *pgListener
 	logger    logr.Logger
 	closeOnce sync.Once
 
-	// events dispatcher state, guarded by eventsMu (see exchange_event.go).
-	eventsMu      sync.Mutex
-	eventSubs     map[string]*eventSub
-	eventsStarted bool
-	eventsCancel  context.CancelFunc
-	// eventsDone is closed by runEventDispatcher when it exits. Close() waits on it
-	// (like pgListener.done) so the dispatcher can never touch the pool after Close.
+	eventsMu     sync.Mutex
+	eventSubs    map[string]*eventSub // per-job consumer registry, guarded by eventsMu
+	eventsCancel context.CancelFunc
+	// Closed when runEventDispatcher exits; Close() waits on it so the dispatcher
+	// can never touch the pool after Close.
 	eventsDone chan struct{}
 }
 
@@ -85,11 +73,10 @@ var (
 	_ db_api.InFlightClient           = (*PostgresExchangeClient)(nil)
 )
 
-// NewPostgresExchangeClient creates the exchange client, applies the (idempotent)
-// exchange schema once, and starts the shared LISTEN dispatcher. It opens its own
-// pool from the shared PostgreSQL URL: the pool holds one long-lived LISTEN
-// connection, so a second small pool is cheap and keeps this constructor parallel
-// to NewPostgresBatchDBClient without touching the shared db_core files.
+// NewPostgresExchangeClient applies the (idempotent) exchange schema and starts
+// the LISTEN and event dispatchers. It opens its own pool rather than sharing the
+// db_client's: it permanently parks one connection in LISTEN and must not starve
+// the persistent layer. The caller resolves config.Url.
 func NewPostgresExchangeClient(ctx context.Context, config *PostgreSQLConfig, logger logr.Logger) (*PostgresExchangeClient, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -98,71 +85,39 @@ func NewPostgresExchangeClient(ctx context.Context, config *PostgreSQLConfig, lo
 		return nil, fmt.Errorf("postgresql config cannot be nil")
 	}
 
-	// Resolve the connection URL from the mounted secret when not set in config,
-	// mirroring NewPostgreSQLDBClients. The exchange builds before the db client in
-	// NewClientset, so the shared config's URL may still be empty here.
-	if config.Url == "" {
-		postgreSQLURL, err := ucom.ReadSecretFile(ucom.SecretKeyPostgreSQLURL)
-		if err != nil {
-			return nil, err
-		}
-		config.Url = postgreSQLURL
-	}
-
-	// Reserve pool headroom for the permanently parked LISTEN connection so a low
-	// pool_max_conns on the shared URL cannot starve exchange CRUD.
 	config.ReserveConnForListen = true
 	pool, err := newPool(ctx, config)
 	if err != nil {
 		return nil, err
 	}
 
-	// newPool always returns a *pgxpool.Pool in production; the assertion only
-	// fails in tests that bypass this constructor (they build the struct directly).
-	pgPool, ok := pool.(*pgxpool.Pool)
-	if !ok {
+	if _, err := pool.Exec(ctx, exchangeSchemaSql); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("expected *pgxpool.Pool from newPool, got %T", pool)
-	}
-
-	if _, err := pgPool.Exec(ctx, exchangeSchemaSql); err != nil {
-		pgPool.Close()
 		return nil, fmt.Errorf("failed to apply exchange schema: %w", err)
 	}
 
-	listener := newPGListener(pgPool, DefaultPollInterval, logger)
-	// The listener runs for the client's whole lifetime; close() stops it.
-	listener.start(context.Background())
-
 	c := &PostgresExchangeClient{
-		pool:      pgPool,
-		listener:  listener,
+		pool:      pool,
+		listener:  newPGListener(pool, DefaultPollInterval, logger),
 		logger:    logger,
 		eventSubs: make(map[string]*eventSub),
 	}
+	c.startEventDispatcher()
 
 	logger.Info("NewPostgresExchangeClient: client created successfully",
-		"maxConns", pgPool.Config().MaxConns)
+		"maxConns", pool.Config().MaxConns)
 	return c, nil
 }
 
-// Close cancels the events dispatcher, waits for it to exit, stops the LISTEN
-// dispatcher, and closes the pool. Joining the dispatcher before closing the pool
-// guarantees it can never run a drain query against an already-closed pool.
-// Idempotent via closeOnce.
+// Close is idempotent. Dispatchers are joined before the pool closes so they can
+// never query an already-closed pool.
 func (c *PostgresExchangeClient) Close() error {
 	c.closeOnce.Do(func() {
-		c.eventsMu.Lock()
-		cancel := c.eventsCancel
-		done := c.eventsDone
-		c.eventsMu.Unlock()
-
-		if cancel != nil {
-			cancel()
+		if c.eventsCancel != nil {
+			c.eventsCancel()
 		}
-		// Wait for the dispatcher goroutine to fully exit before touching the pool.
-		if done != nil {
-			<-done
+		if c.eventsDone != nil {
+			<-c.eventsDone
 		}
 
 		if c.listener != nil {
@@ -175,16 +130,7 @@ func (c *PostgresExchangeClient) Close() error {
 	return nil
 }
 
-// SweepExpired deletes expired rows from batch_queue, batch_status, and
-// batch_events. Correctness does not depend on it (every read filters expired rows
-// inline); it is a safety-net reclaim. The gc binary runs it periodically via
-// runExchangeSweepLoop (cmd/batch-gc), gated by the exchangeSweeper type assertion.
-func (c *PostgresExchangeClient) SweepExpired(ctx context.Context) (err error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	const sweepSQL = `WITH q AS (
+const sweepExpiredSQL = `WITH q AS (
 	DELETE FROM batch_queue WHERE expires_at IS NOT NULL AND expires_at <= EXTRACT(EPOCH FROM NOW())::BIGINT
 ), s AS (
 	DELETE FROM batch_status WHERE expires_at <= EXTRACT(EPOCH FROM NOW())::BIGINT
@@ -193,7 +139,15 @@ func (c *PostgresExchangeClient) SweepExpired(ctx context.Context) (err error) {
 )
 SELECT 1`
 
-	if _, err = c.pool.Exec(ctx, sweepSQL); err != nil {
+// SweepExpired reclaims expired rows from all three exchange tables. Correctness
+// does not depend on it (reads filter expiry inline); the gc binary runs it
+// periodically as a safety net.
+func (c *PostgresExchangeClient) SweepExpired(ctx context.Context) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if _, err = c.pool.Exec(ctx, sweepExpiredSQL); err != nil {
 		return fmt.Errorf("SweepExpired: %w", err)
 	}
 	return nil
