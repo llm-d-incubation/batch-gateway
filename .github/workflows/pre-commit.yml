@@ -19,6 +19,22 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+    # Real Postgres for the exchange integration tests (they skip without it).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: it
+          POSTGRES_PASSWORD: it
+          POSTGRES_DB: it
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U it"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v7
 
@@ -43,6 +59,8 @@ jobs:
         uses: pre-commit/action@v3.0.1
 
       - name: Run integration tests
+        env:
+          POSTGRES_TEST_URL: postgres://it:it@localhost:15432/it?sslmode=disable
         run: make test-integration
 
       - name: Lint Helm chart

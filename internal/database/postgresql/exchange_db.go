@@ -48,9 +48,7 @@ const (
 	channelEvents    = "batch_events"
 )
 
-// PostgresExchangeClient implements all four exchange interfaces. pool is a
-// *pgxpool.Pool in prod, pgxmock in unit tests (which leave listener nil and
-// build the struct directly, so Close nil-guards the constructor-set fields).
+// PostgresExchangeClient implements all four exchange interfaces.
 type PostgresExchangeClient struct {
 	pool      pgxPool
 	listener  *pgListener
@@ -113,19 +111,10 @@ func NewPostgresExchangeClient(ctx context.Context, config *PostgreSQLConfig, lo
 // never query an already-closed pool.
 func (c *PostgresExchangeClient) Close() error {
 	c.closeOnce.Do(func() {
-		if c.eventsCancel != nil {
-			c.eventsCancel()
-		}
-		if c.eventsDone != nil {
-			<-c.eventsDone
-		}
-
-		if c.listener != nil {
-			_ = c.listener.close()
-		}
-		if c.pool != nil {
-			c.pool.Close()
-		}
+		c.eventsCancel()
+		<-c.eventsDone
+		_ = c.listener.close()
+		c.pool.Close()
 	})
 	return nil
 }

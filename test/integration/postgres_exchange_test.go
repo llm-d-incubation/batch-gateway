@@ -451,3 +451,38 @@ func TestPostgresExchangeInFlight(t *testing.T) {
 		}
 	})
 }
+
+// Input validation rejects bad arguments before touching the database.
+func TestPostgresExchangeValidation(t *testing.T) {
+	client := newExchangeTestClient(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{name: "PQEnqueue nil item", call: func() error { return client.PQEnqueue(ctx, nil) }},
+		{name: "PQEnqueue zero SLO", call: func() error { return client.PQEnqueue(ctx, &dbapi.BatchJobPriority{ID: "j"}) }},
+		{name: "PQDelete nil item", call: func() error { _, err := client.PQDelete(ctx, nil); return err }},
+		{name: "StatusSet empty ID", call: func() error { return client.StatusSet(ctx, "", 60, []byte("x")) }},
+		{name: "StatusSet empty data", call: func() error { return client.StatusSet(ctx, "j", 60, nil) }},
+		{name: "StatusGet empty ID", call: func() error { _, err := client.StatusGet(ctx, ""); return err }},
+		{name: "StatusDelete empty ID", call: func() error { _, err := client.StatusDelete(ctx, ""); return err }},
+		{name: "InFlightSet empty jobID", call: func() error { return client.InFlightSet(ctx, "", "p") }},
+		{name: "InFlightSet empty processorID", call: func() error { return client.InFlightSet(ctx, "j", "") }},
+		{name: "InFlightDelete empty jobID", call: func() error { return client.InFlightDelete(ctx, "") }},
+		{name: "ECProducerSendEvents no events", call: func() error { _, err := client.ECProducerSendEvents(ctx, nil); return err }},
+		{name: "ECProducerSendEvents invalid event", call: func() error {
+			_, err := client.ECProducerSendEvents(ctx, []dbapi.BatchEvent{{ID: "j", Type: dbapi.BatchEventCancel}})
+			return err
+		}},
+		{name: "ECConsumerGetChannel empty ID", call: func() error { _, err := client.ECConsumerGetChannel(ctx, ""); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.call() == nil {
+				t.Error("expected validation error, got nil")
+			}
+		})
+	}
+}

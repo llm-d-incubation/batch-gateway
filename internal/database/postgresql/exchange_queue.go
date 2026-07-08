@@ -129,9 +129,8 @@ func (c *PostgresExchangeClient) PQDequeue(ctx context.Context, timeout time.Dur
 		return jobPriorities, nil
 	}
 
-	// Blocking path: wait for a wake and re-drain until items arrive or the timeout
-	// elapses. Only reached when timeout>0 and the first drain was empty, so
-	// nil-listener CRUD tests never get here.
+	// Blocking path: wait for a wake and re-drain until items arrive or the
+	// timeout elapses.
 	wake, unsubscribe := c.listener.subscribe(channelQueueWake)
 	defer unsubscribe()
 
