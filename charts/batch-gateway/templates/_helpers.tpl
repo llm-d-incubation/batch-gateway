@@ -69,6 +69,29 @@ Usage: {{ include "batch-gateway.validateTLS" (dict "tls" .Values.apiserver.tls 
 {{- end -}}
 {{- end -}}
 
+{{/* ========== Exchange Client Validation Helper ========== */}}
+
+{{/*
+Validate exchange client configuration against the db client and dispatch mode.
+Mirrors the startup validation in internal/util/clientset/clientset.go so misconfig
+fails fast at `helm template`/`helm install` time instead of at pod startup.
+Rules (only enforced when exchangeClient.type is postgresql):
+  - dbClient.type must also be postgresql (the pg exchange reuses the db connection).
+  - async dispatch is unsupported (llm-d-async is redis-only).
+Usage: {{ include "batch-gateway.validateExchange" . }}
+*/}}
+{{- define "batch-gateway.validateExchange" -}}
+{{- $exchangeType := .Values.global.exchangeClient.type | default "redis" -}}
+{{- if eq $exchangeType "postgresql" -}}
+  {{- if ne .Values.global.dbClient.type "postgresql" -}}
+    {{- fail "global.exchangeClient.type=postgresql requires global.dbClient.type=postgresql" -}}
+  {{- end -}}
+  {{- if eq (.Values.processor.config.dispatchMode | default "") "async" -}}
+    {{- fail "global.exchangeClient.type=postgresql does not support async dispatch; use sync dispatch or a redis exchange" -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* ========== API Server Helpers ========== */}}
 
 {{/*

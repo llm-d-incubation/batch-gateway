@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown benchmark-gpu benchmark-gpu-teardown
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-integration-postgres test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown benchmark-gpu benchmark-gpu-teardown
 
 SHELL := /usr/bin/env bash
 
@@ -329,6 +329,23 @@ test-integration:
 	@$(GO) test -v -tags=integration ./... || \
 		(echo "\n❌ Integration tests failed" && exit 1)
 	@echo "\n✅ Integration tests passed!"
+
+## test-integration-postgres: Run Postgres exchange integration tests against a throwaway local Postgres container
+test-integration-postgres: check-container-tool
+	@echo "Starting throwaway Postgres container..."
+	@$(CONTAINER_TOOL) rm -f batch-gateway-it-postgres >/dev/null 2>&1 || true
+	@$(CONTAINER_TOOL) run -d --name batch-gateway-it-postgres \
+		-e POSTGRES_USER=it -e POSTGRES_PASSWORD=it -e POSTGRES_DB=it \
+		-p 15432:5432 postgres:16-alpine >/dev/null
+	@until $(CONTAINER_TOOL) exec batch-gateway-it-postgres pg_isready -U it >/dev/null 2>&1; do sleep 0.5; done
+	@sleep 1
+	@echo "Running Postgres exchange integration tests..."
+	@POSTGRES_TEST_URL="postgres://it:it@localhost:15432/it?sslmode=disable" \
+		$(GO) test -v -tags=integration -count=1 ./test/integration/ -run TestPostgresExchange; \
+		rc=$$?; \
+		$(CONTAINER_TOOL) rm -f batch-gateway-it-postgres >/dev/null 2>&1; \
+		if [ $$rc -ne 0 ]; then echo "\n❌ Postgres exchange integration tests failed" && exit $$rc; fi
+	@echo "\n✅ Postgres exchange integration tests passed!"
 
 ## test-all: Run all tests (unit + regression + integration)
 test-all: test test-regression test-integration

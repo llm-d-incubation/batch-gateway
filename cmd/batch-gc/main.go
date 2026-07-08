@@ -84,7 +84,7 @@ func run() error {
 		clientset.WithFile(cfg.FileClientCfg),
 	}
 	if cfg.Reconciler.Enabled {
-		clientOpts = append(clientOpts, clientset.WithExchange(cfg.DBClientCfg.RedisCfg))
+		clientOpts = append(clientOpts, clientset.WithExchange(cfg.ExchangeClientCfg, cfg.DBClientCfg.RedisCfg, cfg.DBClientCfg.PostgreSQLCfg))
 	}
 
 	clients, err := clientset.NewClientset(ctx, ucom.ComponentGC, clientOpts...)
@@ -130,6 +130,14 @@ func run() error {
 			return fmt.Errorf("failed to create reconciler: %w", err)
 		}
 		g.Go(func() error { return rec.RunLoop(gCtx) })
+
+		// Exchange backends without native TTL (PostgreSQL) need their expired
+		// queue/status/event rows physically reclaimed. Redis expires natively and
+		// does not implement exchangeSweeper, so this simply no-ops there.
+		if sweeper, ok := clients.Queue.(exchangeSweeper); ok {
+			logger.Info("Exchange sweep loop enabled", "interval", cfg.Reconciler.Interval)
+			g.Go(func() error { return runExchangeSweepLoop(gCtx, sweeper, cfg.Reconciler.Interval, logger) })
+		}
 	}
 
 	ready.Store(true)
@@ -141,6 +149,32 @@ func run() error {
 
 	logger.Info("Garbage collector shut down gracefully")
 	return nil
+}
+
+// exchangeSweeper is implemented by exchange backends that need a periodic reclaim
+// of expired rows because they lack native TTL (PostgreSQL). Redis expires keys
+// itself and does not implement this, so the type assertion in run() skips the loop.
+type exchangeSweeper interface {
+	SweepExpired(ctx context.Context) error
+}
+
+// runExchangeSweepLoop periodically deletes expired exchange rows. Correctness never
+// depends on it (every read filters expired rows inline); it bounds table growth on
+// backends without native TTL. It returns nil on shutdown so it does not trip the
+// errgroup's failure path.
+func runExchangeSweepLoop(ctx context.Context, sweeper exchangeSweeper, interval time.Duration, logger logr.Logger) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := sweeper.SweepExpired(ctx); err != nil {
+				logger.Error(err, "exchange sweep failed")
+			}
+		}
+	}
 }
 
 func startMetricsServer(ctx context.Context, addr string, logger logr.Logger, ready *atomic.Bool) (<-chan error, error) {

@@ -367,6 +367,30 @@ tests:
           path: data["config.yaml"]
           pattern: 'send_fairness_header: true'
 
+  - it: should render exchange_client default (redis)
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'exchange_client:\n\s+type: "redis"'
+
+  - it: should render postgresql exchange_client when set
+    set:
+      global.dbClient.type: "postgresql"
+      global.exchangeClient.type: "postgresql"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'exchange_client:\n\s+type: "postgresql"'
+
+  - it: should fail when postgresql exchange is used with async dispatch
+    set:
+      global.dbClient.type: "postgresql"
+      global.exchangeClient.type: "postgresql"
+      processor.config.dispatchMode: "async"
+    asserts:
+      - failedTemplate:
+          errorMessage: "global.exchangeClient.type=postgresql does not support async dispatch; use sync dispatch or a redis exchange"
+
   - it: should not render ConfigMap when processor is disabled
     set:
       processor.enabled: false

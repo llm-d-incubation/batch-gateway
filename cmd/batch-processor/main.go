@@ -288,7 +288,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 	opts := []clientset.Option{
 		clientset.WithDB(cfg.DBClientCfg),
 		clientset.WithFile(cfg.FileClientCfg),
-		clientset.WithExchange(cfg.DBClientCfg.RedisCfg),
+		clientset.WithExchange(cfg.ExchangeClientCfg, cfg.DBClientCfg.RedisCfg, cfg.DBClientCfg.PostgreSQLCfg),
 	}
 	if resolved.Global != nil {
 		opts = append(opts, clientset.WithGlobalInference(*resolved.Global))

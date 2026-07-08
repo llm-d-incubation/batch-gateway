@@ -58,7 +58,7 @@ func buildClients(ctx context.Context, config *common.ServerConfig) (*clientset.
 	clients, err := clientset.NewClientset(ctx, ucom.ComponentApiserver,
 		clientset.WithDB(config.DBClientCfg),
 		clientset.WithFile(config.FileClientCfg),
-		clientset.WithExchange(config.DBClientCfg.RedisCfg),
+		clientset.WithExchange(config.ExchangeClientCfg, config.DBClientCfg.RedisCfg, config.DBClientCfg.PostgreSQLCfg),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clients: %w", err)

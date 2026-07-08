@@ -44,6 +44,11 @@ type PostgreSQLConfig struct {
 	Url string `yaml:"-"`
 	// EnableTracing enables OpenTelemetry tracing for all PostgreSQL operations.
 	EnableTracing bool
+	// ReserveConnForListen guarantees the pool has room for the exchange's permanently
+	// parked LISTEN connection plus at least one connection for CRUD. Set only by the
+	// exchange client; without it a URL that caps pool_max_conns=1 would let the LISTEN
+	// connection consume the sole slot and block every subsequent query.
+	ReserveConnForListen bool `yaml:"-"`
 }
 
 // Validate checks that the required configuration fields are set.
@@ -112,6 +117,11 @@ func newPool(ctx context.Context, config *PostgreSQLConfig) (pgxPool, error) {
 			otelpgx.WithTrimSQLInSpanName(),
 			otelpgx.WithSpanNameFunc(shortSpanName),
 		)
+	}
+	// The exchange parks one connection in LISTEN for the client's whole lifetime, so
+	// the pool needs at least 2 (one parked + one for CRUD) or every query starves.
+	if config.ReserveConnForListen && poolConfig.MaxConns < 2 {
+		poolConfig.MaxConns = 2
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {

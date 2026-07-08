@@ -149,7 +149,9 @@ type Option func(*clientsetConfig)
 type clientsetConfig struct {
 	dbCfg             *sharedcfg.DBClientConfig
 	fileCfg           *sharedcfg.FileClientConfig
+	exchangeType      string
 	exchangeRedisCfg  *uredis.RedisClientConfig
+	exchangePgCfg     *postgresql.PostgreSQLConfig
 	inferenceGlobal   *inference.GatewayClientConfig
 	inferencePerModel map[string]inference.GatewayClientConfig
 	asyncInference    *inference.AsyncClientConfig
@@ -166,10 +168,16 @@ func WithFile(cfg sharedcfg.FileClientConfig) Option {
 	return func(c *clientsetConfig) { c.fileCfg = &cfg }
 }
 
-// WithExchange enables creation of the Redis exchange client (Queue, Event, Status).
-func WithExchange(cfg uredis.RedisClientConfig) Option {
-	cfg = cfg.DeepCopy()
-	return func(c *clientsetConfig) { c.exchangeRedisCfg = &cfg }
+// WithExchange enables creation of the exchange client (Queue, Event, Status, InFlight).
+// The backend is selected by cfg.Type; connection settings are reused from the db_client
+// config (redisCfg for a Redis exchange, pgCfg for a PostgreSQL exchange).
+func WithExchange(cfg sharedcfg.ExchangeClientConfig, redisCfg uredis.RedisClientConfig, pgCfg postgresql.PostgreSQLConfig) Option {
+	redisCfg = redisCfg.DeepCopy()
+	return func(c *clientsetConfig) {
+		c.exchangeType = cfg.Type
+		c.exchangeRedisCfg = &redisCfg
+		c.exchangePgCfg = &pgCfg
+	}
 }
 
 // WithGlobalInference enables creation of a global inference client.
@@ -204,27 +212,52 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 
 	cs := &Clientset{}
 
-	// build redis exchange client
+	// build exchange client (Queue, Event, Status, InFlight)
 	if cfg.exchangeRedisCfg != nil {
-		// TODO: The exchange interfaces (priority queue, events, status) currently always use Redis.
-		// Consider adding a separate type parameter for these if we need alternative backends.
-		// See: https://github.com/llm-d/llm-d-batch-gateway/pull/102#discussion_r2906181334
-		if cfg.exchangeRedisCfg.Url == "" {
-			redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
-			if err != nil {
-				return nil, err
+		switch exchangeType := cfg.exchangeType; exchangeType {
+		case "", sharedcfg.ExchangeTypeRedis:
+			if cfg.exchangeRedisCfg.Url == "" {
+				redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
+				if err != nil {
+					return nil, err
+				}
+				cfg.exchangeRedisCfg.Url = redisURL
 			}
-			cfg.exchangeRedisCfg.Url = redisURL
+			redisClient, err := dbRedis.NewExchangeDBClientRedis(ctx, nil, cfg.exchangeRedisCfg, 0)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create redis exchange client: %w", err)
+			}
+			logger.Info("Redis exchange client created")
+			cs.Queue = redisClient
+			cs.Event = redisClient
+			cs.Status = redisClient
+			cs.InFlight = redisClient
+		case sharedcfg.ExchangeTypePostgreSQL:
+			// A PostgreSQL exchange requires a PostgreSQL db_client: the exchange reuses the
+			// same connection URL and this keeps deployments to a single datastore.
+			if cfg.dbCfg == nil || cfg.dbCfg.Type != sharedcfg.DBTypePostgreSQL {
+				return nil, fmt.Errorf("exchange_client.type=postgresql requires db_client.type=postgresql")
+			}
+			// Async dispatch (llm-d-async) is Redis-only; postgres-only mode is sync dispatch only.
+			if cfg.asyncInference != nil {
+				return nil, fmt.Errorf("postgres-only mode does not support async dispatch; use sync inference or a redis exchange")
+			}
+			pgCfg := *cfg.exchangePgCfg
+			if pgCfg.Url == "" {
+				pgCfg.Url = cfg.dbCfg.PostgreSQLCfg.Url
+			}
+			pgClient, err := postgresql.NewPostgresExchangeClient(ctx, &pgCfg, logger)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create postgresql exchange client: %w", err)
+			}
+			logger.Info("PostgreSQL exchange client created")
+			cs.Queue = pgClient
+			cs.Event = pgClient
+			cs.Status = pgClient
+			cs.InFlight = pgClient
+		default:
+			return nil, fmt.Errorf("unsupported exchange_client.type: %s (supported values: redis, postgresql)", exchangeType)
 		}
-		redisClient, err := dbRedis.NewExchangeDBClientRedis(ctx, nil, cfg.exchangeRedisCfg, 0)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create redis exchange client: %w", err)
-		}
-		logger.Info("Redis exchange client created")
-		cs.Queue = redisClient
-		cs.Event = redisClient
-		cs.Status = redisClient
-		cs.InFlight = redisClient
 	}
 
 	// build file store client

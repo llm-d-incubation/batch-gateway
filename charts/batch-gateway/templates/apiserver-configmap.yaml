@@ -1,4 +1,5 @@
 {{- if .Values.apiserver.enabled -}}
+{{- include "batch-gateway.validateExchange" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -36,6 +37,8 @@ data:
         pool_timeout: {{ .Values.global.dbClient.redis.poolTimeout | quote }}
         conn_max_idle_time: {{ .Values.global.dbClient.redis.connMaxIdleTime | quote }}
         conn_max_lifetime: {{ .Values.global.dbClient.redis.connMaxLifetime | quote }}
+    exchange_client:
+      type: {{ .Values.global.exchangeClient.type | quote }}
     file_client:
       type: {{ .Values.global.fileClient.type | quote }}
       fs:

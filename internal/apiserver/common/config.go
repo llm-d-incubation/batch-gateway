@@ -132,6 +132,9 @@ type ServerConfig struct {
 	// DB client configuration
 	DBClientCfg sharedcfg.DBClientConfig `yaml:"db_client"`
 
+	// Exchange client configuration (priority queue, events, status, in-flight).
+	ExchangeClientCfg sharedcfg.ExchangeClientConfig `yaml:"exchange_client"`
+
 	// EnablePprof enables pprof profiling endpoints on the observability server.
 	EnablePprof bool `yaml:"enable_pprof"`
 
@@ -215,6 +218,9 @@ func (c *ServerConfig) applyDefaults() {
 	}
 	if c.DBClientCfg.Type == "" {
 		c.DBClientCfg.Type = sharedcfg.DBTypeRedis
+	}
+	if c.ExchangeClientCfg.Type == "" {
+		c.ExchangeClientCfg.Type = sharedcfg.ExchangeTypeRedis
 	}
 	if c.ReadHeaderTimeoutSeconds <= 0 {
 		c.ReadHeaderTimeoutSeconds = DefaultReadHeaderTimeoutSeconds

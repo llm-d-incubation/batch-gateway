@@ -21,6 +21,26 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'db_client:\n\s+type: "postgresql"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'exchange_client:\n\s+type: "redis"'
+
+  - it: should render postgresql exchange_client when set
+    set:
+      global.dbClient.type: "postgresql"
+      global.exchangeClient.type: "postgresql"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'exchange_client:\n\s+type: "postgresql"'
+
+  - it: should fail when postgresql exchange is used with a non-postgresql db
+    set:
+      global.dbClient.type: "redis"
+      global.exchangeClient.type: "postgresql"
+    asserts:
+      - failedTemplate:
+          errorMessage: "global.exchangeClient.type=postgresql requires global.dbClient.type=postgresql"
 
   - it: should render inputHeaders when set
     asserts:

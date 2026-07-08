@@ -69,6 +69,13 @@ file_client:
 #   redis:
 #     url_secret_key: "redis-url"  # key name within /etc/.secrets/ (mounted from existingSecret)
 
+# Exchange client configuration (priority queue, events, status, in-flight).
+# exchange_client:
+#   # Type selects the exchange backend: "redis" (default) or "postgresql".
+#   # "postgresql" requires db_client.type=postgresql and does not support async dispatch.
+#   # Connection settings are reused from db_client, so nothing else is configured here.
+#   type: "redis"
+
 # Batch API configuration
 batch_api:
   # Batch event TTL in seconds (default: 30 days)

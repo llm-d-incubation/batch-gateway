@@ -1,0 +1,13 @@
+# Exercises: postgres-only mode (no Redis).
+# Both the persistent store (dbClient) and the runtime exchange (exchangeClient)
+# use PostgreSQL, so the deployment needs only the postgresql-url secret key — no
+# Redis/Valkey at all. Async dispatch is intentionally left unset (llm-d-async is
+# redis-only and rejected by the exchange validation in this mode).
+global:
+  dbClient:
+    type: "postgresql"
+  exchangeClient:
+    type: "postgresql"
+  fileClient:
+    fs:
+      pvcName: "batch-data"

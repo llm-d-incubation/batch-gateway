@@ -68,6 +68,9 @@ type Config struct {
 	// DB client configuration
 	DBClientCfg sharedcfg.DBClientConfig `yaml:"db_client"`
 
+	// Exchange client configuration (priority queue, events, status, in-flight).
+	ExchangeClientCfg sharedcfg.ExchangeClientConfig `yaml:"exchange_client"`
+
 	// FileClientCfg holds the file storage backend configuration.
 	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
 }
@@ -92,6 +95,10 @@ func Load(path string) (*Config, error) {
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if cfg.ExchangeClientCfg.Type == "" {
+		cfg.ExchangeClientCfg.Type = sharedcfg.ExchangeTypeRedis
 	}
 
 	if cfg.Collector.MaxConcurrency <= 0 {

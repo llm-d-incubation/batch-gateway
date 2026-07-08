@@ -40,6 +40,21 @@ const (
 	FileTypeMock = "mock"
 )
 
+// Exchange backend types. The exchange serves the priority queue, event channels,
+// status store, and in-flight tracking.
+const (
+	ExchangeTypeRedis      = "redis"
+	ExchangeTypePostgreSQL = "postgresql"
+)
+
+// ExchangeClientConfig selects the exchange backend. Connection settings are
+// reused from DBClientConfig (validation forces them to match the db backend),
+// so only the type is configurable here.
+type ExchangeClientConfig struct {
+	// Type specifies the exchange backend: ExchangeTypeRedis or ExchangeTypePostgreSQL.
+	Type string `yaml:"type"`
+}
+
 // DBClientConfig holds database client configuration shared by all components.
 type DBClientConfig struct {
 	// Type specifies the database backend: DBTypeRedis, DBTypeValkey, or DBTypePostgreSQL.

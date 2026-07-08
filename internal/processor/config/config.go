@@ -121,6 +121,9 @@ type ProcessorConfig struct {
 	// DB client configuration
 	DBClientCfg sharedcfg.DBClientConfig `yaml:"db_client"`
 
+	// Exchange client configuration (priority queue, events, status, in-flight).
+	ExchangeClientCfg sharedcfg.ExchangeClientConfig `yaml:"exchange_client"`
+
 	Addr string `yaml:"addr"`
 	// TerminateOnObservabilityFailure controls whether observability server failures should terminate the processor.
 	// false: best-effort (default), true: fatal.
@@ -305,6 +308,9 @@ func NewConfig() *ProcessorConfig {
 		WorkDir:                         "/var/lib/batch-gateway/processor",
 		DBClientCfg: sharedcfg.DBClientConfig{
 			Type: sharedcfg.DBTypeRedis,
+		},
+		ExchangeClientCfg: sharedcfg.ExchangeClientConfig{
+			Type: sharedcfg.ExchangeTypeRedis,
 		},
 		FileClientCfg: sharedcfg.FileClientConfig{
 			Type: sharedcfg.FileTypeMock,

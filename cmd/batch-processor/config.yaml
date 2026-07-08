@@ -90,6 +90,13 @@ default_output_expiration_seconds: 7776000  # 90 days
 # TTL for temporary progress updates in the status store (Redis), in seconds.
 progress_ttl_seconds: 86400  # 24 hours
 
+# Exchange client configuration (priority queue, events, status, in-flight).
+# exchange_client:
+#   # Type selects the exchange backend: "redis" (default) or "postgresql".
+#   # "postgresql" requires db_client.type=postgresql and does not support async dispatch.
+#   # Connection settings are reused from db_client, so nothing else is configured here.
+#   type: "redis"
+
 # Whether to send x-gateway-inference-fairness-id on inference requests.
 # false (default) omits the fairness header entirely.
 send_fairness_header: false
