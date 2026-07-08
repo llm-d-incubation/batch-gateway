@@ -124,6 +124,8 @@ Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](http
 | `BATCH_GC_REPO` | — | Override gc image repository |
 | `BATCH_DB_TYPE` | `postgresql` | Database backend: `postgresql` or `redis` |
 | `BATCH_STORAGE_TYPE` | `s3` | File storage: `fs` or `s3` |
+| `MINIO_BUCKET` | `llm-d-batch-gateway` | MinIO bucket name (also used as the S3 `bucket` and `prefix` config values) |
+| `MINIO_REGION` | `us-east-1` | S3 region for MinIO |
 | `DEMO_TLS_INSECURE_SKIP_VERIFY` | `1` | Disables TLS certificate verification for processor → model gateway and Istio Gateway → batch apiserver (**demo/lab only**, [CWE-295](https://cwe.mitre.org/data/definitions/295.html)). Default `1` since demo scripts use self-signed certs. Set to `0` if you have trusted CA certs. |
 | `BATCH_NAMESPACE` | `batch-api` | Namespace for batch-gateway |
 | `LLM_NAMESPACE` | `llm` | Namespace for model serving |

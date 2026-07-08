@@ -856,7 +856,8 @@ kubectl rollout status statefulset/postgresql -n ${BATCH_NS} --timeout=120s
 # Install MinIO (S3-compatible object storage for batch files)
 MINIO_USER=<your-minio-user>
 MINIO_PASSWORD=<your-minio-password>
-MINIO_BUCKET=batch-gateway
+MINIO_BUCKET=llm-d-batch-gateway
+MINIO_REGION=us-east-1
 
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -964,7 +965,8 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
     --set "global.dbClient.type=postgresql" \
     --set "global.fileClient.type=s3" \
     --set "global.fileClient.s3.endpoint=http://minio.${BATCH_NS}.svc.cluster.local:9000" \
-    --set "global.fileClient.s3.region=us-east-1" \
+    --set "global.fileClient.s3.region=${MINIO_REGION}" \
+    --set "global.fileClient.s3.bucket=${MINIO_BUCKET}" \
     --set "global.fileClient.s3.accessKeyId=${MINIO_USER}" \
     --set "global.fileClient.s3.prefix=${MINIO_BUCKET}" \
     --set "global.fileClient.s3.usePathStyle=true" \
