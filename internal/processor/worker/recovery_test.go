@@ -26,6 +26,8 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 
 	batchDB := newMockBatchDBClient()
 	pq := mockdb.NewMockBatchPriorityQueueClient()
+	inflightClient := mockdb.NewMockInFlightClient()
+	pq.LinkInFlight(inflightClient)
 	spyQueue := &spyPQ{inner: pq}
 	statusClient := mockdb.NewMockBatchStatusClient()
 
@@ -391,15 +393,15 @@ func TestRecoverJob_Validating_ReEnqueuesWithExactTaggedSLO(t *testing.T) {
 		t.Fatalf("recoverJob: %v", err)
 	}
 
-	tasks, err := spyQueue.PQDequeue(ctx, 0, 1)
+	task, err := spyQueue.PQDequeueAndClaim(ctx, "test-proc")
 	if err != nil {
-		t.Fatalf("PQDequeue: %v", err)
+		t.Fatalf("PQDequeueAndClaim: %v", err)
 	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 re-enqueued task, got %d", len(tasks))
+	if task == nil {
+		t.Fatal("expected 1 re-enqueued task, got none")
 	}
-	if !tasks[0].SLO.Equal(wantSLO) {
-		t.Fatalf("re-enqueued SLO = %v, want %v", tasks[0].SLO, wantSLO)
+	if !task.SLO.Equal(wantSLO) {
+		t.Fatalf("re-enqueued SLO = %v, want %v", task.SLO, wantSLO)
 	}
 
 	assertJobDirRemoved(t, p, jobID, tenantID)

@@ -2127,12 +2127,12 @@ func TestHandleJobError_Shutdown_LeavesJobForReconciler(t *testing.T) {
 	}, errShutdown)
 
 	// Job must NOT be re-enqueued — reconciler handles recovery.
-	tasks, err := env.pqClient.PQDequeue(ctx, 0, 10)
+	queuedIDs, err := env.pqClient.PQGetIDs(ctx)
 	if err != nil {
-		t.Fatalf("PQDequeue: %v", err)
+		t.Fatalf("PQGetIDs: %v", err)
 	}
-	if len(tasks) != 0 {
-		t.Fatalf("expected no re-enqueued tasks, got %d", len(tasks))
+	if len(queuedIDs) != 0 {
+		t.Fatalf("expected no re-enqueued tasks, got %d", len(queuedIDs))
 	}
 
 	// Job status must remain in_progress (not transitioned by the processor).

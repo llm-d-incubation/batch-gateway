@@ -29,7 +29,6 @@ import (
 
 	"github.com/go-logr/logr"
 	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
-	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -131,71 +130,6 @@ func (c *ExchangeDBClientRedis) PQDelete(ctx context.Context, item *db_api.Batch
 	return
 }
 
-func (c *ExchangeDBClientRedis) PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
-	jobPriorities []*db_api.BatchJobPriority, err error) {
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	logger := logr.FromContextOrDiscard(ctx)
-
-	// Get items from the queue.
-	// Use non-blocking ZMPop when timeout is zero, blocking BZMPop otherwise.
-	var vals []goredis.Z
-	if timeout <= 0 {
-		logger.V(logging.DEBUG).Info("PQDequeue: Start ZMPop (non-blocking)")
-		_, vals, err = c.redisClient.ZMPop(
-			ctx, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
-		logger.V(logging.DEBUG).Info("PQDequeue: End ZMPop")
-	} else {
-		logger.V(logging.DEBUG).Info("PQDequeue: Start BZMPop", "timeout", timeout)
-		_, vals, err = c.redisClient.BZMPop(
-			ctx, timeout, goredis.Min.String(), int64(maxItems), priorityQueueKeyName).Result()
-		logger.V(logging.DEBUG).Info("PQDequeue: End BZMPop")
-	}
-	if err != nil {
-		if unrecognizedBlockingError(err) {
-			logger.Error(err, "PQDequeue: B/ZMPop failed")
-			cerr := c.redisClientChecker.Check(ctx)
-			if cerr != nil {
-				logger.Error(err, "PQDequeue: ClientCheck failed")
-			}
-			return nil, err
-		}
-		if time.Since(c.idleLogLast) >= c.idleLogFreq {
-			logger.Info("PQDequeue: no items")
-			c.idleLogLast = time.Now()
-		}
-		return nil, nil
-	}
-	if len(vals) == 0 {
-		if time.Since(c.idleLogLast) >= c.idleLogFreq {
-			logger.Info("PQDequeue: no items")
-			c.idleLogLast = time.Now()
-		}
-		return nil, nil
-	}
-
-	jobPriorities = make([]*db_api.BatchJobPriority, 0, len(vals))
-	for _, val := range vals {
-		item := &db_api.BatchJobPriority{}
-		member, ok := val.Member.(string)
-		if !ok {
-			err = fmt.Errorf("unexpected member type: %T", val.Member)
-			return
-		}
-		err = json.Unmarshal([]byte(member), item)
-		if err != nil {
-			logger.Error(err, "PQDequeue: Unmarshal failed")
-			return
-		}
-		jobPriorities = append(jobPriorities, item)
-	}
-
-	logger.Info("PQDequeue: succeeded", "nItems", len(jobPriorities))
-	return
-}
-
 func (c *ExchangeDBClientRedis) PQDequeueAndClaim(ctx context.Context, processorID string) (
 	*db_api.BatchJobPriority, error) {
 
@@ -228,6 +162,13 @@ func (c *ExchangeDBClientRedis) PQDequeueAndClaim(ctx context.Context, processor
 				c.idleLogLast = time.Now()
 			}
 			return nil, nil
+		}
+		// The polling loop treats dequeue errors as "no work" and keeps
+		// spinning, so log here and probe the connection to surface Redis
+		// outages and read-only failovers that would otherwise be silent.
+		logger.Error(err, "PQDequeueAndClaim: script failed")
+		if cerr := c.redisClientChecker.Check(ctx); cerr != nil {
+			logger.Error(cerr, "PQDequeueAndClaim: ClientCheck failed")
 		}
 		return nil, fmt.Errorf("PQDequeueAndClaim: %w", err)
 	}

@@ -127,21 +127,13 @@ type BatchPriorityQueueClient interface {
 	// PQEnqueue adds a job priority object to the queue.
 	PQEnqueue(ctx context.Context, jobPriority *BatchJobPriority) (err error)
 
-	// PQDequeue atomically removes and returns the job priority objects at the head of the queue,
-	// up to the maximum number of objects specified in maxItems.
-	// The function blocks up to the timeout value for a job priority object to be available.
-	// If the timeout value is zero or negative, the function returns immediately.
-	//
-	// Implementations MUST atomically remove dequeued items from the queue. The processor
-	// assumes exclusive dequeue semantics: a dequeued job will not be returned by any
-	// subsequent PQDequeue call. Non-atomic (peek/lease) implementations will cause the
-	// same job to be processed multiple times.
-	PQDequeue(ctx context.Context, timeout time.Duration, maxItems int) (
-		jobPriorities []*BatchJobPriority, err error)
-
 	// PQDequeueAndClaim atomically removes the highest-priority job from the
 	// queue and records an in-flight entry (see InFlightClient) owned by
 	// processorID. Returns (nil, nil) when the queue is empty.
+	//
+	// Implementations MUST pop and claim as one atomic operation: a dequeued
+	// job is never returned to a subsequent caller, and there is no
+	// intermediate state where the job is neither queued nor claimed.
 	PQDequeueAndClaim(ctx context.Context, processorID string) (
 		jobPriority *BatchJobPriority, err error)
 

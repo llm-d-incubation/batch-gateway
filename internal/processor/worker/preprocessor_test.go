@@ -1104,11 +1104,11 @@ func TestRunPollingLoop_FetchFailsWithCancelledCtx_ReEnqueuesViaDetachedCtx(t *t
 		t.Fatalf("runPollingLoop: %v", err)
 	}
 
-	tasks, err := pq.PQDequeue(ctx, 0, 10)
+	queuedIDs, err := pq.PQGetIDs(ctx)
 	if err != nil {
-		t.Fatalf("PQDequeue: %v", err)
+		t.Fatalf("PQGetIDs: %v", err)
 	}
-	if len(tasks) == 0 {
+	if len(queuedIDs) == 0 {
 		t.Fatalf("expected task to be back in queue after re-enqueue via detached context")
 	}
 }

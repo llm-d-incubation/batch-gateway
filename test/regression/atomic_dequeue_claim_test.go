@@ -35,7 +35,7 @@ import (
 // between the two left the job in neither store. PQDequeueAndClaim does both
 // in one Lua script; these tests pin that invariant.
 func TestRegression_AtomicDequeueClaim(t *testing.T) {
-	newExchangeClient := func(t *testing.T) *dbredis.ExchangeDBClientRedis {
+	newExchangeClient := func(t *testing.T) (*miniredis.Miniredis, *dbredis.ExchangeDBClientRedis) {
 		t.Helper()
 		minirds := miniredis.NewMiniRedis()
 		if err := minirds.Start(); err != nil {
@@ -51,13 +51,17 @@ func TestRegression_AtomicDequeueClaim(t *testing.T) {
 			t.Fatalf("failed to create exchange client: %v", err)
 		}
 		t.Cleanup(func() { _ = exch.Close() })
-		return exch
+		return minirds, exch
 	}
+
+	// Mirrors the unexported queue key in the redis package, for direct
+	// sabotage of queue contents.
+	const queueKey = "llmd_batch:queue:priority"
 
 	t.Run("ClaimIsAtomicPair", func(t *testing.T) {
 		// Once a claim returns, both effects are visible: gone from the
 		// queue, owned in the in-flight hash.
-		exch := newExchangeClient(t)
+		_, exch := newExchangeClient(t)
 		ctx := context.Background()
 
 		if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
@@ -101,7 +105,7 @@ func TestRegression_AtomicDequeueClaim(t *testing.T) {
 		// job in at least one of the two stores. Queue is read first: a job
 		// that left the queue before the read is already claimed, and claims
 		// are never deleted here, so the in-flight read that follows sees it.
-		exch := newExchangeClient(t)
+		_, exch := newExchangeClient(t)
 		ctx := context.Background()
 
 		const nJobs = 60
@@ -210,6 +214,71 @@ func TestRegression_AtomicDequeueClaim(t *testing.T) {
 			if entry.ProcessorID != owner {
 				t.Fatalf("job %s in-flight owner=%q, want claimer %q", id, entry.ProcessorID, owner)
 			}
+		}
+	})
+
+	t.Run("CorruptMemberDoesNotStarveQueue", func(t *testing.T) {
+		// Past bug (caught in review of #559): a corrupt queue member was
+		// restored at its original score after failing validation, putting it
+		// back at the queue head forever — a poison pill starving every valid
+		// job behind it. Corrupt members must be dropped, and the next claim
+		// must return the job that was behind them.
+		minirds, exch := newExchangeClient(t)
+		ctx := context.Background()
+
+		if _, err := minirds.ZAdd(queueKey, 1, "poison-pill-not-json"); err != nil {
+			t.Fatalf("ZAdd() err=%v", err)
+		}
+		if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
+			ID:  "job-behind-pill",
+			SLO: time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("PQEnqueue() err=%v", err)
+		}
+
+		if _, err := exch.PQDequeueAndClaim(ctx, "proc-A"); err == nil {
+			t.Fatal("first claim err=nil, want corrupt-member error")
+		}
+
+		task, err := exch.PQDequeueAndClaim(ctx, "proc-A")
+		if err != nil {
+			t.Fatalf("second claim err=%v, want the job behind the pill", err)
+		}
+		if task == nil || task.ID != "job-behind-pill" {
+			t.Fatalf("second claim task=%v, want job-behind-pill", task)
+		}
+	})
+
+	t.Run("FailedClaimWriteDoesNotLoseJob", func(t *testing.T) {
+		// Past bug (caught in review of #559): if the in-flight HSET failed
+		// after ZPOPMIN, the script aborted without restoring the member —
+		// the job vanished from both stores, the exact state this fix exists
+		// to eliminate. A failed claim write must leave the job in the queue.
+		minirds, exch := newExchangeClient(t)
+		ctx := context.Background()
+
+		if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
+			ID:  "job-claim-fail",
+			SLO: time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("PQEnqueue() err=%v", err)
+		}
+
+		// Sabotage the in-flight key so HSET fails with WRONGTYPE.
+		if err := minirds.Set("llmd_batch:inflight", "not-a-hash"); err != nil {
+			t.Fatalf("Set() err=%v", err)
+		}
+
+		if task, err := exch.PQDequeueAndClaim(ctx, "proc-A"); err == nil {
+			t.Fatalf("claim err=nil, want claim-write error (task=%v)", task)
+		}
+
+		queued, err := exch.PQGetIDs(ctx)
+		if err != nil {
+			t.Fatalf("PQGetIDs() err=%v", err)
+		}
+		if !queued["job-claim-fail"] {
+			t.Fatal("job lost: not in queue after failed claim write")
 		}
 	})
 }

@@ -232,13 +232,6 @@ func (s *spyPQ) PQEnqueue(ctx context.Context, jobPriority *db.BatchJobPriority)
 	}
 	return s.inner.PQEnqueue(ctx, jobPriority)
 }
-func (s *spyPQ) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) ([]*db.BatchJobPriority, error) {
-	items, err := s.inner.PQDequeue(ctx, timeout, maxObjs)
-	if err == nil && len(items) > 0 && s.afterDequeueFn != nil {
-		s.afterDequeueFn()
-	}
-	return items, err
-}
 func (s *spyPQ) PQDequeueAndClaim(ctx context.Context, processorID string) (*db.BatchJobPriority, error) {
 	task, err := s.inner.PQDequeueAndClaim(ctx, processorID)
 	if err == nil && task != nil && s.afterDequeueFn != nil {

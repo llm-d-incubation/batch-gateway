@@ -70,47 +70,6 @@ func (m *MockBatchPriorityQueueClient) PQEnqueue(ctx context.Context, jobPriorit
 	return nil
 }
 
-func (m *MockBatchPriorityQueueClient) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) ([]*api.BatchJobPriority, error) {
-	deadline := time.Now().Add(timeout)
-
-	for {
-		m.mu.Lock()
-		if len(m.queue) > 0 {
-			// Determine how many objects to return
-			count := min(maxObjs, len(m.queue))
-
-			// Get the first 'count' items (highest priority)
-			result := make([]*api.BatchJobPriority, count)
-			copy(result, m.queue[:count])
-
-			// Remove them from the queue
-			m.queue = m.queue[count:]
-
-			m.mu.Unlock()
-			return result, nil
-		}
-		m.mu.Unlock()
-
-		// If timeout is zero, return immediately
-		if timeout == 0 {
-			return []*api.BatchJobPriority{}, nil
-		}
-
-		// Check if we've exceeded the timeout
-		if time.Now().After(deadline) {
-			return []*api.BatchJobPriority{}, nil
-		}
-
-		// Check if context is cancelled
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-			// Small sleep before checking again
-		}
-	}
-}
-
 func (m *MockBatchPriorityQueueClient) PQDequeueAndClaim(ctx context.Context, processorID string) (*api.BatchJobPriority, error) {
 	if processorID == "" {
 		return nil, fmt.Errorf("processorID is empty")

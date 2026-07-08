@@ -41,13 +41,6 @@ func (p *pqSpy) PQEnqueue(ctx context.Context, jobPriority *db.BatchJobPriority)
 	return p.inner.PQEnqueue(ctx, jobPriority)
 }
 
-func (p *pqSpy) PQDequeue(ctx context.Context, timeout time.Duration, maxObjs int) ([]*db.BatchJobPriority, error) {
-	if p.dequeueErr != nil {
-		return nil, p.dequeueErr
-	}
-	return p.inner.PQDequeue(ctx, timeout, maxObjs)
-}
-
 func (p *pqSpy) PQDequeueAndClaim(ctx context.Context, processorID string) (*db.BatchJobPriority, error) {
 	if p.dequeueErr != nil {
 		return nil, p.dequeueErr

@@ -18,7 +18,6 @@ package redis_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +25,13 @@ import (
 
 	db_api "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	dbredis "github.com/llm-d/llm-d-batch-gateway/internal/database/redis"
+)
+
+// Mirrors of the unexported key names in the redis package, for direct
+// store manipulation in sabotage tests.
+const (
+	queueKey    = "llmd_batch:queue:priority"
+	inFlightKey = "llmd_batch:inflight"
 )
 
 func TestPQDequeueAndClaim(t *testing.T) {
@@ -149,7 +155,7 @@ func TestPQDequeueAndClaim(t *testing.T) {
 		}
 	})
 
-	t.Run("corrupt queue member returns error without claiming", func(t *testing.T) {
+	t.Run("corrupt queue member is dropped with an error, without claiming", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
 			member string
@@ -163,25 +169,6 @@ func TestPQDequeueAndClaim(t *testing.T) {
 				minirds, exch := newExchangeClient(t)
 				ctx := context.Background()
 
-				// Discover the (unexported) queue key by enqueueing a real job,
-				// then replace its contents with the corrupt member.
-				if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
-					ID:  "job-probe",
-					SLO: time.Now().Add(time.Hour),
-				}); err != nil {
-					t.Fatalf("PQEnqueue() err=%v", err)
-				}
-				var queueKey string
-				for _, key := range minirds.Keys() {
-					if strings.Contains(key, "priority") {
-						queueKey = key
-						break
-					}
-				}
-				if queueKey == "" {
-					t.Fatal("could not find priority queue key in miniredis")
-				}
-				minirds.Del(queueKey)
 				if _, err := minirds.ZAdd(queueKey, 1, tc.member); err != nil {
 					t.Fatalf("ZAdd() err=%v", err)
 				}
@@ -191,12 +178,11 @@ func TestPQDequeueAndClaim(t *testing.T) {
 					t.Fatalf("PQDequeueAndClaim() err=nil, want error (task=%v)", task)
 				}
 
-				members, err := minirds.ZMembers(queueKey)
-				if err != nil {
-					t.Fatalf("ZMembers() err=%v", err)
-				}
-				if len(members) != 1 || members[0] != tc.member {
-					t.Fatalf("queue members=%v, want [%s]", members, tc.member)
+				// The corrupt member must stay dropped: restoring it would put
+				// it back at the queue head and starve everything behind it.
+				members, _ := minirds.ZMembers(queueKey)
+				if len(members) != 0 {
+					t.Fatalf("queue members=%v, want empty (corrupt member dropped)", members)
 				}
 
 				entries, err := exch.InFlightGetAll(ctx)
@@ -207,6 +193,67 @@ func TestPQDequeueAndClaim(t *testing.T) {
 					t.Fatalf("corrupt member produced in-flight entries: %v", entries)
 				}
 			})
+		}
+	})
+
+	t.Run("valid job behind corrupt member is claimed on the next call", func(t *testing.T) {
+		t.Parallel()
+		minirds, exch := newExchangeClient(t)
+		ctx := context.Background()
+
+		// Corrupt member at the queue head, valid job behind it.
+		if _, err := minirds.ZAdd(queueKey, 1, "not-json"); err != nil {
+			t.Fatalf("ZAdd() err=%v", err)
+		}
+		if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
+			ID:  "job-behind",
+			SLO: time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("PQEnqueue() err=%v", err)
+		}
+
+		if _, err := exch.PQDequeueAndClaim(ctx, "proc-1"); err == nil {
+			t.Fatal("first PQDequeueAndClaim() err=nil, want corrupt-member error")
+		}
+
+		task, err := exch.PQDequeueAndClaim(ctx, "proc-1")
+		if err != nil {
+			t.Fatalf("second PQDequeueAndClaim() err=%v, want valid job", err)
+		}
+		if task == nil || task.ID != "job-behind" {
+			t.Fatalf("second PQDequeueAndClaim() task=%v, want job-behind", task)
+		}
+	})
+
+	t.Run("claim write failure does not lose the job", func(t *testing.T) {
+		t.Parallel()
+		minirds, exch := newExchangeClient(t)
+		ctx := context.Background()
+
+		if err := exch.PQEnqueue(ctx, &db_api.BatchJobPriority{
+			ID:  "job-1",
+			SLO: time.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("PQEnqueue() err=%v", err)
+		}
+
+		// Sabotage the in-flight key so HSET fails with WRONGTYPE.
+		if err := minirds.Set(inFlightKey, "not-a-hash"); err != nil {
+			t.Fatalf("Set() err=%v", err)
+		}
+
+		task, err := exch.PQDequeueAndClaim(ctx, "proc-1")
+		if err == nil {
+			t.Fatalf("PQDequeueAndClaim() err=nil, want claim-write error (task=%v)", task)
+		}
+
+		// The job must be restored to the queue, not lost between the stores.
+		queued, err := exch.PQGetIDs(ctx)
+		if err != nil {
+			t.Fatalf("PQGetIDs() err=%v", err)
+		}
+		if !queued["job-1"] {
+			t.Fatal("job lost: not in queue after failed claim write")
 		}
 	})
 }
