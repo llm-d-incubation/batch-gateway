@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -56,13 +55,13 @@ type uploaderAPI interface {
 }
 
 // Client implements api.BatchFilesClient using S3 storage.
-// The folderName parameter in Store/Retrieve/Delete is used as the S3 bucket name.
+// All objects are stored in a single configured bucket. The folderName parameter
+// in Store/Retrieve/Delete is used as part of the S3 key for tenant isolation.
 type Client struct {
-	s3Client         s3API
-	uploader         uploaderAPI
-	prefix           string
-	autoCreateBucket bool
-	knownBuckets     sync.Map // caches bucket names that have been verified to exist
+	s3Client s3API
+	uploader uploaderAPI
+	prefix   string
+	bucket   string
 }
 
 var _ api.BatchFilesClient = (*Client)(nil)
@@ -70,6 +69,7 @@ var _ api.BatchFilesClient = (*Client)(nil)
 // Config holds configuration for the S3 client.
 type Config struct {
 	Region           string `yaml:"region"`
+	Bucket           string `yaml:"bucket"`
 	Endpoint         string `yaml:"endpoint"`
 	AccessKeyID      string `yaml:"access_key_id"`
 	SecretAccessKey  string `yaml:"-"`
@@ -82,6 +82,9 @@ type Config struct {
 func (c *Config) Validate() error {
 	if c.Region == "" {
 		return fmt.Errorf("s3.region cannot be empty")
+	}
+	if c.Bucket == "" {
+		return fmt.Errorf("s3.bucket cannot be empty")
 	}
 	return nil
 }
@@ -115,83 +118,76 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	s3Client := s3.NewFromConfig(awsCfg, s3Opts...)
 
-	return &Client{
-		s3Client:         s3Client,
-		uploader:         manager.NewUploader(s3Client), //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
-		prefix:           cfg.Prefix,
-		autoCreateBucket: cfg.AutoCreateBucket,
-	}, nil
-}
-
-// buildKey constructs the full S3 key from the file name.
-func (c *Client) buildKey(fileName string) string {
-	if c.prefix == "" {
-		return fileName
-	}
-	return c.prefix + "/" + fileName
-}
-
-// ensureBucket checks that the bucket exists. When autoCreateBucket is true,
-// it creates the bucket if it does not exist; otherwise it returns an error.
-// Verified buckets are cached to avoid repeated HeadBucket calls.
-func (c *Client) ensureBucket(ctx context.Context, bucket string) error {
-	if _, ok := c.knownBuckets.Load(bucket); ok {
-		return nil
+	c := &Client{
+		s3Client: s3Client,
+		uploader: manager.NewUploader(s3Client), //nolint:staticcheck // TODO: migrate to feature/s3/transfermanager
+		prefix:   cfg.Prefix,
+		bucket:   cfg.Bucket,
 	}
 
+	if err := c.ensureBucket(ctx, cfg.AutoCreateBucket); err != nil {
+		return nil, fmt.Errorf("ensure bucket %s: %w", cfg.Bucket, err)
+	}
+
+	return c, nil
+}
+
+// buildKey constructs the full S3 key from the folder name and file name.
+func (c *Client) buildKey(folderName, fileName string) string {
+	key := folderName + "/" + fileName
+	if c.prefix != "" {
+		key = c.prefix + "/" + key
+	}
+	return key
+}
+
+// ensureBucket checks that the configured bucket exists. When autoCreate is
+// true, it creates the bucket if it does not exist; otherwise it returns an
+// error. Called once at startup.
+func (c *Client) ensureBucket(ctx context.Context, autoCreate bool) error {
 	_, err := c.s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(c.bucket),
 	})
 	if err == nil {
-		c.knownBuckets.Store(bucket, true)
 		return nil
 	}
 
 	var notFound *types.NotFound
 	if !errors.As(err, &notFound) {
-		// HeadBucket may also return 404 as a generic smithy error, so check for NoSuchBucket too.
 		var noSuchBucket *types.NoSuchBucket
 		if !errors.As(err, &noSuchBucket) {
-			return fmt.Errorf("head bucket %s: %w", bucket, err)
+			return fmt.Errorf("head bucket %s: %w", c.bucket, err)
 		}
 	}
 
-	if !c.autoCreateBucket {
-		return fmt.Errorf("bucket %s does not exist", bucket)
+	if !autoCreate {
+		return fmt.Errorf("bucket %s does not exist", c.bucket)
 	}
 
 	_, err = c.s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(c.bucket),
 	})
 	if err != nil {
-		// Bucket may have been created concurrently — check for BucketAlreadyOwnedByYou.
 		var alreadyOwned *types.BucketAlreadyOwnedByYou
-		var alreadyExists *types.BucketAlreadyExists
-		if errors.As(err, &alreadyOwned) || errors.As(err, &alreadyExists) {
-			c.knownBuckets.Store(bucket, true)
+		if errors.As(err, &alreadyOwned) {
 			return nil
 		}
-		return fmt.Errorf("create bucket %s: %w", bucket, err)
+		return fmt.Errorf("create bucket %s: %w", c.bucket, err)
 	}
 
-	c.knownBuckets.Store(bucket, true)
-	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("Bucket created", "bucket", bucket)
+	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("Bucket created", "bucket", c.bucket)
 	return nil
 }
 
 // Store stores a file in S3.
-// The bucket parameter specifies which S3 bucket to use.
-func (c *Client) Store(ctx context.Context, fileName, bucket string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
+// The folderName parameter is used as a key prefix for tenant isolation.
+func (c *Client) Store(ctx context.Context, fileName, folderName string, fileSizeLimit, lineNumLimit int64, reader io.Reader) (
 	*api.BatchFileMetadata, error,
 ) {
-	key := c.buildKey(fileName)
-
-	if err := c.ensureBucket(ctx, bucket); err != nil {
-		return nil, err
-	}
+	key := c.buildKey(folderName, fileName)
 
 	_, err := c.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	})
 	if err == nil {
@@ -210,7 +206,7 @@ func (c *Client) Store(ctx context.Context, fileName, bucket string, fileSizeLim
 	}
 
 	_, err = c.uploader.Upload(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 		Body:   countingReader,
 	})
@@ -233,18 +229,18 @@ func (c *Client) Store(ctx context.Context, fileName, bucket string, fileSizeLim
 	}
 
 	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File stored successfully",
-		"bucket", bucket, "key", key, "size", metadata.Size, "lines", metadata.LinesNumber)
+		"bucket", c.bucket, "key", key, "size", metadata.Size, "lines", metadata.LinesNumber)
 
 	return metadata, nil
 }
 
 // Retrieve retrieves a file from S3.
-// The bucket parameter specifies which S3 bucket to use.
-func (c *Client) Retrieve(ctx context.Context, fileName, bucket string) (io.ReadCloser, *api.BatchFileMetadata, error) {
-	key := c.buildKey(fileName)
+// The folderName parameter is used as a key prefix for tenant isolation.
+func (c *Client) Retrieve(ctx context.Context, fileName, folderName string) (io.ReadCloser, *api.BatchFileMetadata, error) {
+	key := c.buildKey(folderName, fileName)
 
 	out, err := c.s3Client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
@@ -273,18 +269,18 @@ func (c *Client) Retrieve(ctx context.Context, fileName, bucket string) (io.Read
 	}
 
 	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File retrieved successfully",
-		"bucket", bucket, "key", key, "size", metadata.Size)
+		"bucket", c.bucket, "key", key, "size", metadata.Size)
 
 	return out.Body, metadata, nil
 }
 
 // Delete deletes a file from S3.
-// The bucket parameter specifies which S3 bucket to use.
-func (c *Client) Delete(ctx context.Context, fileName, bucket string) error {
-	key := c.buildKey(fileName)
+// The folderName parameter is used as a key prefix for tenant isolation.
+func (c *Client) Delete(ctx context.Context, fileName, folderName string) error {
+	key := c.buildKey(folderName, fileName)
 
 	_, err := c.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(bucket),
+		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
@@ -296,7 +292,7 @@ func (c *Client) Delete(ctx context.Context, fileName, bucket string) error {
 	}
 
 	logr.FromContextOrDiscard(ctx).V(logging.INFO).Info("File deleted successfully",
-		"bucket", bucket, "key", key)
+		"bucket", c.bucket, "key", key)
 
 	return nil
 }

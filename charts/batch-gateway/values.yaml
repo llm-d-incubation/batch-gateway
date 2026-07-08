@@ -81,6 +81,7 @@ global:
     # S3 client configuration (required when type is "s3")
     s3:
       region: ""
+      bucket: ""
       endpoint: ""
       accessKeyId: ""
       prefix: ""

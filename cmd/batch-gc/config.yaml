@@ -42,6 +42,7 @@ file_client:
   # S3-compatible storage (uncomment to use instead of fs)
   # s3:
   #   region: "us-east-1"
+  #   bucket: "llm-d-batch-gateway"  # Required: single bucket for all tenants
   #   endpoint: ""
   #   access_key_id: ""
   #   prefix: ""

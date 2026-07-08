@@ -50,7 +50,8 @@ import (
 )
 
 const (
-	integrationBucket = "integration-test"
+	integrationBucket     = "integration-test"
+	integrationFolderName = "test-tenant-folder"
 )
 
 func s3Config() s3client.Config {
@@ -65,6 +66,7 @@ func s3Config() s3client.Config {
 
 	return s3client.Config{
 		Region:           "us-east-1",
+		Bucket:           integrationBucket,
 		Endpoint:         os.Getenv("S3_TEST_ENDPOINT"),
 		AccessKeyID:      accessKey,
 		SecretAccessKey:  secretKey,
@@ -95,11 +97,11 @@ func TestS3StoreAndRetrieve(t *testing.T) {
 	content := []byte("hello integration test\nline2\nline3\n")
 	fileName := fmt.Sprintf("test-store-retrieve-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	md, err := client.Store(ctx, fileName, integrationBucket, 1024, 0, bytes.NewReader(content))
+	md, err := client.Store(ctx, fileName, integrationFolderName, 1024, 0, bytes.NewReader(content))
 	if err != nil {
 		t.Fatalf("Store failed: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Delete(ctx, fileName, integrationBucket) })
+	t.Cleanup(func() { _ = client.Delete(ctx, fileName, integrationFolderName) })
 
 	if md.Size != int64(len(content)) {
 		t.Errorf("expected size %d, got %d", len(content), md.Size)
@@ -108,7 +110,7 @@ func TestS3StoreAndRetrieve(t *testing.T) {
 		t.Errorf("expected 3 lines, got %d", md.LinesNumber)
 	}
 
-	reader, md2, err := client.Retrieve(ctx, fileName, integrationBucket)
+	reader, md2, err := client.Retrieve(ctx, fileName, integrationFolderName)
 	if err != nil {
 		t.Fatalf("Retrieve failed: %v", err)
 	}
@@ -131,13 +133,13 @@ func TestS3StoreExistingFile(t *testing.T) {
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-existing-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	_, err := client.Store(ctx, fileName, integrationBucket, 1024, 0, bytes.NewReader([]byte("first")))
+	_, err := client.Store(ctx, fileName, integrationFolderName, 1024, 0, bytes.NewReader([]byte("first")))
 	if err != nil {
 		t.Fatalf("first Store failed: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Delete(ctx, fileName, integrationBucket) })
+	t.Cleanup(func() { _ = client.Delete(ctx, fileName, integrationFolderName) })
 
-	_, err = client.Store(ctx, fileName, integrationBucket, 1024, 0, bytes.NewReader([]byte("second")))
+	_, err = client.Store(ctx, fileName, integrationFolderName, 1024, 0, bytes.NewReader([]byte("second")))
 	if !errors.Is(err, api.ErrFileExists) {
 		t.Errorf("expected ErrFileExists, got %v", err)
 	}
@@ -148,12 +150,12 @@ func TestS3StoreFileTooLarge(t *testing.T) {
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-toolarge-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	_, err := client.Store(ctx, fileName, integrationBucket, 5, 0, bytes.NewReader([]byte("this is too large")))
+	_, err := client.Store(ctx, fileName, integrationFolderName, 5, 0, bytes.NewReader([]byte("this is too large")))
 	if !errors.Is(err, api.ErrFileTooLarge) {
 		t.Errorf("expected ErrFileTooLarge, got %v", err)
 	}
 
-	_, _, err = client.Retrieve(ctx, fileName, integrationBucket)
+	_, _, err = client.Retrieve(ctx, fileName, integrationFolderName)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected rejected file to not exist in storage, got: %v", err)
 	}
@@ -164,12 +166,12 @@ func TestS3StoreTooManyLines(t *testing.T) {
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-toomanylines-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	_, err := client.Store(ctx, fileName, integrationBucket, 1024, 2, bytes.NewReader([]byte("l1\nl2\nl3\n")))
+	_, err := client.Store(ctx, fileName, integrationFolderName, 1024, 2, bytes.NewReader([]byte("l1\nl2\nl3\n")))
 	if !errors.Is(err, api.ErrTooManyLines) {
 		t.Errorf("expected ErrTooManyLines, got %v", err)
 	}
 
-	_, _, err = client.Retrieve(ctx, fileName, integrationBucket)
+	_, _, err = client.Retrieve(ctx, fileName, integrationFolderName)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected rejected file to not exist in storage, got: %v", err)
 	}
@@ -180,17 +182,17 @@ func TestS3Delete(t *testing.T) {
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-delete-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	_, err := client.Store(ctx, fileName, integrationBucket, 1024, 0, bytes.NewReader([]byte("delete me")))
+	_, err := client.Store(ctx, fileName, integrationFolderName, 1024, 0, bytes.NewReader([]byte("delete me")))
 	if err != nil {
 		t.Fatalf("Store failed: %v", err)
 	}
 
-	err = client.Delete(ctx, fileName, integrationBucket)
+	err = client.Delete(ctx, fileName, integrationFolderName)
 	if err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	_, _, err = client.Retrieve(ctx, fileName, integrationBucket)
+	_, _, err = client.Retrieve(ctx, fileName, integrationFolderName)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected os.ErrNotExist after delete, got %v", err)
 	}
@@ -202,7 +204,7 @@ func TestS3DeleteNonExistent(t *testing.T) {
 
 	// Deleting a file that was never created should succeed (S3 DeleteObject is idempotent).
 	fileName := fmt.Sprintf("test-delete-nonexistent-%s-%s", t.Name(), uuid.NewString()[:8])
-	err := client.Delete(ctx, fileName, integrationBucket)
+	err := client.Delete(ctx, fileName, integrationFolderName)
 	if err != nil {
 		t.Fatalf("Delete of non-existent file should succeed (S3 idempotent delete), got: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestS3RetrieveNonExistent(t *testing.T) {
 	client := newS3IntegrationClient(t, s3Config())
 	ctx := context.Background()
 
-	_, _, err := client.Retrieve(ctx, "nonexistent-file-xyz", integrationBucket)
+	_, _, err := client.Retrieve(ctx, "nonexistent-file-xyz", integrationFolderName)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
@@ -225,18 +227,18 @@ func TestS3Prefix(t *testing.T) {
 	ctx := context.Background()
 	fileName := fmt.Sprintf("test-prefix-%s-%s", t.Name(), uuid.NewString()[:8])
 
-	md, err := client.Store(ctx, fileName, integrationBucket, 1024, 0, bytes.NewReader([]byte("prefixed")))
+	md, err := client.Store(ctx, fileName, integrationFolderName, 1024, 0, bytes.NewReader([]byte("prefixed")))
 	if err != nil {
 		t.Fatalf("Store failed: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Delete(ctx, fileName, integrationBucket) })
+	t.Cleanup(func() { _ = client.Delete(ctx, fileName, integrationFolderName) })
 
-	expectedLocation := "testprefix/" + fileName
+	expectedLocation := "testprefix/" + integrationFolderName + "/" + fileName
 	if md.Location != expectedLocation {
 		t.Errorf("expected location %s, got %s", expectedLocation, md.Location)
 	}
 
-	reader, _, err := client.Retrieve(ctx, fileName, integrationBucket)
+	reader, _, err := client.Retrieve(ctx, fileName, integrationFolderName)
 	if err != nil {
 		t.Fatalf("Retrieve failed: %v", err)
 	}

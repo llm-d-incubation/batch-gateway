@@ -71,20 +71,18 @@ func FileStorageName(fileID, origFilename string) string {
 	return fileID + ext
 }
 
-// GetFolderNameByTenantID converts a tenant ID into a filesystem and S3-safe folder name.
-// It generates a deterministic SHA256-based name that is guaranteed to be valid for both
-// filesystem paths and S3 bucket naming requirements (63 characters max).
+// GetFolderNameByTenantID converts a tenant ID into a storage-safe folder name.
+// It generates a deterministic SHA256-based name that is used as a filesystem
+// subdirectory or S3 key prefix for tenant isolation.
 func GetFolderNameByTenantID(tenantID string) (string, error) {
 	if tenantID == "" {
 		return "", fmt.Errorf("tenantID cannot be empty")
 	}
 
-	// Generate SHA256 hash of the tenant ID for a deterministic, filesystem-safe name
 	hash := sha256.Sum256([]byte(tenantID))
 	hashStr := hex.EncodeToString(hash[:])
 
-	// Use "t-" prefix + 61 hex chars = 63 chars total (S3 maximum)
-	// This provides virtually collision-free tenant ID mapping while staying under S3's 63-char limit
+	// "t-" prefix + 61 hex chars = 63 chars total
 	return "t-" + hashStr[:61], nil
 }
 

@@ -21,6 +21,7 @@ MINIO_IMAGE="${MINIO_IMAGE:-${IMAGE_REGISTRY}/minio/minio:latest}"
 MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
 MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
 MINIO_REGION="${MINIO_REGION:-us-east-1}"
+MINIO_BUCKET="${MINIO_BUCKET:-llm-d-batch-gateway}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
 VLLM_SIM_429_MODEL="${VLLM_SIM_429_MODEL:-sim-model-429}"
@@ -815,10 +816,12 @@ install_vllm_sim() {
     step "Installing vLLM simulator '${sim_name}' (model: ${sim_model})..."
 
     local extra_args_yaml=""
-    for arg in "${extra_args[@]}"; do
-        extra_args_yaml="${extra_args_yaml}
+    if [ ${#extra_args[@]} -gt 0 ]; then
+        for arg in "${extra_args[@]}"; do
+            extra_args_yaml="${extra_args_yaml}
         - ${arg}"
-    done
+        done
+    fi
 
     kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -1115,6 +1118,7 @@ install_batch_gateway() {
         local minio_endpoint="http://${MINIO_NAME}.${NAMESPACE}.svc.cluster.local:9000"
         helm_args+=(
             --set "global.fileClient.s3.region=${MINIO_REGION}"
+            --set "global.fileClient.s3.bucket=${MINIO_BUCKET}"
             --set "global.fileClient.s3.endpoint=${minio_endpoint}"
             --set "global.fileClient.s3.accessKeyId=${MINIO_ACCESS_KEY}"
             --set "global.fileClient.s3.usePathStyle=true"

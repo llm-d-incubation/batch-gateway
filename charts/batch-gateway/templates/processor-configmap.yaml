@@ -129,6 +129,7 @@ data:
         base_path: {{ .Values.global.fileClient.fs.basePath | quote }}
       s3:
         region: {{ .Values.global.fileClient.s3.region | quote }}
+        bucket: {{ .Values.global.fileClient.s3.bucket | quote }}
         endpoint: {{ .Values.global.fileClient.s3.endpoint | quote }}
         access_key_id: {{ .Values.global.fileClient.s3.accessKeyId | quote }}
         prefix: {{ .Values.global.fileClient.s3.prefix | quote }}

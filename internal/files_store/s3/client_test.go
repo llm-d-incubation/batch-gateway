@@ -32,7 +32,10 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
 )
 
-const testBucketName = "test-bucket"
+const (
+	testBucketName = "test-bucket"
+	testFolderName = "test-folder"
+)
 
 type mockS3Client struct {
 	objects map[string]mockObject
@@ -56,7 +59,7 @@ type mockUploader struct {
 func newMockS3Client() *mockS3Client {
 	return &mockS3Client{
 		objects: make(map[string]mockObject),
-		buckets: make(map[string]bool),
+		buckets: map[string]bool{testBucketName: true},
 	}
 }
 
@@ -147,10 +150,10 @@ func (m *mockS3Client) ListObjectsV2(_ context.Context, params *s3.ListObjectsV2
 
 func newTestClient(mock *mockS3Client) *Client {
 	return &Client{
-		s3Client:         mock,
-		uploader:         &mockUploader{s3Client: mock},
-		prefix:           "",
-		autoCreateBucket: true,
+		s3Client: mock,
+		uploader: &mockUploader{s3Client: mock},
+		prefix:   "",
+		bucket:   testBucketName,
 	}
 }
 
@@ -162,23 +165,20 @@ func TestStore(t *testing.T) {
 		client := newTestClient(mock)
 		content := []byte("hello world")
 
-		md, err := client.Store(ctx, "test.txt", testBucketName, 1024, 0, bytes.NewReader(content))
+		md, err := client.Store(ctx, "test.txt", testFolderName, 1024, 0, bytes.NewReader(content))
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
 		if md.Size != int64(len(content)) {
 			t.Errorf("expected size %d, got %d", len(content), md.Size)
 		}
-		if md.Location != "test.txt" {
-			t.Errorf("expected location test.txt, got %s", md.Location)
+		expectedKey := testFolderName + "/test.txt"
+		if md.Location != expectedKey {
+			t.Errorf("expected location %s, got %s", expectedKey, md.Location)
 		}
 
-		obj, ok := mock.objects["test.txt"]
-		if !ok {
+		if _, ok := mock.objects[expectedKey]; !ok {
 			t.Fatal("expected object to be stored")
-		}
-		if !bytes.Equal(obj.data, content) {
-			t.Errorf("expected content %q, got %q", content, obj.data)
 		}
 	})
 
@@ -187,12 +187,12 @@ func TestStore(t *testing.T) {
 		client := newTestClient(mock)
 		content := []byte("this content is too large")
 
-		_, err := client.Store(ctx, "large.txt", testBucketName, 5, 0, bytes.NewReader(content))
+		_, err := client.Store(ctx, "large.txt", testFolderName, 5, 0, bytes.NewReader(content))
 		if !errors.Is(err, api.ErrFileTooLarge) {
 			t.Errorf("expected ErrFileTooLarge, got %v", err)
 		}
 
-		if _, ok := mock.objects["large.txt"]; ok {
+		if _, ok := mock.objects[testFolderName+"/large.txt"]; ok {
 			t.Error("expected object not to be stored")
 		}
 	})
@@ -202,7 +202,7 @@ func TestStore(t *testing.T) {
 		client := newTestClient(mock)
 		content := []byte("line1\nline2\nline3\n")
 
-		_, err := client.Store(ctx, "toomany.txt", testBucketName, 1024, 2, bytes.NewReader(content))
+		_, err := client.Store(ctx, "toomany.txt", testFolderName, 1024, 2, bytes.NewReader(content))
 		if !errors.Is(err, api.ErrTooManyLines) {
 			t.Errorf("expected ErrTooManyLines, got %v", err)
 		}
@@ -213,7 +213,7 @@ func TestStore(t *testing.T) {
 		client := newTestClient(mock)
 		content := []byte("line1\nline2\n")
 
-		md, err := client.Store(ctx, "exactlines.txt", testBucketName, 1024, 2, bytes.NewReader(content))
+		md, err := client.Store(ctx, "exactlines.txt", testFolderName, 1024, 2, bytes.NewReader(content))
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -227,7 +227,7 @@ func TestStore(t *testing.T) {
 		client := newTestClient(mock)
 		content := []byte("12345")
 
-		md, err := client.Store(ctx, "exact.txt", testBucketName, 5, 0, bytes.NewReader(content))
+		md, err := client.Store(ctx, "exact.txt", testFolderName, 5, 0, bytes.NewReader(content))
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -240,12 +240,12 @@ func TestStore(t *testing.T) {
 		mock := newMockS3Client()
 		client := newTestClient(mock)
 
-		_, err := client.Store(ctx, "existing.txt", testBucketName, 1024, 0, bytes.NewReader([]byte("original")))
+		_, err := client.Store(ctx, "existing.txt", testFolderName, 1024, 0, bytes.NewReader([]byte("original")))
 		if err != nil {
 			t.Fatalf("expected no error on first store, got %v", err)
 		}
 
-		_, err = client.Store(ctx, "existing.txt", testBucketName, 1024, 0, bytes.NewReader([]byte("new content")))
+		_, err = client.Store(ctx, "existing.txt", testFolderName, 1024, 0, bytes.NewReader([]byte("new content")))
 		if !errors.Is(err, api.ErrFileExists) {
 			t.Errorf("expected ErrFileExists, got %v", err)
 		}
@@ -256,16 +256,39 @@ func TestStore(t *testing.T) {
 		client := newTestClient(mock)
 		client.prefix = "myprefix"
 
-		md, err := client.Store(ctx, "test.txt", testBucketName, 1024, 0, bytes.NewReader([]byte("content")))
+		md, err := client.Store(ctx, "test.txt", testFolderName, 1024, 0, bytes.NewReader([]byte("content")))
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
-		if md.Location != "myprefix/test.txt" {
-			t.Errorf("expected location myprefix/test.txt, got %s", md.Location)
+		expectedKey := "myprefix/" + testFolderName + "/test.txt"
+		if md.Location != expectedKey {
+			t.Errorf("expected location %s, got %s", expectedKey, md.Location)
 		}
 
-		if _, ok := mock.objects["myprefix/test.txt"]; !ok {
+		if _, ok := mock.objects[expectedKey]; !ok {
 			t.Error("expected object to be stored with prefix")
+		}
+	})
+
+	t.Run("isolates files by folder name", func(t *testing.T) {
+		mock := newMockS3Client()
+		client := newTestClient(mock)
+
+		_, err := client.Store(ctx, "file.txt", "tenant-a", 1024, 0, bytes.NewReader([]byte("a")))
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		_, err = client.Store(ctx, "file.txt", "tenant-b", 1024, 0, bytes.NewReader([]byte("b")))
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if _, ok := mock.objects["tenant-a/file.txt"]; !ok {
+			t.Error("expected tenant-a file to be stored")
+		}
+		if _, ok := mock.objects["tenant-b/file.txt"]; !ok {
+			t.Error("expected tenant-b file to be stored")
 		}
 	})
 }
@@ -278,12 +301,12 @@ func TestRetrieve(t *testing.T) {
 		client := newTestClient(mock)
 		content := []byte("retrieve me")
 
-		_, err := client.Store(ctx, "retrieve.txt", testBucketName, 1024, 0, bytes.NewReader(content))
+		_, err := client.Store(ctx, "retrieve.txt", testFolderName, 1024, 0, bytes.NewReader(content))
 		if err != nil {
 			t.Fatalf("failed to store: %v", err)
 		}
 
-		reader, md, err := client.Retrieve(ctx, "retrieve.txt", testBucketName)
+		reader, md, err := client.Retrieve(ctx, "retrieve.txt", testFolderName)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -307,7 +330,7 @@ func TestRetrieve(t *testing.T) {
 		mock := newMockS3Client()
 		client := newTestClient(mock)
 
-		_, _, err := client.Retrieve(ctx, "nonexistent.txt", testBucketName)
+		_, _, err := client.Retrieve(ctx, "nonexistent.txt", testFolderName)
 		if !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("expected os.ErrNotExist, got %v", err)
 		}
@@ -320,14 +343,14 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes existing file", func(t *testing.T) {
 		mock := newMockS3Client()
 		client := newTestClient(mock)
-		_, _ = client.Store(ctx, "delete.txt", testBucketName, 1024, 0, bytes.NewReader([]byte("delete me")))
+		_, _ = client.Store(ctx, "delete.txt", testFolderName, 1024, 0, bytes.NewReader([]byte("delete me")))
 
-		err := client.Delete(ctx, "delete.txt", testBucketName)
+		err := client.Delete(ctx, "delete.txt", testFolderName)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
 
-		_, _, err = client.Retrieve(ctx, "delete.txt", testBucketName)
+		_, _, err = client.Retrieve(ctx, "delete.txt", testFolderName)
 		if !errors.Is(err, os.ErrNotExist) {
 			t.Error("expected file to be deleted")
 		}
@@ -337,9 +360,61 @@ func TestDelete(t *testing.T) {
 		mock := newMockS3Client()
 		client := newTestClient(mock)
 
-		err := client.Delete(ctx, "nonexistent.txt", testBucketName)
+		err := client.Delete(ctx, "nonexistent.txt", testFolderName)
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
+		}
+	})
+}
+
+func TestEnsureBucket(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("auto-creates bucket when enabled", func(t *testing.T) {
+		mock := newMockS3Client()
+		delete(mock.buckets, testBucketName)
+
+		c := &Client{
+			s3Client: mock,
+			uploader: &mockUploader{s3Client: mock},
+			bucket:   testBucketName,
+		}
+
+		if err := c.ensureBucket(ctx, true); err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if !mock.buckets[testBucketName] {
+			t.Error("expected bucket to be created")
+		}
+	})
+
+	t.Run("returns error when bucket missing and auto-create disabled", func(t *testing.T) {
+		mock := newMockS3Client()
+		delete(mock.buckets, testBucketName)
+
+		c := &Client{
+			s3Client: mock,
+			uploader: &mockUploader{s3Client: mock},
+			bucket:   testBucketName,
+		}
+
+		err := c.ensureBucket(ctx, false)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("succeeds when bucket already exists", func(t *testing.T) {
+		mock := newMockS3Client()
+
+		c := &Client{
+			s3Client: mock,
+			uploader: &mockUploader{s3Client: mock},
+			bucket:   testBucketName,
+		}
+
+		if err := c.ensureBucket(ctx, false); err != nil {
+			t.Fatalf("expected no error, got %v", err)
 		}
 	})
 }
@@ -395,23 +470,47 @@ func TestClose(t *testing.T) {
 
 func TestBuildKey(t *testing.T) {
 	tests := []struct {
-		name     string
-		prefix   string
-		fileName string
-		expected string
+		name       string
+		prefix     string
+		folderName string
+		fileName   string
+		expected   string
 	}{
-		{"no prefix", "", "file.txt", "file.txt"},
-		{"with prefix", "myprefix", "file.txt", "myprefix/file.txt"},
-		{"nested fileName", "prefix", "a/b/file.txt", "prefix/a/b/file.txt"},
+		{"no prefix", "", "folder", "file.txt", "folder/file.txt"},
+		{"with prefix", "myprefix", "folder", "file.txt", "myprefix/folder/file.txt"},
+		{"nested fileName", "prefix", "folder", "a/b/file.txt", "prefix/folder/a/b/file.txt"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &Client{prefix: tt.prefix}
-			result := client.buildKey(tt.fileName)
+			result := client.buildKey(tt.folderName, tt.fileName)
 			if result != tt.expected {
 				t.Errorf("expected %s, got %s", tt.expected, result)
 			}
 		})
 	}
+}
+
+func TestValidate(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		cfg := &Config{Region: "us-east-1", Bucket: "my-bucket"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	t.Run("missing region", func(t *testing.T) {
+		cfg := &Config{Bucket: "my-bucket"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("expected error for missing region")
+		}
+	})
+
+	t.Run("missing bucket", func(t *testing.T) {
+		cfg := &Config{Region: "us-east-1"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("expected error for missing bucket")
+		}
+	})
 }

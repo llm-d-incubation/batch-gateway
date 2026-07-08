@@ -54,9 +54,10 @@ file_client:
   # S3 client configuration (required when type is "s3")
   # s3:
   #   region: "us-west-2"
+  #   bucket: "llm-d-batch-gateway"  # Required: single bucket for all tenants
   #   endpoint: ""             # Optional: custom endpoint for S3-compatible storage
   #   access_key_id: ""        # Optional: defaults to AWS environment/IAM credentials
-  #   prefix: "batch-gateway"  # Optional: prefix for S3 object keys
+  #   prefix: ""               # Optional: prefix for S3 object keys
   #   use_path_style: false    # Optional: use path-style addressing
 
 # Database client configuration
