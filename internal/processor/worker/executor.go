@@ -294,10 +294,13 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 		// This ensures the first real error reaches errCh before any context.Canceled
 		// from other models whose contexts were cancelled by requestAbortFn.
 		go func(safeModelID, modelID string) {
+			modelCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
+				trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
+			)
 			var err error
 			if p.asyncInference != nil {
 				err = p.processModelAsync(
-					requestAbortCtx,
+					modelCtx,
 					ctx,
 					sloCtx,
 					userCancelCtx,
@@ -310,7 +313,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 				)
 			} else {
 				err = p.processModel(
-					requestAbortCtx,
+					modelCtx,
 					ctx,
 					sloCtx,
 					userCancelCtx,
@@ -322,6 +325,11 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 					tenantID,
 				)
 			}
+			if err != nil && !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
+				modelSpan.RecordError(err)
+				modelSpan.SetStatus(codes.Error, "process-model failed")
+			}
+			modelSpan.End()
 			// Abort all sibling models when any model hits a fatal I/O error
 			// (e.g. output file write failure). modelErr is only set for local
 			// I/O failures — not inference errors, which are recorded normally
@@ -428,18 +436,7 @@ func (p *Processor) processModel(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 	tenantID string,
-) (retErr error) {
-	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
-		trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
-	)
-	defer func() {
-		if retErr != nil && !errors.Is(retErr, errExpired) && !errors.Is(retErr, errCancelled) && !errors.Is(retErr, errShutdown) {
-			modelSpan.RecordError(retErr)
-			modelSpan.SetStatus(codes.Error, "process-model failed")
-		}
-		modelSpan.End()
-	}()
-
+) error {
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
@@ -581,18 +578,7 @@ func (p *Processor) processModelAsync(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 	tenantID string,
-) (retErr error) {
-	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
-		trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
-	)
-	defer func() {
-		if retErr != nil && !errors.Is(retErr, errExpired) && !errors.Is(retErr, errCancelled) && !errors.Is(retErr, errShutdown) {
-			modelSpan.RecordError(retErr)
-			modelSpan.SetStatus(codes.Error, "process-model failed")
-		}
-		modelSpan.End()
-	}()
-
+) error {
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
