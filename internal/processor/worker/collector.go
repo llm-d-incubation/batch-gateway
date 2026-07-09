@@ -83,8 +83,9 @@ type resultCollector struct {
 	abortFn      context.CancelFunc
 	abortOnce    sync.Once
 
-	ch   chan *ResultItem
-	done chan struct{}
+	ch       chan *ResultItem
+	done     chan error
+	writeErr error
 }
 
 func newResultCollector(outputWriter, errorWriter *bufio.Writer, progress *executionProgress, logger logr.Logger, abortFn context.CancelFunc) *resultCollector {
@@ -98,7 +99,7 @@ func newResultCollector(outputWriter, errorWriter *bufio.Writer, progress *execu
 		logger:       logger,
 		abortFn:      abortFn,
 		ch:           make(chan *ResultItem, 1024),
-		done:         make(chan struct{}),
+		done:         make(chan error, 1),
 	}
 }
 
@@ -106,8 +107,7 @@ func newResultCollector(outputWriter, errorWriter *bufio.Writer, progress *execu
 // updates to the status store.
 func (c *resultCollector) start(ctx context.Context) {
 	go func() {
-		c.run(ctx)
-		close(c.done)
+		c.done <- c.run(ctx)
 	}()
 }
 
@@ -116,25 +116,29 @@ func (c *resultCollector) collect(result *ResultItem) {
 	c.ch <- result
 }
 
-// flush closes the result channel and waits for the collector goroutine to
-// finish writing all buffered results and flushing the underlying writers.
-func (c *resultCollector) flush() {
+// flush closes the result channel, waits for the collector goroutine to
+// finish writing all buffered results, and returns the first write error
+// encountered (or nil).
+func (c *resultCollector) flush() error {
 	close(c.ch)
-	<-c.done
+	return <-c.done
 }
 
-func (c *resultCollector) abort() {
+func (c *resultCollector) abort(err error) {
+	if c.writeErr == nil {
+		c.writeErr = err
+	}
 	c.abortOnce.Do(c.abortFn)
 }
 
-func (c *resultCollector) run(ctx context.Context) {
+func (c *resultCollector) run(ctx context.Context) error {
 	for result := range c.ch {
 		line := resultToOutputLine(result)
 
 		lineBytes, err := json.Marshal(line)
 		if err != nil {
 			c.logger.Error(err, "Failed to marshal output line", "customId", result.CustomID)
-			c.abort()
+			c.abort(err)
 			continue
 		}
 		lineBytes = append(lineBytes, '\n')
@@ -146,7 +150,7 @@ func (c *resultCollector) run(ctx context.Context) {
 		}
 		if _, err := writer.Write(lineBytes); err != nil {
 			c.logger.Error(err, "Failed to write output line", "customId", result.CustomID)
-			c.abort()
+			c.abort(err)
 			continue
 		}
 
@@ -155,8 +159,11 @@ func (c *resultCollector) run(ctx context.Context) {
 
 	if err := c.outputWriter.Flush(); err != nil {
 		c.logger.Error(err, "Failed to flush output file (partial results may be truncated)")
+		c.abort(err)
 	}
 	if err := c.errorWriter.Flush(); err != nil {
 		c.logger.Error(err, "Failed to flush error file (partial results may be truncated)")
+		c.abort(err)
 	}
+	return c.writeErr
 }

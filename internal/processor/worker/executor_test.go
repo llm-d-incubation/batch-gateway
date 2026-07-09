@@ -817,7 +817,9 @@ func TestProcessModel_Success(t *testing.T) {
 		t.Fatalf("processModel error: %v", err)
 	}
 
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 
 	if int(callCount.Load()) != len(requests) {
 		t.Fatalf("inference calls = %d, want %d", callCount.Load(), len(requests))
@@ -874,7 +876,9 @@ func TestProcessModel_CancelStopsDispatch(t *testing.T) {
 	}
 
 	// Verify that undispatched entry was drained as batch_cancelled.
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 	errLines := bytes.Split(bytes.TrimSpace(errBuf.Bytes()), []byte{'\n'})
 	if len(errLines) != 1 {
 		t.Fatalf("expected 1 drain entry in error output, got %d", len(errLines))
@@ -934,7 +938,9 @@ func TestProcessModel_CancelWritesInFlightToErrorFile(t *testing.T) {
 		t.Fatalf("expected errCancelled from processModel, got: %v", modelErr)
 	}
 
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 
 	// Output file should be empty — cancelled requests go to error file.
 	if outBuf.Len() > 0 {
@@ -1007,7 +1013,9 @@ func TestProcessModel_InferenceFatalError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error from closed input file")
 	}
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 }
 
 func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
@@ -1059,7 +1067,9 @@ func TestProcessModel_ContextCancelledDuringDispatch(t *testing.T) {
 	close(block)
 
 	err := <-done
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 	if err == nil {
 		t.Fatalf("expected error on context cancellation")
 	}
@@ -1113,7 +1123,9 @@ func TestProcessModel_SIGTERMCancelsAllDispatched(t *testing.T) {
 	if !errors.Is(err, errShutdown) {
 		t.Fatalf("expected errShutdown when SIGTERM cancels all dispatched requests, got: %v", err)
 	}
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 }
 
 // TestProcessModel_SiblingAbort_ReturnsNil verifies that when requestAbortCtx is cancelled
@@ -1159,7 +1171,9 @@ func TestProcessModel_SiblingAbort_ReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil when only requestAbortCtx is cancelled (sibling abort), got: %v", err)
 	}
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 }
 
 // =====================================================================
@@ -3382,7 +3396,9 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
-		collector.flush()
+		if err := collector.flush(); err != nil {
+			t.Fatalf("collector.flush: %v", err)
+		}
 		return env.p
 	}
 
@@ -3540,7 +3556,9 @@ func TestProcessModel_AIMDSignaling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("processModel error: %v", err)
 		}
-		collector.flush()
+		if err := collector.flush(); err != nil {
+			t.Fatalf("collector.flush: %v", err)
+		}
 
 		// If non-HTTP errors were incorrectly counted as RecordSuccess,
 		// the window (size=reducedLimit) would fill and push the limit
@@ -3659,7 +3677,9 @@ func TestProcessModel_AIMDEndpointIsolation(t *testing.T) {
 	// Process m2 (200s) — should NOT affect m2's endpoint AIMD.
 	_ = p.processModel(ctx, ctx, ctx, context.Background(), inputFile, plansDir, "m2", "m2", collector, nil, tenantID)
 
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 
 	limitA := p.endpointLimits[clientA].aimd.Limit()
 	limitB := p.endpointLimits[clientB].aimd.Limit()
@@ -3724,7 +3744,9 @@ func TestProcessModel_EndpointLimitNil_DrainsAsModelNotFound(t *testing.T) {
 		t.Fatalf("processModel error: %v", err)
 	}
 
-	collector.flush()
+	if err := collector.flush(); err != nil {
+		t.Fatalf("collector.flush: %v", err)
+	}
 
 	// All requests should appear in the error file as model_not_found.
 	errLines := strings.Split(strings.TrimSpace(errBuf.String()), "\n")
@@ -3894,7 +3916,9 @@ func TestProcessModelAsync(t *testing.T) {
 			t.Fatalf("processModelAsync error: %v", err)
 		}
 
-		collector.flush()
+		if err := collector.flush(); err != nil {
+			t.Fatalf("collector.flush: %v", err)
+		}
 
 		if len(submitted) != len(requests) {
 			t.Fatalf("submitted = %d, want %d", len(submitted), len(requests))
@@ -3984,7 +4008,9 @@ func TestProcessModelAsync(t *testing.T) {
 
 		<-done
 
-		collector.flush()
+		if err := collector.flush(); err != nil {
+			t.Fatalf("collector.flush: %v", err)
+		}
 
 		counts := progress.counts()
 		// 1 completed + 2 expired = 3 total
@@ -4029,7 +4055,9 @@ func TestProcessModelAsync(t *testing.T) {
 			t.Fatalf("processModelAsync error: %v", err)
 		}
 
-		collector.flush()
+		if err := collector.flush(); err != nil {
+			t.Fatalf("collector.flush: %v", err)
+		}
 
 		counts := progress.counts()
 		if counts.Failed != 1 {

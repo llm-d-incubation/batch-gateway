@@ -314,7 +314,9 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	// Wait on the result, flush, collect counts, log and exit.
 	resultErr := <-resultCh
 
-	collector.flush()
+	if flushErr := collector.flush(); resultErr == nil {
+		resultErr = flushErr
+	}
 	progress.flush(ctx)
 	counts := progress.counts()
 
