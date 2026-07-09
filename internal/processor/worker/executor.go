@@ -35,10 +35,14 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
@@ -192,6 +196,11 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	if err != nil {
 		return nil, fmt.Errorf("failed to read model map: %w", err)
 	}
+
+	uotel.SetAttr(ctx,
+		attribute.Int("batch.model.count", len(modelMap.SafeToModel)),
+		attribute.Int64(uotel.AttrRequestTotal, modelMap.LineCount),
+	)
 
 	// Early SLO check: if the deadline already fired before execution begins (e.g. SLO expired
 	// during ingestion), skip dispatch entirely. No output file is written since no requests
@@ -414,6 +423,11 @@ func (p *Processor) processModel(
 	passThroughHeaders map[string]string,
 	tenantID string,
 ) error {
+	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
+		trace.WithAttributes(attribute.String("gen_ai.request.model", modelID)),
+	)
+	defer modelSpan.End()
+
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
@@ -422,6 +436,7 @@ func (p *Processor) processModel(
 	if err != nil {
 		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
 	}
+	modelSpan.SetAttributes(attribute.Int("batch.request.count", len(entries)))
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 

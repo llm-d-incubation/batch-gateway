@@ -168,7 +168,10 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	go p.heartbeat(heartbeatCtx, params.jobItem.ID, requestAbortFn)
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
-	if err := p.preProcessJob(ctx, sloCtx, userCancelCtx, params.jobInfo); err != nil {
+	ingestCtx, ingestSpan := uotel.StartSpan(ctx, "ingest-and-plan")
+	err = p.preProcessJob(ingestCtx, sloCtx, userCancelCtx, params.jobInfo)
+	ingestSpan.End()
+	if err != nil {
 		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
 		if !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
 			logger.Error(err, "Pre-processing failed")
@@ -195,8 +198,13 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	transitionedToInProgress = true
 
 	// execution: execute inference requests
+	execCtx, execSpan := uotel.StartSpan(ctx, "execute-job")
 	var execErr error
-	requestCounts, execErr = p.executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx, params)
+	requestCounts, execErr = p.executeJob(execCtx, sloCtx, userCancelCtx, requestAbortCtx, params)
+	if execErr != nil {
+		execSpan.RecordError(execErr)
+	}
+	execSpan.End()
 	params.requestCounts = requestCounts
 	if execErr != nil {
 		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
