@@ -164,11 +164,18 @@ func (c *ExchangeDBClientRedis) PQDequeueAndClaim(ctx context.Context, processor
 			return nil, nil
 		}
 		// The polling loop treats dequeue errors as "no work" and keeps
-		// spinning, so log here and probe the connection to surface Redis
-		// outages and read-only failovers that would otherwise be silent.
+		// spinning, so log here and (for connection-level failures) probe the
+		// connection to surface Redis outages and read-only failovers that
+		// would otherwise be silent.
 		logger.Error(err, "PQDequeueAndClaim: script failed")
-		if cerr := c.redisClientChecker.Check(ctx); cerr != nil {
-			logger.Error(cerr, "PQDequeueAndClaim: ClientCheck failed")
+		// Server-side (script) errors already prove Redis is reachable; only
+		// run the checker for connection-level failures.
+		if _, ok := err.(goredis.RedisError); !ok && ctx.Err() == nil {
+			checkCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
+			defer cancel()
+			if cerr := c.redisClientChecker.Check(checkCtx); cerr != nil {
+				logger.Error(cerr, "PQDequeueAndClaim: ClientCheck failed")
+			}
 		}
 		return nil, fmt.Errorf("PQDequeueAndClaim: %w", err)
 	}
