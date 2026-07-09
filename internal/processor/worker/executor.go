@@ -195,6 +195,10 @@ func (ep *executionProgress) run(ctx context.Context) {
 			} else {
 				ep.failed++
 			}
+			if !dirty {
+				ep.push(pushCtx())
+				ticker.Reset(ep.interval)
+			}
 			dirty = true
 
 		case <-ticker.C:
