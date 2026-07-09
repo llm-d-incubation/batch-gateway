@@ -52,6 +52,9 @@ const (
 	AttrInputLineCount   = "batch.input.line_count"
 	AttrRejectedCount    = "batch.input.rejected_count"
 	AttrSizeBucket       = "batch.size_bucket"
+	// OTel GenAI semantic convention (experimental); switch to semconv
+	// constant when go.opentelemetry.io/otel/semconv exports gen_ai.*.
+	AttrGenAIRequestModel = "gen_ai.request.model"
 )
 
 // baseLoggerKey stores the logger captured before the first trace enrichment.

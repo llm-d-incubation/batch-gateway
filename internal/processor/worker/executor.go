@@ -428,7 +428,7 @@ func (p *Processor) processModel(
 	tenantID string,
 ) error {
 	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
-		trace.WithAttributes(attribute.String("gen_ai.request.model", modelID)),
+		trace.WithAttributes(attribute.String(uotel.AttrGenAIRequestModel, modelID)),
 	)
 	defer modelSpan.End()
 
