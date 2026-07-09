@@ -36,6 +36,7 @@ import (
 	"github.com/google/uuid"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -427,11 +428,17 @@ func (p *Processor) processModel(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 	tenantID string,
-) error {
+) (retErr error) {
 	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
 		trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
 	)
-	defer modelSpan.End()
+	defer func() {
+		if retErr != nil && !errors.Is(retErr, errExpired) && !errors.Is(retErr, errCancelled) && !errors.Is(retErr, errShutdown) {
+			modelSpan.RecordError(retErr)
+			modelSpan.SetStatus(codes.Error, "process-model failed")
+		}
+		modelSpan.End()
+	}()
 
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
@@ -574,11 +581,17 @@ func (p *Processor) processModelAsync(
 	progress *executionProgress,
 	passThroughHeaders map[string]string,
 	tenantID string,
-) error {
+) (retErr error) {
 	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
 		trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
 	)
-	defer modelSpan.End()
+	defer func() {
+		if retErr != nil && !errors.Is(retErr, errExpired) && !errors.Is(retErr, errCancelled) && !errors.Is(retErr, errShutdown) {
+			modelSpan.RecordError(retErr)
+			modelSpan.SetStatus(codes.Error, "process-model failed")
+		}
+		modelSpan.End()
+	}()
 
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
