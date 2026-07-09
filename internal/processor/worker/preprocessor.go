@@ -228,10 +228,10 @@ func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jo
 	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), sizeBucket)
 
 	uotel.SetAttr(ctx,
-		attribute.Int64("batch.input.line_count", lineCount),
-		attribute.Int("batch.model.count", len(modelToSafe)),
-		attribute.Int64("batch.input.rejected_count", rejectedCount),
-		attribute.String("batch.size_bucket", sizeBucket),
+		attribute.Int64(uotel.AttrInputLineCount, lineCount),
+		attribute.Int(uotel.AttrModelCount, len(modelToSafe)),
+		attribute.Int64(uotel.AttrRejectedCount, rejectedCount),
+		attribute.String(uotel.AttrSizeBucket, sizeBucket),
 	)
 
 	modelCounts := make(map[string]int, len(modelToSafe))

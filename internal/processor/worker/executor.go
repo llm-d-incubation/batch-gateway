@@ -184,6 +184,10 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // SLO expiry or SIGTERM. Its sole purpose is to let the drain phase distinguish user cancel from
 // SLO expiry.
 func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+	// Inject execute-job span into requestAbortCtx so all processModel
+	// goroutines inherit it without needing mainCtx for tracing.
+	requestAbortCtx = trace.ContextWithSpan(requestAbortCtx, trace.SpanFromContext(ctx))
+
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting execution: executing job")
 
@@ -198,7 +202,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 	}
 
 	uotel.SetAttr(ctx,
-		attribute.Int("batch.model.count", len(modelMap.SafeToModel)),
+		attribute.Int(uotel.AttrModelCount, len(modelMap.SafeToModel)),
 		attribute.Int64(uotel.AttrRequestTotal, modelMap.LineCount),
 	)
 
@@ -423,9 +427,6 @@ func (p *Processor) processModel(
 	passThroughHeaders map[string]string,
 	tenantID string,
 ) error {
-	// Inherit the execute-job span from mainCtx so process-model nests
-	// under execute-job rather than under the root process-batch span.
-	requestAbortCtx = trace.ContextWithSpan(requestAbortCtx, trace.SpanFromContext(mainCtx))
 	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
 		trace.WithAttributes(attribute.String("gen_ai.request.model", modelID)),
 	)
@@ -439,7 +440,7 @@ func (p *Processor) processModel(
 	if err != nil {
 		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
 	}
-	modelSpan.SetAttributes(attribute.Int("batch.request.count", len(entries)))
+	uotel.SetAttr(requestAbortCtx, attribute.Int(uotel.AttrRequestCount, len(entries)))
 
 	logger.V(logging.INFO).Info("Processing requests for a model", "numEntries", len(entries))
 
