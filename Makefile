@@ -453,11 +453,12 @@ PROMETHEUS_RELEASE ?= llmd-kube-prometheus-stack
 
 ## test-e2e: Run E2E tests against a live API server (requires TEST_BASE_URL or dev-deploy NodePort services)
 ##           Use TEST_RUN to filter tests, e.g.: make test-e2e TEST_RUN=TestE2E/Batches/Cancel/InProgress
+##           Use TEST_OUTPUT to save JSON test output to a file (adds -json flag), e.g.: make test-e2e TEST_OUTPUT=results.json
 test-e2e:
 	@echo "Running E2E tests..."
 	@OUT=$$(mktemp); \
 	echo "Processor observability endpoint: auto-resolved by the e2e test helpers"; \
-	cd test/e2e && $(GO) test -v -count=1 -timeout=20m $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
+	cd test/e2e && $(GO) test -v $(if $(TEST_OUTPUT),-json) -count=1 -timeout=20m $(if $(TEST_RUN),-run $(TEST_RUN)) ./... 2>&1 | tee $$OUT; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
 	PASS_COUNT=$$(grep -- '--- PASS:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
 	FAIL_COUNT=$$(grep -- '--- FAIL:' $$OUT 2>/dev/null | wc -l | tr -d ' '); \
@@ -473,5 +474,6 @@ test-e2e:
 	else \
 		echo "❌ E2E tests failed with exit code $$TEST_EXIT"; \
 	fi; \
+	if [ -n "$(TEST_OUTPUT)" ]; then cp $$OUT "$(TEST_OUTPUT)"; fi; \
 	rm -f $$OUT; \
 	exit $$TEST_EXIT
