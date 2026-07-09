@@ -172,6 +172,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	err = p.preProcessJob(ingestCtx, sloCtx, userCancelCtx, params.jobInfo)
 	if err != nil && !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
 		ingestSpan.RecordError(err)
+		ingestSpan.SetStatus(codes.Error, "pre-process failed")
 	}
 	ingestSpan.End()
 	if err != nil {
@@ -206,6 +207,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	requestCounts, execErr = p.executeJob(execCtx, sloCtx, userCancelCtx, requestAbortCtx, params)
 	if execErr != nil && !errors.Is(execErr, errExpired) && !errors.Is(execErr, errCancelled) && !errors.Is(execErr, errShutdown) {
 		execSpan.RecordError(execErr)
+		execSpan.SetStatus(codes.Error, "execution failed")
 	}
 	execSpan.End()
 	params.requestCounts = requestCounts

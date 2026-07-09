@@ -36,6 +36,7 @@ import (
 	"github.com/google/uuid"
 
 	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
@@ -428,7 +429,7 @@ func (p *Processor) processModel(
 	tenantID string,
 ) error {
 	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
-		trace.WithAttributes(attribute.String(uotel.AttrGenAIRequestModel, modelID)),
+		trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
 	)
 	defer modelSpan.End()
 
@@ -574,6 +575,11 @@ func (p *Processor) processModelAsync(
 	passThroughHeaders map[string]string,
 	tenantID string,
 ) error {
+	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
+		trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
+	)
+	defer modelSpan.End()
+
 	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
 	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
 
@@ -582,6 +588,7 @@ func (p *Processor) processModelAsync(
 	if err != nil {
 		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
 	}
+	uotel.SetAttr(requestAbortCtx, attribute.Int(uotel.AttrRequestCount, len(entries)))
 
 	logger.V(logging.INFO).Info("Processing requests for model (async)", "numEntries", len(entries))
 
