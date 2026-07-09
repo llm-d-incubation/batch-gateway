@@ -170,6 +170,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// ingestion: pre-process job (rejects unregistered-model requests early)
 	ingestCtx, ingestSpan := uotel.StartSpan(ctx, "ingest-and-plan")
 	err = p.preProcessJob(ingestCtx, sloCtx, userCancelCtx, params.jobInfo)
+	if err != nil {
+		ingestSpan.RecordError(err)
+	}
 	ingestSpan.End()
 	if err != nil {
 		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.

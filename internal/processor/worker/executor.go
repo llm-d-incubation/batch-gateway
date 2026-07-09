@@ -423,6 +423,9 @@ func (p *Processor) processModel(
 	passThroughHeaders map[string]string,
 	tenantID string,
 ) error {
+	// Inherit the execute-job span from mainCtx so process-model nests
+	// under execute-job rather than under the root process-batch span.
+	requestAbortCtx = trace.ContextWithSpan(requestAbortCtx, trace.SpanFromContext(mainCtx))
 	requestAbortCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
 		trace.WithAttributes(attribute.String("gen_ai.request.model", modelID)),
 	)
