@@ -39,6 +39,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/gc/collector"
 	gcconfig "github.com/llm-d/llm-d-batch-gateway/internal/gc/config"
 	gcmetrics "github.com/llm-d/llm-d-batch-gateway/internal/gc/metrics"
+	"github.com/llm-d/llm-d-batch-gateway/internal/gc/podwatcher"
 	"github.com/llm-d/llm-d-batch-gateway/internal/gc/reconciler"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
@@ -131,19 +132,26 @@ func run() error {
 		onCycle := func(r *reconciler.Result) {
 			gcmetrics.RecordCycleDuration(r.Duration)
 			if !cfg.DryRun {
-				gcmetrics.RecordOrphansRecovered(gcmetrics.ActionCancelled, r.Cancelled)
 				gcmetrics.RecordOrphansRecovered(gcmetrics.ActionExpired, r.Expired)
 				gcmetrics.RecordOrphansRecovered(gcmetrics.ActionReEnqueued, r.ReEnqueued)
-				gcmetrics.RecordOrphansRecovered(gcmetrics.ActionFailed, r.Failed)
-				gcmetrics.RecordStaleCleanup(r.StaleCleanup)
 			}
 			gcmetrics.RecordCASConflicts(r.Conflicts)
 			gcmetrics.RecordErrors(r.Errors)
 		}
-		rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, clients.InFlight, cfg.Reconciler.Interval, cfg.DryRun, onCycle)
+		rec, err := reconciler.NewReconciler(clients.BatchDB, clients.Queue, cfg.Reconciler.Interval, cfg.DryRun, onCycle)
 		if err != nil {
 			return fmt.Errorf("failed to create reconciler: %w", err)
 		}
+
+		pw, err := podwatcher.New(cfg.Reconciler.ProcessorStatefulSet, cfg.Reconciler.ProcessorLabelSelector, func(live map[string]bool) {
+			rec.SetLiveProcessors(live)
+			rec.Trigger()
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create pod watcher: %w", err)
+		}
+
+		g.Go(func() error { return pw.Run(gCtx) })
 		g.Go(func() error { return rec.RunLoop(gCtx) })
 	}
 

@@ -40,8 +40,10 @@ const (
 
 // ReconcilerConfig holds the orphan reconciler configuration.
 type ReconcilerConfig struct {
-	Enabled  bool          `yaml:"enabled"`
-	Interval time.Duration `yaml:"interval"`
+	Enabled                bool          `yaml:"enabled"`
+	Interval               time.Duration `yaml:"interval"`
+	ProcessorLabelSelector string        `yaml:"processor_label_selector"`
+	ProcessorStatefulSet   string        `yaml:"processor_statefulset"`
 }
 
 // CollectorConfig holds collector-specific settings (interval and concurrency).

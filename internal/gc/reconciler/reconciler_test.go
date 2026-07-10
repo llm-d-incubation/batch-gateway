@@ -43,7 +43,7 @@ func expiredSLO() time.Time {
 	return time.Now().Add(-1 * time.Hour)
 }
 
-func newTestBatchItem(id string, status openai.BatchStatus, tags db.Tags) *db.BatchItem {
+func newTestBatchItem(id, processorID string, status openai.BatchStatus, tags db.Tags) *db.BatchItem {
 	statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: status})
 	return &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{
@@ -53,6 +53,7 @@ func newTestBatchItem(id string, status openai.BatchStatus, tags db.Tags) *db.Ba
 		BaseContents: db.BaseContents{
 			Status: statusBytes,
 		},
+		ProcessorID: processorID,
 	}
 }
 
@@ -60,15 +61,30 @@ func newTestReconciler(
 	t *testing.T,
 	batchDB db.BatchDBClient,
 	queue db.BatchPriorityQueueClient,
-	inflight db.InFlightClient,
 ) (*Reconciler, chan *Result) {
 	t.Helper()
 	resultCh := make(chan *Result, 1)
-	r, err := NewReconciler(batchDB, queue, inflight, testInterval, false, func(res *Result) {
+	r, err := NewReconciler(batchDB, queue, testInterval, false, func(res *Result) {
 		resultCh <- res
 	})
 	if err != nil {
 		t.Fatalf("failed to create reconciler: %v", err)
+	}
+	return r, resultCh
+}
+
+func newTestDryRunReconciler(
+	t *testing.T,
+	batchDB db.BatchDBClient,
+	queue db.BatchPriorityQueueClient,
+) (*Reconciler, chan *Result) {
+	t.Helper()
+	resultCh := make(chan *Result, 1)
+	r, err := NewReconciler(batchDB, queue, testInterval, true, func(res *Result) {
+		resultCh <- res
+	})
+	if err != nil {
+		t.Fatalf("failed to create dry-run reconciler: %v", err)
 	}
 	return r, resultCh
 }
@@ -82,530 +98,6 @@ func storeItems(t *testing.T, batchDB db.BatchDBClient, items ...*db.BatchItem) 
 		}
 	}
 }
-
-func TestTriageOrphan(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("cancelling transitions to cancelled", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusCancelling, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Cancelled != 1 {
-			t.Errorf("expected 1 cancelled, got %d", result.Cancelled)
-		}
-		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusCancelled)
-	})
-
-	t.Run("validating with expired SLO transitions to expired", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(expiredSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Expired != 1 {
-			t.Errorf("expected 1 expired, got %d", result.Expired)
-		}
-		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusExpired)
-	})
-
-	t.Run("validating with future SLO is re-enqueued", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.ReEnqueued != 1 {
-			t.Errorf("expected 1 re-enqueued, got %d", result.ReEnqueued)
-		}
-
-		queuedIDs, _ := queue.PQGetIDs(ctx)
-		if !queuedIDs["job-1"] {
-			t.Error("expected job-1 to be in queue after re-enqueue")
-		}
-	})
-
-	t.Run("in_progress with expired SLO transitions to expired", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(expiredSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Expired != 1 {
-			t.Errorf("expected 1 expired, got %d", result.Expired)
-		}
-		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusExpired)
-	})
-
-	t.Run("in_progress with future SLO transitions to failed", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Failed != 1 {
-			t.Errorf("expected 1 failed, got %d", result.Failed)
-		}
-		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusFailed)
-	})
-
-	t.Run("finalizing with expired SLO transitions to expired", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusFinalizing, sloTag(expiredSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Expired != 1 {
-			t.Errorf("expected 1 expired, got %d", result.Expired)
-		}
-	})
-
-	t.Run("finalizing with future SLO transitions to failed", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusFinalizing, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Failed != 1 {
-			t.Errorf("expected 1 failed, got %d", result.Failed)
-		}
-	})
-}
-
-func TestSkipNonOrphans(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("job in queue is not treated as orphan", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		slo := futureSLO()
-		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(slo))
-		storeItems(t, batchDB, item)
-
-		_ = queue.PQEnqueue(ctx, &db.BatchJobPriority{ID: "job-1", SLO: slo})
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.ReEnqueued != 0 || result.Failed != 0 || result.Expired != 0 || result.Cancelled != 0 {
-			t.Errorf("expected no actions for queued job, got %+v", result)
-		}
-	})
-
-	t.Run("job with fresh in-flight entry is not treated as orphan", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		_ = inflight.InFlightSet(ctx, "job-1", "processor-1")
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Failed != 0 {
-			t.Errorf("expected no failures for fresh in-flight job, got %d", result.Failed)
-		}
-	})
-}
-
-func TestStaleInflightCleanup(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("removes in-flight entry for job not in non-terminal set", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		// Stale in-flight entry for a job that no longer appears in the
-		// non-terminal query (e.g. it already reached a terminal state
-		// or was deleted, but its in-flight entry was not cleaned up).
-		_ = inflight.InFlightSet(ctx, "job-stale", "processor-1")
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.StaleCleanup != 1 {
-			t.Errorf("expected 1 stale cleanup, got %d", result.StaleCleanup)
-		}
-
-		entries, _ := inflight.InFlightGetAll(ctx)
-		if _, ok := entries["job-stale"]; ok {
-			t.Error("expected stale in-flight entry to be removed")
-		}
-	})
-
-	t.Run("preserves in-flight entry for non-terminal job", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-active", openai.BatchStatusInProgress, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		// Fresh in-flight entry — should NOT be cleaned up (it's non-terminal
-		// and recently seen, so it's treated as actively processing).
-		_ = inflight.InFlightSet(ctx, "job-active", "processor-1")
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.StaleCleanup != 0 {
-			t.Errorf("expected 0 stale cleanup, got %d", result.StaleCleanup)
-		}
-
-		entries, _ := inflight.InFlightGetAll(ctx)
-		if _, ok := entries["job-active"]; !ok {
-			t.Error("expected in-flight entry to be preserved for non-terminal job")
-		}
-	})
-}
-
-func TestCASConflict(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("CAS conflict is counted as conflict not error", func(t *testing.T) {
-		batchDB := &casConflictBatchDB{}
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Conflicts != 1 {
-			t.Errorf("expected 1 conflict from CAS, got %d", result.Conflicts)
-		}
-		if result.Errors != 0 {
-			t.Errorf("expected 0 errors (CAS is a conflict, not an error), got %d", result.Errors)
-		}
-		if result.Cancelled != 0 {
-			t.Errorf("expected 0 cancelled (CAS failed), got %d", result.Cancelled)
-		}
-	})
-}
-
-func TestRunLoop(t *testing.T) {
-	t.Run("stops on context cancel", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		ran := make(chan struct{}, 1)
-		r, err := NewReconciler(batchDB, queue, inflight, testInterval, false, func(*Result) {
-			select {
-			case ran <- struct{}{}:
-			default:
-			}
-		})
-		if err != nil {
-			t.Fatalf("failed to create reconciler: %v", err)
-		}
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		done := make(chan error, 1)
-		go func() { done <- r.RunLoop(ctx) }()
-
-		<-ran
-		cancel()
-
-		if err := <-done; err != nil && err != context.Canceled {
-			t.Errorf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestTriageEdgeCases(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("validating orphan without SLO tag errors", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusValidating, db.Tags{})
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Errors != 1 {
-			t.Errorf("expected 1 error for missing SLO, got %d", result.Errors)
-		}
-		if result.ReEnqueued != 0 {
-			t.Errorf("expected 0 re-enqueued, got %d", result.ReEnqueued)
-		}
-	})
-
-	t.Run("validating orphan with corrupt SLO tag errors", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusValidating, db.Tags{batch_types.TagSLO: "not-a-number"})
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Errors != 1 {
-			t.Errorf("expected 1 error for corrupt SLO, got %d", result.Errors)
-		}
-		if result.ReEnqueued != 0 {
-			t.Errorf("expected 0 re-enqueued, got %d", result.ReEnqueued)
-		}
-	})
-
-	t.Run("malformed status JSON errors", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := &db.BatchItem{
-			BaseIndexes:  db.BaseIndexes{ID: "job-1", Tags: sloTag(futureSLO())},
-			BaseContents: db.BaseContents{Status: []byte(`{{invalid json`)},
-		}
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Errors != 1 {
-			t.Errorf("expected 1 error for malformed status, got %d", result.Errors)
-		}
-	})
-
-	t.Run("stale in-flight entry triggers triage", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusInProgress, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		_ = inflight.InFlightSet(ctx, "job-1", "processor-1")
-		// Backdate the LastSeen to make it stale (older than the reconciler interval).
-		staleTime := time.Now().Add(-2 * testInterval).Unix()
-		inflight.SetLastSeen("job-1", staleTime)
-
-		r, resultCh := newTestReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Failed != 1 {
-			t.Errorf("expected 1 failed for stale in-flight job, got %d", result.Failed)
-		}
-		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusFailed)
-	})
-}
-
-func TestNewReconcilerValidation(t *testing.T) {
-	batchDB := newMockBatchDB()
-	queue := mock.NewMockBatchPriorityQueueClient()
-	inflight := mock.NewMockInFlightClient()
-
-	t.Run("nil batchDB", func(t *testing.T) {
-		_, err := NewReconciler(nil, queue, inflight, testInterval, false, nil)
-		if err == nil {
-			t.Fatal("expected error for nil batchDB")
-		}
-	})
-
-	t.Run("nil queue", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, nil, inflight, testInterval, false, nil)
-		if err == nil {
-			t.Fatal("expected error for nil queue")
-		}
-	})
-
-	t.Run("nil inflight", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, queue, nil, testInterval, false, nil)
-		if err == nil {
-			t.Fatal("expected error for nil inflight")
-		}
-	})
-
-	t.Run("zero interval", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, queue, inflight, 0, false, nil)
-		if err == nil {
-			t.Fatal("expected error for zero interval")
-		}
-	})
-
-	t.Run("negative interval", func(t *testing.T) {
-		_, err := NewReconciler(batchDB, queue, inflight, -time.Minute, false, nil)
-		if err == nil {
-			t.Fatal("expected error for negative interval")
-		}
-	})
-}
-
-func newTestDryRunReconciler(
-	t *testing.T,
-	batchDB db.BatchDBClient,
-	queue db.BatchPriorityQueueClient,
-	inflight db.InFlightClient,
-) (*Reconciler, chan *Result) {
-	t.Helper()
-	resultCh := make(chan *Result, 1)
-	r, err := NewReconciler(batchDB, queue, inflight, testInterval, true, func(res *Result) {
-		resultCh <- res
-	})
-	if err != nil {
-		t.Fatalf("failed to create dry-run reconciler: %v", err)
-	}
-	return r, resultCh
-}
-
-func TestDryRun(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("transition is counted but DB is not mutated", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusCancelling, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestDryRunReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.Cancelled != 1 {
-			t.Errorf("expected 1 cancelled, got %d", result.Cancelled)
-		}
-		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusCancelling)
-	})
-
-	t.Run("re-enqueue is counted but queue is not mutated", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		item := newTestBatchItem("job-1", openai.BatchStatusValidating, sloTag(futureSLO()))
-		storeItems(t, batchDB, item)
-
-		r, resultCh := newTestDryRunReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.ReEnqueued != 1 {
-			t.Errorf("expected 1 re-enqueued, got %d", result.ReEnqueued)
-		}
-
-		queuedIDs, _ := queue.PQGetIDs(ctx)
-		if queuedIDs["job-1"] {
-			t.Error("expected job-1 NOT to be in queue in dry-run mode")
-		}
-	})
-
-	t.Run("stale cleanup is counted but in-flight entry is preserved", func(t *testing.T) {
-		batchDB := newMockBatchDB()
-		queue := mock.NewMockBatchPriorityQueueClient()
-		inflight := mock.NewMockInFlightClient()
-
-		_ = inflight.InFlightSet(ctx, "job-stale", "processor-1")
-
-		r, resultCh := newTestDryRunReconciler(t, batchDB, queue, inflight)
-		r.run(ctx)
-
-		result := <-resultCh
-		if result.StaleCleanup != 1 {
-			t.Errorf("expected 1 stale cleanup, got %d", result.StaleCleanup)
-		}
-
-		entries, _ := inflight.InFlightGetAll(ctx)
-		if _, ok := entries["job-stale"]; !ok {
-			t.Error("expected stale in-flight entry to be preserved in dry-run mode")
-		}
-	})
-}
-
-func TestTerminalStatusesSync(t *testing.T) {
-	// Verify that every status returned by TerminalStatuses() is actually final,
-	// and every final status is included in TerminalStatuses().
-	terminalSet := make(map[openai.BatchStatus]bool)
-	for _, s := range openai.TerminalStatuses() {
-		if !s.IsTerminal() {
-			t.Errorf("TerminalStatuses() contains %q which is not IsTerminal()", s)
-		}
-		terminalSet[s] = true
-	}
-
-	allStatuses := []openai.BatchStatus{
-		openai.BatchStatusValidating,
-		openai.BatchStatusFailed,
-		openai.BatchStatusInProgress,
-		openai.BatchStatusFinalizing,
-		openai.BatchStatusCompleted,
-		openai.BatchStatusExpired,
-		openai.BatchStatusCancelling,
-		openai.BatchStatusCancelled,
-	}
-	for _, s := range allStatuses {
-		if s.IsTerminal() && !terminalSet[s] {
-			t.Errorf("status %q is IsTerminal() but missing from TerminalStatuses()", s)
-		}
-	}
-}
-
-// --- Helpers ---
 
 func assertJobStatus(t *testing.T, batchDB db.BatchDBClient, jobID string, expected openai.BatchStatus) {
 	t.Helper()
@@ -626,12 +118,19 @@ func assertJobStatus(t *testing.T, batchDB db.BatchDBClient, jobID string, expec
 	}
 }
 
-// newMockBatchDB creates a mock batch DB that always returns all items for NonTerminal queries.
+// newMockBatchDB creates a mock batch DB that filters by HasProcessorID when set.
 func newMockBatchDB() *mock.MockDBClient[db.BatchItem, db.BatchQuery] {
-	return mock.NewMockDBClient[db.BatchItem, db.BatchQuery](
+	m := mock.NewMockDBClient[db.BatchItem, db.BatchQuery](
 		func(item *db.BatchItem) string { return item.ID },
 		func(query *db.BatchQuery) *db.BaseQuery { return &query.BaseQuery },
 	)
+	m.QueryFilter = func(item *db.BatchItem, query *db.BatchQuery) bool {
+		if query.HasProcessorID && item.ProcessorID == "" {
+			return false
+		}
+		return true
+	}
+	return m
 }
 
 // casConflictBatchDB is a minimal mock that always returns ErrConflict on DBUpdate.
@@ -639,7 +138,7 @@ type casConflictBatchDB struct{}
 
 func (c *casConflictBatchDB) DBStore(_ context.Context, _ *db.BatchItem) error { return nil }
 func (c *casConflictBatchDB) DBGet(_ context.Context, _ *db.BatchQuery, _ bool, _, _ int) ([]*db.BatchItem, int, bool, error) {
-	item := newTestBatchItem("job-cas", openai.BatchStatusCancelling, sloTag(futureSLO()))
+	item := newTestBatchItem("job-cas", "dead-processor", openai.BatchStatusInProgress, sloTag(expiredSLO()))
 	return []*db.BatchItem{item}, 1, false, nil
 }
 func (c *casConflictBatchDB) DBUpdate(_ context.Context, _ *db.BatchItem, _ []byte) error {
@@ -651,4 +150,462 @@ func (c *casConflictBatchDB) DBDelete(_ context.Context, _ []string) ([]string, 
 func (c *casConflictBatchDB) Close() error { return nil }
 func (c *casConflictBatchDB) GetContext(_ context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
 	return context.Background(), func() {}
+}
+
+func TestTriageOrphan(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name            string
+		status          openai.BatchStatus
+		slo             time.Time
+		wantExpired     int
+		wantReEnqueued  int
+		wantFinalStatus openai.BatchStatus
+		checkQueue      bool
+		wantInQueue     bool
+	}{
+		{
+			name:            "orphan with expired SLO transitions to failed",
+			status:          openai.BatchStatusValidating,
+			slo:             expiredSLO(),
+			wantExpired:     1,
+			wantReEnqueued:  0,
+			wantFinalStatus: openai.BatchStatusFailed,
+		},
+		{
+			name:            "orphan with future SLO is re-enqueued",
+			status:          openai.BatchStatusValidating,
+			slo:             futureSLO(),
+			wantExpired:     0,
+			wantReEnqueued:  1,
+			wantFinalStatus: openai.BatchStatusValidating, // status unchanged on re-enqueue
+			checkQueue:      true,
+			wantInQueue:     true,
+		},
+		{
+			name:            "in_progress orphan with expired SLO transitions to failed",
+			status:          openai.BatchStatusInProgress,
+			slo:             expiredSLO(),
+			wantExpired:     1,
+			wantReEnqueued:  0,
+			wantFinalStatus: openai.BatchStatusFailed,
+		},
+		{
+			name:            "in_progress orphan with future SLO is re-enqueued",
+			status:          openai.BatchStatusInProgress,
+			slo:             futureSLO(),
+			wantExpired:     0,
+			wantReEnqueued:  1,
+			wantFinalStatus: openai.BatchStatusInProgress,
+			checkQueue:      true,
+			wantInQueue:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			batchDB := newMockBatchDB()
+			queue := mock.NewMockBatchPriorityQueueClient()
+
+			item := newTestBatchItem("job-1", "dead-processor", tc.status, sloTag(tc.slo))
+			storeItems(t, batchDB, item)
+
+			r, resultCh := newTestReconciler(t, batchDB, queue)
+			// Mark "dead-processor" as not alive by not including it in live set.
+			r.SetLiveProcessors(map[string]bool{})
+			r.run(ctx)
+
+			result := <-resultCh
+			if result.Expired != tc.wantExpired {
+				t.Errorf("expected %d expired, got %d", tc.wantExpired, result.Expired)
+			}
+			if result.ReEnqueued != tc.wantReEnqueued {
+				t.Errorf("expected %d re-enqueued, got %d", tc.wantReEnqueued, result.ReEnqueued)
+			}
+
+			assertJobStatus(t, batchDB, "job-1", tc.wantFinalStatus)
+
+			if tc.checkQueue {
+				queuedIDs, _ := queue.PQGetIDs(ctx)
+				if tc.wantInQueue && !queuedIDs["job-1"] {
+					t.Error("expected job-1 to be in queue after re-enqueue")
+				}
+				if !tc.wantInQueue && queuedIDs["job-1"] {
+					t.Error("expected job-1 NOT to be in queue")
+				}
+			}
+		})
+	}
+}
+
+func TestSkipNonOrphans(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		processorID string
+		liveSet     map[string]bool
+	}{
+		{
+			name:        "job with no processor_id is skipped",
+			processorID: "",
+			liveSet:     map[string]bool{},
+		},
+		{
+			name:        "job with alive processor is skipped",
+			processorID: "alive-processor",
+			liveSet:     map[string]bool{"alive-processor": true},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			batchDB := newMockBatchDB()
+			queue := mock.NewMockBatchPriorityQueueClient()
+
+			item := newTestBatchItem("job-1", tc.processorID, openai.BatchStatusValidating, sloTag(futureSLO()))
+			storeItems(t, batchDB, item)
+
+			r, resultCh := newTestReconciler(t, batchDB, queue)
+			r.SetLiveProcessors(tc.liveSet)
+			r.run(ctx)
+
+			result := <-resultCh
+			if result.Expired != 0 || result.ReEnqueued != 0 || result.Conflicts != 0 || result.Errors != 0 {
+				t.Errorf("expected no actions for non-orphan job, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestRunCycleMixedJobs(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("only dead-processor jobs are triaged", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		storeItems(t, batchDB,
+			// Queued (no processor_id) — should be skipped.
+			newTestBatchItem("queued-job", "", openai.BatchStatusValidating, sloTag(futureSLO())),
+			// Alive processor — should be skipped.
+			newTestBatchItem("alive-job", "processor-0", openai.BatchStatusInProgress, sloTag(futureSLO())),
+			// Dead processor, valid SLO — should be re-enqueued.
+			newTestBatchItem("dead-valid", "processor-1", openai.BatchStatusInProgress, sloTag(futureSLO())),
+			// Dead processor, expired SLO — should be failed.
+			newTestBatchItem("dead-expired", "processor-2", openai.BatchStatusInProgress, sloTag(expiredSLO())),
+		)
+
+		r, resultCh := newTestReconciler(t, batchDB, queue)
+		r.SetLiveProcessors(map[string]bool{"processor-0": true})
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.ReEnqueued != 1 {
+			t.Errorf("expected 1 re-enqueued, got %d", result.ReEnqueued)
+		}
+		if result.Expired != 1 {
+			t.Errorf("expected 1 expired, got %d", result.Expired)
+		}
+		if result.Errors != 0 {
+			t.Errorf("expected 0 errors, got %d", result.Errors)
+		}
+
+		// Verify the queued and alive jobs were not touched.
+		assertJobStatus(t, batchDB, "queued-job", openai.BatchStatusValidating)
+		assertJobStatus(t, batchDB, "alive-job", openai.BatchStatusInProgress)
+	})
+}
+
+func TestCASConflict(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("CAS conflict is counted as conflict not error", func(t *testing.T) {
+		batchDB := &casConflictBatchDB{}
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		resultCh := make(chan *Result, 1)
+		r, err := NewReconciler(batchDB, queue, testInterval, false, func(res *Result) {
+			resultCh <- res
+		})
+		if err != nil {
+			t.Fatalf("failed to create reconciler: %v", err)
+		}
+		// Ensure "dead-processor" is not in live set so the job is orphaned.
+		r.SetLiveProcessors(map[string]bool{})
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Conflicts != 1 {
+			t.Errorf("expected 1 conflict from CAS, got %d", result.Conflicts)
+		}
+		if result.Errors != 0 {
+			t.Errorf("expected 0 errors (CAS is a conflict, not an error), got %d", result.Errors)
+		}
+		if result.Expired != 0 {
+			t.Errorf("expected 0 expired (CAS failed), got %d", result.Expired)
+		}
+	})
+}
+
+func TestRunLoop(t *testing.T) {
+	t.Run("stops on context cancel", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		ran := make(chan struct{}, 1)
+		r, err := NewReconciler(batchDB, queue, testInterval, false, func(*Result) {
+			select {
+			case ran <- struct{}{}:
+			default:
+			}
+		})
+		if err != nil {
+			t.Fatalf("failed to create reconciler: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		done := make(chan error, 1)
+		go func() { done <- r.RunLoop(ctx) }()
+
+		// The first cycle is deferred until Trigger() is called (normally
+		// by the pod watcher after cache sync).
+		r.Trigger()
+
+		<-ran
+		cancel()
+
+		if err := <-done; err != nil && err != context.Canceled {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestNewReconcilerValidation(t *testing.T) {
+	batchDB := newMockBatchDB()
+	queue := mock.NewMockBatchPriorityQueueClient()
+
+	tests := []struct {
+		name     string
+		batchDB  db.BatchDBClient
+		queue    db.BatchPriorityQueueClient
+		interval time.Duration
+	}{
+		{
+			name:     "nil batchDB",
+			batchDB:  nil,
+			queue:    queue,
+			interval: testInterval,
+		},
+		{
+			name:     "nil queue",
+			batchDB:  batchDB,
+			queue:    nil,
+			interval: testInterval,
+		},
+		{
+			name:     "zero interval",
+			batchDB:  batchDB,
+			queue:    queue,
+			interval: 0,
+		},
+		{
+			name:     "negative interval",
+			batchDB:  batchDB,
+			queue:    queue,
+			interval: -time.Minute,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewReconciler(tc.batchDB, tc.queue, tc.interval, false, nil)
+			if err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestRunCycle_DBFailure(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DB error is counted and cycle returns early", func(t *testing.T) {
+		queue := mock.NewMockBatchPriorityQueueClient()
+		failDB := &failGetBatchDB{err: fmt.Errorf("connection refused")}
+
+		r, resultCh := newTestReconciler(t, failDB, queue)
+		r.SetLiveProcessors(map[string]bool{})
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Errors != 1 {
+			t.Errorf("expected 1 error, got %d", result.Errors)
+		}
+		if result.Expired != 0 || result.ReEnqueued != 0 {
+			t.Errorf("expected no actions on DB failure, got expired=%d reEnqueued=%d", result.Expired, result.ReEnqueued)
+		}
+	})
+}
+
+// failGetBatchDB always returns an error on DBGet.
+type failGetBatchDB struct {
+	err error
+}
+
+func (f *failGetBatchDB) DBStore(_ context.Context, _ *db.BatchItem) error { return nil }
+func (f *failGetBatchDB) DBGet(_ context.Context, _ *db.BatchQuery, _ bool, _, _ int) ([]*db.BatchItem, int, bool, error) {
+	return nil, 0, false, f.err
+}
+func (f *failGetBatchDB) DBUpdate(_ context.Context, _ *db.BatchItem, _ []byte) error { return nil }
+func (f *failGetBatchDB) DBDelete(_ context.Context, _ []string) ([]string, error)    { return nil, nil }
+func (f *failGetBatchDB) Close() error                                                { return nil }
+func (f *failGetBatchDB) GetContext(_ context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return context.Background(), func() {}
+}
+
+func TestDryRun(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("expire is counted but DB is not mutated", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		item := newTestBatchItem("job-1", "dead-processor", openai.BatchStatusInProgress, sloTag(expiredSLO()))
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestDryRunReconciler(t, batchDB, queue)
+		r.SetLiveProcessors(map[string]bool{})
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Expired != 1 {
+			t.Errorf("expected 1 expired, got %d", result.Expired)
+		}
+		// In dry-run mode the DB status should remain unchanged.
+		assertJobStatus(t, batchDB, "job-1", openai.BatchStatusInProgress)
+	})
+
+	t.Run("re-enqueue is counted but queue is not mutated", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		item := newTestBatchItem("job-1", "dead-processor", openai.BatchStatusValidating, sloTag(futureSLO()))
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestDryRunReconciler(t, batchDB, queue)
+		r.SetLiveProcessors(map[string]bool{})
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.ReEnqueued != 1 {
+			t.Errorf("expected 1 re-enqueued, got %d", result.ReEnqueued)
+		}
+
+		queuedIDs, _ := queue.PQGetIDs(ctx)
+		if queuedIDs["job-1"] {
+			t.Error("expected job-1 NOT to be in queue in dry-run mode")
+		}
+	})
+}
+
+func TestSetLiveProcessors(t *testing.T) {
+	tests := []struct {
+		name      string
+		liveSet   map[string]bool
+		processor string
+		wantAlive bool
+	}{
+		{
+			name:      "processor in live set is alive",
+			liveSet:   map[string]bool{"proc-1": true, "proc-2": true},
+			processor: "proc-1",
+			wantAlive: true,
+		},
+		{
+			name:      "processor not in live set is not alive",
+			liveSet:   map[string]bool{"proc-1": true},
+			processor: "proc-2",
+			wantAlive: false,
+		},
+		{
+			name:      "empty live set means no processor is alive",
+			liveSet:   map[string]bool{},
+			processor: "proc-1",
+			wantAlive: false,
+		},
+		{
+			name:      "updating live set replaces previous set",
+			liveSet:   map[string]bool{"proc-new": true},
+			processor: "proc-old",
+			wantAlive: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			batchDB := newMockBatchDB()
+			queue := mock.NewMockBatchPriorityQueueClient()
+
+			r, _ := newTestReconciler(t, batchDB, queue)
+
+			// Set an initial live set then overwrite it.
+			r.SetLiveProcessors(map[string]bool{"proc-old": true})
+			r.SetLiveProcessors(tc.liveSet)
+
+			got := r.isProcessorAlive(tc.processor)
+			if got != tc.wantAlive {
+				t.Errorf("isProcessorAlive(%q) = %v, want %v", tc.processor, got, tc.wantAlive)
+			}
+		})
+	}
+}
+
+func TestTrigger(t *testing.T) {
+	t.Run("trigger causes immediate reconciliation", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		// Use a very long interval so the ticker never fires.
+		resultCh := make(chan *Result, 10)
+		r, err := NewReconciler(batchDB, queue, 24*time.Hour, false, func(res *Result) {
+			resultCh <- res
+		})
+		if err != nil {
+			t.Fatalf("failed to create reconciler: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		go func() { done <- r.RunLoop(ctx) }()
+
+		r.Trigger()
+
+		select {
+		case <-resultCh:
+			// Trigger caused the cycle — success.
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for triggered reconciliation cycle")
+		}
+
+		cancel()
+		<-done
+	})
+
+	t.Run("trigger is non-blocking", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		r, _ := newTestReconciler(t, batchDB, queue)
+
+		// Multiple triggers should not block even without a consumer.
+		r.Trigger()
+		r.Trigger()
+		r.Trigger()
+		// If we reach here without deadlocking, the test passes.
+	})
 }

@@ -167,6 +167,13 @@ app.kubernetes.io/component: processor
 {{- end }}
 
 {{/*
+Processor selector labels as a flat comma-separated string for label selectors.
+*/}}
+{{- define "batch-gateway.processor.selectorLabelsFlat" -}}
+app.kubernetes.io/name={{ include "batch-gateway.name" . }}-processor,app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=processor
+{{- end }}
+
+{{/*
 Processor service account name
 */}}
 {{- define "batch-gateway.processor.serviceAccountName" -}}

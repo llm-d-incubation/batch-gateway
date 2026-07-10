@@ -1,0 +1,16 @@
+{{- if and .Values.gc.enabled .Values.gc.config.reconciler.enabled -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "batch-gateway.gc.fullname" . }}-pod-watcher
+  labels:
+    {{- include "batch-gateway.gc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "batch-gateway.gc.fullname" . }}-pod-watcher
+subjects:
+- kind: ServiceAccount
+  name: {{ include "batch-gateway.gc.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

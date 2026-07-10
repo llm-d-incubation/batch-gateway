@@ -32,6 +32,10 @@ type MockDBClient[T any, Q any] struct {
 	items           sync.Map
 	idGetter        func(*T) string
 	baseQueryGetter func(*Q) *api.BaseQuery
+
+	// QueryFilter is an optional callback for query-specific filtering beyond BaseQuery.
+	// When set, it is called for each item during DBGet. Return true to include the item.
+	QueryFilter func(item *T, query *Q) bool
 }
 
 // NewMockDBClient creates a new mock DB client.
@@ -64,12 +68,22 @@ func (m *MockDBClient[T, Q]) DBGet(
 	bq := m.baseQueryGetter(query)
 	var allMatches []*T
 
+	matchesAll := func(item *T) bool {
+		if !m.matchesFilters(*item, bq) {
+			return false
+		}
+		if m.QueryFilter != nil && !m.QueryFilter(item, query) {
+			return false
+		}
+		return true
+	}
+
 	// If IDs are specified, get by IDs
 	if len(bq.IDs) > 0 {
 		for _, id := range bq.IDs {
 			if value, ok := m.items.Load(id); ok {
 				if item, ok := value.(*T); ok {
-					if m.matchesFilters(*item, bq) {
+					if matchesAll(item) {
 						allMatches = append(allMatches, item)
 					}
 				}
@@ -79,7 +93,7 @@ func (m *MockDBClient[T, Q]) DBGet(
 		// Collect all items, applying filters
 		m.items.Range(func(key, value any) bool {
 			if item, ok := value.(*T); ok {
-				if m.matchesFilters(*item, bq) {
+				if matchesAll(item) {
 					allMatches = append(allMatches, item)
 				}
 			}

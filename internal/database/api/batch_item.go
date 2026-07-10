@@ -34,8 +34,9 @@ type BatchItem struct {
 // BatchQuery specifies parameters for retrieving batches from the database.
 type BatchQuery struct {
 	BaseQuery
-	NonTerminal bool
-	ProcessorID string
+	NonTerminal    bool
+	ProcessorID    string
+	HasProcessorID bool // filter for processor_id IS NOT NULL (owned jobs)
 }
 
 // BatchDBClient is the typed database client for batch objects.

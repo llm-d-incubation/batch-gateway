@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package reconciler detects and recovers orphaned batch jobs that are stuck
-// in non-terminal states because their processor crashed or lost connectivity.
+// in non-terminal states because their processor crashed or was deleted.
 package reconciler
 
 import (
@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -40,33 +41,37 @@ const pageSize = 100
 
 // Result contains the outcome of a single reconciliation cycle.
 type Result struct {
-	Cancelled    int
-	Expired      int
-	ReEnqueued   int
-	Failed       int
-	StaleCleanup int
-	Conflicts    int
-	Errors       int
-	Duration     time.Duration
+	Expired    int
+	ReEnqueued int
+	Conflicts  int
+	Errors     int
+	Duration   time.Duration
 }
 
-// Reconciler periodically scans for orphaned batch jobs and recovers them.
+// Reconciler detects orphaned batch jobs and recovers them. A job is
+// considered orphaned when it has a processor_id set but that processor
+// is no longer in the live set (maintained by the pod watcher).
+//
+// The reconciler runs on two triggers:
+//   - Event-driven: the pod watcher calls Trigger() on pod deletion
+//   - Periodic: a backstop timer fires every interval as a safety net
 type Reconciler struct {
 	batchDB         db.BatchDBClient
 	queue           db.BatchPriorityQueueClient
-	inflight        db.InFlightClient
 	interval        time.Duration
 	dryRun          bool
 	onCycleComplete func(*Result)
+
+	mu             sync.RWMutex
+	liveProcessors map[string]bool
+
+	triggerCh chan struct{}
 }
 
 // NewReconciler creates a new orphan reconciler.
-// interval controls both the scan frequency and the staleness threshold for in-flight entries.
-// onCycleComplete, if non-nil, is called after each cycle with the result.
 func NewReconciler(
 	batchDB db.BatchDBClient,
 	queue db.BatchPriorityQueueClient,
-	inflight db.InFlightClient,
 	interval time.Duration,
 	dryRun bool,
 	onCycleComplete func(*Result),
@@ -77,29 +82,47 @@ func NewReconciler(
 	if queue == nil {
 		return nil, fmt.Errorf("queue client is required")
 	}
-	if inflight == nil {
-		return nil, fmt.Errorf("in-flight client is required")
-	}
 	if interval <= 0 {
 		return nil, fmt.Errorf("interval must be positive, got %v", interval)
 	}
 	return &Reconciler{
 		batchDB:         batchDB,
 		queue:           queue,
-		inflight:        inflight,
 		interval:        interval,
 		dryRun:          dryRun,
 		onCycleComplete: onCycleComplete,
+		liveProcessors:  make(map[string]bool),
+		triggerCh:       make(chan struct{}, 1),
 	}, nil
 }
 
-// RunLoop runs the reconciler in a continuous loop at the configured interval.
+// SetLiveProcessors updates the set of currently alive processor pod names.
+// Called by the pod watcher on add/delete events.
+func (r *Reconciler) SetLiveProcessors(processors map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.liveProcessors = processors
+}
+
+// Trigger requests an immediate reconciliation cycle. Non-blocking.
+func (r *Reconciler) Trigger() {
+	select {
+	case r.triggerCh <- struct{}{}:
+	default:
+	}
+}
+
+func (r *Reconciler) isProcessorAlive(processorID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.liveProcessors[processorID]
+}
+
+// RunLoop runs the reconciler on both event triggers and a periodic timer.
 // It blocks until the context is cancelled.
 func (r *Reconciler) RunLoop(ctx context.Context) error {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.Info("Reconciler: starting loop", "interval", r.interval)
-
-	r.run(ctx)
 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -110,6 +133,8 @@ func (r *Reconciler) RunLoop(ctx context.Context) error {
 			logger.Info("Reconciler: loop stopped")
 			return ctx.Err()
 		case <-ticker.C:
+			r.run(ctx)
+		case <-r.triggerCh:
 			r.run(ctx)
 		}
 	}
@@ -124,11 +149,8 @@ func (r *Reconciler) run(ctx context.Context) {
 	defer func() {
 		result.Duration = time.Since(start)
 		logger.Info("Reconciler: cycle completed",
-			"cancelled", result.Cancelled,
 			"expired", result.Expired,
 			"reEnqueued", result.ReEnqueued,
-			"failed", result.Failed,
-			"staleCleanup", result.StaleCleanup,
 			"conflicts", result.Conflicts,
 			"errors", result.Errors,
 			"duration", result.Duration,
@@ -143,45 +165,11 @@ func (r *Reconciler) run(ctx context.Context) {
 		return
 	}
 
-	inflightEntries, err := r.inflight.InFlightGetAll(ctx)
-	if err != nil {
-		logger.Error(err, "Reconciler: failed to get in-flight entries")
-		result.Errors++
-		return
-	}
-
-	nonTerminalIDs := make(map[string]bool, len(jobs))
-
-	if len(jobs) > 0 {
-		queuedIDs, err := r.queue.PQGetIDs(ctx)
-		if err != nil {
-			logger.Error(err, "Reconciler: failed to get queued job IDs")
-			result.Errors++
-			return
-		}
-
-		now := time.Now()
-		stalenessThreshold := now.Add(-r.interval)
-
-		for _, job := range jobs {
-			nonTerminalIDs[job.ID] = true
-
-			if queuedIDs[job.ID] {
-				continue
-			}
-
-			if entry, ok := inflightEntries[job.ID]; ok {
-				lastSeen := time.Unix(entry.LastSeen, 0)
-				if lastSeen.After(stalenessThreshold) {
-					continue
-				}
-			}
-
+	for _, job := range jobs {
+		if !r.isProcessorAlive(job.ProcessorID) {
 			r.triageOrphan(ctx, job, result)
 		}
 	}
-
-	r.cleanupStaleInflight(ctx, inflightEntries, nonTerminalIDs, result)
 }
 
 func (r *Reconciler) notifyCycle(result *Result) {
@@ -190,36 +178,30 @@ func (r *Reconciler) notifyCycle(result *Result) {
 	}
 }
 
-// fetchNonTerminalJobs retrieves all non-terminal batch jobs via paginated queries.
+// fetchNonTerminalJobs paginates through non-terminal batch items that are
+// owned by a processor (processor_id IS NOT NULL). Queued jobs (processor_id
+// IS NULL) are excluded since they are not orphans.
 func (r *Reconciler) fetchNonTerminalJobs(ctx context.Context) ([]*db.BatchItem, error) {
-	query := &db.BatchQuery{NonTerminal: true}
-	var allJobs []*db.BatchItem
+	var all []*db.BatchItem
 	cursor := 0
-
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		jobs, nextCursor, expectMore, err := r.batchDB.DBGet(ctx, query, false, cursor, pageSize)
+		items, nextCursor, more, err := r.batchDB.DBGet(ctx,
+			&db.BatchQuery{NonTerminal: true, HasProcessorID: true},
+			false, cursor, pageSize)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query non-terminal jobs: %w", err)
+			return nil, err
 		}
-		allJobs = append(allJobs, jobs...)
-
-		if !expectMore {
+		all = append(all, items...)
+		if !more {
 			break
 		}
 		cursor = nextCursor
 	}
-
-	return allJobs, nil
+	return all, nil
 }
 
-// triageOrphan determines the correct recovery action for an orphaned job
-// based on its current status and SLO.
+// triageOrphan decides whether to re-enqueue or expire an orphaned job
+// based on its SLO.
 func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result *Result) {
 	ctx = logr.NewContext(ctx, logr.FromContextOrDiscard(ctx).WithValues("jobId", job.ID))
 	ctx, span := uotel.StartSpan(ctx, "reconciler.triage")
@@ -227,6 +209,17 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 	span.SetAttributes(attribute.String(uotel.AttrBatchID, job.ID))
 	logger := logr.FromContextOrDiscard(ctx)
 
+	sloExpired := isSLOExpired(job)
+
+	if sloExpired {
+		r.expireOrphan(ctx, job, result, logger)
+	} else {
+		r.reEnqueueOrphan(ctx, job, result, logger)
+	}
+}
+
+// expireOrphan transitions an orphaned job to failed when its SLO has expired.
+func (r *Reconciler) expireOrphan(ctx context.Context, job *db.BatchItem, result *Result, logger logr.Logger) {
 	var statusInfo openai.BatchStatusInfo
 	if err := json.Unmarshal(job.Status, &statusInfo); err != nil {
 		logger.Error(err, "Reconciler: failed to unmarshal job status")
@@ -235,121 +228,63 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 	}
 	span.SetAttributes(attribute.String("batch.status", string(statusInfo.Status)))
 
-	sloExpired := isSLOExpired(job)
-
-	var ok bool
-
-	switch statusInfo.Status {
-	case openai.BatchStatusCancelling:
-		ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusCancelled, result, logger)
-
-	case openai.BatchStatusValidating:
-		if sloExpired {
-			ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusExpired, result, logger)
-		} else {
-			ok = r.reEnqueueOrphan(ctx, job, result, logger)
-		}
-
-	case openai.BatchStatusInProgress, openai.BatchStatusFinalizing:
-		if sloExpired {
-			ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusExpired, result, logger)
-		} else {
-			ok = r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusFailed, result, logger)
-		}
-
-	default:
-		logger.Info("Reconciler: orphan in unexpected status, skipping", "status", statusInfo.Status)
+	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(&statusInfo, openai.BatchStatusFailed, nil, nil)
+	if err != nil {
+		logger.Error(err, "Reconciler: failed to build failed status")
 		result.Errors++
 		return
 	}
 
-	if ok && !r.dryRun {
-		if err := r.inflight.InFlightDelete(ctx, job.ID); err != nil {
-			logger.Error(err, "Reconciler: failed to delete in-flight entry for orphan")
-			result.Errors++
-		}
-	}
-}
-
-// transitionOrphan performs a CAS status transition on the orphaned job.
-// Returns true if the transition succeeded (or dry-run logged it).
-func (r *Reconciler) transitionOrphan(
-	ctx context.Context,
-	job *db.BatchItem,
-	currentStatus *openai.BatchStatusInfo,
-	newStatus openai.BatchStatus,
-	result *Result,
-	logger logr.Logger,
-) bool {
-	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(currentStatus, newStatus, nil, nil)
-	if err != nil {
-		logger.Error(err, "Reconciler: failed to build updated status", "newStatus", newStatus)
-		result.Errors++
-		return false
-	}
-
 	updatedBytes, err := json.Marshal(updatedStatus)
 	if err != nil {
-		logger.Error(err, "Reconciler: failed to marshal updated status")
+		logger.Error(err, "Reconciler: failed to marshal failed status")
 		result.Errors++
-		return false
+		return
 	}
 
-	if !r.dryRun {
-		updateItem := &db.BatchItem{
-			BaseIndexes:  db.BaseIndexes{ID: job.ID},
-			BaseContents: db.BaseContents{Status: updatedBytes},
-		}
-		if err := r.batchDB.DBUpdate(ctx, updateItem, job.Status); err != nil {
-			if errors.Is(err, db.ErrConflict) {
-				logger.Info("Reconciler: CAS conflict during orphan transition (another actor won the race)", "newStatus", newStatus)
-				result.Conflicts++
-			} else {
-				logger.Error(err, "Reconciler: failed to transition orphan", "newStatus", newStatus)
-				result.Errors++
-			}
-			return false
-		}
-		logger.Info("Reconciler: orphan transitioned", "from", currentStatus.Status, "to", newStatus)
-	} else {
-		logger.Info("Reconciler: dry-run: would transition orphan", "from", currentStatus.Status, "to", newStatus)
-	}
-
-	switch newStatus {
-	case openai.BatchStatusCancelled:
-		result.Cancelled++
-	case openai.BatchStatusExpired:
+	if r.dryRun {
+		logger.Info("Reconciler: dry-run: would fail expired orphan")
 		result.Expired++
-	case openai.BatchStatusFailed:
-		result.Failed++
+		return
 	}
-	return true
+
+	updateItem := &db.BatchItem{
+		BaseIndexes:  db.BaseIndexes{ID: job.ID},
+		BaseContents: db.BaseContents{Status: updatedBytes},
+	}
+	if err := r.batchDB.DBUpdate(ctx, updateItem, job.Status); err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			logger.Info("Reconciler: CAS conflict during orphan expiry")
+			result.Conflicts++
+		} else {
+			logger.Error(err, "Reconciler: failed to fail expired orphan")
+			result.Errors++
+		}
+		return
+	}
+
+	logger.Info("Reconciler: orphan failed (SLO expired)")
+	result.Expired++
 }
 
-// reEnqueueOrphan re-enqueues an orphaned validating job with its original SLO.
-// Returns true if the re-enqueue succeeded (or dry-run logged it).
-func (r *Reconciler) reEnqueueOrphan(
-	ctx context.Context,
-	job *db.BatchItem,
-	result *Result,
-	logger logr.Logger,
-) bool {
+// reEnqueueOrphan re-enqueues an orphaned job whose SLO is still valid.
+func (r *Reconciler) reEnqueueOrphan(ctx context.Context, job *db.BatchItem, result *Result, logger logr.Logger) {
 	slo, err := extractSLO(job)
 	if err != nil {
 		logger.Error(err, "Reconciler: cannot re-enqueue orphan with corrupt SLO")
 		result.Errors++
-		return false
+		return
 	}
 	if slo == nil {
 		logger.Error(fmt.Errorf("missing SLO tag"), "Reconciler: cannot re-enqueue orphan without SLO")
 		result.Errors++
-		return false
+		return
 	}
 
 	if r.dryRun {
 		logger.Info("Reconciler: dry-run: would re-enqueue orphan", "slo", slo)
 		result.ReEnqueued++
-		return true
+		return
 	}
 
 	task := &db.BatchJobPriority{
@@ -359,45 +294,14 @@ func (r *Reconciler) reEnqueueOrphan(
 	if err := r.queue.PQEnqueue(ctx, task); err != nil {
 		logger.Error(err, "Reconciler: failed to re-enqueue orphan")
 		result.Errors++
-		return false
+		return
 	}
 
 	logger.Info("Reconciler: orphan re-enqueued", "slo", slo)
 	result.ReEnqueued++
-	return true
-}
-
-// cleanupStaleInflight removes in-flight entries for jobs that are no longer
-// in the non-terminal set (already completed, failed, or deleted from DB).
-func (r *Reconciler) cleanupStaleInflight(
-	ctx context.Context,
-	inflightEntries map[string]*db.InFlightEntry,
-	nonTerminalIDs map[string]bool,
-	result *Result,
-) {
-	logger := logr.FromContextOrDiscard(ctx)
-
-	for jobID := range inflightEntries {
-		if nonTerminalIDs[jobID] {
-			continue
-		}
-		if r.dryRun {
-			logger.Info("Reconciler: dry-run: would clean up stale in-flight entry", "jobId", jobID)
-			result.StaleCleanup++
-			continue
-		}
-		if err := r.inflight.InFlightDelete(ctx, jobID); err != nil {
-			logger.Error(err, "Reconciler: failed to clean up stale in-flight entry", "jobId", jobID)
-			result.Errors++
-			continue
-		}
-		logger.Info("Reconciler: cleaned up stale in-flight entry", "jobId", jobID)
-		result.StaleCleanup++
-	}
 }
 
 // isSLOExpired checks whether the job's SLO deadline has passed.
-// Returns false if the SLO tag is missing or corrupt (caller should check extractSLO separately).
 func isSLOExpired(job *db.BatchItem) bool {
 	slo, _ := extractSLO(job)
 	if slo == nil {
@@ -407,7 +311,6 @@ func isSLOExpired(job *db.BatchItem) bool {
 }
 
 // extractSLO parses the SLO tag from the job's tags.
-// Returns (nil, nil) if the tag is missing, or (nil, error) if the tag value is corrupt.
 func extractSLO(job *db.BatchItem) (*time.Time, error) {
 	sloStr, ok := job.Tags[batch_types.TagSLO]
 	if !ok {

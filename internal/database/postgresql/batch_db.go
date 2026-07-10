@@ -111,6 +111,9 @@ func (c *PostgresBatchDBClient) DBGet(
 	if query.NonTerminal {
 		rawConditions = append(rawConditions, nonTerminalCondition)
 	}
+	if query.HasProcessorID {
+		rawConditions = append(rawConditions, colProcessorID+" IS NOT NULL")
+	}
 
 	var extraFilters map[string]any
 	if query.ProcessorID != "" {

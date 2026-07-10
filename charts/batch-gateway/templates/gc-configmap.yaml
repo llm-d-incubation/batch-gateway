@@ -45,4 +45,6 @@ data:
     reconciler:
       enabled: {{ .Values.gc.config.reconciler.enabled }}
       interval: {{ .Values.gc.config.reconciler.interval | quote }}
+      processor_label_selector: {{ include "batch-gateway.processor.selectorLabelsFlat" . | quote }}
+      processor_statefulset: {{ include "batch-gateway.processor.fullname" . | quote }}
 {{- end }}
