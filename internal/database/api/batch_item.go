@@ -20,6 +20,15 @@ package api
 type BatchItem struct {
 	BaseIndexes
 	BaseContents
+
+	// ProcessorID identifies the processor pod that owns this job.
+	// Set atomically with the status transition to in_progress during dequeue.
+	// Empty when the job is queued (validating) or in a terminal state.
+	ProcessorID string
+
+	// Priority determines dequeue order (lower = higher priority).
+	// Stores SLO.UnixMicro() — jobs with earlier deadlines are dequeued first.
+	Priority int64
 }
 
 // BatchQuery specifies parameters for retrieving batches from the database.

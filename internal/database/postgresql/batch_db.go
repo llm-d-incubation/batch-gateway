@@ -44,6 +44,11 @@ func buildNonTerminalCondition() string {
 	return colStatus + `::jsonb->>'status' NOT IN (` + strings.Join(quoted, ",") + `)`
 }
 
+const (
+	colProcessorID = "processor_id"
+	colPriority    = "priority"
+)
+
 // Compile-time check: batchDescriptor implements TableDescriptor.
 var _ TableDescriptor = (*batchDescriptor)(nil)
 
@@ -52,7 +57,7 @@ type batchDescriptor struct{}
 
 func (batchDescriptor) TableName() string      { return "batch_items" }
 func (batchDescriptor) Schema() string         { return batchSchemaSql }
-func (batchDescriptor) ExtraColumns() []string { return nil }
+func (batchDescriptor) ExtraColumns() []string { return []string{colProcessorID, colPriority} }
 
 // PostgresBatchDBClient implements api.BatchDBClient using PostgreSQL.
 type PostgresBatchDBClient struct {
@@ -85,7 +90,10 @@ func (c *PostgresBatchDBClient) DBStore(ctx context.Context, item *api.BatchItem
 		err = fmt.Errorf("item is nil")
 		return
 	}
-	if err = c.store(ctx, &item.BaseIndexes, &item.BaseContents, nil); err != nil {
+	if err = c.store(ctx, &item.BaseIndexes, &item.BaseContents, map[string]any{
+		colProcessorID: item.ProcessorID,
+		colPriority:    item.Priority,
+	}); err != nil {
 		return
 	}
 	return
@@ -104,7 +112,7 @@ func (c *PostgresBatchDBClient) DBGet(
 		rawConditions = append(rawConditions, nonTerminalCondition)
 	}
 
-	indexes, contents, _, cursor, expectMore, err := c.get(
+	indexes, contents, extras, cursor, expectMore, err := c.get(
 		ctx, &query.BaseQuery, includeStatic, start, limit, nil, rawConditions)
 	if err != nil {
 		return
@@ -112,9 +120,13 @@ func (c *PostgresBatchDBClient) DBGet(
 
 	items = make([]*api.BatchItem, len(indexes))
 	for i := range indexes {
+		processorID, _ := extras[i][colProcessorID].(string)
+		priority, _ := extras[i][colPriority].(int64)
 		items[i] = &api.BatchItem{
 			BaseIndexes:  *indexes[i],
 			BaseContents: *contents[i],
+			ProcessorID:  processorID,
+			Priority:     priority,
 		}
 	}
 

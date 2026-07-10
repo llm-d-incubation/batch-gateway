@@ -12,14 +12,28 @@
 -- limitations under the License.
 
 CREATE TABLE IF NOT EXISTS batch_items (
-    id         TEXT PRIMARY KEY,
-    tenant_id  TEXT NOT NULL,
-    expiry     BIGINT,
-    tags       JSONB,
-    spec       JSONB,
-    status     JSONB
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL,
+    expiry        BIGINT,
+    tags          JSONB,
+    spec          JSONB,
+    status        JSONB,
+    processor_id  TEXT,
+    priority      BIGINT
 );
 
 CREATE INDEX IF NOT EXISTS idx_batch_items_tenant_id ON batch_items(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_batch_items_expiry ON batch_items(expiry) WHERE expiry IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_batch_items_tags ON batch_items USING GIN (tags) WHERE tags IS NOT NULL;
+
+-- Queue index: unclaimed jobs ordered by priority (SLO deadline, earliest first).
+CREATE INDEX IF NOT EXISTS idx_batch_items_queue
+    ON batch_items (priority ASC)
+    WHERE processor_id IS NULL
+      AND status IS NOT NULL
+      AND status::jsonb->>'status' = 'validating';
+
+-- Processor ownership index: find jobs owned by a specific processor for crash recovery.
+CREATE INDEX IF NOT EXISTS idx_batch_items_processor
+    ON batch_items (processor_id)
+    WHERE processor_id IS NOT NULL;
