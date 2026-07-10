@@ -244,7 +244,7 @@ func (c *pgCore) buildGetQuery(
 
 // scanRow scans a single row into BaseIndexes + BaseContents + extra values.
 // The returned map is keyed by column name for each ExtraColumns() entry.
-func (c *pgCore) scanRow(rows pgx.Rows, includeStatic bool) (*api.BaseIndexes, *api.BaseContents, map[string]string, error) {
+func (c *pgCore) scanRow(rows pgx.Rows, includeStatic bool) (*api.BaseIndexes, *api.BaseContents, map[string]any, error) {
 	var (
 		id      string
 		tenant  string
@@ -256,7 +256,7 @@ func (c *pgCore) scanRow(rows pgx.Rows, includeStatic bool) (*api.BaseIndexes, *
 
 	scanArgs := []any{&id, &tenant, &expiry, &tagsStr}
 
-	extraDest := make([]string, len(extraCols))
+	extraDest := make([]any, len(extraCols))
 	for i := range extraDest {
 		scanArgs = append(scanArgs, &extraDest[i])
 	}
@@ -294,7 +294,7 @@ func (c *pgCore) scanRow(rows pgx.Rows, includeStatic bool) (*api.BaseIndexes, *
 		Status: status,
 	}
 
-	extras := make(map[string]string, len(extraCols))
+	extras := make(map[string]any, len(extraCols))
 	for i, col := range extraCols {
 		extras[col] = extraDest[i]
 	}
@@ -309,7 +309,7 @@ func (c *pgCore) get(
 	ctx context.Context, bq *api.BaseQuery, includeStatic bool, start, limit int,
 	extraFilters map[string]any, rawConditions []string,
 ) (
-	indexes []*api.BaseIndexes, contents []*api.BaseContents, extras []map[string]string,
+	indexes []*api.BaseIndexes, contents []*api.BaseContents, extras []map[string]any,
 	cursor int, expectMore bool, err error,
 ) {
 	// Request one extra row beyond the limit to determine if more results exist.

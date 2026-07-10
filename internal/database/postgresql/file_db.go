@@ -106,7 +106,7 @@ func (c *PostgresFileDBClient) DBGet(
 		items[i] = &api.FileItem{
 			BaseIndexes:  *indexes[i],
 			BaseContents: *contents[i],
-			Purpose:      extras[i][colPurpose],
+			Purpose:      extras[i][colPurpose].(string),
 		}
 	}
 
