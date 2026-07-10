@@ -112,8 +112,13 @@ func (c *PostgresBatchDBClient) DBGet(
 		rawConditions = append(rawConditions, nonTerminalCondition)
 	}
 
+	var extraFilters map[string]any
+	if query.ProcessorID != "" {
+		extraFilters = map[string]any{colProcessorID: query.ProcessorID}
+	}
+
 	indexes, contents, extras, cursor, expectMore, err := c.get(
-		ctx, &query.BaseQuery, includeStatic, start, limit, nil, rawConditions)
+		ctx, &query.BaseQuery, includeStatic, start, limit, extraFilters, rawConditions)
 	if err != nil {
 		return
 	}

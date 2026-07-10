@@ -35,6 +35,7 @@ type BatchItem struct {
 type BatchQuery struct {
 	BaseQuery
 	NonTerminal bool
+	ProcessorID string
 }
 
 // BatchDBClient is the typed database client for batch objects.

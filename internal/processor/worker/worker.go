@@ -115,7 +115,7 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 		return err
 	}
 
-	p.recoverStaleJobs(ctx)
+	p.recoverOwnedJobs(ctx)
 
 	if onReady != nil {
 		onReady()
