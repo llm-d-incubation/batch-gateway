@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,32 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+// stubProducer is an in-memory producer.Producer for unit-testing the
+// resultDispatcher without Redis.
+type stubProducer struct {
+	mu      sync.Mutex
+	results []*api.ResultMessage
+}
+
+func (s *stubProducer) SubmitRequest(context.Context, api.Request) error { return nil }
+
+func (s *stubProducer) GetResult(ctx context.Context) (*api.ResultMessage, error) {
+	s.mu.Lock()
+	if len(s.results) > 0 {
+		r := s.results[0]
+		s.results = s.results[1:]
+		s.mu.Unlock()
+		return r, nil
+	}
+	s.mu.Unlock()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (s *stubProducer) Close() error { return nil }
+
+var _ producer.Producer = (*stubProducer)(nil)
 
 func newTestPool(t *testing.T, mr *miniredis.Miniredis, poolName string) *asyncPool {
 	t.Helper()
@@ -79,7 +106,7 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 		resultQueue := asyncQueuePrefix + "results:" + poolName
 
 		pool := newTestPool(t, mr, poolName)
-		client := newAsyncProducerClient(pool)
+		client := newAsyncProducerClient(pool, 0)
 		defer func() { _ = client.Close() }()
 
 		go func() {
@@ -113,7 +140,7 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 		resultQueue := asyncQueuePrefix + "results:" + poolName
 
 		pool := newTestPool(t, mr, poolName)
-		client := newAsyncProducerClient(pool)
+		client := newAsyncProducerClient(pool, 0)
 		defer func() { _ = client.Close() }()
 
 		for _, id := range []string{"s-1", "s-2", "s-3"} {
@@ -156,7 +183,7 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 		resultQueue := asyncQueuePrefix + "results:" + poolName
 
 		pool := newTestPool(t, mr, poolName)
-		client := newAsyncProducerClient(pool)
+		client := newAsyncProducerClient(pool, 0)
 
 		if err := client.Submit(context.Background(), &GenerateRequest{
 			RequestID: "c-1",
@@ -186,8 +213,8 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 		resultQueue := asyncQueuePrefix + "results:" + poolName
 
 		pool := newTestPool(t, mr, poolName)
-		clientA := newAsyncProducerClient(pool)
-		clientB := newAsyncProducerClient(pool)
+		clientA := newAsyncProducerClient(pool, 0)
+		clientB := newAsyncProducerClient(pool, 0)
 		defer func() { _ = clientA.Close() }()
 		defer func() { _ = clientB.Close() }()
 
@@ -233,7 +260,7 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 	t.Run("close handles non-string key without panic", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		pool := newTestPool(t, mr, "close-nonstring-pool")
-		client := newAsyncProducerClient(pool)
+		client := newAsyncProducerClient(pool, 0)
 
 		// Manually store a non-string key in pendingIDs
 		client.pendingIDs.Store(42, struct{}{})
@@ -246,13 +273,80 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 	})
 }
 
+func TestAsyncProducerClient_ResultBufferCapacity(t *testing.T) {
+	mr := miniredis.RunT(t)
+	pool := newTestPool(t, mr, "capacity-pool")
+
+	t.Run("explicit capacity is honored", func(t *testing.T) {
+		client := newAsyncProducerClient(pool, 250)
+		defer func() { _ = client.Close() }()
+		if got := client.resultBufferCap(); got != 250 {
+			t.Fatalf("resultBufferCap() = %d, want 250", got)
+		}
+	})
+
+	t.Run("non-positive capacity falls back to default", func(t *testing.T) {
+		client := newAsyncProducerClient(pool, 0)
+		defer func() { _ = client.Close() }()
+		if got := client.resultBufferCap(); got != defaultResultBufferSize {
+			t.Fatalf("resultBufferCap() = %d, want %d", got, defaultResultBufferSize)
+		}
+	})
+}
+
+func TestResultDispatcher_SubmitBeforeCollectBuffer(t *testing.T) {
+	// Reproduces submit-before-collect: many results arrive before any drain.
+	// Undersized buffer (default 100) drops; sizing to the batch does not.
+	const n = 150
+
+	dispatchAll := func(t *testing.T, bufSize int) int {
+		t.Helper()
+		results := make([]*api.ResultMessage, n)
+		for i := range results {
+			id := fmt.Sprintf("req-%d", i)
+			results[i] = &api.ResultMessage{ID: id, Payload: `{"ok":true}`}
+		}
+		stub := &stubProducer{results: results}
+		d := newResultDispatcher(stub, testLogger(t), time.Second)
+		ch := make(chan *GenerateResponse, bufSize)
+		// Store waiters directly — register() would start the background
+		// run loop and race with the processNext calls below.
+		for i := range n {
+			d.waiters.Store(fmt.Sprintf("req-%d", i), (chan<- *GenerateResponse)(ch))
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		for range n {
+			d.processNext(ctx)
+		}
+		return len(ch)
+	}
+
+	t.Run("undersized buffer drops results", func(t *testing.T) {
+		got := dispatchAll(t, defaultResultBufferSize) // 100 < 150
+		if got >= n {
+			t.Fatalf("delivered %d/%d — expected drops with buffer %d", got, n, defaultResultBufferSize)
+		}
+		if got != defaultResultBufferSize {
+			t.Fatalf("delivered %d, want %d (channel filled then dropped the rest)", got, defaultResultBufferSize)
+		}
+	})
+
+	t.Run("buffer sized to batch delivers all", func(t *testing.T) {
+		got := dispatchAll(t, n)
+		if got != n {
+			t.Fatalf("delivered %d results, want %d", got, n)
+		}
+	})
+}
+
 func TestResultDispatcher_PanicRecovery(t *testing.T) {
 	mr := miniredis.RunT(t)
 	poolName := "panic-pool"
 	resultQueue := asyncQueuePrefix + "results:" + poolName
 
 	pool := newTestPool(t, mr, poolName)
-	client := newAsyncProducerClient(pool)
+	client := newAsyncProducerClient(pool, 0)
 	defer func() { _ = client.Close() }()
 
 	// Submit two requests
@@ -298,7 +392,7 @@ func TestAsyncProducerClient_SubmitPropagatesTraceContext(t *testing.T) {
 	requestQueue := asyncQueuePrefix + "requests:" + poolName
 
 	pool := newTestPool(t, mr, poolName)
-	client := newAsyncProducerClient(pool)
+	client := newAsyncProducerClient(pool, 0)
 	defer func() { _ = client.Close() }()
 
 	// Create a parent span to simulate the job runner's trace context

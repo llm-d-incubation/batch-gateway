@@ -106,6 +106,10 @@ func (d *resultDispatcher) processNext(ctx context.Context) {
 		RequestID: result.ID,
 		Response:  []byte(result.Payload),
 	}
+	// Non-blocking send keeps the shared dispatcher from stalling when one
+	// job's channel is full. Callers must size the per-job buffer to cover
+	// submit-before-collect (see ClientForWithCapacity); this default branch
+	// is a defensive fallback only.
 	select {
 	case ch <- resp:
 	default:
@@ -162,12 +166,20 @@ type asyncProducerClient struct {
 	logger     logr.Logger
 }
 
-func newAsyncProducerClient(pool *asyncPool) *asyncProducerClient {
+func newAsyncProducerClient(pool *asyncPool, capacity int) *asyncProducerClient {
+	if capacity <= 0 {
+		capacity = defaultResultBufferSize
+	}
 	return &asyncProducerClient{
 		pool:    pool,
-		results: make(chan *GenerateResponse, defaultResultBufferSize),
+		results: make(chan *GenerateResponse, capacity),
 		logger:  pool.logger,
 	}
+}
+
+// resultBufferCap returns the per-job results channel capacity (test helper).
+func (c *asyncProducerClient) resultBufferCap() int {
+	return cap(c.results)
 }
 
 // Submit enqueues a request for async processing. The result will be routed

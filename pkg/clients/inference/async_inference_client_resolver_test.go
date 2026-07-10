@@ -125,4 +125,27 @@ func TestNewAsyncResolver(t *testing.T) {
 			t.Fatal("expected fresh client per ClientFor call")
 		}
 	})
+
+	t.Run("ClientForWithCapacity sizes the results buffer", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+
+		r, err := NewAsyncResolver(AsyncClientConfig{
+			RedisURL:          "redis://" + mr.Addr(),
+			Models:            map[string]string{"model-a": "pool-a"},
+			ResultPollTimeout: time.Second,
+		}, testLogger(t))
+		if err != nil {
+			t.Fatalf("NewAsyncResolver: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+
+		client := r.ClientForWithCapacity("model-a", 175)
+		got, ok := client.(*asyncProducerClient)
+		if !ok {
+			t.Fatalf("ClientForWithCapacity type = %T, want *asyncProducerClient", client)
+		}
+		if cap := got.resultBufferCap(); cap != 175 {
+			t.Fatalf("resultBufferCap() = %d, want 175", cap)
+		}
+	})
 }

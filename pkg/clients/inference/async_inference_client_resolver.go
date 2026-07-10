@@ -46,9 +46,19 @@ type AsyncGatewayResolver struct {
 	clientFactories map[string]func() AsyncInferenceClient // test-only override
 }
 
-// ClientFor creates a fresh per-job async client for the given model.
+// ClientFor creates a fresh per-job async client for the given model using
+// the default result buffer size. Prefer ClientForWithCapacity when the
+// caller knows how many results may arrive before collect starts.
 // Returns nil if no matching pool exists.
 func (r *AsyncGatewayResolver) ClientFor(modelID string) AsyncInferenceClient {
+	return r.ClientForWithCapacity(modelID, defaultResultBufferSize)
+}
+
+// ClientForWithCapacity creates a fresh per-job async client whose results
+// channel can hold capacity responses. Under submit-then-collect, pass
+// len(planEntries) so results that arrive during submit are not dropped.
+// Returns nil if no matching pool exists. capacity <= 0 uses the default.
+func (r *AsyncGatewayResolver) ClientForWithCapacity(modelID string, capacity int) AsyncInferenceClient {
 	if r.clientFactories != nil {
 		if factory, ok := r.clientFactories[modelID]; ok {
 			return factory()
@@ -59,7 +69,7 @@ func (r *AsyncGatewayResolver) ClientFor(modelID string) AsyncInferenceClient {
 	if !ok {
 		return nil
 	}
-	return newAsyncProducerClient(pool)
+	return newAsyncProducerClient(pool, capacity)
 }
 
 // NewTestAsyncResolver creates a resolver backed by factory functions instead of

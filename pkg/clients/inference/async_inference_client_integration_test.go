@@ -35,7 +35,7 @@ func TestAsyncProducerClient_Submit_roundtrip(t *testing.T) {
 		resultQueue := asyncQueuePrefix + "results:" + poolName
 
 		pool := newTestPool(t, mr, poolName)
-		client := newAsyncProducerClient(pool)
+		client := newAsyncProducerClient(pool, 0)
 		defer func() { _ = client.Close() }()
 
 		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})

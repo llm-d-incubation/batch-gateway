@@ -566,7 +566,10 @@ func (p *Processor) processModelAsync(
 
 	logger.V(logging.INFO).Info("Processing requests for model (async)", "numEntries", len(entries))
 
-	asyncClient := p.asyncInference.ClientFor(modelID)
+	// Size the per-job results buffer to the plan length so results that
+	// arrive during submit-before-collect cannot fill a fixed buffer of 100
+	// and be silently dropped by the shared resultDispatcher.
+	asyncClient := p.asyncInference.ClientForWithCapacity(modelID, len(entries))
 	if asyncClient == nil {
 		logger.V(logging.INFO).Info("No async client for model, draining as model_not_found")
 		p.drainUnprocessedRequests(
