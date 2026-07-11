@@ -30,22 +30,23 @@ KUADRANT_NAMESPACE="${KUADRANT_NAMESPACE:-kuadrant-system}"
 KUADRANT_VERSION="${KUADRANT_VERSION:-1.3.1}"
 KUADRANT_RELEASE="${KUADRANT_RELEASE:-kuadrant-operator}"
 
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.15.3}"
+CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.20.3}"
 
 BATCH_INTERNAL_GATEWAY_NAME="${BATCH_INTERNAL_GATEWAY_NAME:-batch-internal-gateway}"
 BATCH_INTERNAL_GATEWAY_NAMESPACE="${BATCH_INTERNAL_GATEWAY_NAMESPACE:-${GATEWAY_NAMESPACE}}"
 GATEWAY_LOCAL_PORT="${GATEWAY_LOCAL_PORT:-8080}"
 
-LLMD_VERSION="${LLMD_VERSION:-v0.7.0}"
+LLMD_VERSION="${LLMD_VERSION:-v0.8.1}"
 LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
 LLMD_RELEASE_POSTFIX="${LLMD_RELEASE_POSTFIX:-llmd}"
 
-GAIE_CHART_VERSION="${GAIE_CHART_VERSION:-v1.5.0}"
-MODELSERVICE_CHART_VERSION="${MODELSERVICE_CHART_VERSION:-v0.4.12}"
+ISTIO_VERSION="${ISTIO_VERSION:-1.29.2}"
+# GAIE_VERSION, ROUTER_CHART_VERSION, ROUTER_GATEWAY_CHART are sourced
+# from the llm-d repo's guides/env.sh (see clone_llmd_repo).
 
 # Model name matches the simulated model default ("random")
 MODEL_NAME="${MODEL_NAME:-random}"
-LLMD_POOL_NAME="gaie-${LLMD_RELEASE_POSTFIX}"
+LLMD_POOL_NAME="${LLMD_RELEASE_POSTFIX}"
 
 MODEL_ROUTES=(
     "${MODEL_NAME}:${LLMD_POOL_NAME}"
@@ -83,7 +84,7 @@ install_cert_manager() {
     log "cert-manager installed successfully."
 }
 
-create_k8s_gateway() {
+create_inference_external_gateway() {
     step "Creating TLS certificate for Gateway..."
     kubectl apply -f - <<EOF
 apiVersion: cert-manager.io/v1
@@ -387,26 +388,59 @@ init_test() {
 
 # ── llm-d stack: Istio + GAIE + vllm-sim ─────────────────────────────────────
 
+clone_llmd_repo() {
+    if [ ! -d "${LLMD_GIT_DIR}/guides" ]; then
+        step "Cloning llm-d ${LLMD_VERSION}..."
+        rm -rf "${LLMD_GIT_DIR}"
+        git clone --depth 1 --branch "${LLMD_VERSION}" https://github.com/llm-d/llm-d.git "${LLMD_GIT_DIR}"
+    fi
+    source "${LLMD_GIT_DIR}/guides/env.sh"
+}
+
 install_llmd_deps() {
-    step "Installing llm-d dependencies (CRDs + Istio)..."
+    step "Installing llm-d dependencies (CRDs)..."
 
-    rm -rf "${LLMD_GIT_DIR}"
-    git clone --depth 1 --branch "${LLMD_VERSION}" https://github.com/llm-d/llm-d.git "${LLMD_GIT_DIR}"
+    clone_llmd_repo
 
-    local llmd_dir="${LLMD_GIT_DIR}"
-
-    # CRDs (Gateway API + GAIE)
-    # On OpenShift, Gateway API CRDs are managed by the Ingress Operator and may
-    # reject external modifications. Skip on failure.
-    step "Installing CRDs..."
-    bash "${llmd_dir}/guides/prereq/gateway-provider/install-gateway-provider-dependencies.sh" \
+    # Gateway API + GAIE CRDs via the official install script.
+    # On OpenShift, Gateway API CRDs are platform-managed; failures are skipped.
+    step "Installing Gateway API + GAIE CRDs..."
+    bash "${LLMD_GIT_DIR}/guides/recipes/gateway/install-gateway-crds.sh" \
         || warn "CRD install failed (may already exist on OpenShift). Continuing."
 
-    # Istio (via helmfile)
-    step "Installing Istio..."
-    helmfile apply -f "${llmd_dir}/guides/prereq/gateway-provider/istio.helmfile.yaml"
+    # llm-d Router CRDs (InferenceObjective etc.)
+    step "Installing llm-d Router CRDs ${ROUTER_CHART_VERSION}..."
+    kubectl apply -f "https://github.com/llm-d/llm-d-router/releases/download/${ROUTER_CHART_VERSION}/manifests.yaml" \
+        || warn "Router CRD install failed. Continuing."
 
-    log "llm-d dependencies installed (CRDs + Istio)."
+    log "llm-d CRDs installed."
+}
+
+install_istio() {
+    step "Installing Istio ${ISTIO_VERSION}..."
+    helm repo add istio https://istio-release.storage.googleapis.com/charts --force-update
+
+    if ! helm status istio-base -n istio-system &>/dev/null; then
+        helm install istio-base istio/base \
+            --namespace istio-system \
+            --create-namespace \
+            --version "${ISTIO_VERSION}"
+    else
+        log "istio-base already installed. Skipping."
+    fi
+
+    if ! helm status istiod -n istio-system &>/dev/null; then
+        helm install istiod istio/istiod \
+            --namespace istio-system \
+            --version "${ISTIO_VERSION}" \
+            --set pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true \
+            --wait
+    else
+        log "istiod already installed. Skipping."
+    fi
+
+    wait_for_deployment "istiod" "istio-system" 300s
+    log "Istio installed."
 }
 
 deploy_llmd_model() {
@@ -416,41 +450,42 @@ deploy_llmd_model() {
     local pool_name="${LLMD_POOL_NAME}"
     local epp_host="${pool_name}-epp.${LLM_NAMESPACE}.svc.cluster.local"
 
-    # Install InferencePool (GAIE EPP)
-    step "Installing InferencePool chart ${GAIE_CHART_VERSION}..."
-    local gaie_helm_args=(
-        --version "${GAIE_CHART_VERSION}"
+    # Install llm-d Router (gateway mode) — follows the official layered values
+    # pattern from guides/flow-control/README.md (gateway mode section):
+    #   base.values.yaml (from llm-d repo) + sim overlay + flow-control overlay
+    local llmd_dir="${LLMD_GIT_DIR}"
+    step "Installing llm-d Router chart ${ROUTER_CHART_VERSION}..."
+    local router_helm_args=(
+        --version "${ROUTER_CHART_VERSION}"
         --namespace "${LLM_NAMESPACE}"
-        -f "${sim_dir}/gaie-sim-values.yaml"
+        -f "${llmd_dir}/guides/recipes/router/base.values.yaml"
+        -f "${sim_dir}/router/sim-values.yaml"
+        --set provider.name=istio
         --set "provider.istio.destinationRule.host=${epp_host}"
     )
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
-        gaie_helm_args+=(-f "${sim_dir}/overlays/flow-control.yaml")
+        router_helm_args+=(-f "${sim_dir}/router/overlays/flow-control.yaml")
         log "Flow control enabled: EPP will use flow-control-plugins.yaml"
     fi
     helm upgrade --install "${pool_name}" \
-        oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
-        "${gaie_helm_args[@]}"
+        oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+        "${router_helm_args[@]}"
 
-    # Install ModelService (vllm-sim)
-    step "Installing ModelService chart ${MODELSERVICE_CHART_VERSION}..."
-    helm repo add llm-d-modelservice https://llm-d-incubation.github.io/llm-d-modelservice/ --force-update
-    helm upgrade --install "ms-${LLMD_RELEASE_POSTFIX}" llm-d-modelservice/llm-d-modelservice \
-        --version "${MODELSERVICE_CHART_VERSION}" \
-        --namespace "${LLM_NAMESPACE}" \
-        -f "${sim_dir}/ms-sim-values.yaml"
+    # Deploy model server (vllm-sim) via kustomize
+    step "Deploying model server (vllm-sim)..."
+    kubectl apply -n "${LLM_NAMESPACE}" -k "${sim_dir}/modelserver/"
 
     # Wait for llm-d deployments
     wait_for_deployment "${pool_name}-epp" "${LLM_NAMESPACE}" 300s
-    wait_for_deployment "ms-${LLMD_RELEASE_POSTFIX}-llm-d-modelservice-decode" "${LLM_NAMESPACE}" 300s
+    wait_for_deployment "llmd-sim-decode" "${LLM_NAMESPACE}" 300s
 
     log "llm-d model deployed."
 }
 
 create_inference_objectives() {
-    step "Creating InferenceObjective CRDs..."
+    step "Creating InferenceObjective resources..."
     kubectl apply -f - <<EOF
-apiVersion: inference.networking.x-k8s.io/v1alpha2
+apiVersion: llm-d.ai/v1alpha2
 kind: InferenceObjective
 metadata:
   name: ${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}
@@ -458,10 +493,9 @@ metadata:
 spec:
   priority: 100
   poolRef:
-    group: inference.networking.k8s.io
     name: ${LLMD_POOL_NAME}
 ---
-apiVersion: inference.networking.x-k8s.io/v1alpha2
+apiVersion: llm-d.ai/v1alpha2
 kind: InferenceObjective
 metadata:
   name: ${BATCH_FLOW_CONTROL_OBJECTIVE}
@@ -469,7 +503,6 @@ metadata:
 spec:
   priority: -1
   poolRef:
-    group: inference.networking.k8s.io
     name: ${LLMD_POOL_NAME}
 EOF
     log "InferenceObjectives created (${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}: priority 100, ${BATCH_FLOW_CONTROL_OBJECTIVE}: priority -1)."
@@ -484,7 +517,7 @@ verify_flow_control_config() {
     # 1. EPP plugins config
     step "Checking EPP plugins config..."
     local epp_pod
-    epp_pod=$(kubectl get pod -n "${LLM_NAMESPACE}" -l "inferencepool=${pool_name}-epp" \
+    epp_pod=$(kubectl get pod -n "${LLM_NAMESPACE}" -l "llm-d-router-gateway=${pool_name}-epp" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
     if [ -z "${epp_pod}" ]; then
         warn "No EPP pod found for pool '${pool_name}'. Cannot verify plugins config."
@@ -501,8 +534,8 @@ verify_flow_control_config() {
         fi
     fi
 
-    # 2. InferenceObjective CRDs
-    step "Checking InferenceObjective CRDs..."
+    # 2. InferenceObjective resources
+    step "Checking InferenceObjective resources..."
     for obj in "${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}" "${BATCH_FLOW_CONTROL_OBJECTIVE}"; do
         if kubectl get inferenceobjective "${obj}" -n "${LLM_NAMESPACE}" &>/dev/null; then
             log "InferenceObjective '${obj}' exists."
@@ -534,37 +567,19 @@ verify_flow_control_runtime() {
     local pool_name="${LLMD_POOL_NAME}"
     local errors=0
 
-    # Fetch metrics from EPP pod via kubectl exec + curl.
+    # Fetch metrics from EPP via the in-cluster Service (avoids port-forward
+    # reliability issues). The EPP container is distroless (no curl/sh), so
+    # we use a temporary pod to curl the EPP metrics endpoint.
     step "Fetching EPP flow control metrics..."
-    local epp_pod
-    epp_pod=$(kubectl get pod -n "${LLM_NAMESPACE}" -l "inferencepool=${pool_name}-epp" \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    if [ -z "${epp_pod}" ]; then
-        die "No EPP pod found for pool '${pool_name}'."
-    fi
-
-    local metrics_port=19090
-    kubectl port-forward -n "${LLM_NAMESPACE}" "${epp_pod}" ${metrics_port}:9090 &>/dev/null &
-    local pf_pid=$!
-    sleep 2
-
-    local curl_args=(-s "http://localhost:${metrics_port}/metrics")
-    local metrics_secret
-    metrics_secret=$(kubectl get secret -n "${LLM_NAMESPACE}" -o name 2>/dev/null \
-        | grep 'metrics-reader' | head -1 | sed 's|^secret/||')
-    if [ -n "${metrics_secret}" ]; then
-        local metrics_token
-        metrics_token=$(kubectl get secret "${metrics_secret}" -n "${LLM_NAMESPACE}" \
-            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d) || true
-        if [ -n "${metrics_token}" ]; then
-            curl_args=(-sk -H "Authorization: Bearer ${metrics_token}" "http://localhost:${metrics_port}/metrics")
-        fi
-    fi
+    local epp_svc="${pool_name}-epp"
+    local metrics_url="http://${epp_svc}.${LLM_NAMESPACE}.svc.cluster.local:9090/metrics"
 
     local metrics_response
-    metrics_response=$(curl -w '\n%{http_code}' "${curl_args[@]}")
-    kill "${pf_pid}" 2>/dev/null || true
-    wait "${pf_pid}" 2>/dev/null || true
+    local check_pod="epp-metrics-check-$(date +%s)"
+    metrics_response=$(kubectl run "${check_pod}" --rm -i --restart=Never --quiet \
+        --image=curlimages/curl -n "${LLM_NAMESPACE}" -- \
+        curl -s --connect-timeout 10 --max-time 30 -w '\n%{http_code}' "${metrics_url}" \
+    2>/dev/null) || true
 
     local metrics_body metrics_http_code
     metrics_http_code=$(echo "${metrics_response}" | tail -1)
@@ -576,12 +591,12 @@ verify_flow_control_runtime() {
         die "EPP metrics response body is empty."
     fi
 
-    echo "${metrics_body}" | grep 'inference_extension_flow_control_request_queue_duration_seconds_count'
+    echo "${metrics_body}" | grep 'llm_d_epp_flow_control_request_queue_duration_seconds_count' || true
 
     # 1. Interactive requests dispatched (priority 0)
     step "Checking flow control metrics for interactive requests (priority 0)..."
     local interactive_count
-    interactive_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_queue_duration_seconds_count' \
+    interactive_count=$(echo "${metrics_body}" | grep 'llm_d_epp_flow_control_request_queue_duration_seconds_count' \
         | grep 'priority="0"' | grep 'outcome="Dispatched"' | grep -oE '[0-9]+$' || echo "0")
     if [ "${interactive_count}" -gt 0 ] 2>/dev/null; then
         log "Flow control dispatched ${interactive_count} interactive request(s) (priority 0)."
@@ -593,7 +608,7 @@ verify_flow_control_runtime() {
     # 2. Batch requests dispatched (priority -1)
     step "Checking flow control metrics for batch requests (priority -1)..."
     local batch_count
-    batch_count=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_request_queue_duration_seconds_count' \
+    batch_count=$(echo "${metrics_body}" | grep 'llm_d_epp_flow_control_request_queue_duration_seconds_count' \
         | grep 'priority="-1"' | grep 'outcome="Dispatched"' | grep -oE '[0-9]+$' || echo "0")
     if [ "${batch_count}" -gt 0 ] 2>/dev/null; then
         log "Flow control dispatched ${batch_count} batch request(s) (priority -1)."
@@ -604,10 +619,11 @@ verify_flow_control_runtime() {
 
     # 3. Pool saturation metric exists
     step "Checking pool saturation metric..."
-    if echo "${metrics_body}" | grep -q 'inference_extension_flow_control_pool_saturation'; then
+    local saturation_line
+    saturation_line=$(echo "${metrics_body}" | grep 'llm_d_epp_flow_control_pool_saturation{' | head -1 || true)
+    if [ -n "${saturation_line}" ]; then
         local saturation
-        saturation=$(echo "${metrics_body}" | grep 'inference_extension_flow_control_pool_saturation{' \
-            | grep -oE '[0-9.]+$' | head -1)
+        saturation=$(echo "${saturation_line}" | grep -oE '[0-9.]+$')
         log "Pool saturation: ${saturation}"
     else
         warn "Pool saturation metric not found."
@@ -623,7 +639,7 @@ verify_flow_control_runtime() {
 uninstall_llmd() {
     step "Removing llm-d stack (${LLM_NAMESPACE})..."
     timeout_delete 30s httproute --all -n "${LLM_NAMESPACE}" || true
-    helm uninstall "ms-${LLMD_RELEASE_POSTFIX}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    kubectl delete -k "${SCRIPT_DIR}/llmd-sim/modelserver/" -n "${LLM_NAMESPACE}" 2>/dev/null || true
     helm uninstall "${LLMD_POOL_NAME}" -n "${LLM_NAMESPACE}" --timeout 60s 2>/dev/null || true
     timeout_delete 30s inferencepool --all -n "${LLM_NAMESPACE}" || true
 }
@@ -794,15 +810,11 @@ EOF
 check_prerequisites() {
     step "Checking prerequisites..."
     local missing=()
-    for cmd in kubectl helm helmfile git curl jq yq; do
+    for cmd in kubectl helm git curl jq yq; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [ ${#missing[@]} -gt 0 ]; then
         die "Missing required tools: ${missing[*]}."
-    fi
-
-    if ! helm plugin list 2>/dev/null | grep -q '^diff'; then
-        die "Missing helm-diff plugin. Install with: helm plugin install https://github.com/databus23/helm-diff"
     fi
 
     if ! kubectl cluster-info --request-timeout=10s &>/dev/null; then
@@ -833,9 +845,10 @@ cmd_install() {
     install_cert_manager
     create_selfsigned_issuer
     install_llmd_deps
+    install_istio
     install_kuadrant
 
-    create_k8s_gateway
+    create_inference_external_gateway
 
     deploy_llmd_model
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
@@ -945,6 +958,7 @@ EOF
 
 cmd_uninstall() {
     set +e
+    clone_llmd_repo
 
     banner "Uninstalling All Components"
 
@@ -994,19 +1008,15 @@ cmd_uninstall() {
         uninstall_llmd
 
         step "Uninstalling Istio..."
-        local istio_helmfile="${LLMD_GIT_DIR}/guides/prereq/gateway-provider/istio.helmfile.yaml"
-        if [ -f "${istio_helmfile}" ]; then
-            helmfile destroy -f "${istio_helmfile}" 2>/dev/null \
-                || warn "helmfile destroy failed"
-        fi
         helm uninstall istiod -n istio-system --timeout 60s 2>/dev/null || true
         helm uninstall istio-base -n istio-system --timeout 60s 2>/dev/null || true
         force_delete_crds 'istio\.io|sail'
         force_delete_namespace "istio-system"
 
         step "Removing CRDs..."
-        local crd_script="${LLMD_GIT_DIR}/guides/prereq/gateway-provider/install-gateway-provider-dependencies.sh"
-        [ -f "${crd_script}" ] && bash "${crd_script}" delete 2>/dev/null || true
+        clone_llmd_repo
+        kubectl delete -f "https://github.com/llm-d/llm-d-router/releases/download/${ROUTER_CHART_VERSION}/manifests.yaml" 2>/dev/null || true
+        bash "${LLMD_GIT_DIR}/guides/recipes/gateway/install-gateway-crds.sh" delete 2>/dev/null || true
 
         step "Cleaning up cache..."
         rm -rf "${LLMD_GIT_DIR}"
@@ -1062,7 +1072,7 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0 install"
-    echo "  MODEL_NAME=my-model LLMD_VERSION=v0.7.0 $0 install"
+    echo "  MODEL_NAME=my-model LLMD_VERSION=v0.8.1 $0 install"
     exit "${1:-0}"
 }
 

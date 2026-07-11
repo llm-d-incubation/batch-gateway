@@ -1,0 +1,46 @@
+# Sim-specific overlay for llm-d Router (gateway mode).
+# Layered on top of guides/recipes/router/base.values.yaml from the llm-d repo.
+# Used with: oci://ghcr.io/llm-d/charts/llm-d-router-gateway ${ROUTER_CHART_VERSION}
+
+router:
+  epp:
+    # Reduced for demo — base.values.yaml defaults (4 CPU / 8Gi) exceed
+    # demo and CI cluster capacity.
+    resources:
+      requests:
+        cpu: "500m"
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
+
+  inferencePool:
+    targetPorts:
+      - number: 8000
+
+  monitoring:
+    prometheus:
+      auth:
+        enabled: false
+
+  modelServers:
+    matchLabels:
+      llm-d.ai/inference-serving: "true"
+      llm-d.ai/guide: "simulated-accelerators"
+      llm-d.ai/accelerator-variant: "cpu"
+      llm-d.ai/model: "random"
+
+provider:
+  istio:
+    destinationRule:
+      trafficPolicy:
+        connectionPool:
+          http:
+            http1MaxPendingRequests: 256000
+            maxRequestsPerConnection: 256000
+            http2MaxRequests: 256000
+            idleTimeout: "900s"
+          tcp:
+            maxConnections: 256000
+            maxConnectionDuration: "1800s"
+            connectTimeout: "900s"

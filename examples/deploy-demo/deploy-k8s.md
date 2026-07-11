@@ -6,7 +6,7 @@ One-click deployment script for batch-gateway on Kubernetes. Supports `install`,
 
 **Prerequisites**:
 
-- **Tools**: `kubectl`, `helm`, `helmfile`, `git`, `curl`, `jq`, `yq`, and the [`helm-diff`](https://github.com/databus23/helm-diff) plugin.
+- **Tools**: `kubectl`, `helm`, `git`, `curl`, `jq`, `yq`.
 - **Cluster access**: You must be logged in to the target cluster. Use `kubectl config current-context` (or `oc whoami` on OpenShift) to verify.
 
 ## Usage
@@ -23,7 +23,7 @@ bash examples/deploy-demo/deploy-k8s.sh install
 |-----------|---------|
 | cert-manager | TLS certificate management |
 | Istio | Service mesh + ingress gateway (HTTPS:443) |
-| llm-d stack | GAIE InferencePool + vllm-sim (single model, default: random) |
+| llm-d stack | llm-d Router (gateway mode) + vllm-sim (single model, default: random) |
 | Kuadrant | Auth + rate limiting (installed via Helm) |
 | Redis | Exchange backend (Bitnami Helm chart, configurable via `BATCH_EXCHANGE_CLIENT_TYPE`) |
 | PostgreSQL | Batch metadata store (Bitnami Helm chart) |
@@ -140,13 +140,13 @@ Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](http
 | `GATEWAY_LOCAL_PORT` | `8080` | Port-forward local port |
 | `BATCH_INTERNAL_GATEWAY_NAME` | `batch-internal-gateway` | Internal Gateway resource name |
 | `BATCH_INTERNAL_GATEWAY_NAMESPACE` | `${GATEWAY_NAMESPACE}` | Internal Gateway namespace |
-| `LLMD_VERSION` | `v0.7.0` | llm-d git ref to install |
+| `LLMD_VERSION` | `v0.8.1` | llm-d git ref to install |
 | `LLMD_RELEASE_POSTFIX` | `llmd` | Helm release postfix |
 | `MODEL_NAME` | `random` | Model name for routing |
-| `CERT_MANAGER_VERSION` | `v1.15.3` | cert-manager Helm chart version |
+| `CERT_MANAGER_VERSION` | `v1.20.3` | cert-manager Helm chart version |
 | `KUADRANT_VERSION` | `1.3.1` | Kuadrant Helm chart version |
-| `GAIE_CHART_VERSION` | `v1.5.0` | InferencePool (GAIE) Helm chart version |
-| `MODELSERVICE_CHART_VERSION` | `v0.4.12` | ModelService (vllm-sim) Helm chart version |
+| `ROUTER_CHART_VERSION` | (from llm-d env.sh) | llm-d Router chart/CRD version (auto-detected from LLMD_VERSION) |
+| `ISTIO_VERSION` | `1.29.2` | Istio Helm chart version |
 | `ENABLE_FLOW_CONTROL` | `true` | Enable GIE priority-based flow control |
 | `BATCH_FLOW_CONTROL_OBJECTIVE` | `batch-sheddable` | InferenceObjective name for batch requests (priority -1) |
 | `UNINSTALL_ALL` | `0` | Set to `1` to remove Kuadrant, Istio, cert-manager, CRDs (ephemeral clusters only) |

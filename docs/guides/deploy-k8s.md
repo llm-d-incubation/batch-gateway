@@ -1,6 +1,22 @@
 # Batch Gateway on Kubernetes
 
-This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or OpenShift) using open-source Helm charts. It uses the [llm-d](https://llm-d.ai) stack (Istio + GAIE InferencePool + vLLM) and [Kuadrant](https://kuadrant.io/) for authentication, authorization, and rate limiting.
+This guide demonstrates how to deploy batch-gateway on vanilla Kubernetes (or OpenShift) using open-source Helm charts. It uses the [llm-d](https://llm-d.ai) stack (Istio + llm-d Router + vLLM) and [Kuadrant](https://kuadrant.io/) for authentication, authorization, and rate limiting.
+
+## Quick Start
+
+For a one-click deployment, use the automated script from the **repository root**:
+
+```bash
+cd /path/to/batch-gateway   # all commands assume you are at the repo root
+
+bash examples/deploy-demo/deploy-k8s.sh install   # deploy everything
+bash examples/deploy-demo/deploy-k8s.sh test       # run all tests
+bash examples/deploy-demo/deploy-k8s.sh uninstall  # tear down (UNINSTALL_ALL=1 for full cleanup)
+```
+
+See [deploy-demo/deploy-k8s.md](../../examples/deploy-demo/deploy-k8s.md) for script options and environment variables.
+
+The sections below walk through each step manually for understanding and customization.
 
 ## 1. Architecture
 
@@ -61,7 +77,7 @@ HTTPRoute authentication behavior:
 
 Users need RBAC `get` permission on the `inferencepools` resource whose name matches the **model name in the URL path**. The AuthPolicy extracts the resource name from the URL via `request.path.split("/")[2]`.
 
-> **Important**: The SAR resource name (derived from the URL path segment) is **independent** of the HTTPRoute backend `InferencePool` metadata name. Which `InferencePool` a given path segment routes to is determined by **routing** (the HTTPRoute / route map), not by SAR. SAR controls *who* can access a model endpoint; the HTTPRoute controls *where* that endpoint's traffic is sent. For example, a URL path segment `random` may route to an `InferencePool` named `gaie-llmd` — the RBAC `resourceNames` should use the URL path segment (`random`), not the `InferencePool` object name.
+> **Important**: The SAR resource name (derived from the URL path segment) is **independent** of the HTTPRoute backend `InferencePool` metadata name. Which `InferencePool` a given path segment routes to is determined by **routing** (the HTTPRoute / route map), not by SAR. SAR controls *who* can access a model endpoint; the HTTPRoute controls *where* that endpoint's traffic is sent. For example, a URL path segment `random` may route to an `InferencePool` named `llmd` — the RBAC `resourceNames` should use the URL path segment (`random`), not the `InferencePool` object name.
 
 To grant access, create a Role and RoleBinding:
 
@@ -120,8 +136,8 @@ The `Authorization` header is included in `passThroughHeaders`, so the processor
 ## 2. Prerequisites
 
 - Kubernetes cluster (or OpenShift 4.x)
-- CLI tools: `kubectl`, `helm`, `helmfile`, `git`, `curl`, `jq`, `yq`
-- Helm plugin: `helm-diff` (`helm plugin install https://github.com/databus23/helm-diff`)
+- CLI tools: `kubectl`, `helm`, `git`, `curl`, `jq`, `yq`
+- All commands below assume you are at the **batch-gateway repository root** (where `charts/` and `examples/` are located)
 
 ### Environment Variables
 
@@ -131,30 +147,34 @@ Set these once before running any installation or test step. All subsequent code
 # Gateway
 export GATEWAY_NAME=istio-gateway
 export GATEWAY_NAMESPACE=istio-ingress
-export INTERNAL_GW_NAME=batch-internal-gateway
+export BATCH_INTERNAL_GATEWAY_NAME=batch-internal-gateway
+export BATCH_INTERNAL_GATEWAY_NAMESPACE=${GATEWAY_NAMESPACE}   # defaults to same as external gateway
 
 # Namespaces
-export LLM_NS=llm
-export BATCH_NS=batch-api
-export KUADRANT_NS=kuadrant-system
+export LLM_NAMESPACE=llm
+export BATCH_NAMESPACE=batch-api
+export KUADRANT_NAMESPACE=kuadrant-system
 
 # Component versions
-export CERT_MANAGER_VERSION=v1.15.3
+export CERT_MANAGER_VERSION=v1.20.3
 export KUADRANT_VERSION=1.3.1
-export LLMD_VERSION=v0.7.0
+export ISTIO_VERSION=1.29.2
+export LLMD_VERSION=v0.8.1
 export LLMD_GIT_DIR="/tmp/llm-d-${LLMD_VERSION}"
-export GAIE_CHART_VERSION=v1.5.0
-export MODELSERVICE_CHART_VERSION=v0.4.12
 
 # llm-d model
 export LLMD_RELEASE_POSTFIX=llmd
-export LLMD_POOL_NAME=gaie-${LLMD_RELEASE_POSTFIX}
+export LLMD_POOL_NAME=${LLMD_RELEASE_POSTFIX}
 export MODEL_NAME=random
 
 # Flow control
 export INTERACTIVE_FLOW_CONTROL_OBJECTIVE=interactive-default
 export BATCH_FLOW_CONTROL_OBJECTIVE=batch-sheddable
 ```
+
+> **Note**: `GAIE_VERSION`, `ROUTER_CHART_VERSION`, and `ROUTER_GATEWAY_CHART` are automatically sourced from the llm-d repo's `guides/env.sh` after cloning (see step 3.2). You do not need to set them manually.
+>
+> **Note**: These variable names match the deploy script (`deploy-k8s.sh`), so values exported here will take effect if you run the script afterwards.
 
 ## 3. Installation Steps
 
@@ -195,50 +215,53 @@ EOF
 
 </details>
 
-### 3.2 Install llm-d Dependencies (CRD + Istio)
+### 3.2 Install llm-d Dependencies (CRDs)
 
-Install Gateway API CRDs and Istio from the [llm-d repository](https://github.com/llm-d/llm-d).
+Install Gateway API and GAIE CRDs from the [llm-d repository](https://github.com/llm-d/llm-d), following the [official quickstart](https://llm-d.ai/docs/getting-started/quickstart) pattern.
 
 <details>
-<summary>Clone llm-d and install CRDs + Istio</summary>
+<summary>Clone llm-d and install CRDs</summary>
 
 ```bash
+# Clone llm-d repo and source version variables
 git clone --depth 1 --branch "${LLMD_VERSION}" \
     https://github.com/llm-d/llm-d.git "${LLMD_GIT_DIR}"
+source "${LLMD_GIT_DIR}/guides/env.sh"
 
-# Install Gateway API + GAIE CRDs
-bash "${LLMD_GIT_DIR}/guides/prereq/gateway-provider/install-gateway-provider-dependencies.sh"
+# Install Gateway API + GAIE CRDs (pre-installed on OpenShift; needed on vanilla k8s)
+bash "${LLMD_GIT_DIR}/guides/recipes/gateway/install-gateway-crds.sh"
 
-# Install Istio via helmfile
-helmfile apply -f "${LLMD_GIT_DIR}/guides/prereq/gateway-provider/istio.helmfile.yaml"
+# Install llm-d Router CRDs (InferenceObjective etc.)
+kubectl apply -f "https://github.com/llm-d/llm-d-router/releases/download/${ROUTER_CHART_VERSION}/manifests.yaml"
 ```
 
 </details>
+
+### 3.3 Install Istio
 
 <details>
-<summary>Check Istiod installation</summary>
+<summary>Install Istio via Helm</summary>
 
+```bash
+helm repo add istio https://istio-release.storage.googleapis.com/charts --force-update
+
+helm install istio-base istio/base \
+    --namespace istio-system \
+    --create-namespace \
+    --version "${ISTIO_VERSION}"
+
+helm install istiod istio/istiod \
+    --namespace istio-system \
+    --version "${ISTIO_VERSION}" \
+    --set pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true \
+    --wait
+
+kubectl rollout status deploy/istiod -n istio-system --timeout=300s
 ```
-kubectl get all -n istio-system
 
-NAME                          READY   STATUS    RESTARTS   AGE
-pod/istiod-66b5776d74-ddprr   1/1     Running   0          10m
-
-NAME             TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)                                 AGE
-service/istiod   ClusterIP   172.30.29.80   <none>        15010/TCP,15012/TCP,443/TCP,15014/TCP   10m
-
-NAME                     READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/istiod   1/1     1            1           10m
-
-NAME                                DESIRED   CURRENT   READY   AGE
-replicaset.apps/istiod-66b5776d74   1         1         1       10m
-
-NAME                                         REFERENCE           TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
-horizontalpodautoscaler.autoscaling/istiod   Deployment/istiod   cpu: 0%/80%   1         5         1          10m
-```
 </details>
 
-### 3.3 Install Kuadrant
+### 3.4 Install Kuadrant
 
 <details>
 <summary>Install Kuadrant operator via Helm</summary>
@@ -248,12 +271,12 @@ helm repo add kuadrant https://kuadrant.io/helm-charts/ --force-update
 helm upgrade --install kuadrant-operator kuadrant/kuadrant-operator \
     --version "${KUADRANT_VERSION}" \
     --create-namespace \
-    --namespace "${KUADRANT_NS}"
+    --namespace "${KUADRANT_NAMESPACE}"
 
 # Wait for operator deployments
-kubectl rollout status deploy/authorino-operator -n ${KUADRANT_NS} --timeout=120s
-kubectl rollout status deploy/kuadrant-operator-controller-manager -n ${KUADRANT_NS} --timeout=120s
-kubectl rollout status deploy/limitador-operator-controller-manager -n ${KUADRANT_NS} --timeout=120s
+kubectl rollout status deploy/authorino-operator -n ${KUADRANT_NAMESPACE} --timeout=120s
+kubectl rollout status deploy/kuadrant-operator-controller-manager -n ${KUADRANT_NAMESPACE} --timeout=120s
+kubectl rollout status deploy/limitador-operator-controller-manager -n ${KUADRANT_NAMESPACE} --timeout=120s
 ```
 
 </details>
@@ -267,68 +290,18 @@ apiVersion: kuadrant.io/v1beta1
 kind: Kuadrant
 metadata:
   name: kuadrant
-  namespace: ${KUADRANT_NS}
+  namespace: ${KUADRANT_NAMESPACE}
 spec: {}
 EOF
 
-kubectl get kuadrant kuadrant -n "${KUADRANT_NS}"
-
-# wait for kuadrant instance is ready
+# Wait for kuadrant instance to be ready
 kubectl wait kuadrant/kuadrant --for="condition=Ready=true" \
-    -n "${KUADRANT_NS}" --timeout=300s
+    -n "${KUADRANT_NAMESPACE}" --timeout=300s
 ```
 
 </details>
 
-<details>
-<summary>Check Kuadrant Installation</summary>
-
-```
-kubectl get all -n "${KUADRANT_NS}"
-Warning: apps.openshift.io/v1 DeploymentConfig is deprecated in v4.14+, unavailable in v4.10000+
-NAME                                                        READY   STATUS    RESTARTS   AGE
-pod/authorino-7758d659c-gnxgz                               1/1     Running   0          12m
-pod/authorino-operator-6f859bbd59-7jdjb                     1/1     Running   0          12m
-pod/dns-operator-controller-manager-5c659dd95f-msk9k        1/1     Running   0          12m
-pod/kuadrant-console-plugin-5d7c7bc6f9-9pg7b                1/1     Running   0          12m
-pod/kuadrant-operator-controller-manager-cbd896f76-pdf5c    1/1     Running   0          12m
-pod/limitador-limitador-658c8849b8-4c8w7                    1/1     Running   0          12m
-pod/limitador-operator-controller-manager-cb6c488bf-94m24   1/1     Running   0          12m
-
-NAME                                                      TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)              AGE
-service/authorino-authorino-authorization                 ClusterIP   172.30.229.206   <none>        50051/TCP,5001/TCP   12m
-service/authorino-authorino-oidc                          ClusterIP   172.30.51.82     <none>        8083/TCP             12m
-service/authorino-controller-metrics                      ClusterIP   172.30.114.175   <none>        8080/TCP             12m
-service/authorino-operator-metrics                        ClusterIP   172.30.147.35    <none>        8080/TCP             12m
-service/dns-operator-controller-manager-metrics-service   ClusterIP   172.30.215.23    <none>        8080/TCP             12m
-service/kuadrant-console-plugin                           ClusterIP   172.30.141.247   <none>        9443/TCP             12m
-service/kuadrant-operator-metrics                         ClusterIP   172.30.132.188   <none>        8080/TCP             12m
-service/limitador-limitador                               ClusterIP   None             <none>        8080/TCP,8081/TCP    12m
-service/limitador-operator-metrics                        ClusterIP   172.30.176.191   <none>        8080/TCP             12m
-
-NAME                                                    READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/authorino                               1/1     1            1           12m
-deployment.apps/authorino-operator                      1/1     1            1           12m
-deployment.apps/dns-operator-controller-manager         1/1     1            1           12m
-deployment.apps/kuadrant-console-plugin                 1/1     1            1           12m
-deployment.apps/kuadrant-operator-controller-manager    1/1     1            1           12m
-deployment.apps/limitador-limitador                     1/1     1            1           12m
-deployment.apps/limitador-operator-controller-manager   1/1     1            1           12m
-
-NAME                                                              DESIRED   CURRENT   READY   AGE
-replicaset.apps/authorino-76d7b84c9                               0         0         0       12m
-replicaset.apps/authorino-7758d659c                               1         1         1       12m
-replicaset.apps/authorino-operator-6f859bbd59                     1         1         1       12m
-replicaset.apps/dns-operator-controller-manager-5c659dd95f        1         1         1       12m
-replicaset.apps/kuadrant-console-plugin-5d7c7bc6f9                1         1         1       12m
-replicaset.apps/kuadrant-operator-controller-manager-cbd896f76    1         1         1       12m
-replicaset.apps/limitador-limitador-658c8849b8                    1         1         1       12m
-replicaset.apps/limitador-limitador-777cf94b6d                    0         0         0       12m
-replicaset.apps/limitador-operator-controller-manager-cb6c488bf   1         1         1       12m
-```
-</details>
-
-### 3.4 Create Gateway and TLS Certificate
+### 3.5 Create Gateway and TLS Certificate
 
 <details>
 <summary>Create TLS Certificate for Gateway</summary>
@@ -397,7 +370,7 @@ spec:
             llm-d.ai/gateway-route: "true"
 EOF
 
-# wait for gateway instance is ready
+# Wait for gateway to be programmed
 kubectl wait --for=condition=Programmed --timeout=300s \
     -n "${GATEWAY_NAMESPACE}" gateway/${GATEWAY_NAME}
 ```
@@ -408,151 +381,92 @@ kubectl wait --for=condition=Programmed --timeout=300s \
 
 </details>
 
-<details>
-<summary>Check envoy proxy installation</summary>
+### 3.6 Deploy model with llm-d
 
-```
-kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NAMESPACE}"
-NAME            CLASS   ADDRESS                                                                  PROGRAMMED   AGE
-istio-gateway   istio   a0c489f378d1f492bb6123d83bad0d95-863333050.us-east-2.elb.amazonaws.com   True         13m
-
-kubectl get all -n "${GATEWAY_NAMESPACE}"
-Warning: apps.openshift.io/v1 DeploymentConfig is deprecated in v4.14+, unavailable in v4.10000+
-NAME                                       READY   STATUS    RESTARTS   AGE
-pod/istio-gateway-istio-544bcc95c5-dv6l6   1/1     Running   0          12m
-
-NAME                          TYPE           CLUSTER-IP       EXTERNAL-IP                                                              PORT(S)                                      AGE
-service/istio-gateway-istio   LoadBalancer   172.30.218.212   a0c489f378d1f492bb6123d83bad0d95-863333050.us-east-2.elb.amazonaws.com   15021:30205/TCP,80:31849/TCP,443:30658/TCP   12m
-
-NAME                                  READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/istio-gateway-istio   1/1     1            1           12m
-
-NAME                                             DESIRED   CURRENT   READY   AGE
-replicaset.apps/istio-gateway-istio-544bcc95c5   1         1         1       12m
-```
-</details>
-
-
-### 3.5 Deploy model with llm-d
-
-This doc follows the [simulated-accelerators guide](https://llm-d.ai/docs/guide/Installation/simulated-accelerators). Find more guides at [llm-d guides](https://llm-d.ai/docs/guide/).
+Deploy the llm-d Router (gateway mode) and model server, following the [official llm-d quickstart](https://llm-d.ai/docs/getting-started/quickstart) pattern with sim-specific overlays.
 
 ```bash
 # Create the LLM namespace
-kubectl create namespace "${LLM_NS}" 2>/dev/null || true
-kubectl label namespace "${LLM_NS}" llm-d.ai/gateway-route=true --overwrite
+kubectl create namespace "${LLM_NAMESPACE}" 2>/dev/null || true
+kubectl label namespace "${LLM_NAMESPACE}" llm-d.ai/gateway-route=true --overwrite
 ```
 
 <details>
-<summary>Install InferencePool (GAIE EPP) with flow control</summary>
+<summary>Install llm-d Router (gateway mode) with flow control</summary>
 
-The InferencePool chart deploys the EPP (Endpoint Picker Plugin). The flow control overlay configures priority-based dispatch with two bands: interactive (priority 100) and batch (priority -1, sheddable).
+The Router chart deploys the InferencePool, EPP (Endpoint Picker), and RBAC. Following the official layered values pattern, we use `base.values.yaml` from the llm-d repo + sim-specific overlay + flow control overlay.
 
 ```bash
-EPP_HOST="${LLMD_POOL_NAME}-epp.${LLM_NS}.svc.cluster.local"
+EPP_HOST="${LLMD_POOL_NAME}-epp.${LLM_NAMESPACE}.svc.cluster.local"
 
 helm upgrade --install "${LLMD_POOL_NAME}" \
-    oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
-    --version "${GAIE_CHART_VERSION}" \
-    --namespace "${LLM_NS}" \
-    -f examples/deploy-demo/llmd-sim/gaie-sim-values.yaml \
-    -f examples/deploy-demo/llmd-sim/overlays/flow-control.yaml \
+    oci://ghcr.io/llm-d/charts/llm-d-router-gateway \
+    --version "${ROUTER_CHART_VERSION}" \
+    --namespace "${LLM_NAMESPACE}" \
+    -f "${LLMD_GIT_DIR}/guides/recipes/router/base.values.yaml" \
+    -f examples/deploy-demo/llmd-sim/router/sim-values.yaml \
+    -f examples/deploy-demo/llmd-sim/router/overlays/flow-control.yaml \
+    --set provider.name=istio \
     --set "provider.istio.destinationRule.host=${EPP_HOST}"
 ```
 
-> **Flow control overlay**: The `-f overlays/flow-control.yaml` overlay sets `pluginsConfigFile: flow-control-plugins.yaml` and configures the `EndpointPickerConfig` with the `flowControl` feature gate, two priority bands, and a saturation detector. See [Flow Control Setup](flow-control-setup.md) for details on the configuration.
+> **Flow control overlay**: The flow-control overlay sets `pluginsConfigFile: flow-control-plugins.yaml` and configures the `EndpointPickerConfig` with the `flowControl` feature gate, two priority bands (interactive: 100, batch: -1), and a concurrency-based saturation detector. See [Flow Control Setup](flow-control-setup.md) for details.
+>
+> **Disabling flow control**: To deploy without flow control, omit the `-f .../overlays/flow-control.yaml` line above and skip the InferenceObjective creation step below. Also omit `processor.config.modelGateways.<model>.inferenceObjective` when installing batch-gateway (step 3.8).
 
 </details>
 
 <details>
-<summary>Install ModelService (vllm-sim)</summary>
+<summary>Deploy model server (vllm-sim) via kustomize</summary>
 
 ```bash
-helm repo add llm-d-modelservice https://llm-d-incubation.github.io/llm-d-modelservice/ --force-update
-helm upgrade --install "ms-${LLMD_RELEASE_POSTFIX}" llm-d-modelservice/llm-d-modelservice \
-    --version "${MODELSERVICE_CHART_VERSION}" \
-    --namespace "${LLM_NS}" \
-    -f examples/deploy-demo/llmd-sim/ms-sim-values.yaml
+kubectl apply -n "${LLM_NAMESPACE}" -k examples/deploy-demo/llmd-sim/modelserver/
 
 # Wait for deployments
-kubectl rollout status deploy/${LLMD_POOL_NAME}-epp -n ${LLM_NS} --timeout=300s
-kubectl rollout status deploy/ms-${LLMD_RELEASE_POSTFIX}-llm-d-modelservice-decode -n ${LLM_NS} --timeout=300s
+kubectl rollout status deploy/${LLMD_POOL_NAME}-epp -n ${LLM_NAMESPACE} --timeout=300s
+kubectl rollout status deploy/llmd-sim-decode -n ${LLM_NAMESPACE} --timeout=300s
 ```
 
 </details>
 
 <details>
-<summary>Create InferenceObjective CRDs</summary>
+<summary>Create InferenceObjective resources</summary>
 
-InferenceObjective CRDs assign requests to priority bands based on the `x-gateway-inference-objective` header. Create one for interactive traffic (priority 100) and one for batch traffic (priority -1, sheddable).
+InferenceObjective resources assign requests to priority bands based on the `x-gateway-inference-objective` header. Create one for interactive traffic (priority 100) and one for batch traffic (priority -1, sheddable).
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: inference.networking.x-k8s.io/v1alpha2
+apiVersion: llm-d.ai/v1alpha2
 kind: InferenceObjective
 metadata:
   name: ${INTERACTIVE_FLOW_CONTROL_OBJECTIVE}
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   priority: 100
   poolRef:
-    group: inference.networking.k8s.io
     name: ${LLMD_POOL_NAME}
 ---
-apiVersion: inference.networking.x-k8s.io/v1alpha2
+apiVersion: llm-d.ai/v1alpha2
 kind: InferenceObjective
 metadata:
   name: ${BATCH_FLOW_CONTROL_OBJECTIVE}
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   priority: -1
   poolRef:
-    group: inference.networking.k8s.io
     name: ${LLMD_POOL_NAME}
 EOF
 ```
 
-> **Note**: InferenceObjectives are created via `kubectl apply` instead of the InferencePool chart's `inferenceObjectives` values because the chart template (v1.5.0) has a scoping bug that causes `helm install` to fail when `inferenceObjectives` is non-empty.
-
 Verify the objectives:
 
 ```bash
-kubectl get inferenceobjective -n ${LLM_NS}
+kubectl get inferenceobjective -n ${LLM_NAMESPACE}
 ```
 
 </details>
 
-<details>
-<summary>Check llm-d model installation</summary>
-
-```
-kubectl get all -n ${LLM_NS}
-
-NAME                                                      READY   STATUS    RESTARTS   AGE
-pod/gaie-llmd-epp-76798cd4dd-sfdck                        1/1     Running   0          14m
-pod/ms-llmd-llm-d-modelservice-decode-75cfd56dbb-dv7fm    2/2     Running   0          14m
-pod/ms-llmd-llm-d-modelservice-decode-75cfd56dbb-q66n8    2/2     Running   0          14m
-pod/ms-llmd-llm-d-modelservice-decode-75cfd56dbb-v5zc9    2/2     Running   0          14m
-pod/ms-llmd-llm-d-modelservice-prefill-7d7b78699f-nccpj   1/1     Running   0          14m
-
-NAME                            TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)             AGE
-service/gaie-llmd-epp           ClusterIP   172.30.174.214   <none>        9002/TCP,9090/TCP   14m
-service/gaie-llmd-ip-d209bc5e   ClusterIP   None             <none>        54321/TCP           14m
-
-NAME                                                 READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/gaie-llmd-epp                        1/1     1            1           14m
-deployment.apps/ms-llmd-llm-d-modelservice-decode    3/3     3            3           14m
-deployment.apps/ms-llmd-llm-d-modelservice-prefill   1/1     1            1           14m
-
-NAME                                                            DESIRED   CURRENT   READY   AGE
-replicaset.apps/gaie-llmd-epp-76798cd4dd                        1         1         1       14m
-replicaset.apps/ms-llmd-llm-d-modelservice-decode-75cfd56dbb    3         3         3       14m
-replicaset.apps/ms-llmd-llm-d-modelservice-prefill-7d7b78699f   1         1         1       14m
-```
-</details>
-
-
-### 3.6 Configure HTTPRoute and Policies for LLM model
+### 3.7 Configure HTTPRoute and Policies for LLM model
 
 <details>
 <summary>Create HTTPRoute for LLM inference</summary>
@@ -565,7 +479,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: llm-route
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   parentRefs:
   - name: ${GATEWAY_NAME}
@@ -574,7 +488,7 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /${LLM_NS}/${MODEL_NAME}/v1/completions
+        value: /${LLM_NAMESPACE}/${MODEL_NAME}/v1/completions
     filters:
     - type: URLRewrite
       urlRewrite:
@@ -588,7 +502,7 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /${LLM_NS}/${MODEL_NAME}/v1/chat/completions
+        value: /${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions
     filters:
     - type: URLRewrite
       urlRewrite:
@@ -615,7 +529,7 @@ apiVersion: kuadrant.io/v1
 kind: AuthPolicy
 metadata:
   name: llm-route-auth
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -661,7 +575,7 @@ apiVersion: kuadrant.io/v1alpha1
 kind: TokenRateLimitPolicy
 metadata:
   name: inference-token-limit
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -680,14 +594,14 @@ EOF
 
 kubectl wait tokenratelimitpolicy/inference-token-limit \
     --for="condition=Enforced=true" \
-    -n ${LLM_NS} --timeout=120s
+    -n ${LLM_NAMESPACE} --timeout=120s
 ```
 
 > **Note**: The TokenRateLimitPolicy targets the HTTPRoute (not the Gateway), because the llm-route is manually created with a stable name.
 
 </details>
 
-### 3.7 Install Batch Gateway
+### 3.8 Install Batch Gateway
 
 The batch processor routes inference requests through a separate, ClusterIP-only Internal Gateway to bypass the TokenRateLimitPolicy on the External Gateway while still enforcing model-level authorization (AuthPolicy).
 
@@ -699,8 +613,8 @@ kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: ${INTERNAL_GW_NAME}
-  namespace: ${GATEWAY_NAMESPACE}
+  name: ${BATCH_INTERNAL_GATEWAY_NAME}
+  namespace: ${BATCH_INTERNAL_GATEWAY_NAMESPACE}
   annotations:
     networking.istio.io/service-type: ClusterIP
 spec:
@@ -718,7 +632,7 @@ spec:
 EOF
 
 kubectl wait --for=condition=Programmed --timeout=300s \
-    -n "${GATEWAY_NAMESPACE}" gateway/${INTERNAL_GW_NAME}
+    -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" gateway/${BATCH_INTERNAL_GATEWAY_NAME}
 ```
 
 > **Note**: The `networking.istio.io/service-type: ClusterIP` annotation ensures the Internal Gateway's Service is ClusterIP-only (no LoadBalancer, no external IP). This prevents direct external access — all external traffic must go through the External Gateway.
@@ -736,16 +650,16 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: batch-llm-route
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   parentRefs:
-  - name: ${INTERNAL_GW_NAME}
-    namespace: ${GATEWAY_NAMESPACE}
+  - name: ${BATCH_INTERNAL_GATEWAY_NAME}
+    namespace: ${BATCH_INTERNAL_GATEWAY_NAMESPACE}
   rules:
   - matches:
     - path:
         type: PathPrefix
-        value: /${LLM_NS}/${MODEL_NAME}/v1/completions
+        value: /${LLM_NAMESPACE}/${MODEL_NAME}/v1/completions
     filters:
     - type: URLRewrite
       urlRewrite:
@@ -759,7 +673,7 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /${LLM_NS}/${MODEL_NAME}/v1/chat/completions
+        value: /${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions
     filters:
     - type: URLRewrite
       urlRewrite:
@@ -784,7 +698,7 @@ apiVersion: kuadrant.io/v1
 kind: AuthPolicy
 metadata:
   name: batch-llm-route-auth
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -827,31 +741,31 @@ Deploy batch-gateway with the model gateway URL pointing to the Internal Gateway
 <summary>Create namespace and install dependencies</summary>
 
 ```bash
-kubectl create namespace "${BATCH_NS}" 2>/dev/null || true
-kubectl label namespace "${BATCH_NS}" llm-d.ai/gateway-route=true --overwrite
+kubectl create namespace "${BATCH_NAMESPACE}" 2>/dev/null || true
+kubectl label namespace "${BATCH_NAMESPACE}" llm-d.ai/gateway-route=true --overwrite
 
 # Install Redis (or Valkey — see alternative below)
 helm upgrade --install redis oci://registry-1.docker.io/bitnamicharts/redis \
-    --namespace ${BATCH_NS} --create-namespace \
+    --namespace ${BATCH_NAMESPACE} --create-namespace \
     --set architecture=standalone \
     --set auth.enabled=false
-kubectl rollout status statefulset/redis-master -n ${BATCH_NS} --timeout=120s
+kubectl rollout status statefulset/redis-master -n ${BATCH_NAMESPACE} --timeout=120s
 
 # Alternative: Install Valkey (wire-protocol compatible with Redis)
 # helm upgrade --install redis oci://registry-1.docker.io/bitnamicharts/valkey \
-#     --namespace ${BATCH_NS} --create-namespace \
+#     --namespace ${BATCH_NAMESPACE} --create-namespace \
 #     --set architecture=standalone \
 #     --set auth.enabled=false
-# kubectl rollout status statefulset/redis-valkey-primary -n ${BATCH_NS} --timeout=120s
+# kubectl rollout status statefulset/redis-valkey-primary -n ${BATCH_NAMESPACE} --timeout=120s
 # Note: when using Valkey, update the redis-url secret below to use:
-#   redis://redis-valkey-primary.${BATCH_NS}.svc.cluster.local:6379/0
+#   redis://redis-valkey-primary.${BATCH_NAMESPACE}.svc.cluster.local:6379/0
 
 # Install PostgreSQL
 helm upgrade --install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
-    --namespace ${BATCH_NS} --create-namespace \
+    --namespace ${BATCH_NAMESPACE} --create-namespace \
     --set auth.postgresPassword=<your-postgres-password> \
     --set auth.database=batch
-kubectl rollout status statefulset/postgresql -n ${BATCH_NS} --timeout=120s
+kubectl rollout status statefulset/postgresql -n ${BATCH_NAMESPACE} --timeout=120s
 
 # Install MinIO (S3-compatible object storage for batch files)
 MINIO_USER=<your-minio-user>
@@ -864,7 +778,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: minio
-  namespace: ${BATCH_NS}
+  namespace: ${BATCH_NAMESPACE}
   labels:
     app: minio
 spec:
@@ -902,7 +816,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: minio
-  namespace: ${BATCH_NS}
+  namespace: ${BATCH_NAMESPACE}
   labels:
     app: minio
 spec:
@@ -918,14 +832,14 @@ spec:
   type: ClusterIP
 EOF
 
-until kubectl get deployment minio -n ${BATCH_NS} &>/dev/null; do sleep 5; done
-kubectl rollout status deployment/minio -n ${BATCH_NS} --timeout=180s
+until kubectl get deployment minio -n ${BATCH_NAMESPACE} &>/dev/null; do sleep 5; done
+kubectl rollout status deployment/minio -n ${BATCH_NAMESPACE} --timeout=180s
 
 # Create application secret
 kubectl create secret generic batch-gateway-secrets \
-    --namespace ${BATCH_NS} \
-    --from-literal=redis-url="redis://redis-master.${BATCH_NS}.svc.cluster.local:6379/0" \
-    --from-literal=postgresql-url="postgresql://postgres:<your-postgres-password>@postgresql.${BATCH_NS}.svc.cluster.local:5432/batch?sslmode=disable" \
+    --namespace ${BATCH_NAMESPACE} \
+    --from-literal=redis-url="redis://redis-master.${BATCH_NAMESPACE}.svc.cluster.local:6379/0" \
+    --from-literal=postgresql-url="postgresql://postgres:<your-postgres-password>@postgresql.${BATCH_NAMESPACE}.svc.cluster.local:5432/batch?sslmode=disable" \
     --from-literal=s3-secret-access-key="${MINIO_PASSWORD}" \
     --dry-run=client -o yaml | kubectl apply -f -
 ```
@@ -938,33 +852,20 @@ kubectl create secret generic batch-gateway-secrets \
 <summary>Install batch-gateway</summary>
 
 ```bash
-IMAGE_TAG=v0.1.0
-APISERVER_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-apiserver
-PROCESSOR_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-processor
-GC_REPO=quay.io/redhat-user-workloads/open-data-hub-tenant/temp-batch-gateway-gc
-```
-
-```bash
 # Discover the Internal Gateway's Service (ClusterIP, HTTP :80)
-INTERNAL_GW_SVC=$(kubectl get svc -n ${GATEWAY_NAMESPACE} \
-    -l "gateway.networking.k8s.io/gateway-name=${INTERNAL_GW_NAME}" \
+INTERNAL_GW_SVC=$(kubectl get svc -n ${BATCH_INTERNAL_GATEWAY_NAMESPACE} \
+    -l "gateway.networking.k8s.io/gateway-name=${BATCH_INTERNAL_GATEWAY_NAME}" \
     -o jsonpath='{.items[0].metadata.name}')
 
 # Model gateway URL: route through the Internal Gateway (which has AuthPolicy but no TokenRateLimitPolicy)
-MODEL_GW_URL="http://${INTERNAL_GW_SVC}.${GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NS}/${MODEL_NAME}"
+MODEL_GW_URL="http://${INTERNAL_GW_SVC}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
 
 helm upgrade --install batch-gateway ./charts/batch-gateway \
-    --namespace ${BATCH_NS} \
-    --set "apiserver.image.repository=${APISERVER_REPO}" \
-    --set "apiserver.image.tag=${IMAGE_TAG}" \
-    --set "processor.image.repository=${PROCESSOR_REPO}" \
-    --set "processor.image.tag=${IMAGE_TAG}" \
-    --set "gc.image.repository=${GC_REPO}" \
-    --set "gc.image.tag=${IMAGE_TAG}" \
+    --namespace ${BATCH_NAMESPACE} \
     --set "global.secretName=batch-gateway-secrets" \
     --set "global.dbClient.type=postgresql" \
     --set "global.fileClient.type=s3" \
-    --set "global.fileClient.s3.endpoint=http://minio.${BATCH_NS}.svc.cluster.local:9000" \
+    --set "global.fileClient.s3.endpoint=http://minio.${BATCH_NAMESPACE}.svc.cluster.local:9000" \
     --set "global.fileClient.s3.region=${MINIO_REGION}" \
     --set "global.fileClient.s3.bucket=${MINIO_BUCKET}" \
     --set "global.fileClient.s3.accessKeyId=${MINIO_USER}" \
@@ -982,14 +883,14 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
     --set apiserver.tls.certManager.enabled=true \
     --set apiserver.tls.certManager.issuerName=selfsigned-issuer \
     --set apiserver.tls.certManager.issuerKind=ClusterIssuer \
-    --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local,localhost}"
+    --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NAMESPACE}.svc.cluster.local,localhost}"
 ```
 
 > - **`modelGateways.<model>.inferenceObjective`**: Set to the `InferenceObjective` CRD name for batch traffic (`batch-sheddable`). The processor sends this as the `x-gateway-inference-objective` header on every inference request, which EPP's flow control uses to assign the request to the batch priority band (priority -1). Without this, batch requests default to priority 0 and compete equally with interactive traffic.
 > - **`modelGateways.<model>.url`**: The processor uses this URL to send inference requests. It points to the **Internal Gateway's** model endpoint (via in-cluster Service DNS), not the External Gateway or the model server directly. The Internal Gateway enforces AuthPolicy (model access check) but bypasses TokenRateLimitPolicy, so batch inference is not token-rate-limited.
 > - **`passThroughHeaders`**: Set to `[Authorization]` so the processor forwards the end user's bearer token on inference calls. Without this, the Internal Gateway cannot attribute inference traffic to the original caller and model-level authorization checks will fail.
 > - **No `tlsInsecureSkipVerify`**: The Internal Gateway uses plain HTTP (ClusterIP :80), so TLS verification is not needed for the processor → model gateway connection.
-> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. The `dnsNames` should include the Service name and FQDN so the External Gateway can verify the backend certificate when re-encrypting traffic (see DestinationRule in 3.8).
+> - **`apiserver.tls.certManager.*`**: Enables TLS for the batch API server using cert-manager. In this demo, the DestinationRule uses `insecureSkipVerify: true` because the certificate is self-signed. For production, use a trusted CA and set `insecureSkipVerify: false`.
 > - **File storage**: This example uses S3-compatible storage (MinIO). To use a PVC instead, replace the `s3` options with:
 >   ```
 >   --set "global.fileClient.type=fs"
@@ -1000,7 +901,7 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
 
 </details>
 
-### 3.8 Configure HTTPRoute and Policies for Batch Gateway
+### 3.9 Configure HTTPRoute and Policies for Batch Gateway
 
 <details>
 <summary>Create HTTPRoute and DestinationRule for Batch API Server</summary>
@@ -1012,7 +913,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: batch-route
-  namespace: ${BATCH_NS}
+  namespace: ${BATCH_NAMESPACE}
 spec:
   parentRefs:
   - name: ${GATEWAY_NAME}
@@ -1026,7 +927,7 @@ spec:
         type: PathPrefix
         value: /v1/files
     backendRefs:
-    - name: batch-gateway-apiserver
+    - name: batch-gateway-apiserver   # matches Helm release name + "-apiserver"
       port: 8000
 EOF
 
@@ -1038,7 +939,7 @@ metadata:
   name: batch-gateway-backend-tls
   namespace: ${GATEWAY_NAMESPACE}
 spec:
-  host: batch-gateway-apiserver.${BATCH_NS}.svc.cluster.local
+  host: batch-gateway-apiserver.${BATCH_NAMESPACE}.svc.cluster.local  # adjust if BATCH_INSTANCE_NAME differs
   trafficPolicy:
     portLevelSettings:
     - port:
@@ -1061,7 +962,7 @@ apiVersion: kuadrant.io/v1
 kind: AuthPolicy
 metadata:
   name: batch-route-auth
-  namespace: ${BATCH_NS}
+  namespace: ${BATCH_NAMESPACE}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -1088,7 +989,7 @@ apiVersion: kuadrant.io/v1
 kind: RateLimitPolicy
 metadata:
   name: batch-ratelimit
-  namespace: ${BATCH_NS}
+  namespace: ${BATCH_NAMESPACE}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
@@ -1106,26 +1007,68 @@ EOF
 
 </details>
 
+### 3.10 Verify Installation
+
+After completing all installation steps, verify that all components are running:
+
+```bash
+echo "=== llm-d (${LLM_NAMESPACE}) ==="
+kubectl get pods -n ${LLM_NAMESPACE}
+# Expected: llmd-epp (1/1 Running), llmd-sim-decode (1/1 Running, 3 replicas)
+
+echo "=== batch-gateway (${BATCH_NAMESPACE}) ==="
+kubectl get pods -n ${BATCH_NAMESPACE}
+# Expected: batch-gateway-apiserver, batch-gateway-processor, batch-gateway-gc (all 1/1 Running)
+#           redis-master, postgresql (all Running), minio (1/1 Running)
+
+echo "=== Gateways ==="
+kubectl get gateway -n ${GATEWAY_NAMESPACE}
+# Expected: istio-gateway (Programmed=True), batch-internal-gateway (Programmed=True)
+
+echo "=== HTTPRoutes ==="
+kubectl get httproute -A
+# Expected: llm-route, batch-llm-route (in llm), batch-route (in batch-api)
+
+echo "=== Flow Control ==="
+kubectl get inferenceobjective -n ${LLM_NAMESPACE}
+# Expected: interactive-default (priority 100), batch-sheddable (priority -1)
+```
+
 ## 4. Test
 
 ### 4.1 Setup Test Accounts
 
 ```bash
-# Get Gateway address
+# Get Gateway address (hostname for OpenShift/SNI, or status address for vanilla k8s)
 GW_ADDR=$(kubectl get gateway ${GATEWAY_NAME} -n ${GATEWAY_NAMESPACE} \
-    -o jsonpath='{.status.addresses[0].value}')
+    -o jsonpath='{.spec.listeners[0].hostname}' 2>/dev/null)
+if [ -z "${GW_ADDR}" ]; then
+    GW_ADDR=$(kubectl get gateway ${GATEWAY_NAME} -n ${GATEWAY_NAMESPACE} \
+        -o jsonpath='{.status.addresses[0].value}')
+fi
+
+# If no external address (e.g. kind/minikube), fall back to port-forward
+if [ -z "${GW_ADDR}" ]; then
+    GATEWAY_LOCAL_PORT=${GATEWAY_LOCAL_PORT:-8080}
+    GW_SVC=$(kubectl get svc -n ${GATEWAY_NAMESPACE} \
+        -l "gateway.networking.k8s.io/gateway-name=${GATEWAY_NAME}" \
+        -o jsonpath='{.items[0].metadata.name}')
+    kubectl port-forward "svc/${GW_SVC}" "${GATEWAY_LOCAL_PORT}:443" \
+        -n "${GATEWAY_NAMESPACE}" &
+    GW_ADDR="localhost:${GATEWAY_LOCAL_PORT}"
+fi
 export GW_URL="https://${GW_ADDR}"
 ```
 
 ```bash
 # Create authorized SA with RBAC to access the InferencePool
-kubectl create serviceaccount test-authorized-sa -n ${LLM_NS} 2>/dev/null || true
+kubectl create serviceaccount test-authorized-sa -n ${LLM_NAMESPACE} 2>/dev/null || true
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: model-access
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 rules:
 - apiGroups: ["inference.networking.k8s.io"]
   resources: ["inferencepools"]
@@ -1136,38 +1079,38 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: model-access-binding
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 subjects:
 - kind: ServiceAccount
   name: test-authorized-sa
-  namespace: ${LLM_NS}
+  namespace: ${LLM_NAMESPACE}
 roleRef:
   kind: Role
   name: model-access
   apiGroup: rbac.authorization.k8s.io
 EOF
 
-AUTH_TOKEN=$(kubectl create token test-authorized-sa -n ${LLM_NS} \
+AUTH_TOKEN=$(kubectl create token test-authorized-sa -n ${LLM_NAMESPACE} \
     --audience=https://kubernetes.default.svc --duration=10m)
 
 # Create unauthorized SA (no RBAC)
-kubectl create serviceaccount test-unauthorized-sa -n ${LLM_NS} 2>/dev/null || true
-UNAUTH_TOKEN=$(kubectl create token test-unauthorized-sa -n ${LLM_NS} \
+kubectl create serviceaccount test-unauthorized-sa -n ${LLM_NAMESPACE} 2>/dev/null || true
+UNAUTH_TOKEN=$(kubectl create token test-unauthorized-sa -n ${LLM_NAMESPACE} \
     --audience=https://kubernetes.default.svc --duration=10m)
 ```
 
 ### 4.2 LLM Authentication
 
 ```bash
-# Unauthenticated -> 401
-curl -sk -o /dev/null -w "%{http_code}" \
-    ${GW_URL}/${LLM_NS}/${MODEL_NAME}/v1/chat/completions \
+# Unauthenticated -> Expected: 401
+curl -sk -o /dev/null -w "%{http_code}\n" \
+    ${GW_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -d '{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}'
 
-# Authenticated -> 200
-curl -sk -o /dev/null -w "%{http_code}" \
-    ${GW_URL}/${LLM_NS}/${MODEL_NAME}/v1/chat/completions \
+# Authenticated -> Expected: 200
+curl -sk -o /dev/null -w "%{http_code}\n" \
+    ${GW_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -d '{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}'
@@ -1176,16 +1119,16 @@ curl -sk -o /dev/null -w "%{http_code}" \
 ### 4.3 LLM Authorization
 
 ```bash
-# Unauthorized SA -> 403
-curl -sk -o /dev/null -w "%{http_code}" \
-    ${GW_URL}/${LLM_NS}/${MODEL_NAME}/v1/chat/completions \
+# Unauthorized SA -> Expected: 403
+curl -sk -o /dev/null -w "%{http_code}\n" \
+    ${GW_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" \
     -d '{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}'
 
-# Authorized SA -> 200
-curl -sk -o /dev/null -w "%{http_code}" \
-    ${GW_URL}/${LLM_NS}/${MODEL_NAME}/v1/chat/completions \
+# Authorized SA -> Expected: 200
+curl -sk -o /dev/null -w "%{http_code}\n" \
+    ${GW_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -d '{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":10}'
@@ -1194,15 +1137,16 @@ curl -sk -o /dev/null -w "%{http_code}" \
 ### 4.4 LLM Token Rate Limit
 
 ```bash
-# Send requests until 429 (token rate limit)
+# Send requests until 429 (token rate limit) -> Expected: 429 within ~10-15 requests
 for i in $(seq 1 100); do
     http_code=$(curl -sk -o /dev/null -w '%{http_code}' \
-        ${GW_URL}/${LLM_NS}/${MODEL_NAME}/v1/chat/completions \
+        ${GW_URL}/${LLM_NAMESPACE}/${MODEL_NAME}/v1/chat/completions \
         -H 'Content-Type: application/json' \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -d '{"model":"'${MODEL_NAME}'","messages":[{"role":"user","content":"Hello"}],"max_tokens":100}')
+    echo "Request $i: $http_code"
     if [ "$http_code" = "429" ]; then
-        echo "Request $i: 429 Token Rate Limited"
+        echo "Token rate limit triggered!"
         break
     fi
 done
@@ -1213,11 +1157,11 @@ sleep 60
 ### 4.5 Batch Authentication
 
 ```bash
-# Unauthenticated -> 401
-curl -sk -o /dev/null -w "%{http_code}" ${GW_URL}/v1/batches
+# Unauthenticated -> Expected: 401
+curl -sk -o /dev/null -w "%{http_code}\n" ${GW_URL}/v1/batches
 
-# Authenticated -> 200
-curl -sk -o /dev/null -w "%{http_code}" \
+# Authenticated -> Expected: 200
+curl -sk -o /dev/null -w "%{http_code}\n" \
     -H "Authorization: Bearer ${AUTH_TOKEN}" ${GW_URL}/v1/batches
 ```
 
@@ -1245,7 +1189,8 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Wait for processing, then check status — expect failed requests with 403
+# Wait for processing, then check status
+# Expected: status=completed, request_counts.failed > 0 (requests rejected with 403)
 sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${UNAUTH_TOKEN}" | jq '{status, request_counts}'
@@ -1268,7 +1213,7 @@ BATCH_ID=$(curl -sk ${GW_URL}/v1/batches \
     -d '{"input_file_id":"'${FILE_ID}'","endpoint":"/v1/chat/completions","completion_window":"24h"}' \
     | jq -r '.id')
 
-# Wait for processing, then check status
+# Wait for processing, then check status -> Expected: "completed"
 sleep 30
 curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${AUTH_TOKEN}" | jq '.status'
@@ -1277,6 +1222,7 @@ curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
 OUTPUT_FILE_ID=$(curl -sk ${GW_URL}/v1/batches/${BATCH_ID} \
     -H "Authorization: Bearer ${AUTH_TOKEN}" | jq -r '.output_file_id')
 
+# Expected: JSONL with inference responses (one per input line)
 curl -sk ${GW_URL}/v1/files/${OUTPUT_FILE_ID}/content \
     -H "Authorization: Bearer ${AUTH_TOKEN}"
 ```
@@ -1284,10 +1230,26 @@ curl -sk ${GW_URL}/v1/files/${OUTPUT_FILE_ID}/content \
 ### 4.8 Batch Request Rate Limit
 
 ```bash
-# Send 25 rapid requests — expect 429 after 20 (rate limit: 20 req/min)
+# Send 25 rapid requests -> Expected: 200 for first ~6, then 429 (rate limit: 20 req/min)
 for i in $(seq 1 25); do
     http_code=$(curl -sk -o /dev/null -w '%{http_code}' \
         -H "Authorization: Bearer ${AUTH_TOKEN}" ${GW_URL}/v1/batches)
     echo "Request $i: $http_code"
 done
 ```
+
+## 5. Uninstall
+
+**Default uninstall** — removes batch-gateway and its resources, but keeps shared infrastructure (Kuadrant, Istio, cert-manager):
+
+```bash
+bash examples/deploy-demo/deploy-k8s.sh uninstall
+```
+
+**Full teardown** (ephemeral/dedicated demo cluster only) — removes everything including operators, CRDs, and all namespaces:
+
+```bash
+UNINSTALL_ALL=1 bash examples/deploy-demo/deploy-k8s.sh uninstall
+```
+
+> **Warning**: Do not use `UNINSTALL_ALL=1` on shared or production clusters — it tears down Kuadrant, Istio, cert-manager, and cluster-wide CRDs that other teams may depend on.
