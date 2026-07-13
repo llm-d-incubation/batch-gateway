@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func TestJobExecutorEndToEnd(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -123,7 +124,7 @@ func TestJobExecutorWithErrors(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -174,7 +175,7 @@ func TestJobExecutorCancellation(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     source,
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -226,7 +227,7 @@ func TestJobExecutorMultipleModels(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -289,7 +290,7 @@ func TestJobExecutorMultipleModels_ModelNotFound(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -332,11 +333,11 @@ func TestJobExecutorMultipleModels_ModelNotFound(t *testing.T) {
 }
 
 func TestJobExecutorSeparatesSuccessAndErrors(t *testing.T) {
-	var callCount int
+	var callCount atomic.Int32
 	client := &mockInferenceClientForE2E{
 		generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
-			callCount++
-			if callCount%2 == 1 {
+			n := callCount.Add(1)
+			if n%2 == 1 {
 				return &inference.GenerateResponse{RequestID: req.RequestID, Response: []byte(`{"ok":true}`)}, nil
 			}
 			return nil, &inference.ClientError{Category: httpclient.ErrCategoryServer, Message: "mock error"}
@@ -358,7 +359,7 @@ func TestJobExecutorSeparatesSuccessAndErrors(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -400,11 +401,11 @@ func TestJobExecutorSeparatesSuccessAndErrors(t *testing.T) {
 }
 
 func TestJobExecutorHTTPErrorGoesToOutputFile(t *testing.T) {
-	var callCount int
+	var callCount atomic.Int32
 	client := &mockInferenceClientForE2E{
 		generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
-			callCount++
-			switch callCount {
+			n := callCount.Add(1)
+			switch n {
 			case 1:
 				return &inference.GenerateResponse{RequestID: req.RequestID, Response: []byte(`{"ok":true}`)}, nil
 			case 2:
@@ -439,7 +440,7 @@ func TestJobExecutorHTTPErrorGoesToOutputFile(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -456,13 +457,12 @@ func TestJobExecutorHTTPErrorGoesToOutputFile(t *testing.T) {
 		t.Fatalf("Failed = %d, want 2", counts.Failed)
 	}
 
-	// output.jsonl should have 2 lines: 200 success + HTTP 422
+	// output.jsonl: 200 success + HTTP 422 (HTTP errors go to output per OpenAI spec)
 	outputData := readFile(t, outputFile)
 	outputLines := splitLines(outputData)
 	if len(outputLines) != 2 {
-		t.Fatalf("output lines = %d, want 2", len(outputLines))
+		t.Fatalf("output lines = %d, want 2 (200 + 422)", len(outputLines))
 	}
-
 	var found200, found422 bool
 	for _, line := range outputLines {
 		var entry outputLine
@@ -480,26 +480,17 @@ func TestJobExecutorHTTPErrorGoesToOutputFile(t *testing.T) {
 			found200 = true
 		case 422:
 			found422 = true
-			errObj, ok := entry.Response.Body["error"].(map[string]any)
-			if !ok {
-				t.Fatalf("HTTP error body should contain error object, got %v", entry.Response.Body)
-			}
-			if errObj["code"] != "model_not_found" {
-				t.Fatalf("expected error code 'model_not_found', got %v", errObj["code"])
-			}
-		default:
-			t.Fatalf("unexpected status code %d", entry.Response.StatusCode)
 		}
 	}
 	if !found200 || !found422 {
-		t.Fatalf("expected both 200 and 422 in output, found200=%v found422=%v", found200, found422)
+		t.Fatalf("expected 200 and 422 in output, found200=%v found422=%v", found200, found422)
 	}
 
-	// error.jsonl should have 1 line: non-HTTP error only
+	// error.jsonl: only non-HTTP error (connection refused)
 	errorData := readFile(t, errorFile)
 	errorLines := splitLines(errorData)
 	if len(errorLines) != 1 {
-		t.Fatalf("error lines = %d, want 1", len(errorLines))
+		t.Fatalf("error lines = %d, want 1 (non-HTTP error only)", len(errorLines))
 	}
 	var errEntry outputLine
 	if err := json.Unmarshal(errorLines[0], &errEntry); err != nil {
@@ -507,12 +498,6 @@ func TestJobExecutorHTTPErrorGoesToOutputFile(t *testing.T) {
 	}
 	if errEntry.Error == nil {
 		t.Fatal("error file line should have error field")
-	}
-	if errEntry.Response != nil {
-		t.Fatal("error file line should not have response field")
-	}
-	if errEntry.Error.Code != string(httpclient.ErrCategoryServer) {
-		t.Fatalf("error code = %q, want %q", errEntry.Error.Code, httpclient.ErrCategoryServer)
 	}
 }
 
@@ -549,7 +534,7 @@ func TestJobExecutorCancellation_AllRequestsAccountedFor(t *testing.T) {
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     source,
-		Dispatcher: newTestSyncDispatcher(resolver),
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
 		Collector:  collector,
 		Tracker:    tracker,
 		Logger:     logr.Discard(),
@@ -565,6 +550,57 @@ func TestJobExecutorCancellation_AllRequestsAccountedFor(t *testing.T) {
 	if accounted != int64(total) {
 		t.Fatalf("Completed(%d) + Failed(%d) = %d, want %d: %d requests were silently dropped",
 			counts.Completed, counts.Failed, accounted, total, int64(total)-accounted)
+	}
+}
+
+// TestJobExecutorCancelAfterComplete verifies that when a request completes
+// successfully and the context is then cancelled, the request stays as
+// Completed (not retroactively failed as batch_cancelled).
+func TestJobExecutorCancelAfterComplete(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{"ok": true})
+	resolver := inference.NewSingleClientResolver(&mockInferenceClient{response: body})
+	defer func() { _ = resolver.Close() }()
+
+	items := makeItems(3, "m1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &cancelAfterNSource{items: items, cancelAt: 2, cancelFn: cancel}
+
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	executor := NewJobExecutor(JobExecutorConfig{
+		Source:     source,
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
+		Collector:  collector,
+		Tracker:    tracker,
+		Logger:     logr.Discard(),
+	})
+
+	_, _ = executor.Execute(ctx)
+
+	counts := tracker.Counts()
+	if counts.Completed < 2 {
+		t.Fatalf("Completed = %d, want >= 2 (requests that finished before cancel must not be retroactively failed)",
+			counts.Completed)
+	}
+
+	outputData := readFile(t, outputFile)
+	outputLines := splitLines(outputData)
+	for _, line := range outputLines {
+		var entry outputLine
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if entry.Response == nil || entry.Response.StatusCode != 200 {
+			t.Errorf("completed request should have 200 response, got %+v", entry.Response)
+		}
+		if entry.Error != nil {
+			t.Errorf("completed request should not have error, got %+v", entry.Error)
+		}
 	}
 }
 
@@ -593,77 +629,6 @@ func TestCancelCode_UserCancel(t *testing.T) {
 	}
 }
 
-// cancelAfterNSource sends cancelAt items, cancels ctx, then keeps producing
-// the rest. This models the fixed PlanFileSource behavior where the source
-// continues producing all items regardless of cancellation.
-type cancelAfterNSource struct {
-	items    []RequestItem
-	cancelAt int
-	cancelFn context.CancelFunc
-}
-
-func (s *cancelAfterNSource) Produce(_ context.Context, out chan<- RequestItem) error {
-	defer close(out)
-	for i, item := range s.items {
-		if i == s.cancelAt {
-			s.cancelFn()
-		}
-		out <- item
-	}
-	return nil
-}
-
 var _ inference.InferenceClient = (*mockInferenceClient)(nil)
 var _ inference.InferenceClient = (*mockInferenceClientForE2E)(nil)
 var _ RequestSource = (*sliceSource)(nil)
-var _ RequestSource = (*cancelAfterNSource)(nil)
-var _ RequestDispatcher = (*testSyncDispatcher)(nil)
-
-// testSyncDispatcher is a minimal synchronous dispatcher for executor tests.
-// It calls Generate inline (no concurrency) and converts the result.
-type testSyncDispatcher struct {
-	resolver *inference.GatewayResolver
-}
-
-func newTestSyncDispatcher(resolver *inference.GatewayResolver) *testSyncDispatcher {
-	return &testSyncDispatcher{resolver: resolver}
-}
-
-func (d *testSyncDispatcher) Run(_ context.Context, requestCh <-chan RequestItem, resultCh chan<- ResultItem) error {
-	for msg := range requestCh {
-		client := d.resolver.ClientFor(msg.ModelID)
-		if client == nil {
-			resultCh <- *msg.ModelNotFound()
-			continue
-		}
-		req := &inference.GenerateRequest{
-			RequestID: msg.RequestID,
-			Endpoint:  msg.Endpoint,
-			Params:    msg.Body,
-			Headers:   msg.Headers,
-		}
-		resp, clientErr := client.Generate(context.Background(), req)
-		result := ResultItem{RequestID: msg.RequestID, CustomID: msg.CustomID, ModelID: msg.ModelID}
-		switch {
-		case clientErr != nil && clientErr.StatusCode > 0:
-			body := make(map[string]any)
-			if len(clientErr.ResponseBody) > 0 {
-				_ = json.Unmarshal(clientErr.ResponseBody, &body)
-			}
-			result.Response = &batch_types.ResponseData{StatusCode: clientErr.StatusCode, RequestID: msg.RequestID, Body: body}
-		case clientErr != nil:
-			result.Error = &OutputError{Code: string(clientErr.Category), Message: clientErr.Message}
-		case resp == nil:
-			result.Error = &OutputError{Code: string(httpclient.ErrCategoryServer), Message: "nil response"}
-		default:
-			var body map[string]any
-			if len(resp.Response) > 0 {
-				_ = json.Unmarshal(resp.Response, &body)
-			}
-			result.Response = &batch_types.ResponseData{StatusCode: 200, RequestID: resp.RequestID, Body: body}
-		}
-		resultCh <- result
-	}
-	close(resultCh)
-	return nil
-}

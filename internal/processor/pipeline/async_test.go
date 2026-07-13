@@ -371,9 +371,9 @@ func TestAsyncDispatcher_ParseError(t *testing.T) {
 	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
-	dispatcher := NewAsyncDispatcher(resolver,
+	dispatcher := NewPreDispatcher(NewAsyncDispatcher(resolver,
 		broadcasters,
-		pending, logr.Discard())
+		pending, logr.Discard()))
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},

@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 )
 
@@ -124,8 +126,8 @@ func TestResultCollector_DrainProcessesAllResultsAfterCancel(t *testing.T) {
 	close(ch)
 
 	err := collector.Drain(ctx, ch)
-	if err != context.Canceled {
-		t.Fatalf("Drain error = %v, want context.Canceled", err)
+	if err != nil {
+		t.Fatalf("Drain error = %v, want nil (drain completed despite cancelled ctx)", err)
 	}
 
 	outputData := readFile(t, outputFile)
@@ -192,6 +194,41 @@ func TestResultCollector_DrainDecrementsMetricsAfterWriteFailure(t *testing.T) {
 	}
 }
 
+func TestResultCollector_DrainReturnsNilWhenCtxCancelled(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(2, nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	results := []ResultItem{
+		{RequestID: "req-1", CustomID: "c-1", Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}}},
+		{RequestID: "req-2", CustomID: "c-2", Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-2", Body: map[string]any{"ok": true}}},
+	}
+	for _, r := range results {
+		pending.Store(RequestItem{RequestID: r.RequestID, CustomID: r.CustomID})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ch := make(chan ResultItem, len(results))
+	for _, r := range results {
+		ch <- r
+	}
+	close(ch)
+
+	err := collector.Drain(ctx, ch)
+	if err != nil {
+		t.Fatalf("Drain() = %v, want nil (all results drained despite cancelled ctx)", err)
+	}
+
+	counts := tracker.Counts()
+	if counts.Completed != 2 {
+		t.Fatalf("Completed = %d, want 2", counts.Completed)
+	}
+}
+
 func TestProgressTracker_AddFailed(t *testing.T) {
 	tracker := NewProgressTracker(10, nil, "test-job", 0, logr.Discard())
 	tracker.AddFailed(5)
@@ -216,5 +253,101 @@ func TestProgressTracker_RecordSuccessAndFailure(t *testing.T) {
 	}
 	if counts.Failed != 1 {
 		t.Fatalf("Failed = %d, want 1", counts.Failed)
+	}
+}
+
+type countingUpdater struct {
+	mu    sync.Mutex
+	calls int
+	last  *openai.BatchRequestCounts
+}
+
+func (u *countingUpdater) UpdateProgressCounts(_ context.Context, _ string, counts *openai.BatchRequestCounts) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.calls++
+	u.last = counts
+	return nil
+}
+
+func (u *countingUpdater) getCalls() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.calls
+}
+
+func (u *countingUpdater) getLast() *openai.BatchRequestCounts {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.last
+}
+
+func TestProgressTracker_Throttle(t *testing.T) {
+	updater := &countingUpdater{}
+	tracker := NewProgressTracker(100, updater, "test-job", 50*time.Millisecond, logr.Discard())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = tracker.Run(ctx)
+		close(done)
+	}()
+
+	for i := range 100 {
+		if i%2 == 0 {
+			tracker.RecordSuccess(ResultItem{RequestID: "r"})
+		} else {
+			tracker.RecordFailure(nil)
+		}
+	}
+
+	// Let at least one tick fire.
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	<-done
+
+	calls := updater.getCalls()
+	if calls == 0 {
+		t.Fatal("expected at least one push")
+	}
+	if calls >= 100 {
+		t.Fatalf("push calls = %d, want < 100 (throttling should batch updates)", calls)
+	}
+
+	last := updater.getLast()
+	if last.Completed+last.Failed != 100 {
+		t.Fatalf("final counts: completed=%d + failed=%d = %d, want 100",
+			last.Completed, last.Failed, last.Completed+last.Failed)
+	}
+}
+
+func TestProgressTracker_FlushOnCancel(t *testing.T) {
+	updater := &countingUpdater{}
+	tracker := NewProgressTracker(5, updater, "test-job", time.Hour, logr.Discard())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = tracker.Run(ctx)
+		close(done)
+	}()
+
+	tracker.RecordSuccess(ResultItem{RequestID: "r1"})
+	tracker.RecordSuccess(ResultItem{RequestID: "r2"})
+	tracker.RecordFailure(nil)
+
+	// Interval is 1 hour, so no tick-based push will fire.
+	// Cancel triggers the final push.
+	cancel()
+	<-done
+
+	calls := updater.getCalls()
+	if calls != 1 {
+		t.Fatalf("push calls = %d, want 1 (final push on cancel)", calls)
+	}
+	last := updater.getLast()
+	if last.Completed != 2 || last.Failed != 1 {
+		t.Fatalf("final counts: completed=%d failed=%d, want completed=2 failed=1",
+			last.Completed, last.Failed)
 	}
 }

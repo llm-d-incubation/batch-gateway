@@ -75,7 +75,10 @@ func (c *ResultCollector) Drain(ctx context.Context, resultCh <-chan ResultItem)
 	if firstErr != nil {
 		return firstErr
 	}
-	return ctx.Err()
+	if ctx.Err() != nil {
+		c.logger.Info("Context cancelled after drain completed", "err", ctx.Err())
+	}
+	return nil
 }
 
 func (c *ResultCollector) Receive(msg ResultItem) error {
