@@ -10,10 +10,10 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/klauspost/cpuid/v2 v2.2.10 h1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=
 github.com/klauspost/cpuid/v2 v2.2.10/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
-github.com/llm-d-incubation/llm-d-async/api v0.7.2 h1:sf6iFDa5LpVoKDYiOOlsbnv+6Ykj5TA22yRqMdIbOfY=
-github.com/llm-d-incubation/llm-d-async/api v0.7.2/go.mod h1:m2zJUwD/AZypJv8RPws3uvCnfQoNW7iv+hH9wPk/Xw4=
-github.com/llm-d-incubation/llm-d-async/producer v0.7.2 h1:hhnLqi+MXq8kBjsQhnUCWYtTCG6uFTZLCH296CZMlpY=
-github.com/llm-d-incubation/llm-d-async/producer v0.7.2/go.mod h1:IrClO4XwMtgLRnlkAqO1LDsuqmwtQjELDabT2f+5d40=
+github.com/llm-d-incubation/llm-d-async/api v0.7.3 h1:OI4zlNdKeXrWa9Q9AhFOSvJZvLC84Nnsv3maF4d8Tns=
+github.com/llm-d-incubation/llm-d-async/api v0.7.3/go.mod h1:m2zJUwD/AZypJv8RPws3uvCnfQoNW7iv+hH9wPk/Xw4=
+github.com/llm-d-incubation/llm-d-async/producer v0.7.3 h1:f06rUZ92g/2gQmcrquYYd5LNGeCYffb1vZdP+7luiA0=
+github.com/llm-d-incubation/llm-d-async/producer v0.7.3/go.mod h1:7FVFV0ggHyaSbD33DP1V68tV7bOVKqjAezd8UgD9Qik=
 github.com/openai/openai-go/v3 v3.24.0 h1:08x6GnYiB+AAejTo6yzPY8RkZMJQ8NpreiOyM5QfyYU=
 github.com/openai/openai-go/v3 v3.24.0/go.mod h1:cdufnVK14cWcT9qA1rRtrXx4FTRsgbDPW7Ia7SS5cZo=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

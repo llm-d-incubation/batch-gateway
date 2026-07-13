@@ -679,11 +679,23 @@ func (p *Processor) processModelAsync(
 		delete(pending, resp.RequestID)
 	}
 
+	// Best-effort: tell the dispatcher to drop still-pending requests before
+	// dispatch. Use a detached timeout — requestAbortCtx is often already
+	// cancelled when we reach this path.
+	if len(pending) > 0 {
+		cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := asyncClient.Cancel(cancelCtx); err != nil {
+			logger.Error(err, "Failed to cancel pending async requests", "pendingCount", len(pending))
+		}
+		cancelFn()
+	}
+
 	// Drain submitted-but-uncollected requests as errors so that
-	// output_lines + error_lines == total_requests.
+	// output_lines + error_lines == total_requests. Error code follows the
+	// same abort-reason priority as drainAndFinalize.
+	errCode, errMsg := uncollectedPendingError(sloCtx, userCancelCtx, mainCtx, modelErr)
 	for _, pr := range pending {
-		out := newErrorOutputLine(pr.batchReqID, pr.customID,
-			string(batch_types.ErrCodeBatchExpired), "result not collected before deadline")
+		out := newErrorOutputLine(pr.batchReqID, pr.customID, string(errCode), errMsg)
 		lineBytes, err := json.Marshal(out)
 		if err != nil {
 			return fmt.Errorf("marshal uncollected error line: %w", err)
@@ -697,6 +709,29 @@ func (p *Processor) processModelAsync(
 
 	return p.drainAndFinalize(requestAbortCtx, mainCtx, sloCtx, userCancelCtx,
 		inputFile, entries[submitCount:], writers, progress, modelErr, logger, len(entries), 0)
+}
+
+// uncollectedPendingError selects the error code/message for submitted-but-
+// uncollected async requests, matching drainAndFinalize's abort-reason order.
+func uncollectedPendingError(
+	sloCtx, userCancelCtx, mainCtx context.Context,
+	modelErr error,
+) (batch_types.BatchErrorCode, string) {
+	switch {
+	case errors.Is(sloCtx.Err(), context.DeadlineExceeded):
+		return batch_types.ErrCodeBatchExpired, batch_types.ErrCodeBatchExpired.Message()
+	case userCancelCtx.Err() != nil:
+		return batch_types.ErrCodeBatchCancelled, batch_types.ErrCodeBatchCancelled.Message()
+	case modelErr != nil:
+		return batch_types.ErrCodeBatchFailed, batch_types.ErrCodeBatchFailed.Message()
+	case mainCtx.Err() != nil:
+		// SIGTERM: leave terminalization to orphan recovery, but still record
+		// lines so completed+failed == total for this model pass.
+		return batch_types.ErrCodeBatchFailed, batch_types.ErrCodeBatchFailed.Message()
+	default:
+		// Sibling abort or collect interrupted without a classified reason.
+		return batch_types.ErrCodeBatchFailed, batch_types.ErrCodeBatchFailed.Message()
+	}
 }
 
 // drainAndFinalize drains undispatched entries based on termination reason and

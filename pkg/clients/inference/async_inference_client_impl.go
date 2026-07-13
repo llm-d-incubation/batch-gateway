@@ -220,6 +220,29 @@ func (c *asyncProducerClient) GetResult(ctx context.Context) (*GenerateResponse,
 	}
 }
 
+// Cancel marks all still-pending submitted request IDs as cancelled so the
+// dispatcher can drop them before dispatch. Uses the producer CancelRequests
+// API; already-dispatched/in-flight requests are not aborted.
+func (c *asyncProducerClient) Cancel(ctx context.Context) error {
+	var ids []string
+	c.pendingIDs.Range(func(key, _ any) bool {
+		id, ok := key.(string)
+		if !ok {
+			return true
+		}
+		ids = append(ids, id)
+		return true
+	})
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := c.pool.producer.CancelRequests(ctx, ids); err != nil {
+		return fmt.Errorf("cancel async requests: %w", err)
+	}
+	c.logger.V(logging.INFO).Info("Cancelled pending async requests", "count", len(ids))
+	return nil
+}
+
 // Close unregisters all pending waiters from the shared dispatcher.
 func (c *asyncProducerClient) Close() error {
 	c.pendingIDs.Range(func(key, _ any) bool {

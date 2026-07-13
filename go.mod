@@ -14,8 +14,8 @@ require (
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/llm-d-incubation/llm-d-async/api v0.7.2
-	github.com/llm-d-incubation/llm-d-async/producer v0.7.2
+	github.com/llm-d-incubation/llm-d-async/api v0.7.3
+	github.com/llm-d-incubation/llm-d-async/producer v0.7.3
 	github.com/pashagolub/pgxmock/v4 v4.9.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
