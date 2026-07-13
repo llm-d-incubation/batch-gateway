@@ -81,7 +81,8 @@ DEMO_TLS_INSECURE_SKIP_VERIFY="${DEMO_TLS_INSECURE_SKIP_VERIFY:-1}"
 BATCH_MINIO_RELEASE="${BATCH_MINIO_RELEASE:-minio}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
-MINIO_BUCKET="${MINIO_BUCKET:-batch-gateway}"
+MINIO_BUCKET="${MINIO_BUCKET:-llm-d-batch-gateway}"
+MINIO_REGION="${MINIO_REGION:-us-east-1}"
 # Image overrides. When set, these take precedence over defaults derived from
 # BATCH_RELEASE_VERSION / BATCH_DEV_VERSION. Leave unset to use chart defaults.
 # Example (upstream):
@@ -619,7 +620,8 @@ do_deploy_batch_gateway_helm() {
         local minio_endpoint="http://${BATCH_MINIO_RELEASE}.${BATCH_NAMESPACE}.svc.cluster.local:9000"
         helm_args+=(
             --set "global.fileClient.s3.endpoint=${minio_endpoint}"
-            --set "global.fileClient.s3.region=us-east-1"
+            --set "global.fileClient.s3.region=${MINIO_REGION}"
+            --set "global.fileClient.s3.bucket=${MINIO_BUCKET}"
             --set "global.fileClient.s3.accessKeyId=${MINIO_ROOT_USER}"
             --set "global.fileClient.s3.prefix=${MINIO_BUCKET}"
             --set "global.fileClient.s3.usePathStyle=true"
@@ -776,7 +778,8 @@ do_deploy_batch_gateway_dsc() {
     if [ "${BATCH_STORAGE_TYPE}" = "s3" ]; then
         local minio_endpoint="http://${BATCH_MINIO_RELEASE}.${BATCH_NAMESPACE}.svc.cluster.local:9000"
         file_storage_yaml="    s3:
-      region: us-east-1
+      region: ${MINIO_REGION}
+      bucket: ${MINIO_BUCKET}
       endpoint: ${minio_endpoint}
       accessKeyId: ${MINIO_ROOT_USER}
       prefix: ${MINIO_BUCKET}

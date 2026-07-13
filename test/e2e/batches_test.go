@@ -42,6 +42,7 @@ func testBatches(t *testing.T) {
 		t.Run("IdempotentRetry", doTestCancelIdempotentRetry)
 		t.Run("TerminalBatchRejected", doTestCancelTerminalBatchRejected)
 	})
+	t.Run("TrailingNewline", doTestBatchTrailingNewline)
 	t.Run("MixedSuccessFailure", doTestBatchMixedSuccessFailure)
 	t.Run("SharedInputFile", doTestBatchSharedInputFile)
 	t.Run("PassThroughHeaders", doTestPassThroughHeaders)
@@ -300,6 +301,33 @@ func doTestBatchSharedInputFile(t *testing.T) {
 	// Verify output files are distinct.
 	if batch1.OutputFileID == batch2.OutputFileID {
 		t.Errorf("both batches produced the same output_file_id %q, expected distinct files", batch1.OutputFileID)
+	}
+}
+
+// doTestBatchTrailingNewline verifies that a single trailing newline in an
+// input file does not inflate the request count or cause parse errors.
+func doTestBatchTrailingNewline(t *testing.T) {
+	t.Helper()
+
+	fileID := mustCreateFile(t, fmt.Sprintf("test-trailing-newline-%s.jsonl", testRunID), testJSONL+"\n")
+	batchID := mustCreateBatch(t, fileID)
+
+	finalBatch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	if finalBatch.RequestCounts.Total != 2 {
+		t.Errorf("total = %d, want 2", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Completed != 2 {
+		t.Errorf("completed = %d, want 2", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 0 {
+		t.Errorf("failed = %d, want 0", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Error("expected output_file_id to be set")
+	}
+	if finalBatch.ErrorFileID != "" {
+		t.Errorf("expected empty error_file_id, got %q", finalBatch.ErrorFileID)
 	}
 }
 
