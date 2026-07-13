@@ -829,6 +829,37 @@ func waitForReady(t *testing.T, url string, timeout time.Duration) {
 	}
 }
 
+// waitForServerUp polls the API server until any HTTP response is received,
+// proving the server is running. Uses testHTTPClient for TLS support.
+// This works from both inside and outside the cluster since testApiserverURL
+// is externally reachable.
+func waitForServerUp(t *testing.T, baseURL string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		resp, err := testHTTPClient.Get(baseURL)
+		if err == nil {
+			resp.Body.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server not reachable after %v: %v (%s)", timeout, err, baseURL)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// skipIf registers a subtest that is skipped with the given reason when cond is true.
+func skipIf(t *testing.T, cond bool, reason, name string, fn func(*testing.T)) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		if cond {
+			t.Skip(reason)
+		}
+		fn(t)
+	})
+}
+
 // fetchOutputFile downloads the output file for a batch and returns its body.
 func fetchOutputFile(t *testing.T, batch *openai.Batch) string {
 	t.Helper()

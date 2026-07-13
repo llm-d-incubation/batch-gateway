@@ -96,9 +96,7 @@ var (
 )
 
 func TestE2E(t *testing.T) {
-	if detectDispatcherDeployed(t) {
-		t.Skip("skipping: processor is in async dispatch mode (dispatcher tests cover this configuration)")
-	}
+	dispatcherDeployed := detectDispatcherDeployed(t)
 
 	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
 		t.Logf("kubectl not available, some checks will be skipped: %v\n%s", err, out)
@@ -110,11 +108,13 @@ func TestE2E(t *testing.T) {
 	testExchangeClientType = detectExchangeClientType(t)
 	t.Logf("DB client type: %s, exchange client type: %s", testDBClientType, testExchangeClientType)
 
+	waitForServerUp(t, testApiserverURL, 30*time.Second)
+
 	if resp, err := http.Get(testApiserverObsURL + "/ready"); err == nil {
 		resp.Body.Close()
-		waitForReady(t, testApiserverObsURL, 30*time.Second)
-	} else {
-		t.Logf("observability endpoint %s not reachable, skipping readiness gate: %v", testApiserverObsURL, err)
+		if resp.StatusCode != http.StatusOK {
+			waitForReady(t, testApiserverObsURL, 30*time.Second)
+		}
 	}
 
 	t.Run("Files", testFiles)
@@ -123,9 +123,9 @@ func TestE2E(t *testing.T) {
 	t.Run("MultiTenant", testMultiTenant)
 	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
-	t.Run("ProcessorGracefulShutdown", testProcessorGracefulShutdown)
-	t.Run("OrphanRecovery", testOrphanRecovery)
-	t.Run("FlowControl", testFlowControl)
-	t.Run("AIMD", testAIMD)
-	t.Run("HelmUpgrade", testHelmUpgrade)
+	skipIf(t, dispatcherDeployed, "requires sync processor", "ProcessorGracefulShutdown", testProcessorGracefulShutdown)
+	skipIf(t, dispatcherDeployed, "requires sync processor", "OrphanRecovery", testOrphanRecovery)
+	skipIf(t, dispatcherDeployed, "requires sync processor", "FlowControl", testFlowControl)
+	skipIf(t, dispatcherDeployed, "requires sync processor", "AIMD", testAIMD)
+	skipIf(t, dispatcherDeployed, "requires sync processor", "HelmUpgrade", testHelmUpgrade)
 }
