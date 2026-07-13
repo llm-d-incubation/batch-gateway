@@ -74,8 +74,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.WorkDir == "" {
 		t.Fatalf("WorkDir should not be empty")
 	}
-	if c.DBClientCfg.Type != "redis" {
-		t.Fatalf("DBClientCfg.Type = %q, want %q", c.DBClientCfg.Type, "redis")
+	if c.DBClientCfg.Type != "postgresql" {
+		t.Fatalf("DBClientCfg.Type = %q, want %q", c.DBClientCfg.Type, "postgresql")
 	}
 	if c.Concurrency.Recovery != 5 {
 		t.Fatalf("Concurrency.Recovery = %d, want %d", c.Concurrency.Recovery, 5)

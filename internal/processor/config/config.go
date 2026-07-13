@@ -350,7 +350,7 @@ func NewConfig() *ProcessorConfig {
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
 		DBClientCfg: sharedcfg.DBClientConfig{
-			Type: sharedcfg.DBTypeRedis,
+			Type: sharedcfg.DBTypePostgreSQL,
 		},
 		FileClientCfg: sharedcfg.FileClientConfig{
 			Type: sharedcfg.FileTypeMock,

@@ -93,31 +93,6 @@ func NewS3FileClient(ctx context.Context, cfg *s3client.Config) (fsapi.BatchFile
 	return c, nil
 }
 
-// NewRedisDBClients creates Redis-backed batch and file database clients.
-// It reads the Redis URL from the mounted secrets when not set in the config.
-func NewRedisDBClients(ctx context.Context, cfg *uredis.RedisClientConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, error) {
-	if cfg == nil {
-		return nil, nil, fmt.Errorf("redis config cannot be nil")
-	}
-	if cfg.Url == "" {
-		redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
-		if err != nil {
-			return nil, nil, err
-		}
-		cfg.Url = redisURL
-	}
-	batchDB, err := dbRedis.NewBatchDBClientRedis(ctx, nil, cfg, 0)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create redis batch-db client: %w", err)
-	}
-	fileDB, err := dbRedis.NewFileDBClientRedis(ctx, nil, cfg, 0)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create redis file-db client: %w", err)
-	}
-	logr.FromContextOrDiscard(ctx).Info("Redis-based database client created")
-	return batchDB, fileDB, nil
-}
-
 // NewPostgreSQLDBClients creates PostgreSQL-backed batch and file database clients.
 // It reads the URL from the mounted secrets when not set in the config.
 func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, error) {
@@ -261,14 +236,6 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 	// build database client
 	if cfg.dbCfg != nil {
 		switch cfg.dbCfg.Type {
-		case sharedcfg.DBTypeRedis, sharedcfg.DBTypeValkey:
-			redisCfg := &cfg.dbCfg.RedisCfg
-			batchDB, fileDB, err := NewRedisDBClients(ctx, redisCfg)
-			if err != nil {
-				return nil, err
-			}
-			cs.BatchDB = batchDB
-			cs.FileDB = fileDB
 		case sharedcfg.DBTypePostgreSQL:
 			batchDB, fileDB, err := NewPostgreSQLDBClients(ctx, &cfg.dbCfg.PostgreSQLCfg)
 			if err != nil {
@@ -292,7 +259,7 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 			// Redis is retained only for Event and Status channels.
 			cs.Queue = queueClient
 		default:
-			return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, valkey, postgresql)", cfg.dbCfg.Type)
+			return nil, fmt.Errorf("unsupported database.type: %s (supported values: postgresql)", cfg.dbCfg.Type)
 		}
 	}
 

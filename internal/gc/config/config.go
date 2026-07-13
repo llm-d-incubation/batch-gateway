@@ -116,12 +116,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	switch cfg.DBClientCfg.Type {
-	case sharedcfg.DBTypeRedis, sharedcfg.DBTypeValkey, sharedcfg.DBTypePostgreSQL:
+	case sharedcfg.DBTypePostgreSQL:
 		// valid
 	case "":
-		return nil, fmt.Errorf("db_client.type is required (must be \"redis\", \"valkey\", or \"postgresql\")")
+		return nil, fmt.Errorf("db_client.type is required (must be \"postgresql\")")
 	default:
-		return nil, fmt.Errorf("db_client.type must be \"redis\", \"valkey\", or \"postgresql\", got %q", cfg.DBClientCfg.Type)
+		return nil, fmt.Errorf("db_client.type must be \"postgresql\", got %q", cfg.DBClientCfg.Type)
 	}
 
 	switch cfg.FileClientCfg.Type {
