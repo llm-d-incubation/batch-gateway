@@ -297,34 +297,18 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 			modelCtx, modelSpan := uotel.StartSpan(requestAbortCtx, "process-model",
 				trace.WithAttributes(semconv.GenAiRequestModel(modelID)),
 			)
-			var err error
-			if p.asyncInference != nil {
-				err = p.processModelAsync(
-					modelCtx,
-					ctx,
-					sloCtx,
-					userCancelCtx,
-					inputFile,
-					plansDir, safeModelID, modelID,
-					writers,
-					progress,
-					passThroughHeaders,
-					tenantID,
-				)
-			} else {
-				err = p.processModel(
-					modelCtx,
-					ctx,
-					sloCtx,
-					userCancelCtx,
-					inputFile,
-					plansDir, safeModelID, modelID,
-					writers,
-					progress,
-					passThroughHeaders,
-					tenantID,
-				)
-			}
+			err := p.processModel(
+				modelCtx,
+				ctx,
+				sloCtx,
+				userCancelCtx,
+				inputFile,
+				plansDir, safeModelID, modelID,
+				writers,
+				progress,
+				passThroughHeaders,
+				tenantID,
+			)
 			if err != nil && !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
 				modelSpan.RecordError(err)
 				modelSpan.SetStatus(codes.Error, "process-model failed")
@@ -564,204 +548,8 @@ dispatch:
 		shutdownCancelled.Load())
 }
 
-// processModelAsync processes all plan entries for a single model using the
-// async submit/collect pattern. All requests are submitted to the queue first,
-// then results are collected as they arrive on a shared channel.
-func (p *Processor) processModelAsync(
-	requestAbortCtx context.Context,
-	mainCtx context.Context,
-	sloCtx context.Context,
-	userCancelCtx context.Context,
-	inputFile *os.File,
-	plansDir, safeModelID, modelID string,
-	writers *outputWriters,
-	progress *executionProgress,
-	passThroughHeaders map[string]string,
-	tenantID string,
-) error {
-	logger := logr.FromContextOrDiscard(requestAbortCtx).WithValues("model", modelID)
-	requestAbortCtx = logr.NewContext(requestAbortCtx, logger)
-
-	planPath := filepath.Join(plansDir, safeModelID+".plan")
-	entries, err := readPlanEntries(planPath)
-	if err != nil {
-		return fmt.Errorf("model setup failed: read plan for model %s: %w", modelID, err)
-	}
-	uotel.SetAttr(requestAbortCtx, attribute.Int(uotel.AttrRequestCount, len(entries)))
-
-	logger.V(logging.INFO).Info("Processing requests for model (async)", "numEntries", len(entries))
-
-	asyncClient := p.asyncInference.ClientFor(modelID)
-	if asyncClient == nil {
-		logger.V(logging.INFO).Info("No async client for model, draining as model_not_found")
-		p.drainUnprocessedRequests(
-			requestAbortCtx, inputFile, entries, writers, progress,
-			inference.ErrCodeModelNotFound)
-		return nil
-	}
-	defer func() {
-		if err := asyncClient.Close(); err != nil {
-			logger.Error(err, "Failed to close async client")
-		}
-	}()
-
-	// ── Phase 1: Submit ────────────────────────────────────────────────────
-	type pendingRequest struct {
-		batchReqID string
-		customID   string
-	}
-
-	pending := make(map[string]*pendingRequest)
-	var submitCount int
-
-	for _, entry := range entries {
-		if requestAbortCtx.Err() != nil {
-			logger.V(logging.INFO).Info("Async submit aborted", "submitted", len(pending), "total", len(entries), "reason", requestAbortCtx.Err())
-			break
-		}
-
-		req, batchReqID, parseErr, readErr := readRequestLine(inputFile, entry, logger)
-		if readErr != nil {
-			return readErr
-		}
-		if parseErr != nil {
-			lineBytes, err := json.Marshal(parseErr)
-			if err != nil {
-				return fmt.Errorf("marshal parse error line: %w", err)
-			}
-			lineBytes = append(lineBytes, '\n')
-			if err := writers.write(lineBytes, true); err != nil {
-				return fmt.Errorf("write parse error line: %w", err)
-			}
-			progress.record(requestAbortCtx, false)
-			submitCount++
-			continue
-		}
-
-		if errors.Is(sloCtx.Err(), context.DeadlineExceeded) {
-			break
-		}
-
-		headers := maps.Clone(passThroughHeaders)
-		headers = mergeInferenceHeaders(headers, sloCtx, p.cfg.InferenceObjectiveFor(modelID), p.fairnessID(tenantID))
-
-		inferReq := &inference.GenerateRequest{
-			RequestID: batchReqID,
-			Endpoint:  req.URL,
-			Params:    req.Body,
-			Headers:   headers,
-		}
-
-		if submitErr := asyncClient.Submit(requestAbortCtx, inferReq); submitErr != nil {
-			out := newErrorOutputLine(batchReqID, req.CustomID,
-				string(submitErr.Category), submitErr.Message)
-			lineBytes, err := json.Marshal(out)
-			if err != nil {
-				return fmt.Errorf("marshal submit error line: %w", err)
-			}
-			lineBytes = append(lineBytes, '\n')
-			if err := writers.write(lineBytes, true); err != nil {
-				return fmt.Errorf("write submit error line: %w", err)
-			}
-			progress.record(requestAbortCtx, false)
-			submitCount++
-			continue
-		}
-
-		pending[batchReqID] = &pendingRequest{
-			batchReqID: batchReqID,
-			customID:   req.CustomID,
-		}
-		submitCount++
-	}
-
-	logger.V(logging.INFO).Info("Submit phase complete", "submitted", len(pending), "total", submitCount)
-
-	// ── Phase 2: Collect ───────────────────────────────────────────────────
-	var modelErr error
-
-	for len(pending) > 0 {
-		resp, err := asyncClient.GetResult(requestAbortCtx)
-		if err != nil {
-			if requestAbortCtx.Err() == nil {
-				logger.Error(err, "Failed to collect async result", "pendingCount", len(pending))
-				modelErr = fmt.Errorf("async result collection failed: %w", err)
-			}
-			break
-		}
-
-		pr, ok := pending[resp.RequestID]
-		if !ok {
-			logger.V(logging.TRACE).Info("Ignoring result for unknown request", "requestID", resp.RequestID)
-			continue
-		}
-
-		out := buildOutputLine(pr.batchReqID, pr.customID, modelID, resp.RequestID, resp, nil, logger)
-		if err := writeResult(out, sloCtx, userCancelCtx, requestAbortCtx, writers, progress); err != nil {
-			modelErr = err
-			break
-		}
-		delete(pending, resp.RequestID)
-	}
-
-	// Best-effort: tell the dispatcher to drop still-pending requests before
-	// dispatch. Use a detached timeout — requestAbortCtx is often already
-	// cancelled when we reach this path.
-	if len(pending) > 0 {
-		cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := asyncClient.Cancel(cancelCtx); err != nil {
-			logger.Error(err, "Failed to cancel pending async requests", "pendingCount", len(pending))
-		}
-		cancelFn()
-	}
-
-	// Drain submitted-but-uncollected requests as errors so that
-	// output_lines + error_lines == total_requests. Error code follows the
-	// same abort-reason priority as drainAndFinalize.
-	errCode, errMsg := uncollectedPendingError(mainCtx, sloCtx, userCancelCtx, modelErr)
-	for _, pr := range pending {
-		out := newErrorOutputLine(pr.batchReqID, pr.customID, string(errCode), errMsg)
-		lineBytes, err := json.Marshal(out)
-		if err != nil {
-			return fmt.Errorf("marshal uncollected error line: %w", err)
-		}
-		lineBytes = append(lineBytes, '\n')
-		if err := writers.write(lineBytes, true); err != nil {
-			return fmt.Errorf("write uncollected error line: %w", err)
-		}
-		progress.record(requestAbortCtx, false)
-	}
-
-	return p.drainAndFinalize(requestAbortCtx, mainCtx, sloCtx, userCancelCtx,
-		inputFile, entries[submitCount:], writers, progress, modelErr, logger, len(entries), 0)
-}
-
-// uncollectedPendingError selects the error code/message for submitted-but-
-// uncollected async requests, matching drainAndFinalize's abort-reason order.
-// Context parameter order mirrors drainAndFinalize (minus requestAbortCtx).
-func uncollectedPendingError(
-	mainCtx, sloCtx, userCancelCtx context.Context,
-	modelErr error,
-) (batch_types.BatchErrorCode, string) {
-	switch {
-	case errors.Is(sloCtx.Err(), context.DeadlineExceeded):
-		return batch_types.ErrCodeBatchExpired, batch_types.ErrCodeBatchExpired.Message()
-	case userCancelCtx.Err() != nil:
-		return batch_types.ErrCodeBatchCancelled, batch_types.ErrCodeBatchCancelled.Message()
-	case modelErr != nil:
-		return batch_types.ErrCodeBatchFailed, batch_types.ErrCodeBatchFailed.Message()
-	case mainCtx.Err() != nil:
-		// SIGTERM: leave terminalization to orphan recovery, but still record
-		// lines so completed+failed == total for this model pass.
-		return batch_types.ErrCodeBatchFailed, batch_types.ErrCodeBatchFailed.Message()
-	default:
-		// Sibling abort or collect interrupted without a classified reason.
-		return batch_types.ErrCodeBatchFailed, batch_types.ErrCodeBatchFailed.Message()
-	}
-}
-
 // drainAndFinalize drains undispatched entries based on termination reason and
-// returns the appropriate sentinel error. Shared by processModel and processModelAsync.
+// returns the appropriate sentinel error.
 func (p *Processor) drainAndFinalize(
 	requestAbortCtx context.Context,
 	mainCtx context.Context,
@@ -1074,7 +862,7 @@ func writeResult(
 }
 
 // buildOutputLine converts an inference response and/or error into an outputLine.
-// Used by both executeOneRequest (sync path) and processModelAsync (async path).
+// Used by executeOneRequest.
 func buildOutputLine(
 	batchReqID, customID, modelID, serverRequestID string,
 	inferResp *inference.GenerateResponse,

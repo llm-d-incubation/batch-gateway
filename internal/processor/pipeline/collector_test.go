@@ -1,0 +1,121 @@
+package pipeline
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/go-logr/logr"
+
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+)
+
+func TestResultCollector_RoutesToCorrectFile(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests()
+	tracker := NewProgressTracker(3, nil, "test-job", logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	results := []ResultItem{
+		{
+			RequestID: "req-1",
+			CustomID:  "c-1",
+			Response:  &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}},
+		},
+		{
+			RequestID: "req-2",
+			CustomID:  "c-2",
+			Response:  &batch_types.ResponseData{StatusCode: 422, RequestID: "req-2", Body: map[string]any{"error": "bad"}},
+		},
+		{
+			RequestID: "req-3",
+			CustomID:  "c-3",
+			Error:     &OutputError{Code: "SERVER_ERROR", Message: "connection refused"},
+		},
+	}
+
+	for _, r := range results {
+		pending.Store(RequestItem{RequestID: r.RequestID, CustomID: r.CustomID})
+	}
+
+	ch := make(chan ResultItem, len(results))
+	for _, r := range results {
+		ch <- r
+	}
+	close(ch)
+
+	if err := collector.Drain(ch); err != nil {
+		t.Fatalf("Drain error: %v", err)
+	}
+
+	outputData := readFile(t, outputFile)
+	outputLines := splitLines(outputData)
+	if len(outputLines) != 2 {
+		t.Fatalf("output lines = %d, want 2 (200 success + 422 HTTP error)", len(outputLines))
+	}
+
+	errorData := readFile(t, errorFile)
+	errorLines := splitLines(errorData)
+	if len(errorLines) != 1 {
+		t.Fatalf("error lines = %d, want 1 (non-HTTP error)", len(errorLines))
+	}
+
+	var errEntry outputLine
+	if err := json.Unmarshal(errorLines[0], &errEntry); err != nil {
+		t.Fatalf("unmarshal error line: %v", err)
+	}
+	if errEntry.Error == nil || errEntry.Error.Code != "SERVER_ERROR" {
+		t.Fatalf("expected SERVER_ERROR, got %+v", errEntry.Error)
+	}
+}
+
+func TestResultCollector_DrainSkipsUnknownPending(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests()
+	tracker := NewProgressTracker(1, nil, "test-job", logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	ch := make(chan ResultItem, 1)
+	ch <- ResultItem{
+		RequestID: "unknown-req",
+	}
+	close(ch)
+
+	if err := collector.Drain(ch); err != nil {
+		t.Fatalf("Drain error: %v", err)
+	}
+
+	outputData := readFile(t, outputFile)
+	errorData := readFile(t, errorFile)
+	if len(trimBytes(outputData)) != 0 || len(trimBytes(errorData)) != 0 {
+		t.Fatal("expected no output for unknown pending request")
+	}
+}
+
+func TestProgressTracker_AddFailed(t *testing.T) {
+	tracker := NewProgressTracker(10, nil, "test-job", logr.Discard())
+	tracker.AddFailed(5)
+	counts := tracker.Counts()
+	if counts.Failed != 5 {
+		t.Fatalf("Failed = %d, want 5", counts.Failed)
+	}
+	if counts.Total != 10 {
+		t.Fatalf("Total = %d, want 10", counts.Total)
+	}
+}
+
+func TestProgressTracker_RecordSuccessAndFailure(t *testing.T) {
+	tracker := NewProgressTracker(3, nil, "test-job", logr.Discard())
+	tracker.RecordSuccess(ResultItem{RequestID: "r1"})
+	tracker.RecordSuccess(ResultItem{RequestID: "r2"})
+	tracker.RecordFailure(nil)
+
+	counts := tracker.Counts()
+	if counts.Completed != 2 {
+		t.Fatalf("Completed = %d, want 2", counts.Completed)
+	}
+	if counts.Failed != 1 {
+		t.Fatalf("Failed = %d, want 1", counts.Failed)
+	}
+}

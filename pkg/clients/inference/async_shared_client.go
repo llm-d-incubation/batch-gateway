@@ -1,0 +1,94 @@
+package inference
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
+	asyncapi "github.com/llm-d-incubation/llm-d-async/api"
+
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
+
+	"github.com/llm-d-incubation/llm-d-async/producer"
+)
+
+// asyncSharedClient decouples submit from collect.
+// GetResult reads directly from the producer — the external ResultBroadcaster
+// handles routing to the correct job.
+type asyncSharedClient struct {
+	producer    producer.Producer
+	pollTimeout time.Duration
+	logger      logr.Logger
+}
+
+var _ AsyncInferenceClient = (*asyncSharedClient)(nil)
+
+func newAsyncSharedClient(p producer.Producer, pollTimeout time.Duration, logger logr.Logger) *asyncSharedClient {
+	return &asyncSharedClient{
+		producer:    p,
+		pollTimeout: pollTimeout,
+		logger:      logger,
+	}
+}
+
+func (c *asyncSharedClient) Submit(ctx context.Context, req *GenerateRequest) *ClientError {
+	now := time.Now()
+	deadline := now.Add(defaultDeadline)
+	if dl, ok := ctx.Deadline(); ok {
+		deadline = dl
+	}
+
+	metadata := make(map[string]string)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(metadata))
+
+	reqMsg := &asyncapi.RequestMessage{
+		ID:       req.RequestID,
+		Created:  now.Unix(),
+		Deadline: deadline.Unix(),
+		Payload:  req.Params,
+		Headers:  req.Headers,
+		Endpoint: req.Endpoint,
+		Metadata: metadata,
+	}
+
+	if err := c.producer.SubmitRequest(ctx, reqMsg); err != nil {
+		return &ClientError{
+			Category: httpclient.ErrCategoryServer,
+			Message:  fmt.Sprintf("submit async request: %v", err),
+			RawError: err,
+		}
+	}
+
+	c.logger.V(logging.TRACE).Info("Submitted async request", "requestID", req.RequestID)
+	return nil
+}
+
+func (c *asyncSharedClient) GetResult(ctx context.Context) (*GenerateResponse, error) {
+	pollCtx, pollCancel := context.WithTimeout(ctx, c.pollTimeout)
+	defer pollCancel()
+
+	result, err := c.producer.GetResult(pollCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &GenerateResponse{
+		RequestID: result.ID,
+		Response:  []byte(result.Payload),
+	}, nil
+}
+
+// Cancel is a no-op on the shared client. Cancellation of pending requests
+// will be wired through the AsyncDispatcher, which owns the pending state.
+func (c *asyncSharedClient) Cancel(_ context.Context) error {
+	return nil
+}
+
+func (c *asyncSharedClient) Close() error {
+	return nil
+}

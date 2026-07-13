@@ -24,42 +24,56 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/llm-d-incubation/llm-d-async/api"
+	"github.com/llm-d-incubation/llm-d-async/producer"
 	"github.com/redis/go-redis/v9"
 )
 
-func TestAsyncProducerClient_Submit_roundtrip(t *testing.T) {
+func TestAsyncSharedClient_Submit_roundtrip(t *testing.T) {
 	t.Run("enqueues request and returns result via GetResult", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		poolName := "test-pool"
 		reqQueue := asyncQueuePrefix + "requests:" + poolName
 		resultQueue := asyncQueuePrefix + "results:" + poolName
 
-		pool := newTestPool(t, mr, poolName)
-		client := newAsyncProducerClient(pool)
-		defer func() { _ = client.Close() }()
-
 		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		defer func() { _ = rdb.Close() }()
 
+		p, err := producer.NewRedisSortedSetProducer(
+			producer.RedisSortedSetConfig{
+				RequestQueueName: asyncQueuePrefix + "requests:" + poolName,
+				ResultQueueName:  asyncQueuePrefix + "results:" + poolName,
+			},
+			producer.WithRedisClient(rdb),
+		)
+		if err != nil {
+			t.Fatalf("NewRedisSortedSetProducer: %v", err)
+		}
+		defer func() { _ = p.Close() }()
+
+		client := newAsyncSharedClient(p, time.Second, testLogger(t))
+
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			pushResult(t, mr, resultQueue, "req-1", `{"choices":[{"text":"hello"}]}`)
+			data, _ := json.Marshal(api.ResultMessage{ID: "req-1", Payload: `{"choices":[{"text":"hello"}]}`})
+			if _, lpushErr := mr.Lpush(resultQueue, string(data)); lpushErr != nil {
+				t.Errorf("Lpush: %v", lpushErr)
+			}
 		}()
 
-		if err := client.Submit(context.Background(), &GenerateRequest{
+		if submitErr := client.Submit(context.Background(), &GenerateRequest{
 			RequestID: "req-1",
 			Endpoint:  "/v1/completions",
 			Params:    map[string]any{"model": "test-model", "prompt": "hello"},
-		}); err != nil {
-			t.Fatalf("Submit() error: %s", err.Message)
+		}); submitErr != nil {
+			t.Fatalf("Submit() error: %s", submitErr.Message)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		resp, err := client.GetResult(ctx)
-		if err != nil {
-			t.Fatalf("GetResult error: %v", err)
+		resp, getErr := client.GetResult(ctx)
+		if getErr != nil {
+			t.Fatalf("GetResult error: %v", getErr)
 		}
 
 		if resp.RequestID != "req-1" {

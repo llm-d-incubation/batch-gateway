@@ -38,13 +38,13 @@ func TestNewAsyncResolver(t *testing.T) {
 			t.Fatalf("NewAsyncResolver: %v", err)
 		}
 
-		if got := r.ClientFor("model-a"); got == nil {
+		if got := r.SharedClientFor("model-a"); got == nil {
 			t.Fatal("expected non-nil client for model-a")
 		}
-		if got := r.ClientFor("model-b"); got == nil {
+		if got := r.SharedClientFor("model-b"); got == nil {
 			t.Fatal("expected non-nil client for model-b")
 		}
-		if got := r.ClientFor("unknown"); got != nil {
+		if got := r.SharedClientFor("unknown"); got != nil {
 			t.Fatalf("expected nil for unknown model, got %v", got)
 		}
 	})
@@ -61,7 +61,7 @@ func TestNewAsyncResolver(t *testing.T) {
 			t.Fatalf("NewAsyncResolver: %v", err)
 		}
 
-		if got := r.ClientFor("unknown"); got != nil {
+		if got := r.SharedClientFor("unknown"); got != nil {
 			t.Fatalf("expected nil for unknown model, got %v", got)
 		}
 	})
@@ -107,7 +107,7 @@ func TestNewAsyncResolver(t *testing.T) {
 		}
 	})
 
-	t.Run("each ClientFor call returns a fresh client", func(t *testing.T) {
+	t.Run("SharedClientFor reuses the same client", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 
 		r, err := NewAsyncResolver(AsyncClientConfig{
@@ -119,10 +119,10 @@ func TestNewAsyncResolver(t *testing.T) {
 			t.Fatalf("NewAsyncResolver: %v", err)
 		}
 
-		client1 := r.ClientFor("model-a")
-		client2 := r.ClientFor("model-a")
-		if client1 == client2 {
-			t.Fatal("expected fresh client per ClientFor call")
+		client1 := r.SharedClientFor("model-a")
+		client2 := r.SharedClientFor("model-a")
+		if client1 != client2 {
+			t.Fatal("expected same client from SharedClientFor")
 		}
 	})
 }

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -36,39 +37,45 @@ type AsyncClientConfig struct {
 	ResultPollTimeout time.Duration     // per-poll timeout in the result dispatcher loop
 }
 
-// AsyncGatewayResolver routes models to per-job AsyncInferenceClient instances.
-// Each call to ClientFor creates a fresh client with its own result channel,
-// backed by a shared producer and dispatcher per pool.
+// AsyncGatewayResolver routes models to shared AsyncInferenceClient instances.
 // Immutable after construction — safe for concurrent reads.
 type AsyncGatewayResolver struct {
 	pools           map[string]*asyncPool // model → pool
+	sharedClients   sync.Map              // model → *asyncSharedClient
 	closers         []io.Closer
 	clientFactories map[string]func() AsyncInferenceClient // test-only override
+	logger          logr.Logger
 }
 
-// ClientFor creates a fresh per-job async client for the given model.
-// Returns nil if no matching pool exists.
-func (r *AsyncGatewayResolver) ClientFor(modelID string) AsyncInferenceClient {
+// SharedClientFor returns a shared client for the given model.
+// Reuses the same client across calls — results are not routed
+// per-request, any consumer can read them.
+func (r *AsyncGatewayResolver) SharedClientFor(modelID string) AsyncInferenceClient {
 	if r.clientFactories != nil {
 		if factory, ok := r.clientFactories[modelID]; ok {
 			return factory()
 		}
 		return nil
 	}
+	if c, ok := r.sharedClients.Load(modelID); ok {
+		return c.(*asyncSharedClient)
+	}
 	pool, ok := r.pools[modelID]
 	if !ok {
 		return nil
 	}
-	return newAsyncProducerClient(pool)
+	c := newAsyncSharedClient(pool.producer, pool.pollTimeout, r.logger.WithValues("model", modelID))
+	actual, _ := r.sharedClients.LoadOrStore(modelID, c)
+	return actual.(*asyncSharedClient)
 }
 
 // NewTestAsyncResolver creates a resolver backed by factory functions instead of
-// real Redis connections. Each call to ClientFor invokes the corresponding factory.
+// real Redis connections. Each call to SharedClientFor invokes the corresponding factory.
 func NewTestAsyncResolver(factories map[string]func() AsyncInferenceClient) *AsyncGatewayResolver {
 	return &AsyncGatewayResolver{clientFactories: factories}
 }
 
-// Close releases resources held by the resolver (dispatchers, producers, Redis).
+// Close releases resources held by the resolver (producers, Redis).
 func (r *AsyncGatewayResolver) Close() error {
 	var errs []error
 	for _, c := range r.closers {
@@ -80,7 +87,7 @@ func (r *AsyncGatewayResolver) Close() error {
 }
 
 // NewAsyncResolver creates an AsyncGatewayResolver with one shared pool
-// (producer + dispatcher) per model/pool pair.
+// (producer) per model/pool pair.
 func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatewayResolver, error) {
 	opts, err := redis.ParseURL(config.RedisURL)
 	if err != nil {
@@ -121,19 +128,14 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 			return nil, fmt.Errorf("failed to create producer for model %q (pool %s): %w", model, poolName, err)
 		}
 
-		poolLogger := logger.WithName("async-inference").WithValues("pool", poolName)
-		d := newResultDispatcher(p, poolLogger, config.ResultPollTimeout)
-		pool := &asyncPool{
-			producer:   p,
-			dispatcher: d,
-			logger:     poolLogger,
+		pools[model] = &asyncPool{
+			producer:    p,
+			pollTimeout: config.ResultPollTimeout,
 		}
-
-		pools[model] = pool
-		closers = append(closers, d, p)
+		closers = append(closers, p)
 	}
 
 	closers = append(closers, rdb)
 
-	return &AsyncGatewayResolver{pools: pools, closers: closers}, nil
+	return &AsyncGatewayResolver{pools: pools, closers: closers, logger: logger}, nil
 }
