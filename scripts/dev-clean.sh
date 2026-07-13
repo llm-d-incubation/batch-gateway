@@ -45,6 +45,7 @@ cleanup_kubernetes_resources() {
     kubectl delete svc "${HELM_RELEASE}-processor-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete svc "${PROMETHEUS_NAME}-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete svc "${GRAFANA_NAME}-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
+    kubectl delete svc "${JAEGER_NAME}-nodeport" -n "${NAMESPACE}" --ignore-not-found=true
 
     # Delete deployments and services
     log "Deleting deployments and services..."

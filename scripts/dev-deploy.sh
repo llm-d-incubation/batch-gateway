@@ -498,12 +498,10 @@ spec:
     protocol: TCP
     port: 16686
     targetPort: 16686
-    nodePort: ${JAEGER_NODE_PORT}
   - name: query-grpc
     protocol: TCP
     port: 16685
     targetPort: 16685
-  type: NodePort
 EOF
 
     wait_for_deployment "${JAEGER_NAME}" "${NAMESPACE}" 120s
@@ -1309,6 +1307,21 @@ spec:
     port: 9000
     targetPort: 9000
     nodePort: ${MINIO_NODE_PORT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${JAEGER_NAME}-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: ${JAEGER_NAME}
+  ports:
+  - name: query-http
+    protocol: TCP
+    port: 16686
+    targetPort: 16686
+    nodePort: ${JAEGER_NODE_PORT}
 EOF
 
     log "NodePort services created."
