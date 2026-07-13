@@ -150,7 +150,8 @@ func (c *PostgresBatchQueueClient) PQDequeue(ctx context.Context, _ time.Duratio
 }
 
 // PQDelete atomically removes a job from the queue by transitioning it to
-// cancelled, but only if it is still unclaimed (validating with no processor_id).
+// cancelled with a cancelled_at timestamp, but only if it is still unclaimed
+// (validating with no processor_id).
 // Returns 1 if the job was cancelled, 0 if it was already claimed by a processor.
 // The FOR UPDATE SKIP LOCKED prevents races with concurrent PQDequeue calls.
 func (c *PostgresBatchQueueClient) PQDelete(ctx context.Context, jobPriority *api.BatchJobPriority) (int, error) {
@@ -158,6 +159,7 @@ func (c *PostgresBatchQueueClient) PQDelete(ctx context.Context, jobPriority *ap
 		return 0, fmt.Errorf("PQDelete: nil job priority")
 	}
 
+	now := time.Now().UTC().Unix()
 	result, err := c.pool.Exec(ctx,
 		`WITH queued AS (
 			SELECT id FROM batch_items
@@ -168,10 +170,13 @@ func (c *PostgresBatchQueueClient) PQDelete(ctx context.Context, jobPriority *ap
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE batch_items
-		SET status = jsonb_set(status, '{status}', '"cancelled"')
+		SET status = jsonb_set(
+			jsonb_set(status, '{status}', '"cancelled"'),
+			'{cancelled_at}', to_jsonb($2::bigint)
+		)
 		FROM queued
 		WHERE batch_items.id = queued.id`,
-		jobPriority.ID,
+		jobPriority.ID, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("PQDelete: %w", err)

@@ -1152,7 +1152,10 @@ install_batch_gateway() {
         kubectl rollout restart deployment \
             -l "app.kubernetes.io/instance=${HELM_RELEASE}" \
             -n "${NAMESPACE}"
-        # rollout status blocks until new ReplicaSet pods are Ready.
+        kubectl rollout restart statefulset \
+            -l "app.kubernetes.io/instance=${HELM_RELEASE}" \
+            -n "${NAMESPACE}"
+        # rollout status blocks until new ReplicaSet/StatefulSet pods are Ready.
         # wait_for_deployment (condition=Available) is insufficient here because
         # the old ReplicaSet satisfies Available immediately after restart.
         wait_for_rollout "${HELM_RELEASE}-apiserver" "${NAMESPACE}" 120s
@@ -1177,31 +1180,49 @@ verify_deployment() {
 }
 
 # wait_for_deployment <name> <namespace> <timeout>
-# Suitable for initial install where no old ReplicaSet exists.
+# Suitable for initial install where no old ReplicaSet/StatefulSet exists.
+# Automatically detects whether the resource is a Deployment or StatefulSet.
 wait_for_deployment() {
     local name="$1"
     local ns="$2"
     local timeout="${3:-120s}"
 
-    step "Waiting for deployment '${name}' to be ready..."
-    if ! kubectl wait deployment/"${name}" \
-        -n "${ns}" --for=condition=Available --timeout="${timeout}"; then
-        die "Deployment '${name}' did not become ready within ${timeout}"
+    local kind="deployment"
+    if kubectl get statefulset/"${name}" -n "${ns}" >/dev/null 2>&1; then
+        kind="statefulset"
     fi
-    log "Deployment '${name}' is ready."
+
+    step "Waiting for ${kind}/${name} to be ready..."
+    if [ "${kind}" = "statefulset" ]; then
+        # StatefulSets don't have an Available condition; use rollout status.
+        if ! kubectl rollout status "${kind}/${name}" \
+            -n "${ns}" --timeout="${timeout}"; then
+            die "${kind}/${name} did not become ready within ${timeout}"
+        fi
+    else
+        if ! kubectl wait "${kind}/${name}" \
+            -n "${ns}" --for=condition=Available --timeout="${timeout}"; then
+            die "${kind}/${name} did not become ready within ${timeout}"
+        fi
+    fi
+    log "${kind}/${name} is ready."
 }
 
 # wait_for_rollout <name> <namespace> <timeout>
-# Blocks until the latest rollout (new ReplicaSet) is fully complete.
-# Use after rollout restart; condition=Available can pass prematurely
-# when the old ReplicaSet still satisfies the Available condition.
+# Blocks until the latest rollout is fully complete.
+# Automatically detects whether the resource is a Deployment or StatefulSet.
 wait_for_rollout() {
     local name="$1"
     local ns="$2"
     local timeout="${3:-120s}"
 
-    step "Waiting for rollout of '${name}' to complete..."
-    if ! kubectl rollout status deployment/"${name}" \
+    local kind="deployment"
+    if kubectl get statefulset/"${name}" -n "${ns}" >/dev/null 2>&1; then
+        kind="statefulset"
+    fi
+
+    step "Waiting for rollout of ${kind}/${name} to complete..."
+    if ! kubectl rollout status "${kind}/${name}" \
         -n "${ns}" --timeout="${timeout}"; then
         die "Rollout of '${name}' did not complete within ${timeout}"
     fi

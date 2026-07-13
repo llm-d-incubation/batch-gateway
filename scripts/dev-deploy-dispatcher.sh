@@ -184,8 +184,8 @@ helm upgrade "${HELM_RELEASE}" "${REPO_ROOT}/charts/batch-gateway" \
 rm -f "${REUSED_VALUES}"
 
 step "Restarting processor to pick up new config..."
-kubectl rollout restart deployment/"${HELM_RELEASE}-processor" --namespace "${NAMESPACE}"
-kubectl rollout status deployment/"${HELM_RELEASE}-processor" --namespace "${NAMESPACE}" --timeout=60s
+kubectl rollout restart statefulset/"${HELM_RELEASE}-processor" --namespace "${NAMESPACE}"
+kubectl rollout status statefulset/"${HELM_RELEASE}-processor" --namespace "${NAMESPACE}" --timeout=60s
 
 log "Processor reconfigured for async dispatch."
 

@@ -117,21 +117,29 @@ wait_for_deployment() {
     local namespace="$2"
     local timeout="${3:-180s}"
 
-    step "Waiting for deployment '${deploy_name}' to be ready..."
-
+    # Auto-detect whether the resource is a Deployment or StatefulSet.
+    local kind="deploy"
     local retries=0
     local max_retries=30
-    while ! kubectl get deploy "${deploy_name}" -n "${namespace}" &>/dev/null; do
+    while true; do
+        if kubectl get deploy "${deploy_name}" -n "${namespace}" &>/dev/null; then
+            kind="deploy"
+            break
+        elif kubectl get statefulset "${deploy_name}" -n "${namespace}" &>/dev/null; then
+            kind="statefulset"
+            break
+        fi
         retries=$((retries + 1))
         if [ "$retries" -ge "$max_retries" ]; then
-            die "Deployment '${deploy_name}' did not become visible after $((max_retries * 2))s"
+            die "'${deploy_name}' did not become visible after $((max_retries * 2))s"
         fi
-        warn "Deployment not yet visible, retrying in 2s... ($retries/$max_retries)"
+        warn "Resource not yet visible, retrying in 2s... ($retries/$max_retries)"
         sleep 2
     done
 
-    kubectl rollout status deploy/"${deploy_name}" -n "${namespace}" --timeout="${timeout}"
-    log "Deployment '${deploy_name}' is ready."
+    step "Waiting for ${kind}/${deploy_name} to be ready..."
+    kubectl rollout status "${kind}/${deploy_name}" -n "${namespace}" --timeout="${timeout}"
+    log "${kind}/${deploy_name} is ready."
 }
 
 wait_for_subscription() {
@@ -686,7 +694,12 @@ do_deploy_batch_gateway_helm() {
     local mismatch=false
     for component in apiserver processor gc; do
         local actual_image
-        actual_image=$(kubectl get deploy "${BATCH_INSTANCE_NAME}-${component}" -n "${BATCH_NAMESPACE}" \
+        # processor is a StatefulSet; apiserver and gc are Deployments.
+        local kind="deploy"
+        if kubectl get statefulset "${BATCH_INSTANCE_NAME}-${component}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+            kind="statefulset"
+        fi
+        actual_image=$(kubectl get "${kind}" "${BATCH_INSTANCE_NAME}-${component}" -n "${BATCH_NAMESPACE}" \
             -o jsonpath='{.spec.template.spec.containers[0].image}')
         local actual_tag="${actual_image##*:}"
         log "  ${component}: ${actual_image}"

@@ -2,7 +2,7 @@ suite: deployments
 templates:
   - templates/apiserver-deployment.yaml
   - templates/apiserver-configmap.yaml
-  - templates/processor-deployment.yaml
+  - templates/processor-statefulset.yaml
   - templates/processor-configmap.yaml
   - templates/gc-deployment.yaml
   - templates/gc-configmap.yaml
@@ -20,15 +20,15 @@ tests:
           value: 1
         template: templates/apiserver-deployment.yaml
 
-  - it: should render processor Deployment
+  - it: should render processor StatefulSet
     asserts:
       - isKind:
-          of: Deployment
-        template: templates/processor-deployment.yaml
+          of: StatefulSet
+        template: templates/processor-statefulset.yaml
       - equal:
           path: spec.replicas
           value: 1
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
 
   - it: should render gc Deployment
     asserts:
@@ -72,7 +72,7 @@ tests:
       - equal:
           path: spec.replicas
           value: 5
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
 
   - it: should not render apiserver Deployment when disabled
     set:
@@ -82,13 +82,13 @@ tests:
           count: 0
         template: templates/apiserver-deployment.yaml
 
-  - it: should not render processor Deployment when disabled
+  - it: should not render processor StatefulSet when disabled
     set:
       processor.enabled: false
     asserts:
       - hasDocuments:
           count: 0
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
 
   - it: should not render gc Deployment when disabled
     set:
@@ -114,14 +114,14 @@ tests:
       - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - isNull:
           path: spec.template.spec.securityContext.runAsUser
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - equal:
           path: spec.template.spec.securityContext.seccompProfile.type
           value: RuntimeDefault
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - equal:
           path: spec.template.spec.securityContext.runAsNonRoot
           value: true
@@ -145,7 +145,7 @@ tests:
       - equal:
           path: spec.template.spec.securityContext.runAsUser
           value: 1000
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - isNull:
           path: spec.template.spec.securityContext.runAsUser
         template: templates/apiserver-deployment.yaml
@@ -164,7 +164,7 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: RELEASE-NAME-batch-gateway-processor
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - equal:
           path: spec.template.spec.serviceAccountName
           value: RELEASE-NAME-batch-gateway-gc
@@ -183,7 +183,7 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: custom-processor-sa
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - equal:
           path: spec.template.spec.serviceAccountName
           value: custom-gc-sa
@@ -202,7 +202,7 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: default
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - equal:
           path: spec.template.spec.serviceAccountName
           value: default
@@ -254,7 +254,7 @@ tests:
 
   - it: should not inject OTel env vars on processor when endpoint is empty
     templates:
-      - templates/processor-deployment.yaml
+      - templates/processor-statefulset.yaml
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -269,7 +269,7 @@ tests:
 
   - it: should inject all OTel env vars on processor when endpoint is set
     templates:
-      - templates/processor-deployment.yaml
+      - templates/processor-statefulset.yaml
     set:
       global.otel.endpoint: "http://jaeger:4317"
     asserts:
@@ -300,7 +300,7 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: "^.+:.+$"
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: "^.+:.+$"
@@ -322,7 +322,7 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].image
           value: "ghcr.io/llm-d/batch-gateway-processor@sha256:def456"
-        template: templates/processor-deployment.yaml
+        template: templates/processor-statefulset.yaml
 
   - it: should use digest when set for gc
     set:
@@ -347,7 +347,7 @@ tests:
 
   - it: should fail when fs pvcName is empty
     templates:
-      - templates/processor-deployment.yaml
+      - templates/processor-statefulset.yaml
     set:
       global.fileClient.type: "fs"
       global.fileClient.fs.pvcName: ""

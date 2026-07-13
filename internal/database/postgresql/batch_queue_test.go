@@ -197,7 +197,7 @@ func TestPQDelete(t *testing.T) {
 		defer mock.Close()
 
 		mock.ExpectExec("WITH queued AS").
-			WithArgs("batch-1").
+			WithArgs("batch-1", pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 		n, err := client.PQDelete(ctx, &api.BatchJobPriority{ID: "batch-1"})
@@ -217,7 +217,7 @@ func TestPQDelete(t *testing.T) {
 		defer mock.Close()
 
 		mock.ExpectExec("WITH queued AS").
-			WithArgs("batch-1").
+			WithArgs("batch-1", pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 		n, err := client.PQDelete(ctx, &api.BatchJobPriority{ID: "batch-1"})
