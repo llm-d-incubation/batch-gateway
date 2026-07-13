@@ -51,7 +51,6 @@ type testServer struct {
 	queue    *dbmock.MockBatchPriorityQueueClient
 	event    *dbmock.MockBatchEventChannelClient
 	status   *dbmock.MockBatchStatusClient
-	inFlight *dbmock.MockInFlightClient
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -68,7 +67,6 @@ func newTestServer(t *testing.T) *testServer {
 	queue := dbmock.NewMockBatchPriorityQueueClient()
 	event := dbmock.NewMockBatchEventChannelClient()
 	statusClient := dbmock.NewMockBatchStatusClient()
-	inFlight := dbmock.NewMockInFlightClient()
 
 	filesClient, err := fsclient.New(t.TempDir())
 	if err != nil {
@@ -82,7 +80,6 @@ func newTestServer(t *testing.T) *testServer {
 		Queue:    queue,
 		Event:    event,
 		Status:   statusClient,
-		InFlight: inFlight,
 	}
 
 	config := &common.ServerConfig{
@@ -126,7 +123,6 @@ func newTestServer(t *testing.T) *testServer {
 		queue:    queue,
 		event:    event,
 		status:   statusClient,
-		inFlight: inFlight,
 	}
 }
 

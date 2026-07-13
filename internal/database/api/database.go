@@ -215,28 +215,3 @@ type BatchStatusClient interface {
 	// StatusDelete deletes the status data for a job.
 	StatusDelete(ctx context.Context, ID string) (nDeleted int, err error)
 }
-
-// -- In-flight job tracking --
-
-// InFlightEntry records which processor owns a dequeued job and when it last
-// reported liveness.
-type InFlightEntry struct {
-	ProcessorID string `json:"pid"`
-	LastSeen    int64  `json:"ls"`
-}
-
-// InFlightClient tracks jobs that have been dequeued and are being processed.
-type InFlightClient interface {
-	store.BatchClientAdmin
-
-	// InFlightSet records or refreshes the in-flight entry for a job.
-	// Called after dequeue and periodically as a heartbeat.
-	InFlightSet(ctx context.Context, jobID, processorID string) error
-
-	// InFlightDelete removes the in-flight entry for a job.
-	// Called when the job reaches a terminal state.
-	InFlightDelete(ctx context.Context, jobID string) error
-
-	// InFlightGetAll returns all in-flight entries keyed by job ID.
-	InFlightGetAll(ctx context.Context) (map[string]*InFlightEntry, error)
-}

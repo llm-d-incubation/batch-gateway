@@ -48,7 +48,6 @@ const (
 	eventKeysPrefix      = keysPrefix + "event:"
 	statusKeysPrefix     = keysPrefix + "status:"
 	priorityQueueKeyName = queueKeysPrefix + "priority"
-	inFlightKeyName      = keysPrefix + "inflight"
 	eventChanSize        = 100
 	eventReadCount       = 4
 	eventReadTimeout     = 20 * time.Second
@@ -105,7 +104,6 @@ var (
 	_ db_api.BatchPriorityQueueClient = (*ExchangeDBClientRedis)(nil)
 	_ db_api.BatchEventChannelClient  = (*ExchangeDBClientRedis)(nil)
 	_ db_api.BatchStatusClient        = (*ExchangeDBClientRedis)(nil)
-	_ db_api.InFlightClient           = (*ExchangeDBClientRedis)(nil)
 )
 
 type DSClientRedis struct {

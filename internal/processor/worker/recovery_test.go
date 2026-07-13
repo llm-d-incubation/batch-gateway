@@ -38,7 +38,6 @@ func newRecoveryTestProcessor(t *testing.T, workDir string) (*Processor, db.Batc
 		Queue:     spyQueue,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -692,7 +691,6 @@ func newRecoveryTestProcessorWithFailDB(t *testing.T, workDir string, failOn int
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -732,7 +730,6 @@ func TestRecoverJob_Cancelling_AllUpdatesFail_ReturnsError(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -777,7 +774,6 @@ func TestRecoverJob_Validating_EnqueueFails_FallsBackToFailed(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -826,7 +822,6 @@ func TestRecoverJob_InProgressReEnqueue_EnqueueFails_FallsBackToFailed(t *testin
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -962,7 +957,6 @@ func TestRecoverOwnedJobs_RunsConcurrently(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -1144,7 +1138,6 @@ func TestRecoverJob_ExpiredWriteFails_FallbackToFailed(t *testing.T) {
 		Queue:     pq,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}, "test-processor", testLogger(t))
 	if err != nil {

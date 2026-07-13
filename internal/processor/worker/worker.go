@@ -19,7 +19,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -70,9 +69,8 @@ type Processor struct {
 	poller  *Poller
 	updater *StatusUpdater
 
-	batchDB        db.BatchDBClient                // job status lookups (heartbeat DB check)
+	batchDB        db.BatchDBClient                // job status lookups
 	event          db.BatchEventChannelClient      // cancel-event subscription
-	inflight       db.InFlightClient               // in-flight job tracking for orphan recovery
 	inference      *inference.GatewayResolver      // model → gateway routing (sync)
 	asyncInference *inference.AsyncGatewayResolver // model → async client routing
 	broadcasters   *broadcasterRegistry            // per-model result broadcasters (async only)
@@ -100,7 +98,6 @@ func NewProcessor(
 		updater:        updater,
 		batchDB:        clients.BatchDB,
 		event:          clients.Event,
-		inflight:       clients.InFlight,
 		inference:      clients.Inference,
 		asyncInference: clients.AsyncInference,
 		files:          newFileManager(clients.File, clients.FileDB),
@@ -272,13 +269,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			continue
 		}
 
-		// Record in-flight entry immediately after dequeue so the orphan
-		// reconciler can track this job. Non-fatal on error: the reconciler
-		// can still detect orphans via DB + queue cross-reference.
-		if err := p.inflight.InFlightSet(pollingCtx, task.ID, p.processorID); err != nil {
-			logr.FromContextOrDiscard(pollingCtx).Error(err, "Failed to set in-flight entry", "jobId", task.ID)
-		}
-
 		// Pre-launch: use pollingCtx so guard cancel / SIGTERM interrupts
 		// DB fetch and validation promptly. jobBaseCtx is only used once
 		// we commit to launching the job goroutine.
@@ -296,10 +286,8 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			bgCtx, bgSpan := uotel.DetachedContext(pollCtx, "re-enqueue-fetch-failure")
 			if reEnqueueErr := p.poller.enqueueOne(bgCtx, task); reEnqueueErr != nil {
 				pollLogger.Error(reEnqueueErr, "Failed to re-enqueue the job to the queue")
-				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonSystemError)
 			} else {
-				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonDBTransient)
 				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue")
 			}
@@ -311,7 +299,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 		if jobItem == nil {
 			pollLogger.Error(fmt.Errorf("job item is not found in the DB"), "Ignoring job (data inconsistency)")
 			p.releaseForNextPoll()
-			p.deleteInFlight(pollCtx, task.ID)
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonDBInconsistency)
 			continue
 		}
@@ -326,7 +313,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			if failErr := p.handleFailed(pollCtx, p.updater, jobItem, nil, nil); failErr != nil {
 				pollLogger.Error(failErr, "Failed to mark malformed job as failed")
 			}
-			p.deleteInFlight(pollCtx, task.ID)
 			continue
 		}
 
@@ -353,7 +339,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			}
 
 			p.releaseForNextPoll()
-			p.deleteInFlight(pollCtx, task.ID)
 			recordE2ELatency(jobInfo, metrics.E2EStatusExpired)
 			metrics.RecordJobProcessed(metrics.ResultExpired, metrics.ReasonExpiredDequeue)
 			continue
@@ -371,7 +356,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 					continue
 				}
 				p.releaseForNextPoll()
-				p.deleteInFlight(pollCtx, task.ID)
 				recordE2ELatency(jobInfo, metrics.E2EStatusCancelled)
 				metrics.RecordCancellation(metrics.CancelPhaseQueued)
 				metrics.RecordJobProcessed(metrics.ResultSuccess, metrics.ReasonNone)
@@ -381,7 +365,6 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 			pollLogger.V(logging.INFO).Info("job is not in processible state. skipping this job.", "status", jobInfo.BatchJob.Status)
 
 			p.releaseForNextPoll()
-			p.deleteInFlight(pollCtx, task.ID)
 			metrics.RecordJobProcessed(metrics.ResultSkipped, metrics.ReasonNotRunnableState)
 			continue
 		}
@@ -400,10 +383,8 @@ func (p *Processor) runPollingLoop(pollingCtx, jobBaseCtx context.Context) error
 				if failErr := p.handleFailed(bgCtx, p.updater, jobItem, nil, jobInfo); failErr != nil {
 					pollLogger.Error(failErr, "Failed to mark dequeued job as failed after re-enqueue failure")
 				}
-				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultFailed, metrics.ReasonGuardShutdown)
 			} else {
-				p.deleteInFlight(bgCtx, task.ID)
 				metrics.RecordJobProcessed(metrics.ResultReEnqueued, metrics.ReasonGuardShutdown)
 				pollLogger.V(logging.INFO).Info("Re-enqueued the job to the queue during graceful shutdown")
 			}
@@ -450,70 +431,6 @@ func (p *Processor) releaseForNextPoll() {
 	p.release()
 }
 
-func (p *Processor) deleteInFlight(ctx context.Context, jobID string) {
-	if err := p.inflight.InFlightDelete(ctx, jobID); err != nil {
-		logr.FromContextOrDiscard(ctx).Error(err, "Failed to delete in-flight entry", "jobId", jobID)
-	}
-}
-
-func (p *Processor) heartbeat(ctx context.Context, jobID string, abortFn context.CancelFunc) {
-	logger := logr.FromContextOrDiscard(ctx).WithValues("jobId", jobID)
-	logger.V(logging.INFO).Info("Heartbeat: started")
-
-	interval := p.cfg.HeartbeatInterval
-	if interval <= 0 {
-		interval = defaultHeartbeatInterval
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.V(logging.INFO).Info("Heartbeat: stopped")
-			return
-		case <-ticker.C:
-			if err := p.inflight.InFlightSet(ctx, jobID, p.processorID); err != nil {
-				logger.Error(err, "Heartbeat: failed to refresh in-flight entry")
-			} else {
-				logger.V(logging.INFO).Info("Heartbeat: refreshed")
-			}
-
-			if p.checkReconcilerActed(ctx, jobID, logger) {
-				logger.Info("Heartbeat: reconciler acted on job, aborting")
-				abortFn()
-				return
-			}
-		}
-	}
-}
-
-func (p *Processor) checkReconcilerActed(ctx context.Context, jobID string, logger logr.Logger) bool {
-	query := &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}
-	items, _, _, err := p.batchDB.DBGet(ctx, query, false, 0, 1)
-	if err != nil {
-		logger.Error(err, "Heartbeat: DB status check failed")
-		return false
-	}
-	if len(items) == 0 {
-		logger.Info("Heartbeat: job not found in DB, reconciler may have acted")
-		return true
-	}
-
-	var statusInfo openai.BatchStatusInfo
-	if err := json.Unmarshal(items[0].Status, &statusInfo); err != nil {
-		logger.Error(err, "Heartbeat: failed to unmarshal job status")
-		return false
-	}
-
-	if statusInfo.Status.IsTerminal() || statusInfo.Status == openai.BatchStatusValidating {
-		logger.Info("Heartbeat: unexpected DB status, reconciler acted", "dbStatus", statusInfo.Status)
-		return true
-	}
-
-	return false
-}
-
 // pre-flight check
 func (p *Processor) prepare(ctx context.Context) error {
 	logger := logr.FromContextOrDiscard(ctx)
@@ -544,9 +461,6 @@ func (p *Processor) validate() error {
 	}
 	if p.event == nil {
 		return fmt.Errorf("event channel client is missing")
-	}
-	if p.inflight == nil {
-		return fmt.Errorf("in-flight client is missing")
 	}
 	if p.inference == nil && p.asyncInference == nil {
 		return fmt.Errorf("inference client is missing")

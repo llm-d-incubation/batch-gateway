@@ -313,9 +313,6 @@ func (f *failOnStatusDB) Close() error { return f.inner.Close() }
 
 func mustNewProcessor(t *testing.T, cfg *config.ProcessorConfig, clients *clientset.Clientset) *Processor {
 	t.Helper()
-	if clients.InFlight == nil {
-		clients.InFlight = mockdb.NewMockInFlightClient()
-	}
 	p, err := NewProcessor(cfg, clients, "test-processor", testLogger(t))
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
@@ -344,7 +341,6 @@ func validProcessorClients(t testing.TB) *clientset.Clientset {
 		Queue:     mockdb.NewMockBatchPriorityQueueClient(),
 		Status:    mockdb.NewMockBatchStatusClient(),
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(&fakeInferenceClient{}),
 	}
 }
@@ -373,7 +369,6 @@ func newTestProcessorEnv(t *testing.T, cfg *config.ProcessorConfig, inferClient 
 		Queue:     pqClient,
 		Status:    statusClient,
 		Event:     mockdb.NewMockBatchEventChannelClient(),
-		InFlight:  mockdb.NewMockInFlightClient(),
 		Inference: inference.NewSingleClientResolver(inferClient),
 	}, "test-processor", testLogger(t))
 	if err != nil {
@@ -721,30 +716,4 @@ func uniqueTestFolder(t *testing.T, base string) string {
 	t.Helper()
 	testName := strings.ReplaceAll(t.Name(), "/", "_")
 	return filepath.Join(base, testName, fmt.Sprintf("%d", time.Now().UnixNano()))
-}
-
-type countingInFlightClient struct {
-	inner    *mockdb.MockInFlightClient
-	setCount atomic.Int32
-}
-
-func newCountingInFlightClient() *countingInFlightClient {
-	return &countingInFlightClient{inner: mockdb.NewMockInFlightClient()}
-}
-
-func (c *countingInFlightClient) InFlightSet(ctx context.Context, jobID, processorID string) error {
-	c.setCount.Add(1)
-	return c.inner.InFlightSet(ctx, jobID, processorID)
-}
-
-func (c *countingInFlightClient) InFlightDelete(ctx context.Context, jobID string) error {
-	return c.inner.InFlightDelete(ctx, jobID)
-}
-
-func (c *countingInFlightClient) InFlightGetAll(ctx context.Context) (map[string]*db.InFlightEntry, error) {
-	return c.inner.InFlightGetAll(ctx)
-}
-
-func (c *countingInFlightClient) Close() error {
-	return c.inner.Close()
 }

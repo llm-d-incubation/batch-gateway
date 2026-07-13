@@ -1,0 +1,220 @@
+# TODO
+
+## internal/util/semaphore: double-release callback is not a safety mechanism
+
+The `onDoubleRelease` callback in `semaphore.New` (internal/util/semaphore/semaphore.go) is
+misleadingly named and does not actually protect concurrency limits. Because the semaphore is
+backed by a buffered channel, `Release()` fires the callback only when the channel is already
+empty — meaning all tokens have been returned and no goroutines are running. At that point there
+is nothing to corrupt, so the callback provides no real protection.
+
+Two cleaner alternatives:
+
+1. Have `Acquire` return an opaque token that `Release` requires as an argument. Without the
+   token the caller cannot invoke `Release`, making double-release structurally impossible.
+   Example shape:
+
+       type Token struct{ _ struct{} } // unexported field prevents external construction
+
+       func (s *semaphore) Acquire(ctx context.Context) (Token, error)
+       func (s *semaphore) Release(t Token)
+
+2. Remove `onDoubleRelease` entirely and make `Release` a no-op when the channel is already
+   empty, which is the correct and safe behavior for this channel-based implementation.
+
+The wiring in `worker.go` (the `makeGuard` / `stopAccepting` pattern) would need to be removed
+or replaced with a different shutdown trigger if option 2 is chosen.
+
+## internal/processor/worker: crash recovery relies on the filesystem, not the DB
+
+Recovery from crashes (internal/processor/worker/recovery.go) works by scanning leftover job
+directories on `emptyDir` at container startup. This means it only handles container-level
+restarts within the same pod. Pod deletion, node eviction, or any scenario where `emptyDir` is
+destroyed means the filesystem-based recovery cannot find those jobs.
+
+The jobs themselves are not unrecoverable orphans: the orphan reconciler in batch-gc
+(internal/gc/reconciler/reconciler.go) periodically cross-references DB, queue, and in-flight
+hash to detect orphans and triage them — re-enqueueing `validating` jobs and CAS-transitioning
+`in_progress`/`finalizing` jobs to `failed`. What is unrecoverable is the **partial output
+data** (output.jsonl/error.jsonl content) that existed only on the destroyed `emptyDir` and had
+not yet been uploaded to shared storage.
+
+The root cause is that intermediate job state (partial output/error files, request counts) is
+written to local disk rather than to the DB. A more resilient design would checkpoint progress
+into the DB so recovery can preserve partial results from any pod, not just the one that
+crashed.
+
+## internal/processor/worker: releaseForNextPoll is a pointless wrapper
+
+`releaseForNextPoll` (worker.go) is a one-line wrapper around `release()`, which is itself a
+one-line wrapper around `p.tokens.Release()`. It adds no behaviour and the name implies
+semantics that don't exist — it does not schedule or influence the next poll in any way.
+Replace all call sites with `p.release()` and remove `releaseForNextPoll`.
+
+## internal/processor/worker: pollCtx is a useless context derivation
+
+In runPollingLoop (worker.go), `pollCtx` is derived from `pollingCtx` solely to carry a logger
+with `jobId` attached. However, every function that receives `pollCtx` and logs the job ID does
+so explicitly as a key-value argument (e.g. poller.go:90), so the logger value in the context
+is never actually used. `pollCtx` and `pollLogger` can be removed — just use `pollingCtx`
+directly and pass `pollLogger` explicitly where needed, or drop it entirely.
+
+## internal/processor/worker: job pickup should be transactional, not eventually consistent
+
+In runPollingLoop (worker.go), there is a window between dequeueOne (removing the job from the
+Redis queue) and InFlightSet (recording it in the Redis in-flight hash) where a crash leaves
+the job invisible — it is neither in the queue nor in the in-flight table. More broadly, even
+when InFlightSet succeeds, the job is only recoverable after a full GC reconciler cycle (~60
+minutes by default). During that window the job sits idle, consuming SLO budget while no
+processor works on it.
+
+The current design is eventually consistent: the orphan reconciler in batch-gc periodically
+cross-references DB, queue, and in-flight hash to detect and triage orphans. This works
+correctly but has two drawbacks:
+
+1. **Recovery latency**: A crashed job waits up to one full reconciler interval before being
+   detected and re-enqueued or failed. For latency-sensitive batches this delay can exhaust the
+   SLO, turning a recoverable job into an expired one.
+
+2. **Distributed bookkeeping**: Job ownership is spread across three data stores (PostgreSQL
+   status, Redis queue, Redis in-flight hash) with no transactional guarantee tying them
+   together. Every crash boundary between these stores is a potential inconsistency that the
+   reconciler must paper over after the fact.
+
+A more robust design would make job pickup transactional: atomically dequeue the job and
+transition its DB status (e.g. `validating` → `in_progress`) in a single operation. With the
+DB record as the sole source of truth, any processor — including the one that restarts after a
+crash — can detect incomplete jobs at startup by querying for `in_progress` jobs that have no
+active processor, and resume or fail them immediately without waiting for a GC cycle. This
+eliminates both the dequeue-to-in-flight gap and the dependency on a periodic reconciler for
+timely recovery.
+
+## internal/processor/worker: concurrency controller is coupled to AIMDController concrete type
+
+The signal-classification switch in executor.go (~L477-496) is guarded by a nil-check on
+`*semaphore.AIMDController` and calls its concrete methods directly. The `endpointLimit` struct
+(worker.go:45) stores `aimd *semaphore.AIMDController` as a concrete pointer, so swapping to a
+different congestion-control algorithm (e.g. CUBIC, PID, or static) requires editing both the
+executor goroutine and the wiring in `Run()`.
+
+`AIMDController` itself is already well-decoupled — it takes a `setFn func(int)` callback and
+knows nothing about semaphores. The missing piece is an interface at the consumer side:
+
+    type ConcurrencyController interface {
+        RecordSuccess()
+        RecordRateLimit(reason string)
+        Limit() int
+    }
+
+With this interface:
+
+- `endpointLimit.aimd` becomes `endpointLimit.controller ConcurrencyController` (nil = no
+  adaptive control).
+- The executor switch calls the interface methods unchanged.
+- `worker.Run()` wires in `AIMDController` (or any future algorithm) based on config — the
+  construction code in worker.go:159-173 stays roughly the same, just returning the interface.
+- New algorithms can be added without touching executor.go.
+
+## internal/processor/worker: worker token conflates job orchestration with capacity reservation
+
+The worker token semaphore (`p.tokens`, sized by `NumWorkers`) is acquired before dequeuing a
+job and held for the **entire job lifecycle** — input download, all inference requests, output
+upload, status finalization (`job_runner.go:82`: `defer p.release()`). This means a job that is
+mostly idle (waiting on I/O, waiting on slow endpoints, or — in a future async-inference model
+— waiting for results from llm-d-async) still occupies a worker slot the whole time, blocking
+other jobs from starting even when the system has spare capacity.
+
+The token conflates two concerns:
+
+1. **Job orchestration** — tracking active jobs, managing their state machine, bounding memory
+   for per-job artifacts (plan files, output buffers, local disk usage on `emptyDir`).
+2. **Capacity reservation** — limiting load on inference endpoints and the processor itself.
+
+For synchronous inference these roughly align: a running job is actively consuming endpoint
+capacity. For asynchronous inference (e.g. llm-d-async) they diverge completely: a job that has
+submitted its requests and is polling for results consumes near-zero inference capacity but
+still holds its worker slot.
+
+Increasing `NumWorkers` is a workaround, not a fix — it raises the ceiling but the coupling
+remains. A cleaner design would separate the two:
+
+- **Job orchestration** becomes unbounded (or bounded by a much larger limit tied to memory /
+  disk, not inference throughput). Any number of jobs can be in the "waiting for results" phase.
+- **Capacity reservation** is handled solely by the global and per-endpoint semaphores, which
+  already exist and already do the right thing at the request level.
+
+This separation would matter most when integrating with llm-d-async, where the job lifecycle
+shifts from "dispatch requests synchronously" to "submit requests, then wait." Without it,
+`NumWorkers` becomes a throughput bottleneck unrelated to actual system load.
+
+## internal/processor/worker: plan files are written to disk unnecessarily
+
+Plan files are per-model binary index files produced by `preProcessJob`. Each entry is 16 bytes
+(`offset int64, length uint32, prefixHash uint32`) pointing into the local `input.jsonl` copy.
+They serve two purposes:
+
+1. **Per-model partitioning** — the input JSONL can mix requests for different models. The
+   preprocessor splits them into separate plan files so the executor can process each model
+   independently, dispatching requests to the correct inference endpoint.
+2. **Prefix-hash sorting** — within each model, entries are sorted by FNV-32a hash of the
+   system prompt. This groups requests with the same system prompt together during dispatch,
+   improving KV-cache hit rates on the inference gateway.
+
+The preprocessor accumulates plan entries in memory (`planAccumulator`), sorts them by prefix
+hash, writes them to binary files on `emptyDir` (`planner.go:152-195`), and the executor reads
+them back from disk during execution — all within the same process and container lifecycle.
+
+The plan files are never used for crash recovery. `recovery.go` only cares about `output.jsonl`
+and `error.jsonl` (partial results to upload). When a crashed job in `validating` or
+`in_progress` (without partial output) is recovered, it is re-enqueued and the next worker
+re-runs `preProcessJob` from scratch — re-downloading from S3 and regenerating everything.
+
+The entries are small: 16 bytes each, so 50k requests (the OpenAI max) is ~800 KB per model.
+They are already fully materialized in memory before the disk write. The disk round-trip (write
+in `Finalize`, read back in `executeJob`) adds complexity and I/O for no benefit. The entries
+should stay in memory and be passed directly from `preProcessJob` to `executeJob` as a
+`map[string][]planEntry`, eliminating the plan file write/read cycle entirely.
+
+## internal/processor/worker: local input.jsonl copy can be replaced with S3 ranged gets
+
+The preprocessor streams the input file from S3 and writes a full copy to local disk
+(`preprocessor.go:156-158`) so the executor can later do random-access reads by byte offset
+(each plan entry stores `(offset, length)` into this local file). With 20 workers at the
+OpenAI max of 200 MB per file, this is up to 4 GB of `emptyDir` consumed by input copies
+alone, plus the output/error files growing during execution.
+
+The AWS SDK already supports ranged gets — `s3.GetObjectInput` has a `Range` field that
+accepts standard HTTP byte ranges (`bytes=offset-offset+length-1`). All S3-compatible stores
+(AWS, MinIO, Ceph) support this. The current `BatchFilesClient` interface just doesn't expose
+it (`Retrieve` always fetches the full object).
+
+Adding a ranged-read method to the interface (or using the S3 client directly in the executor)
+would let the executor fetch each request line on demand from shared storage, eliminating the
+local input copy entirely. The per-request latency overhead (~5-50ms for an S3 GET) is
+negligible compared to inference latency (hundreds of ms to seconds). Adjacent plan entries
+could also be batched into larger range reads to amortize further.
+
+Combined with the plan-files-in-memory change above, this would remove the `emptyDir`
+dependency for input data entirely, leaving only `output.jsonl` and `error.jsonl` on local
+disk (which could themselves be streamed to shared storage via S3 multipart upload as a
+follow-up).
+
+## charts/batch-gateway: default emptyDir budget is tight for 20 workers
+
+The default Helm values set `numWorkers: 20` and `workDirVolume.sizeLimit: 10Gi`
+(values.yaml:237,307). Each worker copies its job's input file to local disk (up to 200 MB per
+the OpenAI spec) and accumulates output/error JSONL during execution. In the worst case, 20
+concurrent jobs with max-size inputs consume ~4 GB for input copies alone, leaving ~6 GB for
+output files, error files, and plan data across all 20 jobs. Output files can grow large —
+inference responses (especially from chat completions) are typically much bigger than the
+corresponding request lines — so 6 GB shared across 20 jobs is not generous.
+
+If the `emptyDir` fills up, the kubelet evicts the pod, losing all in-progress work. The
+`medium: ""` default (values.yaml:238) means the volume uses node disk rather than tmpfs, so
+it doesn't consume RAM, but it competes with other pods for the node's ephemeral storage
+budget.
+
+This is a symptom of the broader filesystem dependency discussed in the entries above. Using
+S3 ranged gets for input and streaming output to shared storage would eliminate the disk
+pressure entirely. Short of that, the `sizeLimit` should either be increased or documented as
+requiring tuning relative to `numWorkers` and expected job sizes.

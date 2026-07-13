@@ -1,0 +1,3 @@
+TODO:
+    -if there is a sigterm in between dequeue and execution before the renqueue the job is lost
+    - releaseForNextPoll is just a release, useless
