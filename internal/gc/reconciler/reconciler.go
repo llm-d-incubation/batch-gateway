@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -269,17 +268,13 @@ func (r *Reconciler) expireOrphan(ctx context.Context, job *db.BatchItem, result
 
 // reEnqueueOrphan re-enqueues an orphaned job whose SLO is still valid.
 func (r *Reconciler) reEnqueueOrphan(ctx context.Context, job *db.BatchItem, result *Result, logger logr.Logger) {
-	slo, err := extractSLO(job)
-	if err != nil {
-		logger.Error(err, "Reconciler: cannot re-enqueue orphan with corrupt SLO")
+	if job.Priority <= 0 {
+		logger.Error(fmt.Errorf("missing priority"), "Reconciler: cannot re-enqueue orphan without priority")
 		result.Errors++
 		return
 	}
-	if slo == nil {
-		logger.Error(fmt.Errorf("missing SLO tag"), "Reconciler: cannot re-enqueue orphan without SLO")
-		result.Errors++
-		return
-	}
+
+	slo := time.UnixMicro(job.Priority)
 
 	if r.dryRun {
 		logger.Info("Reconciler: dry-run: would re-enqueue orphan", "slo", slo)
@@ -289,7 +284,7 @@ func (r *Reconciler) reEnqueueOrphan(ctx context.Context, job *db.BatchItem, res
 
 	task := &db.BatchJobPriority{
 		ID:  job.ID,
-		SLO: *slo,
+		SLO: slo,
 	}
 	if err := r.queue.PQEnqueue(ctx, task); err != nil {
 		logger.Error(err, "Reconciler: failed to re-enqueue orphan")
@@ -303,23 +298,8 @@ func (r *Reconciler) reEnqueueOrphan(ctx context.Context, job *db.BatchItem, res
 
 // isSLOExpired checks whether the job's SLO deadline has passed.
 func isSLOExpired(job *db.BatchItem) bool {
-	slo, _ := extractSLO(job)
-	if slo == nil {
+	if job.Priority <= 0 {
 		return false
 	}
-	return time.Now().After(*slo)
-}
-
-// extractSLO parses the SLO tag from the job's tags.
-func extractSLO(job *db.BatchItem) (*time.Time, error) {
-	sloStr, ok := job.Tags[batch_types.TagSLO]
-	if !ok {
-		return nil, nil
-	}
-	sloMicro, err := strconv.ParseInt(sloStr, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("corrupt SLO tag %q: %w", sloStr, err)
-	}
-	slo := time.UnixMicro(sloMicro).UTC()
-	return &slo, nil
+	return time.Now().After(time.UnixMicro(job.Priority))
 }

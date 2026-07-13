@@ -24,7 +24,6 @@ import (
 const (
 	TagPrefixPassThroughHeader   = "pth:"
 	TagPrefixOTel                = "otel:"
-	TagSLO                       = "slo_unix_micro"
 	TagOutputExpiresAfterAnchor  = "output_expires_after_anchor"
 	TagOutputExpiresAfterSeconds = "output_expires_after_seconds"
 )

@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -184,9 +183,7 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: output_expires_after_anchor and output_expires_after_seconds are saved to database as tag. The cleanup service should delete the output file by this value
 	// Note that the output_expires_after_anchor is the file creation time, not the time the batch is created.
-	tags := api.Tags{
-		batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
-	}
+	tags := api.Tags{}
 	if batchReq.OutputExpiresAfter != nil {
 		tags[batch_types.TagOutputExpiresAfterAnchor] = batchReq.OutputExpiresAfter.Anchor
 		tags[batch_types.TagOutputExpiresAfterSeconds] = fmt.Sprintf("%d", batchReq.OutputExpiresAfter.Seconds)
@@ -520,26 +517,13 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to remove from the priority queue first.
-	// Reconstruct the exact SLO score from the stored tag.
-	removedFromQueue := false
-	sloStr, hasSLO := item.Tags[batch_types.TagSLO]
-	sloMicro, parseErr := strconv.ParseInt(sloStr, 10, 64)
-	if hasSLO && parseErr == nil {
-		slo := time.UnixMicro(sloMicro).UTC()
-		jobPriority := &api.BatchJobPriority{
-			ID:  batch.ID,
-			SLO: slo,
-		}
-		nDeleted, err := c.clients.Queue.PQDelete(ctx, jobPriority)
-		if err != nil {
-			logger.Error(err, "failed to remove batch from queue")
-			common.WriteInternalServerError(w, r)
-			return
-		}
-		removedFromQueue = nDeleted > 0
-	} else {
-		logger.Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
+	nDeleted, err := c.clients.Queue.PQDelete(ctx, &api.BatchJobPriority{ID: batch.ID})
+	if err != nil {
+		logger.Error(err, "failed to remove batch from queue")
+		common.WriteInternalServerError(w, r)
+		return
 	}
+	removedFromQueue := nDeleted > 0
 
 	if removedFromQueue {
 		// Job was in queue (not yet being processed) - directly cancel it

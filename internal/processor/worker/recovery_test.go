@@ -16,7 +16,6 @@ import (
 	mockfiles "github.com/llm-d/llm-d-batch-gateway/internal/files_store/mock"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
@@ -82,14 +81,12 @@ func seedDBJobWithStatusAndSLO(t *testing.T, dbClient db.BatchDBClient, jobID, t
 		BaseIndexes: db.BaseIndexes{
 			ID:       jobID,
 			TenantID: tenantID,
-			Tags: db.Tags{
-				batch_types.TagSLO: fmt.Sprintf("%d", slo.UTC().UnixMicro()),
-			},
 		},
 		BaseContents: db.BaseContents{
 			Status: statusBytes,
 			Spec:   specBytes,
 		},
+		Priority: slo.UTC().UnixMicro(),
 	}
 	if err := dbClient.DBStore(context.Background(), item); err != nil {
 		t.Fatalf("seed DB job: %v", err)

@@ -26,34 +26,29 @@ import (
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
-	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 )
 
 const testInterval = 60 * time.Minute
 
-func sloTag(slo time.Time) db.Tags {
-	return db.Tags{batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro())}
+func futureSLO() int64 {
+	return time.Now().Add(24 * time.Hour).UnixMicro()
 }
 
-func futureSLO() time.Time {
-	return time.Now().Add(24 * time.Hour)
+func expiredSLO() int64 {
+	return time.Now().Add(-1 * time.Hour).UnixMicro()
 }
 
-func expiredSLO() time.Time {
-	return time.Now().Add(-1 * time.Hour)
-}
-
-func newTestBatchItem(id, processorID string, status openai.BatchStatus, tags db.Tags) *db.BatchItem {
+func newTestBatchItem(id, processorID string, status openai.BatchStatus, priority int64) *db.BatchItem {
 	statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: status})
 	return &db.BatchItem{
 		BaseIndexes: db.BaseIndexes{
-			ID:   id,
-			Tags: tags,
+			ID: id,
 		},
 		BaseContents: db.BaseContents{
 			Status: statusBytes,
 		},
 		ProcessorID: processorID,
+		Priority:    priority,
 	}
 }
 
@@ -138,7 +133,7 @@ type casConflictBatchDB struct{}
 
 func (c *casConflictBatchDB) DBStore(_ context.Context, _ *db.BatchItem) error { return nil }
 func (c *casConflictBatchDB) DBGet(_ context.Context, _ *db.BatchQuery, _ bool, _, _ int) ([]*db.BatchItem, int, bool, error) {
-	item := newTestBatchItem("job-cas", "dead-processor", openai.BatchStatusInProgress, sloTag(expiredSLO()))
+	item := newTestBatchItem("job-cas", "dead-processor", openai.BatchStatusInProgress, expiredSLO())
 	return []*db.BatchItem{item}, 1, false, nil
 }
 func (c *casConflictBatchDB) DBUpdate(_ context.Context, _ *db.BatchItem, _ []byte) error {
@@ -158,7 +153,7 @@ func TestTriageOrphan(t *testing.T) {
 	tests := []struct {
 		name            string
 		status          openai.BatchStatus
-		slo             time.Time
+		priority        int64
 		wantExpired     int
 		wantReEnqueued  int
 		wantFinalStatus openai.BatchStatus
@@ -168,7 +163,7 @@ func TestTriageOrphan(t *testing.T) {
 		{
 			name:            "orphan with expired SLO transitions to failed",
 			status:          openai.BatchStatusValidating,
-			slo:             expiredSLO(),
+			priority:        expiredSLO(),
 			wantExpired:     1,
 			wantReEnqueued:  0,
 			wantFinalStatus: openai.BatchStatusFailed,
@@ -176,7 +171,7 @@ func TestTriageOrphan(t *testing.T) {
 		{
 			name:            "orphan with future SLO is re-enqueued",
 			status:          openai.BatchStatusValidating,
-			slo:             futureSLO(),
+			priority:        futureSLO(),
 			wantExpired:     0,
 			wantReEnqueued:  1,
 			wantFinalStatus: openai.BatchStatusValidating, // status unchanged on re-enqueue
@@ -186,7 +181,7 @@ func TestTriageOrphan(t *testing.T) {
 		{
 			name:            "in_progress orphan with expired SLO transitions to failed",
 			status:          openai.BatchStatusInProgress,
-			slo:             expiredSLO(),
+			priority:        expiredSLO(),
 			wantExpired:     1,
 			wantReEnqueued:  0,
 			wantFinalStatus: openai.BatchStatusFailed,
@@ -194,7 +189,7 @@ func TestTriageOrphan(t *testing.T) {
 		{
 			name:            "in_progress orphan with future SLO is re-enqueued",
 			status:          openai.BatchStatusInProgress,
-			slo:             futureSLO(),
+			priority:        futureSLO(),
 			wantExpired:     0,
 			wantReEnqueued:  1,
 			wantFinalStatus: openai.BatchStatusInProgress,
@@ -208,7 +203,7 @@ func TestTriageOrphan(t *testing.T) {
 			batchDB := newMockBatchDB()
 			queue := mock.NewMockBatchPriorityQueueClient()
 
-			item := newTestBatchItem("job-1", "dead-processor", tc.status, sloTag(tc.slo))
+			item := newTestBatchItem("job-1", "dead-processor", tc.status, tc.priority)
 			storeItems(t, batchDB, item)
 
 			r, resultCh := newTestReconciler(t, batchDB, queue)
@@ -264,7 +259,7 @@ func TestSkipNonOrphans(t *testing.T) {
 			batchDB := newMockBatchDB()
 			queue := mock.NewMockBatchPriorityQueueClient()
 
-			item := newTestBatchItem("job-1", tc.processorID, openai.BatchStatusValidating, sloTag(futureSLO()))
+			item := newTestBatchItem("job-1", tc.processorID, openai.BatchStatusValidating, futureSLO())
 			storeItems(t, batchDB, item)
 
 			r, resultCh := newTestReconciler(t, batchDB, queue)
@@ -288,13 +283,13 @@ func TestRunCycleMixedJobs(t *testing.T) {
 
 		storeItems(t, batchDB,
 			// Queued (no processor_id) — should be skipped.
-			newTestBatchItem("queued-job", "", openai.BatchStatusValidating, sloTag(futureSLO())),
+			newTestBatchItem("queued-job", "", openai.BatchStatusValidating, futureSLO()),
 			// Alive processor — should be skipped.
-			newTestBatchItem("alive-job", "processor-0", openai.BatchStatusInProgress, sloTag(futureSLO())),
+			newTestBatchItem("alive-job", "processor-0", openai.BatchStatusInProgress, futureSLO()),
 			// Dead processor, valid SLO — should be re-enqueued.
-			newTestBatchItem("dead-valid", "processor-1", openai.BatchStatusInProgress, sloTag(futureSLO())),
+			newTestBatchItem("dead-valid", "processor-1", openai.BatchStatusInProgress, futureSLO()),
 			// Dead processor, expired SLO — should be failed.
-			newTestBatchItem("dead-expired", "processor-2", openai.BatchStatusInProgress, sloTag(expiredSLO())),
+			newTestBatchItem("dead-expired", "processor-2", openai.BatchStatusInProgress, expiredSLO()),
 		)
 
 		r, resultCh := newTestReconciler(t, batchDB, queue)
@@ -473,7 +468,7 @@ func TestDryRun(t *testing.T) {
 		batchDB := newMockBatchDB()
 		queue := mock.NewMockBatchPriorityQueueClient()
 
-		item := newTestBatchItem("job-1", "dead-processor", openai.BatchStatusInProgress, sloTag(expiredSLO()))
+		item := newTestBatchItem("job-1", "dead-processor", openai.BatchStatusInProgress, expiredSLO())
 		storeItems(t, batchDB, item)
 
 		r, resultCh := newTestDryRunReconciler(t, batchDB, queue)
@@ -492,7 +487,7 @@ func TestDryRun(t *testing.T) {
 		batchDB := newMockBatchDB()
 		queue := mock.NewMockBatchPriorityQueueClient()
 
-		item := newTestBatchItem("job-1", "dead-processor", openai.BatchStatusValidating, sloTag(futureSLO()))
+		item := newTestBatchItem("job-1", "dead-processor", openai.BatchStatusValidating, futureSLO())
 		storeItems(t, batchDB, item)
 
 		r, resultCh := newTestDryRunReconciler(t, batchDB, queue)

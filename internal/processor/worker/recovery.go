@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -400,16 +399,10 @@ func (p *Processor) extractRequestCounts(dbItem *db.BatchItem) *openai.BatchRequ
 }
 
 // extractRecoverySLO recovers the exact SLO deadline for queue re-enqueue.
-// Prefer the stored microsecond tag so later CancelBatch can reconstruct the same queue score.
 func (p *Processor) extractRecoverySLO(dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) (*time.Time, error) {
-	if dbItem != nil {
-		if sloStr, ok := dbItem.Tags[batch_types.TagSLO]; ok {
-			sloMicro, err := strconv.ParseInt(sloStr, 10, 64)
-			if err == nil {
-				slo := time.UnixMicro(sloMicro).UTC()
-				return &slo, nil
-			}
-		}
+	if dbItem != nil && dbItem.Priority > 0 {
+		slo := time.UnixMicro(dbItem.Priority).UTC()
+		return &slo, nil
 	}
 
 	if jobInfo.BatchJob.ExpiresAt != nil {
