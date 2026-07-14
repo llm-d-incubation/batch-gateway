@@ -20,12 +20,14 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/batch"
 	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/common"
@@ -46,11 +48,11 @@ type testServer struct {
 	URL    string
 	Client *http.Client
 
-	batchDB  *dbmock.MockDBClient[dbapi.BatchItem, dbapi.BatchQuery]
-	fileDB   *dbmock.MockDBClient[dbapi.FileItem, dbapi.FileQuery]
-	queue    *dbmock.MockBatchPriorityQueueClient
-	event    *dbmock.MockBatchEventChannelClient
-	status   *dbmock.MockBatchStatusClient
+	batchDB *dbmock.MockDBClient[dbapi.BatchItem, dbapi.BatchQuery]
+	fileDB  *dbmock.MockDBClient[dbapi.FileItem, dbapi.FileQuery]
+	queue   *dbmock.MockBatchPriorityQueueClient
+	event   *dbmock.MockBatchEventChannelClient
+	status  *dbmock.MockBatchStatusClient
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -68,18 +70,41 @@ func newTestServer(t *testing.T) *testServer {
 	event := dbmock.NewMockBatchEventChannelClient()
 	statusClient := dbmock.NewMockBatchStatusClient()
 
+	// Mirror Postgres PQDelete: atomically transition cancelled jobs in the DB.
+	queue.OnDelete = func(ctx context.Context, id string) error {
+		items, _, _, err := batchDB.DBGet(ctx,
+			&dbapi.BatchQuery{BaseQuery: dbapi.BaseQuery{IDs: []string{id}}},
+			true, 0, 1)
+		if err != nil || len(items) == 0 {
+			return err
+		}
+		item := items[0]
+		var statusInfo map[string]any
+		if err := json.Unmarshal(item.Status, &statusInfo); err != nil {
+			return err
+		}
+		statusInfo["status"] = "cancelled"
+		statusInfo["cancelled_at"] = time.Now().UTC().Unix()
+		newStatus, err := json.Marshal(statusInfo)
+		if err != nil {
+			return err
+		}
+		item.Status = newStatus
+		return batchDB.DBUpdate(ctx, item, nil)
+	}
+
 	filesClient, err := fsclient.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create fs client: %v", err)
 	}
 
 	clients := &clientset.Clientset{
-		File:     filesClient,
-		BatchDB:  batchDB,
-		FileDB:   fileDB,
-		Queue:    queue,
-		Event:    event,
-		Status:   statusClient,
+		File:    filesClient,
+		BatchDB: batchDB,
+		FileDB:  fileDB,
+		Queue:   queue,
+		Event:   event,
+		Status:  statusClient,
 	}
 
 	config := &common.ServerConfig{
@@ -116,13 +141,13 @@ func newTestServer(t *testing.T) *testServer {
 	})
 
 	return &testServer{
-		URL:      srv.URL,
-		Client:   srv.Client(),
-		batchDB:  batchDB,
-		fileDB:   fileDB,
-		queue:    queue,
-		event:    event,
-		status:   statusClient,
+		URL:     srv.URL,
+		Client:  srv.Client(),
+		batchDB: batchDB,
+		fileDB:  fileDB,
+		queue:   queue,
+		event:   event,
+		status:  statusClient,
 	}
 }
 

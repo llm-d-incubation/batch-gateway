@@ -31,6 +31,11 @@ var _ api.BatchPriorityQueueClient = (*MockBatchPriorityQueueClient)(nil)
 type MockBatchPriorityQueueClient struct {
 	mu    sync.Mutex
 	queue []*api.BatchJobPriority
+
+	// OnDelete is called when PQDelete successfully removes a job from the
+	// queue. This mirrors the Postgres PQDelete behavior of atomically
+	// transitioning the job to cancelled in the DB.
+	OnDelete func(ctx context.Context, id string) error
 }
 
 func NewMockBatchPriorityQueueClient() *MockBatchPriorityQueueClient {
@@ -109,6 +114,14 @@ func (m *MockBatchPriorityQueueClient) PQDelete(ctx context.Context, jobPriority
 		if jp.ID == jobPriority.ID {
 			// Remove the item
 			m.queue = append(m.queue[:i], m.queue[i+1:]...)
+			if m.OnDelete != nil {
+				m.mu.Unlock()
+				err := m.OnDelete(ctx, jp.ID)
+				m.mu.Lock()
+				if err != nil {
+					return 0, err
+				}
+			}
 			return 1, nil
 		}
 	}

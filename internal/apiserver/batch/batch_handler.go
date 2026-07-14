@@ -517,25 +517,37 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to remove from the priority queue first.
+	// PQDelete atomically transitions the job to cancelled (with cancelled_at)
+	// if it is still unclaimed. Returns 1 if cancelled, 0 if already claimed.
 	nDeleted, err := c.clients.Queue.PQDelete(ctx, &api.BatchJobPriority{ID: batch.ID})
 	if err != nil {
 		logger.Error(err, "failed to remove batch from queue")
 		common.WriteInternalServerError(w, r)
 		return
 	}
-	removedFromQueue := nDeleted > 0
 
-	if removedFromQueue {
-		// Job was in queue (not yet being processed) - directly cancel it
-		batch.Status = openai.BatchStatusCancelled
-		cancelledAt := time.Now().UTC().Unix()
-		batch.CancelledAt = &cancelledAt
-	} else {
-		// Job is being processed - mark as cancelling and send cancel event
-		batch.Status = openai.BatchStatusCancelling
-		cancellingAt := time.Now().UTC().Unix()
-		batch.CancellingAt = &cancellingAt
+	if nDeleted > 0 {
+		// Job was in queue — PQDelete already transitioned it to cancelled.
+		// Re-read the updated state and return it.
+		freshItem, apiErr := c.getBatchItemFromDB(r, "cancel")
+		if apiErr != nil {
+			common.WriteAPIError(w, r, *apiErr)
+			return
+		}
+		freshBatch, convErr := converter.DBItemToBatch(freshItem)
+		if convErr != nil {
+			logger.Error(convErr, "failed to convert database item to batch")
+			common.WriteInternalServerError(w, r)
+			return
+		}
+		common.WriteJSONResponse(w, r, http.StatusOK, freshBatch)
+		return
 	}
+
+	// Job is being processed — mark as cancelling and send cancel event.
+	batch.Status = openai.BatchStatusCancelling
+	cancellingAt := time.Now().UTC().Unix()
+	batch.CancellingAt = &cancellingAt
 
 	// Persist the status change *before* sending the cancel event to prevent a
 	// write-write race between the API server and the worker.
@@ -564,21 +576,19 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the job is being processed, send the cancel event *after* DB update succeeds.
-	if !removedFromQueue {
-		event := []api.BatchEvent{
-			{
-				ID:   batch.ID,
-				Type: api.BatchEventCancel,
-				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
-			},
-		}
-		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
-		if err != nil {
-			logger.Error(err, "failed to send cancel event")
-			common.WriteInternalServerError(w, r)
-			return
-		}
+	// Send the cancel event *after* DB update succeeds.
+	event := []api.BatchEvent{
+		{
+			ID:   batch.ID,
+			Type: api.BatchEventCancel,
+			TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
+		},
+	}
+	_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
+	if err != nil {
+		logger.Error(err, "failed to send cancel event")
+		common.WriteInternalServerError(w, r)
+		return
 	}
 
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)
