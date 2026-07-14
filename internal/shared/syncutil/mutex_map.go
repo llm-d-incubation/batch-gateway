@@ -66,6 +66,16 @@ func (mm *MutexMap[K, V]) Range(fn func(K, V) bool) {
 	}
 }
 
+func (mm *MutexMap[K, V]) Keys() []K {
+	mm.mu.Lock()
+	keys := make([]K, 0, len(mm.m))
+	for k := range mm.m {
+		keys = append(keys, k)
+	}
+	mm.mu.Unlock()
+	return keys
+}
+
 func (mm *MutexMap[K, V]) Len() int {
 	mm.mu.Lock()
 	n := len(mm.m)

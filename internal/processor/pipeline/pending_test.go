@@ -32,11 +32,20 @@ func TestPendingRequests(t *testing.T) {
 		}
 	})
 
-	t.Run("resolve skips lookup when CustomID already set", func(t *testing.T) {
+	t.Run("resolve with CustomID still decrements pending count", func(t *testing.T) {
 		p := NewPendingRequests()
-		result := &ResultItem{RequestID: "r1", CustomID: "already-set"}
+		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
+
+		result := &ResultItem{RequestID: "r1", CustomID: "c1"}
 		if !p.Resolve(result) {
 			t.Fatal("Resolve returned false for result with CustomID")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		p.Wait(ctx)
+		if ctx.Err() != nil {
+			t.Fatal("Wait blocked after resolving request with pre-set CustomID")
 		}
 	})
 

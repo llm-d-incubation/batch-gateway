@@ -107,7 +107,7 @@ func (c *ResultCollector) flushFiles() (err error) {
 		c.logger.Error(err, "Failed to flush output file")
 	}
 	if errErr := c.errors.Flush(); errErr != nil {
-		c.logger.Error(err, "Failed to flush error file")
+		c.logger.Error(errErr, "Failed to flush error file")
 		if err == nil {
 			err = errErr
 		}

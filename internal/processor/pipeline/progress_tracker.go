@@ -96,11 +96,12 @@ func (pt *ProgressTracker) Counts() *openai.BatchRequestCounts {
 	}
 }
 
-// AddFailed adds to the failed counter. Called after Run returns for
-// undispatched request draining.
+// AddFailed adds to the failed counter and marks the tracker as dirty
+// so the next tick pushes the update.
 func (pt *ProgressTracker) AddFailed(n int64) {
 	pt.mu.Lock()
 	pt.failed += n
+	pt.dirty = true
 	pt.mu.Unlock()
 }
 

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -79,6 +80,9 @@ func (b *ResultBroadcaster) Run(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					continue
+				}
 				incomingCh <- resultMsg{err: err}
 				return
 			}
@@ -101,21 +105,23 @@ func (b *ResultBroadcaster) Run(ctx context.Context) {
 			}
 			result := asyncResult(msg.resp, b.logger)
 
-			b.subscribers.Range(func(ch chan<- ResultItem, _ struct{}) bool {
-
-				defer func() {
-					if r := recover(); r != nil {
-						b.logger.Info("Broadcast send recovered (subscriber likely unsubscribed)",
-							"requestID", result.RequestID, "panic", r)
-					}
-				}()
-
-				ch <- result
-
-				return true
-			})
+			for _, ch := range b.subscribers.Keys() {
+				b.safeChannelSend(result, ch)
+			}
 		}
 	}
+}
+
+// safeChannelSend sends to `ch` and handles the panic if the channel was closed concurrently
+// (we received an unsubscription request). It is safe to just ignore the panic.
+func (b *ResultBroadcaster) safeChannelSend(result ResultItem, ch chan<- ResultItem) {
+	defer func() {
+		if r := recover(); r != nil {
+			b.logger.Info("Broadcast send recovered (subscriber likely unsubscribed)",
+				"requestID", result.RequestID, "panic", r)
+		}
+	}()
+	ch <- result
 }
 
 func asyncResult(resp *inference.GenerateResponse, logger logr.Logger) ResultItem {

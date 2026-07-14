@@ -36,6 +36,13 @@ func (p *PendingRequests) Store(msg RequestItem) {
 // Returns false only for broadcast results that belong to another job.
 func (p *PendingRequests) Resolve(result *ResultItem) bool {
 	if result.CustomID != "" {
+		// Already has metadata (inline error, cancel). Still remove from
+		// the pending map so Wait() doesn't block forever.
+		if _, ok := p.m.LoadAndDelete(result.RequestID); ok {
+			if p.count.Add(-1) == 0 {
+				p.once.Do(func() { close(p.done) })
+			}
+		}
 		return true
 	}
 	if msg, ok := p.m.LoadAndDelete(result.RequestID); ok {

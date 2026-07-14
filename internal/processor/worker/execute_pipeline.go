@@ -111,16 +111,16 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 	// Finally, start and wait for completion.
 	counts, execErr := executor.Execute(requestAbortCtx)
 
-	// Handle errors and cancellations.
+	// Handle cancellations before errors — a cancel may have caused the error.
 	switch {
-	case execErr != nil:
-		return counts, execErr
 	case sloCtx.Err() == context.DeadlineExceeded:
 		return counts, errExpired
 	case userCancelCtx.Err() != nil:
 		return counts, errCancelled
 	case ctx.Err() != nil:
 		return counts, errShutdown
+	case execErr != nil:
+		return counts, execErr
 	}
 
 	return counts, nil

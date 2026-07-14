@@ -21,8 +21,6 @@ import (
 )
 
 // PlanFileSource reads plan files and input JSONL to produce RequestItems.
-// After Produce returns, call Unproduced() to get the count of entries
-// that were not produced (e.g. due to context cancellation).
 type PlanFileSource struct {
 	inputFile          *os.File
 	plansDir           string
@@ -66,7 +64,7 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 	}
 }
 
-func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
+func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
 	defer close(outgoingRequestCh)
 
 	for safeModelID, modelID := range s.modelMap.SafeToModel {
@@ -77,6 +75,9 @@ func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pip
 		}
 
 		for _, entry := range entries {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			item, err := s.readEntry(entry, modelID)
 			if err != nil {
 				return err
