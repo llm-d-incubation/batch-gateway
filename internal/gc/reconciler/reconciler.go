@@ -199,8 +199,6 @@ func (r *Reconciler) fetchNonTerminalJobs(ctx context.Context) ([]*db.BatchItem,
 	return all, nil
 }
 
-// triageOrphan decides whether to re-enqueue or expire an orphaned job
-// based on its SLO.
 func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result *Result) {
 	ctx = logr.NewContext(ctx, logr.FromContextOrDiscard(ctx).WithValues("jobId", job.ID))
 	ctx, span := uotel.StartSpan(ctx, "reconciler.triage")
@@ -208,41 +206,44 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 	span.SetAttributes(attribute.String(uotel.AttrBatchID, job.ID))
 	logger := logr.FromContextOrDiscard(ctx)
 
-	sloExpired := isSLOExpired(job)
-
-	if sloExpired {
-		r.expireOrphan(ctx, job, result, logger)
-	} else {
-		r.reEnqueueOrphan(ctx, job, result, logger)
-	}
-}
-
-// expireOrphan transitions an orphaned job to failed when its SLO has expired.
-func (r *Reconciler) expireOrphan(ctx context.Context, job *db.BatchItem, result *Result, logger logr.Logger) {
 	var statusInfo openai.BatchStatusInfo
 	if err := json.Unmarshal(job.Status, &statusInfo); err != nil {
-		logger.Error(err, "Reconciler: failed to unmarshal job status")
+		logger.Error(err, "Reconciler: failed to unmarshal orphan status")
 		result.Errors++
 		return
 	}
 	span.SetAttributes(attribute.String("batch.status", string(statusInfo.Status)))
 
-	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(&statusInfo, openai.BatchStatusFailed, nil, nil)
+	switch statusInfo.Status {
+	case openai.BatchStatusCancelling:
+		r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusCancelled, result, logger)
+	default:
+		if isSLOExpired(job) {
+			r.transitionOrphan(ctx, job, &statusInfo, openai.BatchStatusFailed, result, logger)
+		} else {
+			r.reEnqueueOrphan(ctx, job, result, logger)
+		}
+	}
+}
+
+// transitionOrphan transitions an orphaned job to the given terminal status.
+func (r *Reconciler) transitionOrphan(ctx context.Context, job *db.BatchItem, statusInfo *openai.BatchStatusInfo, target openai.BatchStatus, result *Result, logger logr.Logger) {
+	updatedStatus, err := batch_utils.BuildUpdatedStatusInfo(statusInfo, target, nil, nil)
 	if err != nil {
-		logger.Error(err, "Reconciler: failed to build failed status")
+		logger.Error(err, "Reconciler: failed to build target status", "target", target)
 		result.Errors++
 		return
 	}
 
 	updatedBytes, err := json.Marshal(updatedStatus)
 	if err != nil {
-		logger.Error(err, "Reconciler: failed to marshal failed status")
+		logger.Error(err, "Reconciler: failed to marshal target status", "target", target)
 		result.Errors++
 		return
 	}
 
 	if r.dryRun {
-		logger.Info("Reconciler: dry-run: would fail expired orphan")
+		logger.Info("Reconciler: dry-run: would transition orphan", "target", target)
 		result.Expired++
 		return
 	}
@@ -253,16 +254,16 @@ func (r *Reconciler) expireOrphan(ctx context.Context, job *db.BatchItem, result
 	}
 	if err := r.batchDB.DBUpdate(ctx, updateItem, job.Status); err != nil {
 		if errors.Is(err, db.ErrConflict) {
-			logger.Info("Reconciler: CAS conflict during orphan expiry")
+			logger.Info("Reconciler: CAS conflict during orphan transition", "target", target)
 			result.Conflicts++
 		} else {
-			logger.Error(err, "Reconciler: failed to fail expired orphan")
+			logger.Error(err, "Reconciler: failed to transition orphan", "target", target)
 			result.Errors++
 		}
 		return
 	}
 
-	logger.Info("Reconciler: orphan failed (SLO expired)")
+	logger.Info("Reconciler: orphan transitioned", "target", target)
 	result.Expired++
 }
 

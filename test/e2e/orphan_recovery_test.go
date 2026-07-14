@@ -43,19 +43,16 @@ func testOrphanRecovery(t *testing.T) {
 }
 
 // doTestHardCrashOrphanRecovery submits a batch with long-running requests,
-// force-kills the processor pod and scales the StatefulSet to 0, then verifies
-// the GC reconciler transitions the orphaned job to failed.
-//
-// Since the errShutdown handler does NOT re-enqueue, the job stays in_progress
-// in the DB regardless of whether SIGTERM or SIGKILL kills the process. Scaling
-// scaling to 0 ensures no replacement pod can self-recover the job.
+// scales the processor StatefulSet to 0 (which kills the pod), then verifies
+// the GC reconciler re-enqueues the orphaned job (SLO is still valid with a
+// 24h window). After scaling back to 1, the new processor picks up the
+// re-enqueued job and completes it.
 //
 // Timeline:
 //  1. Submit batch → wait for in_progress
-//  2. Force-kill pod + scale to 0 (no replacement, no re-enqueue)
-//  3. Reconciler detects orphan (staleness threshold = reconciler interval)
-//  4. in_progress + stale/missing in-flight → reconciler transitions to failed
-//  5. Scale processor back to 1 (cleanup for subsequent tests)
+//  2. Scale to 0 (kills pod, no replacement available)
+//  3. Reconciler detects orphan → re-enqueues (SLO valid)
+//  4. Scale back to 1 → processor picks up job and completes it
 func doTestHardCrashOrphanRecovery(t *testing.T) {
 	t.Helper()
 
@@ -66,7 +63,7 @@ func doTestHardCrashOrphanRecovery(t *testing.T) {
 	sts := fmt.Sprintf("%s-processor", testHelmRelease)
 
 	var lines []string
-	for i := 1; i <= 50; i++ {
+	for i := 1; i <= 10; i++ {
 		lines = append(lines, fmt.Sprintf(
 			`{"custom_id":"orphan-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
@@ -77,17 +74,22 @@ func doTestHardCrashOrphanRecovery(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	killAndScaleDown(t, sts)
-	t.Cleanup(func() { scaleUp(t, sts) })
 
-	// Wait for the reconciler to detect the orphan and transition it to failed.
-	// With reconciler interval=60s (dev-deploy):
-	//   - Staleness threshold: 60s after last heartbeat (or immediate if in-flight
-	//     entry was deleted by the processor's defer before process death)
-	//   - Next cycle: up to 60s after staleness
-	//   - Total: ~2m + buffer
-	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusFailed)
+	// The reconciler detects the orphan and re-enqueues it (SLO still valid).
+	// Wait for the job to go back to validating (queued, no processor).
+	waitForBatchStatus(t, batchID, 3*time.Minute, openai.BatchStatusValidating)
+	t.Log("orphan re-enqueued to validating")
 
-	t.Logf("orphan recovery: batch %s reached %s", batchID, finalBatch.Status)
+	// Scale back to 1 so the processor picks up the re-enqueued job.
+	scaleUp(t, sts)
+
+	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	t.Logf("orphan recovery: batch %s reached %s (completed=%d, failed=%d, total=%d)",
+		batchID, finalBatch.Status,
+		finalBatch.RequestCounts.Completed,
+		finalBatch.RequestCounts.Failed,
+		finalBatch.RequestCounts.Total)
 }
 
 // doTestCancellingOrphanRecovery submits a batch, waits for it to reach

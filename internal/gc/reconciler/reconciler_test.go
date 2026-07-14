@@ -196,6 +196,22 @@ func TestTriageOrphan(t *testing.T) {
 			checkQueue:      true,
 			wantInQueue:     true,
 		},
+		{
+			name:            "cancelling orphan transitions to cancelled regardless of SLO",
+			status:          openai.BatchStatusCancelling,
+			priority:        futureSLO(),
+			wantExpired:     1,
+			wantReEnqueued:  0,
+			wantFinalStatus: openai.BatchStatusCancelled,
+		},
+		{
+			name:            "cancelling orphan with expired SLO transitions to cancelled",
+			status:          openai.BatchStatusCancelling,
+			priority:        expiredSLO(),
+			wantExpired:     1,
+			wantReEnqueued:  0,
+			wantFinalStatus: openai.BatchStatusCancelled,
+		},
 	}
 
 	for _, tc := range tests {
