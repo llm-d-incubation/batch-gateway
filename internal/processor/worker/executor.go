@@ -186,8 +186,8 @@ func (ep *executionProgress) counts() *openai.BatchRequestCounts {
 // SLO expiry or SIGTERM. Its sole purpose is to let the drain phase distinguish user cancel from
 // SLO expiry.
 func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
-	// Inject execute-job span into requestAbortCtx so all processModel
-	// goroutines inherit it without needing mainCtx for tracing.
+	// requestAbortCtx is derived from sloCtx (not ctx), so it doesn't carry
+	// the execute-job span. Graft it so process-model spans nest correctly.
 	requestAbortCtx = trace.ContextWithSpan(requestAbortCtx, trace.SpanFromContext(ctx))
 
 	logger := logr.FromContextOrDiscard(ctx)
@@ -205,7 +205,7 @@ func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx conte
 
 	uotel.SetAttr(ctx,
 		attribute.Int(uotel.AttrModelCount, len(modelMap.SafeToModel)),
-		attribute.Int64(uotel.AttrRequestTotal, modelMap.LineCount),
+		attribute.Int64(uotel.AttrInputLineCount, modelMap.LineCount),
 	)
 
 	// Early SLO check: if the deadline already fired before execution begins (e.g. SLO expired

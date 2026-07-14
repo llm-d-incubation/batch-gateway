@@ -179,8 +179,6 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
 		if !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
 			logger.Error(err, "Pre-processing failed")
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "pre-process failed")
 		}
 		p.handleJobError(ctx, params, err)
 		// No RecordJobProcessingDuration here: preprocessing is ingestion (parsing, plan
@@ -212,11 +210,6 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	execSpan.End()
 	params.requestCounts = requestCounts
 	if execErr != nil {
-		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
-		if !errors.Is(execErr, errExpired) && !errors.Is(execErr, errCancelled) && !errors.Is(execErr, errShutdown) {
-			span.RecordError(execErr)
-			span.SetStatus(codes.Error, "execution failed")
-		}
 		p.handleJobError(ctx, params, execErr)
 		// Record processing duration for any job that ran (partially or fully).
 		// executeJob always returns non-nil counts alongside its sentinel errors
