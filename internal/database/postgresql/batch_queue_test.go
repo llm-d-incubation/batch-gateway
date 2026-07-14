@@ -101,8 +101,8 @@ func TestPQDequeue(t *testing.T) {
 		defer mock.Close()
 
 		slo := time.Now().Add(time.Hour)
-		rows := pgxmock.NewRows([]string{"id", "priority"}).
-			AddRow("batch-1", slo.UnixMicro())
+		rows := pgxmock.NewRows([]string{"id", "priority", "epoch"}).
+			AddRow("batch-1", slo.UnixMicro(), int64(1))
 
 		mock.ExpectQuery("WITH claimed AS").
 			WithArgs(1, testProcessorID).
@@ -121,6 +121,9 @@ func TestPQDequeue(t *testing.T) {
 		if result[0].SLO.UnixMicro() != slo.UnixMicro() {
 			t.Errorf("expected SLO %v, got %v", slo.UnixMicro(), result[0].SLO.UnixMicro())
 		}
+		if result[0].Epoch != 1 {
+			t.Errorf("expected Epoch 1, got %d", result[0].Epoch)
+		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("unmet expectations: %v", err)
 		}
@@ -130,7 +133,7 @@ func TestPQDequeue(t *testing.T) {
 		client, mock := newTestQueueClient(t)
 		defer mock.Close()
 
-		rows := pgxmock.NewRows([]string{"id", "priority"})
+		rows := pgxmock.NewRows([]string{"id", "priority", "epoch"})
 
 		mock.ExpectQuery("WITH claimed AS").
 			WithArgs(1, testProcessorID).
@@ -154,9 +157,9 @@ func TestPQDequeue(t *testing.T) {
 
 		slo1 := time.Now().Add(time.Hour)
 		slo2 := time.Now().Add(2 * time.Hour)
-		rows := pgxmock.NewRows([]string{"id", "priority"}).
-			AddRow("batch-1", slo1.UnixMicro()).
-			AddRow("batch-2", slo2.UnixMicro())
+		rows := pgxmock.NewRows([]string{"id", "priority", "epoch"}).
+			AddRow("batch-1", slo1.UnixMicro(), int64(1)).
+			AddRow("batch-2", slo2.UnixMicro(), int64(1))
 
 		mock.ExpectQuery("WITH claimed AS").
 			WithArgs(5, testProcessorID).

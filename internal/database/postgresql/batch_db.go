@@ -47,6 +47,7 @@ func buildNonTerminalCondition() string {
 const (
 	colProcessorID = "processor_id"
 	colPriority    = "priority"
+	colEpoch       = "epoch"
 )
 
 // Compile-time check: batchDescriptor implements TableDescriptor.
@@ -55,9 +56,11 @@ var _ TableDescriptor = (*batchDescriptor)(nil)
 // batchDescriptor implements TableDescriptor for batch items.
 type batchDescriptor struct{}
 
-func (batchDescriptor) TableName() string      { return "batch_items" }
-func (batchDescriptor) Schema() string         { return batchSchemaSql }
-func (batchDescriptor) ExtraColumns() []string { return []string{colProcessorID, colPriority} }
+func (batchDescriptor) TableName() string { return "batch_items" }
+func (batchDescriptor) Schema() string    { return batchSchemaSql }
+func (batchDescriptor) ExtraColumns() []string {
+	return []string{colProcessorID, colPriority, colEpoch}
+}
 
 // PostgresBatchDBClient implements api.BatchDBClient using PostgreSQL.
 type PostgresBatchDBClient struct {
@@ -93,6 +96,7 @@ func (c *PostgresBatchDBClient) DBStore(ctx context.Context, item *api.BatchItem
 	if err = c.store(ctx, &item.BaseIndexes, &item.BaseContents, map[string]any{
 		colProcessorID: item.ProcessorID,
 		colPriority:    item.Priority,
+		colEpoch:       item.Epoch,
 	}); err != nil {
 		return
 	}
@@ -130,11 +134,13 @@ func (c *PostgresBatchDBClient) DBGet(
 	for i := range indexes {
 		processorID, _ := extras[i][colProcessorID].(string)
 		priority, _ := extras[i][colPriority].(int64)
+		epoch, _ := extras[i][colEpoch].(int64)
 		items[i] = &api.BatchItem{
 			BaseIndexes:  *indexes[i],
 			BaseContents: *contents[i],
 			ProcessorID:  processorID,
 			Priority:     priority,
+			Epoch:        epoch,
 		}
 	}
 
@@ -146,7 +152,15 @@ func (c *PostgresBatchDBClient) DBUpdate(ctx context.Context, item *api.BatchIte
 		err = fmt.Errorf("item is nil")
 		return
 	}
-	if err = c.update(ctx, &item.BaseIndexes, &item.BaseContents, expectedStatus); err != nil {
+	var epochFence map[string]any
+	if item.Epoch > 0 {
+		epochFence = map[string]any{colEpoch: item.Epoch}
+	}
+	var rawSets []string
+	if item.BumpEpoch {
+		rawSets = append(rawSets, colEpoch+" = "+colEpoch+" + 1")
+	}
+	if err = c.update(ctx, &item.BaseIndexes, &item.BaseContents, expectedStatus, epochFence, rawSets); err != nil {
 		return
 	}
 	return

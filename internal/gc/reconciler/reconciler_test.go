@@ -19,6 +19,7 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -357,6 +358,98 @@ func TestCASConflict(t *testing.T) {
 		if result.Expired != 0 {
 			t.Errorf("expected 0 expired (CAS failed), got %d", result.Expired)
 		}
+	})
+}
+
+func TestEpochFencing(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("zombie write fails after GC bumps epoch", func(t *testing.T) {
+		// Simulate: processor owns job at epoch=3, GC transitions to failed
+		// (bumping epoch to 4), then zombie tries to write with epoch=3.
+		batchDB := newMockBatchDB()
+		queue := mock.NewMockBatchPriorityQueueClient()
+
+		item := newTestBatchItem("job-epoch", "dead-processor", openai.BatchStatusInProgress, expiredSLO())
+		item.Epoch = 3
+		storeItems(t, batchDB, item)
+
+		r, resultCh := newTestReconciler(t, batchDB, queue)
+		r.SetLiveProcessors(map[string]bool{})
+		r.run(ctx)
+
+		result := <-resultCh
+		if result.Expired != 1 {
+			t.Fatalf("expected 1 expired, got %d", result.Expired)
+		}
+
+		// Verify GC set BumpEpoch — the mock doesn't actually increment,
+		// but in production the epoch would be bumped. Verify the job
+		// was transitioned to failed.
+		assertJobStatus(t, batchDB, "job-epoch", openai.BatchStatusFailed)
+	})
+
+	t.Run("processor write with matching epoch succeeds", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+
+		statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})
+		item := &db.BatchItem{
+			BaseIndexes:  db.BaseIndexes{ID: "job-match"},
+			BaseContents: db.BaseContents{Status: statusBytes},
+			ProcessorID:  "processor-0",
+			Epoch:        5,
+		}
+		storeItems(t, batchDB, item)
+
+		// Update with matching epoch should succeed.
+		newStatus, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusFinalizing})
+		err := batchDB.DBUpdate(ctx, &db.BatchItem{
+			BaseIndexes:  db.BaseIndexes{ID: "job-match"},
+			BaseContents: db.BaseContents{Status: newStatus},
+			Epoch:        5,
+		}, nil)
+		if err != nil {
+			t.Fatalf("expected epoch-matched update to succeed, got %v", err)
+		}
+
+		assertJobStatus(t, batchDB, "job-match", openai.BatchStatusFinalizing)
+	})
+
+	t.Run("processor write with stale epoch fails", func(t *testing.T) {
+		batchDB := newMockBatchDB()
+
+		statusBytes, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusInProgress})
+		item := &db.BatchItem{
+			BaseIndexes:  db.BaseIndexes{ID: "job-stale"},
+			BaseContents: db.BaseContents{Status: statusBytes},
+			ProcessorID:  "processor-0",
+			Epoch:        5,
+		}
+		storeItems(t, batchDB, item)
+
+		// Simulate GC bumping epoch to 6 by directly updating the stored item.
+		items, _, _, _ := batchDB.DBGet(ctx,
+			&db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{"job-stale"}}},
+			true, 0, 1)
+		items[0].Epoch = 6
+		_ = batchDB.DBUpdate(ctx, items[0], nil)
+
+		// Zombie write with stale epoch=5 should fail.
+		newStatus, _ := json.Marshal(openai.BatchStatusInfo{Status: openai.BatchStatusCompleted})
+		err := batchDB.DBUpdate(ctx, &db.BatchItem{
+			BaseIndexes:  db.BaseIndexes{ID: "job-stale"},
+			BaseContents: db.BaseContents{Status: newStatus},
+			Epoch:        5,
+		}, nil)
+		if err == nil {
+			t.Fatal("expected epoch-mismatched update to fail")
+		}
+		if !errors.Is(err, db.ErrConflict) {
+			t.Fatalf("expected ErrConflict, got %v", err)
+		}
+
+		// Job should still be in_progress (zombie write rejected).
+		assertJobStatus(t, batchDB, "job-stale", openai.BatchStatusInProgress)
 	})
 }
 

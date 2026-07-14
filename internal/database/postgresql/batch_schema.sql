@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS batch_items (
     spec          JSONB,
     status        JSONB,
     processor_id  TEXT,
-    priority      BIGINT
+    priority      BIGINT,
+    epoch         BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_batch_items_tenant_id ON batch_items(tenant_id);

@@ -18,6 +18,7 @@ limitations under the License.
 package mock
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -128,9 +129,36 @@ func (m *MockDBClient[T, Q]) DBUpdate(ctx context.Context, item *T, expectedStat
 	if id == "" {
 		return fmt.Errorf("item has empty ID")
 	}
-	if _, ok := m.items.Load(id); !ok {
+	existing, ok := m.items.Load(id)
+	if !ok {
 		return fmt.Errorf("cannot update item with ID '%s': item doesn't exist", id)
 	}
+
+	if existingItem, ok := existing.(*T); ok {
+		val := reflect.ValueOf(*existingItem)
+
+		// CAS: check expectedStatus matches current Status field.
+		if expectedStatus != nil {
+			statusField := val.FieldByName("Status")
+			if statusField.IsValid() && statusField.Kind() == reflect.Slice {
+				currentStatus, _ := statusField.Interface().([]byte)
+				if !bytes.Equal(currentStatus, expectedStatus) {
+					return fmt.Errorf("DBUpdate: %w", api.ErrConflict)
+				}
+			}
+		}
+
+		// Epoch fencing: if the update item has Epoch > 0, check it matches.
+		updateVal := reflect.ValueOf(*item)
+		epochField := updateVal.FieldByName("Epoch")
+		if epochField.IsValid() && epochField.Kind() == reflect.Int64 && epochField.Int() > 0 {
+			existingEpoch := val.FieldByName("Epoch")
+			if existingEpoch.IsValid() && existingEpoch.Int() != epochField.Int() {
+				return fmt.Errorf("DBUpdate: %w", api.ErrConflict)
+			}
+		}
+	}
+
 	m.items.Store(id, item)
 	return nil
 }

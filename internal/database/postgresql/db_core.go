@@ -358,8 +358,11 @@ func (c *pgCore) get(
 // update updates the dynamic fields of an existing item.
 // When expectedStatus is non-nil, the update is conditional (CAS): it only
 // succeeds if the current status column matches expectedStatus exactly.
-// Returns api.ErrConflict on mismatch.
-func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api.BaseContents, expectedStatus []byte) error {
+// extraConditions add additional equality checks to the WHERE clause (e.g.,
+// epoch fencing). rawSetClauses are appended verbatim to the SET clause
+// (e.g., "epoch = epoch + 1"). Returns api.ErrConflict when any condition
+// prevents the update from matching.
+func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api.BaseContents, expectedStatus []byte, extraConditions map[string]any, rawSetClauses []string) error {
 	if err := idx.Validate(); err != nil {
 		return err
 	}
@@ -393,10 +396,22 @@ func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api
 	whereClause := fmt.Sprintf(colID+" = $%d", argIdx)
 	argIdx++
 
+	hasConditions := false
 	if len(expectedStatus) > 0 {
 		args = append(args, expectedStatus)
 		whereClause += fmt.Sprintf(" AND "+colStatus+" = $%d", argIdx)
+		argIdx++
+		hasConditions = true
 	}
+
+	for col, val := range extraConditions {
+		args = append(args, val)
+		whereClause += fmt.Sprintf(" AND %s = $%d", col, argIdx)
+		argIdx++
+		hasConditions = true
+	}
+
+	setClauses = append(setClauses, rawSetClauses...)
 
 	sql := fmt.Sprintf(
 		"UPDATE %s SET %s WHERE %s",
@@ -409,7 +424,7 @@ func (c *pgCore) update(ctx context.Context, idx *api.BaseIndexes, contents *api
 	}
 
 	if result.RowsAffected() == 0 {
-		if len(expectedStatus) > 0 {
+		if hasConditions {
 			return fmt.Errorf("DBUpdate: %w", api.ErrConflict)
 		}
 		return fmt.Errorf("DBUpdate: item %s not found", idx.ID)

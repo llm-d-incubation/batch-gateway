@@ -76,7 +76,8 @@ func (c *PostgresBatchQueueClient) PQEnqueue(ctx context.Context, jobPriority *a
 		`WITH re_enqueued AS (
 			UPDATE batch_items
 			SET processor_id = NULL,
-			    status = jsonb_set(status, '{status}', '"validating"')
+			    status = jsonb_set(status, '{status}', '"validating"'),
+			    epoch = epoch + 1
 			WHERE id = $1
 			  AND processor_id IS NOT NULL
 			  AND `+nonTerminalCondition+`
@@ -116,10 +117,11 @@ func (c *PostgresBatchQueueClient) PQDequeue(ctx context.Context, _ time.Duratio
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE batch_items
-		SET processor_id = $2
+		SET processor_id = $2,
+		    epoch = epoch + 1
 		FROM claimed
 		WHERE batch_items.id = claimed.id
-		RETURNING batch_items.id, batch_items.priority`,
+		RETURNING batch_items.id, batch_items.priority, batch_items.epoch`,
 		maxItems, c.processorID,
 	)
 	if err != nil {
@@ -130,13 +132,14 @@ func (c *PostgresBatchQueueClient) PQDequeue(ctx context.Context, _ time.Duratio
 	var result []*api.BatchJobPriority
 	for rows.Next() {
 		var id string
-		var priority int64
-		if err := rows.Scan(&id, &priority); err != nil {
+		var priority, epoch int64
+		if err := rows.Scan(&id, &priority, &epoch); err != nil {
 			return nil, fmt.Errorf("PQDequeue: scan: %w", err)
 		}
 		result = append(result, &api.BatchJobPriority{
-			ID:  id,
-			SLO: time.UnixMicro(priority),
+			ID:    id,
+			SLO:   time.UnixMicro(priority),
+			Epoch: epoch,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -173,7 +176,8 @@ func (c *PostgresBatchQueueClient) PQDelete(ctx context.Context, jobPriority *ap
 		SET status = jsonb_set(
 			jsonb_set(status, '{status}', '"cancelled"'),
 			'{cancelled_at}', to_jsonb($2::bigint)
-		)
+		),
+		    epoch = epoch + 1
 		FROM queued
 		WHERE batch_items.id = queued.id`,
 		jobPriority.ID, now,
