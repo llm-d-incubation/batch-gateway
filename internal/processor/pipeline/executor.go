@@ -48,13 +48,16 @@ func (je *JobExecutor) Execute(ctx context.Context) (*openai.BatchRequestCounts,
 	trackerCtx, trackerCancel := context.WithCancel(ctx)
 	trackerDone := make(chan struct{})
 	go func() {
-		_ = je.tracker.Run(trackerCtx)
+		err := je.tracker.Run(trackerCtx)
+		if err != nil {
+			je.logger.Error(err, "error on ProgressTracker shutdown for JobExecutor")
+		}
 		close(trackerDone)
 	}()
 
 	g.Go(func() error { return je.dispatcher.Run(ctx, requestCh, resultCh) })
 
-	g.Go(func() error { return je.collector.Drain(resultCh) })
+	g.Go(func() error { return je.collector.Drain(ctx, resultCh) })
 
 	g.Go(func() error { return je.source.Produce(ctx, requestCh) })
 

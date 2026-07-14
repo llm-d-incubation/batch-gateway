@@ -79,7 +79,7 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 	// The dispatcher forwards requests for processing.
 	pending := pipeline.NewPendingRequests()
 
-	// Broadcasters propagate asynchronous responses to subscribers
+	// Broadcasters propagate asynchronous responses to subscribers.
 	broadcasters := p.broadcasters.forModels(modelMap)
 
 	// The async dispatcher forwards requests to the async dispatcher

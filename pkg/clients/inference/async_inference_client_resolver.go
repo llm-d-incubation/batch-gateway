@@ -20,12 +20,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/llm-d-incubation/llm-d-async/producer"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/syncutil"
 )
 
 const asyncQueuePrefix = "llm-d-async:"
@@ -40,11 +41,20 @@ type AsyncClientConfig struct {
 // AsyncGatewayResolver routes models to shared AsyncInferenceClient instances.
 // Immutable after construction — safe for concurrent reads.
 type AsyncGatewayResolver struct {
-	pools           map[string]*asyncPool // model → pool
-	sharedClients   sync.Map              // model → *asyncSharedClient
+	pools           map[string]*asyncPool                          // model → pool
+	sharedClients   *syncutil.MutexMap[string, *asyncSharedClient] // model → shared client
 	closers         []io.Closer
 	clientFactories map[string]func() AsyncInferenceClient // test-only override
 	logger          logr.Logger
+}
+
+// Models returns all configured model IDs.
+func (r *AsyncGatewayResolver) Models() []string {
+	models := make([]string, 0, len(r.pools))
+	for m := range r.pools {
+		models = append(models, m)
+	}
+	return models
 }
 
 // SharedClientFor returns a shared client for the given model.
@@ -58,7 +68,7 @@ func (r *AsyncGatewayResolver) SharedClientFor(modelID string) AsyncInferenceCli
 		return nil
 	}
 	if c, ok := r.sharedClients.Load(modelID); ok {
-		return c.(*asyncSharedClient)
+		return c
 	}
 	pool, ok := r.pools[modelID]
 	if !ok {
@@ -66,7 +76,7 @@ func (r *AsyncGatewayResolver) SharedClientFor(modelID string) AsyncInferenceCli
 	}
 	c := newAsyncSharedClient(pool.producer, pool.pollTimeout, r.logger.WithValues("model", modelID))
 	actual, _ := r.sharedClients.LoadOrStore(modelID, c)
-	return actual.(*asyncSharedClient)
+	return actual
 }
 
 // NewTestAsyncResolver creates a resolver backed by factory functions instead of
@@ -137,5 +147,10 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 
 	closers = append(closers, rdb)
 
-	return &AsyncGatewayResolver{pools: pools, closers: closers, logger: logger}, nil
+	return &AsyncGatewayResolver{
+		pools:         pools,
+		sharedClients: syncutil.NewMutexMap[string, *asyncSharedClient](),
+		closers:       closers,
+		logger:        logger,
+	}, nil
 }

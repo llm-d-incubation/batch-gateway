@@ -2,7 +2,7 @@ package pipeline
 
 import (
 	"context"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -20,10 +20,11 @@ type ProgressUpdater interface {
 // ProgressTracker tracks request completion counts and pushes throttled
 // updates to the status store.
 type ProgressTracker struct {
+	mu        sync.Mutex
 	total     int64
-	completed atomic.Int64
-	failed    atomic.Int64
-	dirty     atomic.Bool
+	completed int64
+	failed    int64
+	dirty     bool
 	updater   ProgressUpdater
 	jobID     string
 	interval  time.Duration
@@ -39,16 +40,20 @@ func NewProgressTracker(total int64, updater ProgressUpdater, jobID string, logg
 	}
 }
 
-// RecordSuccess records a successful result. Non-blocking.
+// RecordSuccess records a successful result.
 func (pt *ProgressTracker) RecordSuccess(msg ResultItem) {
-	pt.completed.Add(1)
-	pt.dirty.Store(true)
+	pt.mu.Lock()
+	pt.completed++
+	pt.dirty = true
+	pt.mu.Unlock()
 }
 
-// RecordFailure records a failed request. Non-blocking.
+// RecordFailure records a failed request.
 func (pt *ProgressTracker) RecordFailure(err error) {
-	pt.failed.Add(1)
-	pt.dirty.Store(true)
+	pt.mu.Lock()
+	pt.failed++
+	pt.dirty = true
+	pt.mu.Unlock()
 }
 
 // Run starts the ticker that pushes throttled updates to the status store.
@@ -64,12 +69,16 @@ func (pt *ProgressTracker) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Use a detached context for the final push so that a cancelled
-			// ctx doesn't prevent the last progress update from reaching Redis.
-			pt.push(context.Background())
+			finalCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			pt.push(finalCtx)
 			return nil
 		case <-ticker.C:
-			if pt.dirty.CompareAndSwap(true, false) {
+			pt.mu.Lock()
+			dirty := pt.dirty
+			pt.dirty = false
+			pt.mu.Unlock()
+			if dirty {
 				pt.push(ctx)
 			}
 		}
@@ -78,17 +87,21 @@ func (pt *ProgressTracker) Run(ctx context.Context) error {
 
 // Counts returns the current request counts. Safe to call after Run returns.
 func (pt *ProgressTracker) Counts() *openai.BatchRequestCounts {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
 	return &openai.BatchRequestCounts{
 		Total:     pt.total,
-		Completed: pt.completed.Load(),
-		Failed:    pt.failed.Load(),
+		Completed: pt.completed,
+		Failed:    pt.failed,
 	}
 }
 
 // AddFailed adds to the failed counter. Called after Run returns for
 // undispatched request draining.
 func (pt *ProgressTracker) AddFailed(n int64) {
-	pt.failed.Add(n)
+	pt.mu.Lock()
+	pt.failed += n
+	pt.mu.Unlock()
 }
 
 func (pt *ProgressTracker) push(ctx context.Context) {

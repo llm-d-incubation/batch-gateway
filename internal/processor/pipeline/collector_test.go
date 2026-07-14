@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestResultCollector_RoutesToCorrectFile(t *testing.T) {
 	}
 	close(ch)
 
-	if err := collector.Drain(ch); err != nil {
+	if err := collector.Drain(context.Background(), ch); err != nil {
 		t.Fatalf("Drain error: %v", err)
 	}
 
@@ -82,7 +83,7 @@ func TestResultCollector_DrainSkipsUnknownPending(t *testing.T) {
 	}
 	close(ch)
 
-	if err := collector.Drain(ch); err != nil {
+	if err := collector.Drain(context.Background(), ch); err != nil {
 		t.Fatalf("Drain error: %v", err)
 	}
 
@@ -90,6 +91,50 @@ func TestResultCollector_DrainSkipsUnknownPending(t *testing.T) {
 	errorData := readFile(t, errorFile)
 	if len(trimBytes(outputData)) != 0 || len(trimBytes(errorData)) != 0 {
 		t.Fatal("expected no output for unknown pending request")
+	}
+}
+
+func TestResultCollector_DrainProcessesAllResultsAfterCancel(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests()
+	tracker := NewProgressTracker(3, nil, "test-job", logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	results := []ResultItem{
+		{RequestID: "req-1", CustomID: "c-1", Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}}},
+		{RequestID: "req-2", CustomID: "c-2", Error: &OutputError{Code: "batch_cancelled", Message: "cancelled"}},
+		{RequestID: "req-3", CustomID: "c-3", Error: &OutputError{Code: "batch_cancelled", Message: "cancelled"}},
+	}
+	for _, r := range results {
+		pending.Store(RequestItem{RequestID: r.RequestID, CustomID: r.CustomID})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan ResultItem, len(results))
+
+	// Send first result, then cancel, then send the rest.
+	ch <- results[0]
+	cancel()
+	ch <- results[1]
+	ch <- results[2]
+	close(ch)
+
+	err := collector.Drain(ctx, ch)
+	if err != context.Canceled {
+		t.Fatalf("Drain error = %v, want context.Canceled", err)
+	}
+
+	outputData := readFile(t, outputFile)
+	outputLines := splitLines(outputData)
+	if len(outputLines) != 1 {
+		t.Fatalf("output lines = %d, want 1", len(outputLines))
+	}
+
+	errorData := readFile(t, errorFile)
+	errorLines := splitLines(errorData)
+	if len(errorLines) != 2 {
+		t.Fatalf("error lines = %d, want 2 (cancelled requests must still be written)", len(errorLines))
 	}
 }
 

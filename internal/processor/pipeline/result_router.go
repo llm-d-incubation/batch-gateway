@@ -4,28 +4,50 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 
 	"github.com/go-logr/logr"
 
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/syncutil"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 const defaultResultBuffer = 64
 
+// BroadcasterGroup is a set of broadcasters for subscribe/unsubscribe.
+// Lifecycle (Run/Wait) is owned by the registry that created them.
+type BroadcasterGroup struct {
+	broadcasters []*ResultBroadcaster
+}
+
+func NewBroadcasterGroup(broadcasters []*ResultBroadcaster) *BroadcasterGroup {
+	return &BroadcasterGroup{broadcasters: broadcasters}
+}
+
+func (bs *BroadcasterGroup) Subscribe(ch chan<- ResultItem) {
+	for _, b := range bs.broadcasters {
+		b.Subscribe(ch)
+	}
+}
+
+func (bs *BroadcasterGroup) Unsubscribe(ch chan<- ResultItem) {
+	for _, b := range bs.broadcasters {
+		b.Unsubscribe(ch)
+	}
+}
+
 // ResultBroadcaster reads results from a shared async client and
 // broadcasts to all subscribed channels.
 type ResultBroadcaster struct {
 	client      inference.AsyncInferenceClient
-	subscribers sync.Map
+	subscribers *syncutil.MutexMap[chan<- ResultItem, struct{}]
 	logger      logr.Logger
 }
 
 func NewResultBroadcaster(client inference.AsyncInferenceClient, logger logr.Logger) *ResultBroadcaster {
 	return &ResultBroadcaster{
 		client:      client,
-		subscribers: sync.Map{},
+		subscribers: syncutil.NewMutexMap[chan<- ResultItem, struct{}](),
 		logger:      logger,
 	}
 }
@@ -33,7 +55,7 @@ func NewResultBroadcaster(client inference.AsyncInferenceClient, logger logr.Log
 // Subscribe registers dest to receive all results.
 // dest should be buffered to avoid blocking the broadcaster.
 func (b *ResultBroadcaster) Subscribe(dest chan<- ResultItem) {
-	b.subscribers.Store(dest, dest)
+	b.subscribers.Store(dest, struct{}{})
 }
 
 // Unsubscribe removes dest from the broadcast list.
@@ -79,7 +101,7 @@ func (b *ResultBroadcaster) Run(ctx context.Context) {
 			}
 			result := asyncResult(msg.resp, b.logger)
 
-			b.subscribers.Range(func(_, v any) bool {
+			b.subscribers.Range(func(ch chan<- ResultItem, _ struct{}) bool {
 
 				defer func() {
 					if r := recover(); r != nil {
@@ -88,10 +110,6 @@ func (b *ResultBroadcaster) Run(ctx context.Context) {
 					}
 				}()
 
-				ch, ok := v.(chan<- ResultItem)
-				if !ok {
-					return true
-				}
 				ch <- result
 
 				return true

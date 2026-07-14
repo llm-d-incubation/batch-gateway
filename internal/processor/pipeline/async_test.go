@@ -62,6 +62,7 @@ func TestAsyncEndToEnd(t *testing.T) {
 
 	// Broadcaster backed by the shared client
 	broadcaster := NewResultBroadcaster(client, logr.Discard())
+	broadcasters := NewBroadcasterGroup([]*ResultBroadcaster{broadcaster})
 	broadcasterCtx, broadcasterCancel := context.WithCancel(context.Background())
 	defer broadcasterCancel()
 	go broadcaster.Run(broadcasterCtx)
@@ -79,7 +80,7 @@ func TestAsyncEndToEnd(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	dispatcher := NewAsyncDispatcher(resolver,
-		map[string]*ResultBroadcaster{"m1": broadcaster},
+		broadcasters,
 		pending, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -176,6 +177,7 @@ func TestAsyncDispatcher_ModelNotFound(t *testing.T) {
 	defer func() { _ = resolver.Close() }()
 
 	broadcaster := NewResultBroadcaster(client, logr.Discard())
+	broadcasters := NewBroadcasterGroup([]*ResultBroadcaster{broadcaster})
 	broadcasterCtx, broadcasterCancel := context.WithCancel(context.Background())
 	defer broadcasterCancel()
 	go broadcaster.Run(broadcasterCtx)
@@ -192,7 +194,7 @@ func TestAsyncDispatcher_ModelNotFound(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	dispatcher := NewAsyncDispatcher(resolver,
-		map[string]*ResultBroadcaster{"m1": broadcaster},
+		broadcasters,
 		pending, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -242,6 +244,7 @@ func TestAsyncCancellation(t *testing.T) {
 	defer func() { _ = resolver.Close() }()
 
 	broadcaster := NewResultBroadcaster(client, logr.Discard())
+	broadcasters := NewBroadcasterGroup([]*ResultBroadcaster{broadcaster})
 	broadcasterCtx, broadcasterCancel := context.WithCancel(context.Background())
 	defer broadcasterCancel()
 	go broadcaster.Run(broadcasterCtx)
@@ -255,7 +258,7 @@ func TestAsyncCancellation(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	dispatcher := NewAsyncDispatcher(resolver,
-		map[string]*ResultBroadcaster{"m1": broadcaster},
+		broadcasters,
 		pending, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{

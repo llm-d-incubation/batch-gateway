@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ type outputLine struct {
 	Error    *OutputError              `json:"error"`
 }
 
+const fileBufferSize = 1024 * 1024
+
 func (o *outputLine) isSuccess() bool {
 	return o.Error == nil && o.Response != nil && o.Response.StatusCode == 200
 }
@@ -34,15 +37,16 @@ type ResultCollector struct {
 }
 
 func NewResultCollector(outputFile, errorFile *os.File, pending *PendingRequests, tracker *ProgressTracker, logger logr.Logger) *ResultCollector {
-	output := bufio.NewWriterSize(outputFile, 1024*1024)
-	errors := bufio.NewWriterSize(errorFile, 1024*1024)
+	output := bufio.NewWriterSize(outputFile, fileBufferSize)
+	errors := bufio.NewWriterSize(errorFile, fileBufferSize)
 
 	return &ResultCollector{output: output, errors: errors, pending: pending, tracker: tracker, logger: logger}
 }
 
-// Drain reads results until resultCh is closed. For async, whoever
-// cancels the pipeline also closes resultCh to unblock the collector.
-func (c *ResultCollector) Drain(resultCh <-chan ResultItem) error {
+// Drain reads results until resultCh is closed, then flushes.
+// Both dispatchers close the channel when done, so this always terminates.
+// Returns ctx.Err() if the context was cancelled during draining.
+func (c *ResultCollector) Drain(ctx context.Context, resultCh <-chan ResultItem) error {
 	var firstErr error
 	for msg := range resultCh {
 		if !c.pending.Resolve(&msg) {
@@ -55,7 +59,10 @@ func (c *ResultCollector) Drain(resultCh <-chan ResultItem) error {
 	if flushErr := c.flushFiles(); flushErr != nil {
 		return flushErr
 	}
-	return firstErr
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 func (c *ResultCollector) Receive(msg ResultItem) error {

@@ -13,7 +13,7 @@ import (
 // clients) that send directly to resultCh.
 type AsyncDispatcher struct {
 	resolver     *inference.AsyncGatewayResolver
-	broadcasters map[string]*ResultBroadcaster
+	broadcasters *BroadcasterGroup
 	pending      *PendingRequests
 	logger       logr.Logger
 }
@@ -22,7 +22,7 @@ var _ RequestDispatcher = (*AsyncDispatcher)(nil)
 
 func NewAsyncDispatcher(
 	resolver *inference.AsyncGatewayResolver,
-	broadcasters map[string]*ResultBroadcaster,
+	broadcasters *BroadcasterGroup,
 	pending *PendingRequests,
 	logger logr.Logger,
 ) *AsyncDispatcher {
@@ -35,17 +35,7 @@ func NewAsyncDispatcher(
 }
 
 func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem, resultCh chan<- ResultItem) error {
-	// Subscribe all model broadcasters upfront.
-	for _, b := range d.broadcasters {
-		b.Subscribe(resultCh)
-	}
-	defer func() {
-		for _, b := range d.broadcasters {
-			b.Unsubscribe(resultCh)
-		}
-		// Defers unsubscribe from broadcasters — no more writes to resultCh.
-		close(resultCh)
-	}()
+	d.broadcasters.Subscribe(resultCh)
 
 	// Submit phase — fast queue writes.
 	for msg := range requestCh {
@@ -78,14 +68,19 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 		}
 	}
 
-	// For above exists on error, or on channel closed
-	// Iterate to drain remaining requests as cancelled (if any).
+	// Drain remaining requests as cancelled (if loop broke early).
 	for msg := range requestCh {
 		resultCh <- *msg.Canceled()
 	}
 
 	// Wait for all pending results to be resolved by the collector.
 	d.pending.Wait(ctx)
+
+	// Unsubscribe blocks until any in-progress broadcaster send completes
+	// (MutexMap.Delete waits for Range to release the lock), so closing
+	// resultCh after this is safe — no concurrent writes remain.
+	d.broadcasters.Unsubscribe(resultCh)
+	close(resultCh)
 
 	return nil
 }

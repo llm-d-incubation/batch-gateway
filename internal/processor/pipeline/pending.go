@@ -4,19 +4,25 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+
+	"github.com/llm-d/llm-d-batch-gateway/internal/shared/syncutil"
 )
 
 // PendingRequests tracks in-flight requests by RequestID.
 // The dispatcher stores entries before dispatching; the collector
 // resolves them when results arrive.
 type PendingRequests struct {
-	m     sync.Map
+	m     *syncutil.MutexMap[string, RequestItem]
 	count atomic.Int64
+	once  sync.Once
 	done  chan struct{}
 }
 
 func NewPendingRequests() *PendingRequests {
-	return &PendingRequests{done: make(chan struct{}, 1)}
+	return &PendingRequests{
+		m:    syncutil.NewMutexMap[string, RequestItem](),
+		done: make(chan struct{}),
+	}
 }
 
 func (p *PendingRequests) Store(msg RequestItem) {
@@ -32,20 +38,15 @@ func (p *PendingRequests) Resolve(result *ResultItem) bool {
 	if result.CustomID != "" {
 		return true
 	}
-	val, ok := p.m.LoadAndDelete(result.RequestID)
-	if !ok {
-		return false
+	if msg, ok := p.m.LoadAndDelete(result.RequestID); ok {
+		if p.count.Add(-1) == 0 {
+			p.once.Do(func() { close(p.done) })
+		}
+		result.CustomID = msg.CustomID
+		result.ModelID = msg.ModelID
+		return true
 	}
-	if p.count.Add(-1) == 0 {
-		close(p.done)
-	}
-	msg, ok := val.(RequestItem)
-	if !ok {
-		return false
-	}
-	result.CustomID = msg.CustomID
-	result.ModelID = msg.ModelID
-	return true
+	return false
 }
 
 // Wait blocks until all pending entries are resolved or ctx is cancelled.
