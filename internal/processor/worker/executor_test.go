@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -4024,6 +4025,108 @@ func TestProcessModelAsync(t *testing.T) {
 
 		counts := progress.counts()
 		// 1 completed + 2 failed (sibling/abort drain) = 3 total
+		if counts.Completed+counts.Failed != int64(len(requests)) {
+			t.Fatalf("completed+failed = %d, want %d", counts.Completed+counts.Failed, len(requests))
+		}
+		if counts.Completed != 1 {
+			t.Errorf("completed = %d, want 1", counts.Completed)
+		}
+		if counts.Failed != 2 {
+			t.Errorf("failed = %d, want 2", counts.Failed)
+		}
+
+		errLines := bytes.Split(bytes.TrimSpace(errBuf.Bytes()), []byte{'\n'})
+		if len(errLines) != 2 {
+			t.Fatalf("error lines = %d, want 2", len(errLines))
+		}
+		for i, line := range errLines {
+			var entry outputLine
+			if err := json.Unmarshal(line, &entry); err != nil {
+				t.Fatalf("unmarshal error line %d: %v", i, err)
+			}
+			if entry.Error == nil || entry.Error.Code != string(batch_types.ErrCodeBatchFailed) {
+				t.Errorf("error line %d: expected code %s, got %+v", i, batch_types.ErrCodeBatchFailed, entry.Error)
+			}
+		}
+	})
+
+	t.Run("CancelErrorDuringCollect", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.WorkDir = t.TempDir()
+
+		results := make(chan *inference.GenerateResponse, 5)
+		submittedIDs := make(chan string, 5)
+		var cancelCalled atomic.Bool
+
+		resolver := inference.NewTestAsyncResolver(map[string]func() inference.AsyncInferenceClient{
+			"m1": func() inference.AsyncInferenceClient {
+				return &mockAsyncInferenceClient{
+					submitFn: func(_ context.Context, req *inference.GenerateRequest) *inference.ClientError {
+						submittedIDs <- req.RequestID
+						return nil
+					},
+					getResultFn: func(ctx context.Context) (*inference.GenerateResponse, error) {
+						select {
+						case r := <-results:
+							return r, nil
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						}
+					},
+					cancelFn: func(context.Context) error {
+						cancelCalled.Store(true)
+						return fmt.Errorf("redis connection refused")
+					},
+				}
+			},
+		})
+
+		requests := []batch_types.Request{
+			{CustomID: "a", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+			{CustomID: "b", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+			{CustomID: "c", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		}
+		env, jobInfo := setupAsyncExecutionJob(t, cfg, resolver, requests, map[string]string{"m1": "m1"})
+
+		inputPath, _ := env.p.jobInputFilePath(jobInfo.JobID, jobInfo.TenantID)
+		inputFile, _ := os.Open(inputPath)
+		defer inputFile.Close()
+
+		plansDir, _ := env.p.jobPlansDir(jobInfo.JobID, jobInfo.TenantID)
+
+		var outBuf, errBuf bytes.Buffer
+		writers := &outputWriters{output: bufio.NewWriter(&outBuf), errors: bufio.NewWriter(&errBuf)}
+		progress := &executionProgress{total: int64(len(requests)), updater: env.updater, jobID: jobInfo.JobID}
+
+		ctx := testLoggerCtx(t)
+		abortCtx, abortFn := context.WithCancel(ctx)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- env.p.processModelAsync(abortCtx, ctx, ctx, context.Background(), inputFile, plansDir, "m1", "m1", writers, progress, nil, "")
+		}()
+
+		firstID := <-submittedIDs
+		<-submittedIDs
+		<-submittedIDs
+
+		results <- &inference.GenerateResponse{
+			RequestID: firstID,
+			Response:  []byte(`{"choices":[{"message":{"content":"ok"}}]}`),
+		}
+		time.Sleep(50 * time.Millisecond)
+		abortFn()
+
+		<-done
+
+		_ = writers.output.Flush()
+		_ = writers.errors.Flush()
+
+		if !cancelCalled.Load() {
+			t.Error("expected Cancel to be called for remaining pending requests")
+		}
+
+		counts := progress.counts()
 		if counts.Completed+counts.Failed != int64(len(requests)) {
 			t.Fatalf("completed+failed = %d, want %d", counts.Completed+counts.Failed, len(requests))
 		}

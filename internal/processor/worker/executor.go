@@ -693,7 +693,7 @@ func (p *Processor) processModelAsync(
 	// Drain submitted-but-uncollected requests as errors so that
 	// output_lines + error_lines == total_requests. Error code follows the
 	// same abort-reason priority as drainAndFinalize.
-	errCode, errMsg := uncollectedPendingError(sloCtx, userCancelCtx, mainCtx, modelErr)
+	errCode, errMsg := uncollectedPendingError(mainCtx, sloCtx, userCancelCtx, modelErr)
 	for _, pr := range pending {
 		out := newErrorOutputLine(pr.batchReqID, pr.customID, string(errCode), errMsg)
 		lineBytes, err := json.Marshal(out)
@@ -713,8 +713,9 @@ func (p *Processor) processModelAsync(
 
 // uncollectedPendingError selects the error code/message for submitted-but-
 // uncollected async requests, matching drainAndFinalize's abort-reason order.
+// Context parameter order mirrors drainAndFinalize (minus requestAbortCtx).
 func uncollectedPendingError(
-	sloCtx, userCancelCtx, mainCtx context.Context,
+	mainCtx, sloCtx, userCancelCtx context.Context,
 	modelErr error,
 ) (batch_types.BatchErrorCode, string) {
 	switch {
