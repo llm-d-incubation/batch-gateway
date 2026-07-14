@@ -148,6 +148,9 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	waitForProcessorReady(t, 2*time.Minute)
 	t.Log("processor rollout complete and ready")
 
+	// Restore normal latency so the re-processed job completes quickly.
+	setSimAdminConfig(t, testSimService, `{"inter-token-latency":"100ms"}`)
+
 	// The processor is a StatefulSet — the restarted pod has the same identity
 	// and recovers its own orphaned jobs via recoverOwnedJobs. Since the SLO
 	// is still valid (24h window), the job is re-enqueued and completed.
