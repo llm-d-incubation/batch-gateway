@@ -109,6 +109,7 @@ func (m *mockInferenceClient) Generate(ctx context.Context, req *inference.Gener
 type mockAsyncInferenceClient struct {
 	submitFn    func(ctx context.Context, req *inference.GenerateRequest) *inference.ClientError
 	getResultFn func(ctx context.Context) (*inference.GenerateResponse, error)
+	cancelFn    func(ctx context.Context) error
 	closeFn     func() error
 }
 
@@ -124,6 +125,13 @@ func (m *mockAsyncInferenceClient) GetResult(ctx context.Context) (*inference.Ge
 		return m.getResultFn(ctx)
 	}
 	return nil, ctx.Err()
+}
+
+func (m *mockAsyncInferenceClient) Cancel(ctx context.Context) error {
+	if m.cancelFn != nil {
+		return m.cancelFn(ctx)
+	}
+	return nil
 }
 
 func (m *mockAsyncInferenceClient) Close() error {

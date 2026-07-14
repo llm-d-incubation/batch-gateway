@@ -11,10 +11,10 @@ fi
 # ── Configuration ────────────────────────────────────────────────────────────
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
 DISPATCHER_RELEASE="${DISPATCHER_RELEASE:-dispatcher}"
-DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.2}"
+DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.3}"
 DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}}"
 DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d-incubation/charts/async-processor}"
-DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.2}"
+DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.3}"
 DISPATCHER_REDIS_PORT="${DISPATCHER_REDIS_PORT:-6399}"
 PID_FILE="${REPO_ROOT}/.dispatcher-port-forward.pid"
 # Set DISPATCHER_SOURCE to a local llm-d-async checkout to build from source

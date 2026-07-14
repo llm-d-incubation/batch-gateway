@@ -244,6 +244,50 @@ func TestAsyncProducerClient_Submit(t *testing.T) {
 			t.Fatalf("Close() error: %v", err)
 		}
 	})
+
+	t.Run("cancel marks pending requests", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		poolName := "cancel-pool"
+		pool := newTestPool(t, mr, poolName)
+		client := newAsyncProducerClient(pool)
+		defer func() { _ = client.Close() }()
+
+		if err := client.Submit(context.Background(), &GenerateRequest{
+			RequestID: "cancel-1",
+			Endpoint:  "/v1/completions",
+			Params:    map[string]any{"model": "test-model"},
+		}); err != nil {
+			t.Fatalf("Submit error: %s", err.Message)
+		}
+
+		active, err := mr.Get(api.RequestActiveTokenKey("cancel-1"))
+		if err != nil || active == "" {
+			t.Fatalf("expected active request token after Submit, got %q err=%v", active, err)
+		}
+
+		if err := client.Cancel(context.Background()); err != nil {
+			t.Fatalf("Cancel error: %v", err)
+		}
+
+		got, err := mr.Get(api.RequestCancellationKey("cancel-1"))
+		if err != nil {
+			t.Fatalf("get cancellation marker: %v", err)
+		}
+		if got != active {
+			t.Fatalf("cancellation marker = %q, want active token %q", got, active)
+		}
+	})
+
+	t.Run("cancel with no pending is no-op", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		pool := newTestPool(t, mr, "cancel-empty-pool")
+		client := newAsyncProducerClient(pool)
+		defer func() { _ = client.Close() }()
+
+		if err := client.Cancel(context.Background()); err != nil {
+			t.Fatalf("Cancel error: %v", err)
+		}
+	})
 }
 
 func TestResultDispatcher_PanicRecovery(t *testing.T) {
