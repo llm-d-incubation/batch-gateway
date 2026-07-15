@@ -83,9 +83,14 @@ func (c *asyncSharedClient) GetResult(ctx context.Context) (*GenerateResponse, e
 	}, nil
 }
 
-// Cancel is a no-op on the shared client. Cancellation of pending requests
-// will be wired through the AsyncDispatcher, which owns the pending state.
-func (c *asyncSharedClient) Cancel(_ context.Context) error {
+func (c *asyncSharedClient) Cancel(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := c.producer.CancelRequests(ctx, ids); err != nil {
+		return fmt.Errorf("cancel async requests: %w", err)
+	}
+	c.logger.V(logging.INFO).Info("Cancelled pending async requests", "count", len(ids))
 	return nil
 }
 

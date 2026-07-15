@@ -86,6 +86,14 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 	// Wait for all pending results to be resolved by the collector.
 	d.pending.Wait(ctx)
 
+	// Best-effort: tell the queue to drop still-pending requests before
+	// dispatch. Use a detached context — ctx is often already cancelled.
+	if ids := d.pending.IDs(); len(ids) > 0 {
+		cancelCtx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+		d.cancelPending(cancelCtx, ids)
+		cancelFn()
+	}
+
 	// Drain submitted-but-uncollected requests as errors so that
 	// output_lines + error_lines == total_requests.
 	d.pending.DrainUnresolved(func(msg RequestItem) {
@@ -99,4 +107,19 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 	close(resultCh)
 
 	return nil
+}
+
+// cancelPending calls Cancel on every shared client with all pending IDs.
+// Different models may map to different producers, but CancelRequests
+// silently ignores unknown IDs, so broadcasting to all is safe.
+func (d *AsyncDispatcher) cancelPending(ctx context.Context, ids []string) {
+	for _, modelID := range d.resolver.Models() {
+		client := d.resolver.SharedClientFor(modelID)
+		if client == nil {
+			continue
+		}
+		if err := client.Cancel(ctx, ids); err != nil {
+			d.logger.Error(err, "Failed to cancel pending async requests", "model", modelID)
+		}
+	}
 }

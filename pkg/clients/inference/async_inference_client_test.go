@@ -105,3 +105,105 @@ func TestAsyncSharedClient_SubmitPropagatesTraceContext(t *testing.T) {
 		t.Errorf("traceparent %q does not contain parent trace ID %q", traceparent, parentTraceID)
 	}
 }
+
+func TestAsyncSharedClient_Cancel(t *testing.T) {
+	t.Run("cancel marks pending requests", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		poolName := "cancel-pool"
+		requestQueue := asyncQueuePrefix + "requests:" + poolName
+
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = rdb.Close() })
+
+		p, err := producer.NewRedisSortedSetProducer(
+			producer.RedisSortedSetConfig{
+				RequestQueueName: requestQueue,
+				ResultQueueName:  asyncQueuePrefix + "results:" + poolName,
+			},
+			producer.WithRedisClient(rdb),
+		)
+		if err != nil {
+			t.Fatalf("NewRedisSortedSetProducer: %v", err)
+		}
+		t.Cleanup(func() { _ = p.Close() })
+
+		client := newAsyncSharedClient(p, time.Second, testLogger(t))
+
+		if submitErr := client.Submit(context.Background(), &GenerateRequest{
+			RequestID: "cancel-1",
+			Endpoint:  "/v1/completions",
+			Params:    map[string]any{"model": "test-model"},
+		}); submitErr != nil {
+			t.Fatalf("Submit error: %s", submitErr.Message)
+		}
+
+		active, err := mr.Get(api.RequestActiveTokenKey("cancel-1"))
+		if err != nil || active == "" {
+			t.Fatalf("expected active request token after Submit, got %q err=%v", active, err)
+		}
+
+		if err := client.Cancel(context.Background(), []string{"cancel-1"}); err != nil {
+			t.Fatalf("Cancel error: %v", err)
+		}
+
+		got, err := mr.Get(api.RequestCancellationKey("cancel-1"))
+		if err != nil {
+			t.Fatalf("get cancellation marker: %v", err)
+		}
+		if got != active {
+			t.Fatalf("cancellation marker = %q, want active token %q", got, active)
+		}
+	})
+
+	t.Run("cancel with no IDs is no-op", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		poolName := "cancel-empty-pool"
+
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = rdb.Close() })
+
+		p, err := producer.NewRedisSortedSetProducer(
+			producer.RedisSortedSetConfig{
+				RequestQueueName: asyncQueuePrefix + "requests:" + poolName,
+				ResultQueueName:  asyncQueuePrefix + "results:" + poolName,
+			},
+			producer.WithRedisClient(rdb),
+		)
+		if err != nil {
+			t.Fatalf("NewRedisSortedSetProducer: %v", err)
+		}
+		t.Cleanup(func() { _ = p.Close() })
+
+		client := newAsyncSharedClient(p, time.Second, testLogger(t))
+
+		if err := client.Cancel(context.Background(), nil); err != nil {
+			t.Fatalf("Cancel error: %v", err)
+		}
+	})
+
+	t.Run("cancel ignores unknown request IDs", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		poolName := "cancel-unknown-pool"
+
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = rdb.Close() })
+
+		p, err := producer.NewRedisSortedSetProducer(
+			producer.RedisSortedSetConfig{
+				RequestQueueName: asyncQueuePrefix + "requests:" + poolName,
+				ResultQueueName:  asyncQueuePrefix + "results:" + poolName,
+			},
+			producer.WithRedisClient(rdb),
+		)
+		if err != nil {
+			t.Fatalf("NewRedisSortedSetProducer: %v", err)
+		}
+		t.Cleanup(func() { _ = p.Close() })
+
+		client := newAsyncSharedClient(p, time.Second, testLogger(t))
+
+		if err := client.Cancel(context.Background(), []string{"nonexistent-id"}); err != nil {
+			t.Fatalf("Cancel error for unknown ID: %v", err)
+		}
+	})
+}

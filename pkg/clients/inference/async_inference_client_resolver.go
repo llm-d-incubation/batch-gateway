@@ -50,6 +50,13 @@ type AsyncGatewayResolver struct {
 
 // Models returns all configured model IDs.
 func (r *AsyncGatewayResolver) Models() []string {
+	if r.clientFactories != nil {
+		models := make([]string, 0, len(r.clientFactories))
+		for m := range r.clientFactories {
+			models = append(models, m)
+		}
+		return models
+	}
 	models := make([]string, 0, len(r.pools))
 	for m := range r.pools {
 		models = append(models, m)

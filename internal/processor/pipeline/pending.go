@@ -86,6 +86,11 @@ func (p *PendingRequests) Wait(ctx context.Context) {
 	}
 }
 
+// IDs returns the request IDs of all still-pending entries.
+func (p *PendingRequests) IDs() []string {
+	return p.m.Keys()
+}
+
 // DrainUnresolved removes all remaining entries from the pending map and
 // calls fn for each. Used after cancellation to emit error results for
 // submitted-but-uncollected requests.

@@ -16,9 +16,10 @@ import (
 )
 
 type fakeAsyncClient struct {
-	mu        sync.Mutex
-	submitted []*inference.GenerateRequest
-	results   chan *inference.GenerateResponse
+	mu           sync.Mutex
+	submitted    []*inference.GenerateRequest
+	results      chan *inference.GenerateResponse
+	cancelledIDs []string
 }
 
 func newFakeAsyncClient() *fakeAsyncClient {
@@ -43,8 +44,13 @@ func (c *fakeAsyncClient) GetResult(ctx context.Context) (*inference.GenerateRes
 	}
 }
 
-func (c *fakeAsyncClient) Cancel(_ context.Context) error { return nil }
-func (c *fakeAsyncClient) Close() error                   { return nil }
+func (c *fakeAsyncClient) Cancel(_ context.Context, ids []string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cancelledIDs = append(c.cancelledIDs, ids...)
+	return nil
+}
+func (c *fakeAsyncClient) Close() error { return nil }
 
 func (c *fakeAsyncClient) deliver(requestID string, body map[string]any) {
 	resp, _ := json.Marshal(body)
@@ -233,8 +239,8 @@ func (c *fakeAsyncClientWithErrors) GetResult(ctx context.Context) (*inference.G
 	return c.getResult(ctx)
 }
 
-func (c *fakeAsyncClientWithErrors) Cancel(_ context.Context) error { return nil }
-func (c *fakeAsyncClientWithErrors) Close() error                   { return nil }
+func (c *fakeAsyncClientWithErrors) Cancel(_ context.Context, _ []string) error { return nil }
+func (c *fakeAsyncClientWithErrors) Close() error                               { return nil }
 
 func TestAsyncDispatcher_ParseError(t *testing.T) {
 	client := newFakeAsyncClient()
@@ -441,4 +447,15 @@ func TestAsyncCancellation(t *testing.T) {
 	if total != len(items) {
 		t.Errorf("total output+error lines = %d, want %d (all requests accounted for)", total, len(items))
 	}
+
+	// Verify Cancel was called with the uncollected request IDs.
+	client.mu.Lock()
+	cancelled := client.cancelledIDs
+	client.mu.Unlock()
+
+	// We delivered 3 results out of 10, so ~7 should have been cancelled.
+	if len(cancelled) == 0 {
+		t.Error("expected Cancel to be called with pending IDs, but no IDs were cancelled")
+	}
+	t.Logf("cancelled %d IDs", len(cancelled))
 }
