@@ -75,9 +75,6 @@ func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- p
 		}
 
 		for _, entry := range entries {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			item, err := s.readEntry(entry, modelID)
 			if err != nil {
 				return err

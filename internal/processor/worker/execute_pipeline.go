@@ -118,7 +118,7 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 		return counts, errExpired
 	case userCancelCtx.Err() != nil:
 		return counts, errCancelled
-	case ctx.Err() != nil:
+	case ctx.Err() != nil && !counts.AllSucceeded():
 		return counts, errShutdown
 	case execErr != nil:
 		return counts, execErr

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -563,5 +564,81 @@ func TestPlanFileSource_Produce_BadPlanFile(t *testing.T) {
 	err = source.Produce(context.Background(), out)
 	if err == nil {
 		t.Fatal("expected error for missing plan file")
+	}
+}
+
+// TestPlanFileSource_Produce_CancellationProducesAllEntries verifies that when
+// the context is cancelled mid-produce, ALL plan entries still reach the output
+// channel — either as normal items (produced before cancellation) or as items
+// that the downstream dispatcher can drain as cancelled. If entries are silently
+// dropped, completed + failed < total and the job's output files are incomplete.
+func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
+	const totalRequests = 10
+	dir := t.TempDir()
+
+	var requests []batch_types.Request
+	for i := range totalRequests {
+		requests = append(requests, batch_types.Request{
+			CustomID: fmt.Sprintf("c-%d", i),
+			Method:   "POST",
+			URL:      "/v1/chat/completions",
+			Body:     map[string]any{"model": "m1", "prompt": fmt.Sprintf("q%d", i)},
+		})
+	}
+
+	inputPath := filepath.Join(dir, "input.jsonl")
+	var entries []planEntry
+	f, err := os.Create(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range requests {
+		data, _ := json.Marshal(req)
+		data = append(data, '\n')
+		offset, _ := f.Seek(0, 1)
+		entries = append(entries, planEntry{Offset: offset, Length: uint32(len(data))})
+		if _, err := f.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inputFile.Close()
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	// Cancel the context immediately so the source hits ctx.Err() early.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		InputFile: inputFile,
+		PlansDir:  plansDir,
+		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: int64(totalRequests)},
+		Resolver:  resolver,
+		Cfg:       config.NewConfig(),
+		Logger:    logr.Discard(),
+	})
+
+	out := make(chan pipeline.RequestItem, totalRequests+1)
+	_ = source.Produce(ctx, out)
+
+	var produced int
+	for range out {
+		produced++
+	}
+
+	if produced != totalRequests {
+		t.Fatalf("produced %d items, want %d: source dropped %d entries on cancellation",
+			produced, totalRequests, totalRequests-produced)
 	}
 }

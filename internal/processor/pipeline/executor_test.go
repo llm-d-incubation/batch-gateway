@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -523,9 +524,99 @@ func (m *mockInferenceClientForE2E) Generate(ctx context.Context, req *inference
 	return m.generateFn(ctx, req)
 }
 
+// TestJobExecutorCancellation_AllRequestsAccountedFor verifies that when the
+// context is cancelled mid-execution, completed + failed == total. Every
+// request must appear in either the output or error file.
+func TestJobExecutorCancellation_AllRequestsAccountedFor(t *testing.T) {
+	const total = 10
+	body, _ := json.Marshal(map[string]any{"ok": true})
+	client := &mockInferenceClient{response: body}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	items := makeItems(total, "m1")
+
+	// Source sends one item then cancels ctx, but keeps producing
+	// remaining items (matching fixed PlanFileSource behavior).
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &cancelAfterNSource{items: items, cancelAt: 1, cancelFn: cancel}
+
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(total), nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	executor := NewJobExecutor(JobExecutorConfig{
+		Source:     source,
+		Dispatcher: newTestSyncDispatcher(resolver),
+		Collector:  collector,
+		Tracker:    tracker,
+		Logger:     logr.Discard(),
+	})
+
+	_, err := executor.Execute(ctx)
+	if err != nil && err != context.Canceled {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	counts := tracker.Counts()
+	accounted := counts.Completed + counts.Failed
+	if accounted != int64(total) {
+		t.Fatalf("Completed(%d) + Failed(%d) = %d, want %d: %d requests were silently dropped",
+			counts.Completed, counts.Failed, accounted, total, int64(total)-accounted)
+	}
+}
+
+// TestCancelCode_SLOExpiry verifies that cancelCode returns batch_expired
+// when the context cancellation was caused by a deadline.
+func TestCancelCode_SLOExpiry(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	<-ctx.Done()
+
+	code, _ := cancelCode(ctx)
+	if code != string(batch_types.ErrCodeBatchExpired) {
+		t.Fatalf("cancelCode() = %q, want %q", code, batch_types.ErrCodeBatchExpired)
+	}
+}
+
+// TestCancelCode_UserCancel verifies that cancelCode returns batch_cancelled
+// when the context was cancelled (not deadline).
+func TestCancelCode_UserCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code, _ := cancelCode(ctx)
+	if code != string(batch_types.ErrCodeBatchCancelled) {
+		t.Fatalf("cancelCode() = %q, want %q", code, batch_types.ErrCodeBatchCancelled)
+	}
+}
+
+// cancelAfterNSource sends cancelAt items, cancels ctx, then keeps producing
+// the rest. This models the fixed PlanFileSource behavior where the source
+// continues producing all items regardless of cancellation.
+type cancelAfterNSource struct {
+	items    []RequestItem
+	cancelAt int
+	cancelFn context.CancelFunc
+}
+
+func (s *cancelAfterNSource) Produce(_ context.Context, out chan<- RequestItem) error {
+	defer close(out)
+	for i, item := range s.items {
+		if i == s.cancelAt {
+			s.cancelFn()
+		}
+		out <- item
+	}
+	return nil
+}
+
 var _ inference.InferenceClient = (*mockInferenceClient)(nil)
 var _ inference.InferenceClient = (*mockInferenceClientForE2E)(nil)
 var _ RequestSource = (*sliceSource)(nil)
+var _ RequestSource = (*cancelAfterNSource)(nil)
 var _ RequestDispatcher = (*testSyncDispatcher)(nil)
 
 // testSyncDispatcher is a minimal synchronous dispatcher for executor tests.

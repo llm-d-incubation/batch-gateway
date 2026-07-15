@@ -7,6 +7,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
+	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
@@ -42,7 +43,7 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 	// Submit phase — fast queue writes.
 	for msg := range requestCh {
 		if ctx.Err() != nil {
-			resultCh <- *msg.Canceled()
+			resultCh <- *msg.Error(cancelCode(ctx))
 			break
 		}
 
@@ -78,9 +79,9 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 		}
 	}
 
-	// Drain remaining requests as cancelled (if loop broke early).
+	// Drain remaining requests (if loop broke early).
 	for msg := range requestCh {
-		resultCh <- *msg.Canceled()
+		resultCh <- *msg.Error(cancelCode(ctx))
 	}
 
 	// Wait for all pending results to be resolved by the collector.
@@ -107,6 +108,13 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 	close(resultCh)
 
 	return nil
+}
+
+func cancelCode(ctx context.Context) (string, string) {
+	if context.Cause(ctx) == context.DeadlineExceeded {
+		return string(batch_types.ErrCodeBatchExpired), batch_types.ErrCodeBatchExpired.Message()
+	}
+	return string(batch_types.ErrCodeBatchCancelled), batch_types.ErrCodeBatchCancelled.Message()
 }
 
 // cancelPending calls Cancel on every shared client with all pending IDs.
