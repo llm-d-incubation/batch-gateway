@@ -46,8 +46,8 @@ func testBatches(t *testing.T) {
 	t.Run("MixedSuccessFailure", doTestBatchMixedSuccessFailure)
 	t.Run("SharedInputFile", doTestBatchSharedInputFile)
 	t.Run("PassThroughHeaders", doTestPassThroughHeaders)
-	t.Run("Expiration", doTestBatchExpiration)
-	t.Run("MultiModel", doTestMultiModelBatch)
+	skipIf(t, testDispatcherDeployed, "requires sync dispatch slot saturation", "Expiration", doTestBatchExpiration)
+	skipIf(t, testDispatcherDeployed, "sim-model-b not available in async dispatch", "MultiModel", doTestMultiModelBatch)
 	t.Run("ProgressPolling", doTestProgressPolling)
 	t.Run("Ingestion", func(t *testing.T) {
 		t.Run("DuplicateCustomID", doTestDuplicateCustomID)

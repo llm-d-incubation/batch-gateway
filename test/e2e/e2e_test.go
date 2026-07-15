@@ -80,6 +80,10 @@ var (
 	// verifications that require kubectl (e.g. log grepping) are skipped.
 	testKubectlAvailable bool
 
+	// testDispatcherDeployed is set once at TestE2E startup; when true,
+	// subtests incompatible with async dispatch mode are skipped.
+	testDispatcherDeployed bool
+
 	// testPassThroughHeaders maps header names (matching apiserver pass_through_headers
 	// configured by dev-deploy.sh) to the values the e2e client sends when asserting
 	// pass-through behavior.
@@ -97,7 +101,7 @@ var (
 )
 
 func TestE2E(t *testing.T) {
-	dispatcherDeployed := detectDispatcherDeployed(t)
+	testDispatcherDeployed = detectDispatcherDeployed(t)
 
 	if out, err := exec.Command("kubectl", "cluster-info").CombinedOutput(); err != nil {
 		t.Logf("kubectl not available, some checks will be skipped: %v\n%s", err, out)
@@ -124,9 +128,9 @@ func TestE2E(t *testing.T) {
 	t.Run("MultiTenant", testMultiTenant)
 	t.Run("GarbageCollection", testGarbageCollection)
 	t.Run("Observability", testObservability)
-	skipIf(t, dispatcherDeployed, "requires sync processor", "ProcessorGracefulShutdown", testProcessorGracefulShutdown)
-	skipIf(t, dispatcherDeployed, "requires sync processor", "OrphanRecovery", testOrphanRecovery)
-	skipIf(t, dispatcherDeployed, "requires sync processor", "FlowControl", testFlowControl)
-	skipIf(t, dispatcherDeployed, "requires sync processor", "AIMD", testAIMD)
-	skipIf(t, dispatcherDeployed, "requires sync processor", "HelmUpgrade", testHelmUpgrade)
+	skipIf(t, testDispatcherDeployed, "requires sync processor", "ProcessorGracefulShutdown", testProcessorGracefulShutdown)
+	skipIf(t, testDispatcherDeployed, "requires sync processor", "OrphanRecovery", testOrphanRecovery)
+	skipIf(t, testDispatcherDeployed, "requires sync processor", "FlowControl", testFlowControl)
+	skipIf(t, testDispatcherDeployed, "requires sync processor", "AIMD", testAIMD)
+	skipIf(t, testDispatcherDeployed, "requires sync processor", "HelmUpgrade", testHelmUpgrade)
 }
