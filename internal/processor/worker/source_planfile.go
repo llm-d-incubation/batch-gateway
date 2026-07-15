@@ -82,9 +82,6 @@ func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- p
 			if err != nil {
 				return err
 			}
-			if item == nil {
-				continue
-			}
 			outgoingRequestCh <- *item
 		}
 	}
@@ -101,8 +98,14 @@ func (s *PlanFileSource) readEntry(entry planEntry, modelID string) (*pipeline.R
 	trimmed := bytes.TrimSuffix(buf, []byte{'\n'})
 	var req batch_types.Request
 	if err := json.Unmarshal(trimmed, &req); err != nil {
-		s.logger.Error(err, "Failed to parse request line, skipping")
-		return nil, nil
+		s.logger.Error(err, "Failed to parse request line, recording as error")
+		return &pipeline.RequestItem{
+			RequestID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			ParseError: &pipeline.OutputError{
+				Code:    "parse_error",
+				Message: fmt.Sprintf("failed to parse request line: %v", err),
+			},
+		}, nil
 	}
 
 	headers := maps.Clone(s.passThroughHeaders)

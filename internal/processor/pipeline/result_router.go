@@ -3,8 +3,8 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -66,27 +66,33 @@ func (b *ResultBroadcaster) Unsubscribe(dest chan<- ResultItem) {
 
 // Run reads results and broadcasts to all subscribers.
 func (b *ResultBroadcaster) Run(ctx context.Context) {
-	type resultMsg struct {
-		resp *inference.GenerateResponse
-		err  error
-	}
-	incomingCh := make(chan resultMsg)
+	incomingCh := make(chan *inference.GenerateResponse)
 
 	go func() {
 		defer close(incomingCh)
-		for {
+		backoff := 100 * time.Millisecond
+		const maxBackoff = 10 * time.Second
+		for ctx.Err() == nil {
 			resp, err := b.client.GetResult(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				if errors.Is(err, context.DeadlineExceeded) {
-					continue
+				b.logger.Error(err, "GetResult failed, retrying", "backoff", backoff)
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return
 				}
-				incomingCh <- resultMsg{err: err}
+				backoff = min(backoff*2, maxBackoff)
+				continue
+			}
+			backoff = 100 * time.Millisecond
+			select {
+			case incomingCh <- resp:
+			case <-ctx.Done():
 				return
 			}
-			incomingCh <- resultMsg{resp: resp}
 		}
 	}()
 
@@ -95,15 +101,11 @@ func (b *ResultBroadcaster) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 
-		case msg, ok := <-incomingCh:
+		case resp, ok := <-incomingCh:
 			if !ok {
 				return
 			}
-			if msg.err != nil {
-				b.logger.Error(msg.err, "GetResult failed, stopping broadcaster")
-				return
-			}
-			result := asyncResult(msg.resp, b.logger)
+			result := asyncResult(resp, b.logger)
 
 			for _, ch := range b.subscribers.Keys() {
 				b.safeChannelSend(result, ch)

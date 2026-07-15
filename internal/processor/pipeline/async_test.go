@@ -3,8 +3,11 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -41,7 +44,7 @@ func (c *fakeAsyncClient) GetResult(ctx context.Context) (*inference.GenerateRes
 }
 
 func (c *fakeAsyncClient) Cancel(_ context.Context) error { return nil }
-func (c *fakeAsyncClient) Close() error                    { return nil }
+func (c *fakeAsyncClient) Close() error                   { return nil }
 
 func (c *fakeAsyncClient) deliver(requestID string, body map[string]any) {
 	resp, _ := json.Marshal(body)
@@ -73,10 +76,10 @@ func TestAsyncEndToEnd(t *testing.T) {
 		{RequestID: "req-3", CustomID: "c-3", ModelID: "m1", Endpoint: "/v1/chat/completions"},
 	}
 
-	pending := NewPendingRequests()
+	pending := NewPendingRequests(0)
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	dispatcher := NewAsyncDispatcher(resolver,
@@ -169,6 +172,145 @@ func TestAsyncResult_Success(t *testing.T) {
 	}
 }
 
+func TestBroadcaster_RetriesTransientError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var callCount atomic.Int32
+		transientErr := fmt.Errorf("connection reset")
+
+		client := &fakeAsyncClientWithErrors{
+			getResult: func(ctx context.Context) (*inference.GenerateResponse, error) {
+				n := callCount.Add(1)
+				if n <= 3 {
+					return nil, transientErr
+				}
+				resp, _ := json.Marshal(map[string]any{"ok": true})
+				return &inference.GenerateResponse{
+					RequestID: "req-1",
+					Response:  resp,
+				}, nil
+			},
+		}
+
+		broadcaster := NewResultBroadcaster(client, logr.Discard())
+		resultCh := make(chan ResultItem, 10)
+		broadcaster.Subscribe(resultCh)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go broadcaster.Run(ctx)
+
+		// Advance past backoff sleeps: 100ms + 200ms + 400ms = 700ms
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		select {
+		case result := <-resultCh:
+			if result.Error != nil {
+				t.Fatalf("expected successful result after transient errors, got error: %+v", result.Error)
+			}
+			if result.RequestID != "req-1" {
+				t.Fatalf("RequestID = %q, want %q", result.RequestID, "req-1")
+			}
+		default:
+			t.Fatal("broadcaster stopped after transient error instead of retrying")
+		}
+
+		if n := callCount.Load(); n < 4 {
+			t.Fatalf("GetResult called %d times, want >= 4 (3 errors + 1 success)", n)
+		}
+	})
+}
+
+type fakeAsyncClientWithErrors struct {
+	getResult func(ctx context.Context) (*inference.GenerateResponse, error)
+}
+
+func (c *fakeAsyncClientWithErrors) Submit(_ context.Context, _ *inference.GenerateRequest) *inference.ClientError {
+	return nil
+}
+
+func (c *fakeAsyncClientWithErrors) GetResult(ctx context.Context) (*inference.GenerateResponse, error) {
+	return c.getResult(ctx)
+}
+
+func (c *fakeAsyncClientWithErrors) Cancel(_ context.Context) error { return nil }
+func (c *fakeAsyncClientWithErrors) Close() error                   { return nil }
+
+func TestAsyncDispatcher_ParseError(t *testing.T) {
+	client := newFakeAsyncClient()
+	resolver := inference.NewTestAsyncResolver(map[string]func() inference.AsyncInferenceClient{
+		"m1": func() inference.AsyncInferenceClient { return client },
+	})
+	defer func() { _ = resolver.Close() }()
+
+	broadcaster := NewResultBroadcaster(client, logr.Discard())
+	broadcasters := NewBroadcasterGroup([]*ResultBroadcaster{broadcaster})
+	broadcasterCtx, broadcasterCancel := context.WithCancel(context.Background())
+	defer broadcasterCancel()
+	go broadcaster.Run(broadcasterCtx)
+
+	items := []RequestItem{
+		{RequestID: "req-1", CustomID: "c-1", ModelID: "m1", Endpoint: "/v1/chat/completions"},
+		{RequestID: "req-bad", ParseError: &OutputError{Code: "parse_error", Message: "bad json"}},
+		{RequestID: "req-2", CustomID: "c-2", ModelID: "m1", Endpoint: "/v1/chat/completions"},
+	}
+
+	pending := NewPendingRequests(0)
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	dispatcher := NewAsyncDispatcher(resolver,
+		broadcasters,
+		pending, logr.Discard())
+
+	executor := NewJobExecutor(JobExecutorConfig{
+		Source:     &sliceSource{items: items},
+		Dispatcher: dispatcher,
+		Collector:  collector,
+		Tracker:    tracker,
+		Logger:     logr.Discard(),
+	})
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		client.deliver("req-1", map[string]any{"ok": true})
+		client.deliver("req-2", map[string]any{"ok": true})
+	}()
+
+	counts, err := executor.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	if counts.Completed != 2 {
+		t.Errorf("Completed = %d, want 2", counts.Completed)
+	}
+	if counts.Failed != 1 {
+		t.Errorf("Failed = %d, want 1", counts.Failed)
+	}
+
+	outputData := readFile(t, outputFile)
+	outputLines := countLines(outputData)
+	if outputLines != 2 {
+		t.Fatalf("output lines = %d, want 2", outputLines)
+	}
+
+	errorData := readFile(t, errorFile)
+	errorLines := splitLines(errorData)
+	if len(errorLines) != 1 {
+		t.Fatalf("error lines = %d, want 1 (parse error)", len(errorLines))
+	}
+	var errEntry outputLine
+	if err := json.Unmarshal(errorLines[0], &errEntry); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if errEntry.Error == nil || errEntry.Error.Code != "parse_error" {
+		t.Fatalf("expected parse_error, got %+v", errEntry.Error)
+	}
+}
+
 func TestAsyncDispatcher_ModelNotFound(t *testing.T) {
 	client := newFakeAsyncClient()
 	resolver := inference.NewTestAsyncResolver(map[string]func() inference.AsyncInferenceClient{
@@ -187,10 +329,10 @@ func TestAsyncDispatcher_ModelNotFound(t *testing.T) {
 		{RequestID: "req-2", CustomID: "c-2", ModelID: "no-such-model", Endpoint: "/v1/chat/completions"},
 	}
 
-	pending := NewPendingRequests()
+	pending := NewPendingRequests(0)
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	dispatcher := NewAsyncDispatcher(resolver,
@@ -251,10 +393,10 @@ func TestAsyncCancellation(t *testing.T) {
 
 	items := makeItems(10, "m1")
 
-	pending := NewPendingRequests()
+	pending := NewPendingRequests(0)
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	dispatcher := NewAsyncDispatcher(resolver,
@@ -281,7 +423,9 @@ func TestAsyncCancellation(t *testing.T) {
 	}()
 
 	_, err := executor.Execute(ctx)
-	_ = err
+	if err != nil && err != context.Canceled {
+		t.Fatalf("Execute() error = %v, want nil or context.Canceled", err)
+	}
 
 	outputData := readFile(t, outputFile)
 	errorData := readFile(t, errorFile)
@@ -293,5 +437,8 @@ func TestAsyncCancellation(t *testing.T) {
 
 	if outputLines < 3 {
 		t.Errorf("expected at least 3 completed, got %d", outputLines)
+	}
+	if total != len(items) {
+		t.Errorf("total output+error lines = %d, want %d (all requests accounted for)", total, len(items))
 	}
 }

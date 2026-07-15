@@ -2,19 +2,26 @@ package pipeline
 
 import (
 	"fmt"
+	"time"
 
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 // RequestItem is a fully-parsed inference request ready for dispatch.
+// If ParseError is set, the request could not be parsed and the dispatcher
+// should convert it to an error result instead of dispatching.
+// NOTE: parse-error handling could also be implemented as a filter dispatcher
+// in the chain, keeping the core dispatchers unaware of parse errors.
 type RequestItem struct {
-	RequestID string
-	CustomID  string
-	ModelID   string
-	Endpoint  string
-	Body      map[string]any
-	Headers   map[string]string
+	RequestID   string
+	CustomID    string
+	ModelID     string
+	Endpoint    string
+	Body        map[string]any
+	Headers     map[string]string
+	ParseError  *OutputError
+	SubmittedAt time.Time
 }
 
 // ResultItem is the outcome of one inference request.
@@ -25,6 +32,7 @@ type ResultItem struct {
 	Response         *batch_types.ResponseData
 	Error            *OutputError
 	HadCapacityRetry bool
+	SubmittedAt      time.Time
 }
 
 func (r *RequestItem) Canceled() *ResultItem {

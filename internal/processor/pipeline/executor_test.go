@@ -52,8 +52,8 @@ func TestJobExecutorEndToEnd(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -116,8 +116,8 @@ func TestJobExecutorWithErrors(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -167,8 +167,8 @@ func TestJobExecutorCancellation(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(10, nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(10, nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -219,8 +219,8 @@ func TestJobExecutorMultipleModels(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -282,8 +282,8 @@ func TestJobExecutorMultipleModels_ModelNotFound(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -351,8 +351,8 @@ func TestJobExecutorSeparatesSuccessAndErrors(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -432,8 +432,8 @@ func TestJobExecutorHTTPErrorGoesToOutputFile(t *testing.T) {
 
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	executor := NewJobExecutor(JobExecutorConfig{

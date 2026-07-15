@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 
 func TestPendingRequests(t *testing.T) {
 	t.Run("resolve enriches result with request metadata", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		p.Store(RequestItem{RequestID: "r1", CustomID: "c1", ModelID: "m1"})
 
 		result := &ResultItem{RequestID: "r1"}
@@ -25,7 +26,7 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("resolve returns false for unknown request", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		result := &ResultItem{RequestID: "unknown"}
 		if p.Resolve(result) {
 			t.Fatal("Resolve returned true for unknown request")
@@ -33,7 +34,7 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("resolve with CustomID still decrements pending count", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
 
 		result := &ResultItem{RequestID: "r1", CustomID: "c1"}
@@ -50,7 +51,7 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("wait returns immediately when no pending", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		p.Wait(ctx)
@@ -60,7 +61,7 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("wait unblocks when last request resolves", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
 		p.Store(RequestItem{RequestID: "r2", CustomID: "c2"})
 
@@ -86,7 +87,7 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("wait respects context cancellation", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -105,10 +106,10 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("wait unblocks under concurrent resolves", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		const n = 100
 		for i := range n {
-			id := "r" + string(rune('A'+i%26)) + string(rune('0'+i/26))
+			id := fmt.Sprintf("r%d", i)
 			p.Store(RequestItem{RequestID: id, CustomID: "c"})
 		}
 
@@ -123,7 +124,7 @@ func TestPendingRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				id := "r" + string(rune('A'+i%26)) + string(rune('0'+i/26))
+				id := fmt.Sprintf("r%d", i)
 				p.Resolve(&ResultItem{RequestID: id})
 			}()
 		}
@@ -137,7 +138,7 @@ func TestPendingRequests(t *testing.T) {
 	})
 
 	t.Run("wait returns when resolve completes before wait starts", func(t *testing.T) {
-		p := NewPendingRequests()
+		p := NewPendingRequests(0)
 		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
 		p.Resolve(&ResultItem{RequestID: "r1"})
 
@@ -146,6 +147,73 @@ func TestPendingRequests(t *testing.T) {
 		p.Wait(ctx)
 		if ctx.Err() != nil {
 			t.Fatal("Wait blocked when all items already resolved")
+		}
+	})
+
+	t.Run("early resolve does not cause Wait to return prematurely", func(t *testing.T) {
+		// Simulates non-monotonic interleaving: result for r1 arrives
+		// before r2 is stored. Count temporarily hits 0 but Wait must
+		// not return until r2 is also resolved.
+		p := NewPendingRequests(0)
+		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
+
+		// Resolve r1 — count goes to 0 temporarily
+		p.Resolve(&ResultItem{RequestID: "r1"})
+
+		// Store r2 — count goes back to 1
+		p.Store(RequestItem{RequestID: "r2", CustomID: "c2"})
+
+		done := make(chan struct{})
+		go func() {
+			p.Wait(context.Background())
+			close(done)
+		}()
+
+		// Wait should NOT have returned yet
+		select {
+		case <-done:
+			t.Fatal("Wait returned before r2 was resolved (non-monotonic bug)")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		// Resolve r2 — now Wait should return
+		p.Resolve(&ResultItem{RequestID: "r2"})
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Wait did not return after all resolved")
+		}
+	})
+
+	t.Run("drain unresolved unblocks Wait and returns remaining", func(t *testing.T) {
+		p := NewPendingRequests(0)
+		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
+		p.Store(RequestItem{RequestID: "r2", CustomID: "c2"})
+		p.Store(RequestItem{RequestID: "r3", CustomID: "c3"})
+
+		// Resolve only r1
+		p.Resolve(&ResultItem{RequestID: "r1"})
+
+		done := make(chan struct{})
+		go func() {
+			p.Wait(context.Background())
+			close(done)
+		}()
+
+		// Drain the remaining — should also unblock Wait
+		var drained []string
+		p.DrainUnresolved(func(msg RequestItem) {
+			drained = append(drained, msg.RequestID)
+		})
+
+		if len(drained) != 2 {
+			t.Fatalf("drained %d, want 2", len(drained))
+		}
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Wait did not return after DrainUnresolved")
 		}
 	})
 }

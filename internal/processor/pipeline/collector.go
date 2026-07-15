@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/go-logr/logr"
 
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 )
 
@@ -45,15 +47,21 @@ func NewResultCollector(outputFile, errorFile *os.File, pending *PendingRequests
 
 // Drain reads results until resultCh is closed, then flushes.
 // Both dispatchers close the channel when done, so this always terminates.
-// Returns ctx.Err() if the context was cancelled during draining.
+// On a write error, Drain continues reading (to avoid deadlocking the
+// dispatcher) but skips further writes. The error is returned after the
+// channel closes.
 func (c *ResultCollector) Drain(ctx context.Context, resultCh <-chan ResultItem) error {
 	var firstErr error
 	for msg := range resultCh {
 		if !c.pending.Resolve(&msg) {
 			continue
 		}
-		if err := c.Receive(msg); err != nil && firstErr == nil {
+		if firstErr != nil {
+			continue
+		}
+		if err := c.Receive(msg); err != nil {
 			firstErr = err
+			c.logger.Error(err, "Persistence failure, skipping further writes")
 		}
 	}
 	if flushErr := c.flushFiles(); flushErr != nil {
@@ -87,8 +95,17 @@ func (c *ResultCollector) Receive(msg ResultItem) error {
 		return fmt.Errorf("write output for %s: %w", msg.RequestID, err)
 	}
 
+	if !msg.SubmittedAt.IsZero() {
+		metrics.DecProcessorInflightRequests()
+		metrics.DecModelInflightRequests(msg.ModelID)
+		metrics.RecordModelRequestExecutionDuration(time.Since(msg.SubmittedAt), msg.ModelID)
+	}
+
 	if line.isSuccess() {
 		c.tracker.RecordSuccess(msg)
+		if msg.Response != nil {
+			recordTokenUsage(msg.Response.Body, msg.ModelID, c.logger)
+		}
 	} else {
 		code := "unknown"
 		if line.Error != nil {
@@ -97,9 +114,44 @@ func (c *ResultCollector) Receive(msg ResultItem) error {
 			code = fmt.Sprintf("http_%d", line.Response.StatusCode)
 		}
 		c.tracker.RecordFailure(fmt.Errorf("%s: %s", msg.RequestID, code))
+		metrics.RecordRequestError(msg.ModelID)
 	}
 
 	return nil
+}
+
+func recordTokenUsage(body map[string]any, model string, logger logr.Logger) {
+	usage, ok := body["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	prompt, pOK := toFloat64(usage["prompt_tokens"])
+	completion, cOK := toFloat64(usage["completion_tokens"])
+	if !pOK && !cOK {
+		return
+	}
+	if prompt < 0 || completion < 0 {
+		logger.Info("Negative token values, skipping metrics",
+			"prompt_tokens", prompt, "completion_tokens", completion)
+		return
+	}
+	metrics.RecordTokenUsage(prompt, completion, model)
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (c *ResultCollector) flushFiles() (err error) {

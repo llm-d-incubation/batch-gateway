@@ -2,9 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-logr/logr"
 
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
@@ -44,13 +46,21 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 			break
 		}
 
+		if msg.ParseError != nil {
+			resultCh <- *msg.Error(msg.ParseError.Code, msg.ParseError.Message)
+			continue
+		}
+
 		client := d.resolver.SharedClientFor(msg.ModelID)
 		if client == nil {
 			resultCh <- *msg.ModelNotFound()
 			continue
 		}
 
+		msg.SubmittedAt = time.Now()
 		d.pending.Store(msg)
+		metrics.IncProcessorInflightRequests()
+		metrics.IncModelInflightRequests(msg.ModelID)
 
 		req := &inference.GenerateRequest{
 			RequestID: msg.RequestID,
@@ -76,9 +86,15 @@ func (d *AsyncDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem,
 	// Wait for all pending results to be resolved by the collector.
 	d.pending.Wait(ctx)
 
-	// Unsubscribe blocks until any in-progress broadcaster send completes
-	// (MutexMap.Delete waits for Range to release the lock), so closing
-	// resultCh after this is safe — no concurrent writes remain.
+	// Drain submitted-but-uncollected requests as errors so that
+	// output_lines + error_lines == total_requests.
+	d.pending.DrainUnresolved(func(msg RequestItem) {
+		resultCh <- *msg.Error("batch_expired", "result not collected before deadline")
+	})
+
+	// Unsubscribe removes resultCh from the broadcast list. A concurrent
+	// send from the broadcaster may still race with close(resultCh);
+	// safeChannelSend recovers from the resulting panic.
 	d.broadcasters.Unsubscribe(resultCh)
 	close(resultCh)
 

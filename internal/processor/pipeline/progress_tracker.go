@@ -10,7 +10,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 )
 
-var progressUpdateInterval = time.Second
+const defaultProgressInterval = time.Second
 
 // ProgressUpdater pushes progress counts to a status store.
 type ProgressUpdater interface {
@@ -31,12 +31,16 @@ type ProgressTracker struct {
 	logger    logr.Logger
 }
 
-func NewProgressTracker(total int64, updater ProgressUpdater, jobID string, logger logr.Logger) *ProgressTracker {
+func NewProgressTracker(total int64, updater ProgressUpdater, jobID string, interval time.Duration, logger logr.Logger) *ProgressTracker {
+	if interval <= 0 {
+		interval = defaultProgressInterval
+	}
 	return &ProgressTracker{
-		total:   total,
-		updater: updater,
-		jobID:   jobID,
-		logger:  logger,
+		total:    total,
+		updater:  updater,
+		jobID:    jobID,
+		interval: interval,
+		logger:   logger,
 	}
 }
 
@@ -59,11 +63,7 @@ func (pt *ProgressTracker) RecordFailure(err error) {
 // Run starts the ticker that pushes throttled updates to the status store.
 // Returns when ctx is cancelled, after pushing final counts.
 func (pt *ProgressTracker) Run(ctx context.Context) error {
-	interval := pt.interval
-	if interval <= 0 {
-		interval = progressUpdateInterval
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(pt.interval)
 	defer ticker.Stop()
 
 	for {

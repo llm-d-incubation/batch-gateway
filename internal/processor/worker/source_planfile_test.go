@@ -440,6 +440,94 @@ func TestPlanFileSource_Produce_MultipleModels(t *testing.T) {
 	}
 }
 
+func TestPlanFileSource_Produce_MalformedLine(t *testing.T) {
+	dir := t.TempDir()
+
+	// One valid line, one malformed line
+	validReq := `{"custom_id":"c-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m1"}}` + "\n"
+	badLine := `{not valid json}` + "\n"
+
+	inputPath := filepath.Join(dir, "input.jsonl")
+	f, err := os.Create(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []planEntry
+
+	// Write valid line
+	offset, _ := f.Seek(0, 1)
+	if _, err := f.WriteString(validReq); err != nil {
+		t.Fatal(err)
+	}
+	entries = append(entries, planEntry{Offset: offset, Length: uint32(len(validReq))})
+
+	// Write malformed line
+	offset, _ = f.Seek(0, 1)
+	if _, err := f.WriteString(badLine); err != nil {
+		t.Fatal(err)
+	}
+	entries = append(entries, planEntry{Offset: offset, Length: uint32(len(badLine))})
+	f.Close()
+
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inputFile.Close()
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		InputFile: inputFile,
+		PlansDir:  plansDir,
+		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
+		Resolver:  resolver,
+		Cfg:       config.NewConfig(),
+		Logger:    logr.Discard(),
+	})
+
+	out := make(chan pipeline.RequestItem, 10)
+	if err := source.Produce(context.Background(), out); err != nil {
+		t.Fatalf("Produce error: %v", err)
+	}
+
+	var items []pipeline.RequestItem
+	for item := range out {
+		items = append(items, item)
+	}
+
+	// Both lines must be produced — malformed one with ParseError set
+	if len(items) != 2 {
+		t.Fatalf("produced %d items, want 2 (valid + parse error)", len(items))
+	}
+
+	var valid, parseErr int
+	for _, item := range items {
+		if item.ParseError != nil {
+			parseErr++
+			if item.ParseError.Code != "parse_error" {
+				t.Errorf("ParseError.Code = %q, want %q", item.ParseError.Code, "parse_error")
+			}
+			if item.RequestID == "" {
+				t.Error("parse error item should have a RequestID")
+			}
+		} else {
+			valid++
+			if item.CustomID != "c-1" {
+				t.Errorf("valid item CustomID = %q, want %q", item.CustomID, "c-1")
+			}
+		}
+	}
+	if valid != 1 || parseErr != 1 {
+		t.Fatalf("valid=%d parseErr=%d, want valid=1 parseErr=1", valid, parseErr)
+	}
+}
+
 func TestPlanFileSource_Produce_BadPlanFile(t *testing.T) {
 	dir := t.TempDir()
 

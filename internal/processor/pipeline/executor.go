@@ -13,7 +13,6 @@ import (
 type JobExecutor struct {
 	source     RequestSource
 	dispatcher RequestDispatcher
-	pending    *PendingRequests
 	collector  *ResultCollector
 	tracker    *ProgressTracker
 	logger     logr.Logger
@@ -22,7 +21,6 @@ type JobExecutor struct {
 type JobExecutorConfig struct {
 	Source     RequestSource
 	Dispatcher RequestDispatcher
-	Pending    *PendingRequests
 	Collector  *ResultCollector
 	Tracker    *ProgressTracker
 	Logger     logr.Logger
@@ -32,7 +30,6 @@ func NewJobExecutor(cfg JobExecutorConfig) *JobExecutor {
 	return &JobExecutor{
 		source:     cfg.Source,
 		dispatcher: cfg.Dispatcher,
-		pending:    cfg.Pending,
 		collector:  cfg.Collector,
 		tracker:    cfg.Tracker,
 		logger:     cfg.Logger,

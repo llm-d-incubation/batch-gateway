@@ -59,6 +59,7 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 		modelMap.LineCount,
 		params.updater,
 		params.jobInfo.JobID,
+		time.Second,
 		logger,
 	)
 	tracker.AddFailed(modelMap.RejectedCount)
@@ -77,7 +78,7 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 	})
 
 	// The dispatcher forwards requests for processing.
-	pending := pipeline.NewPendingRequests()
+	pending := pipeline.NewPendingRequests(modelMap.LineCount)
 
 	// Broadcasters propagate asynchronous responses to subscribers.
 	broadcasters := p.broadcasters.forModels(modelMap)

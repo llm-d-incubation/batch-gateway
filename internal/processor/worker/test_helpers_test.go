@@ -103,45 +103,6 @@ func (m *mockInferenceClient) Generate(ctx context.Context, req *inference.Gener
 }
 
 // ---------------------------------------------------------------------------
-// Mock async inference client
-// ---------------------------------------------------------------------------
-
-type mockAsyncInferenceClient struct {
-	submitFn    func(ctx context.Context, req *inference.GenerateRequest) *inference.ClientError
-	getResultFn func(ctx context.Context) (*inference.GenerateResponse, error)
-	cancelFn    func(ctx context.Context) error
-	closeFn     func() error
-}
-
-func (m *mockAsyncInferenceClient) Submit(ctx context.Context, req *inference.GenerateRequest) *inference.ClientError {
-	if m.submitFn != nil {
-		return m.submitFn(ctx, req)
-	}
-	return nil
-}
-
-func (m *mockAsyncInferenceClient) GetResult(ctx context.Context) (*inference.GenerateResponse, error) {
-	if m.getResultFn != nil {
-		return m.getResultFn(ctx)
-	}
-	return nil, ctx.Err()
-}
-
-func (m *mockAsyncInferenceClient) Cancel(ctx context.Context) error {
-	if m.cancelFn != nil {
-		return m.cancelFn(ctx)
-	}
-	return nil
-}
-
-func (m *mockAsyncInferenceClient) Close() error {
-	if m.closeFn != nil {
-		return m.closeFn()
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // Mock files client (upload retry testing)
 // ---------------------------------------------------------------------------
 

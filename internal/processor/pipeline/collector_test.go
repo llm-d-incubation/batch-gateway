@@ -13,8 +13,8 @@ import (
 func TestResultCollector_RoutesToCorrectFile(t *testing.T) {
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(3, nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(3, nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	results := []ResultItem{
@@ -73,8 +73,8 @@ func TestResultCollector_RoutesToCorrectFile(t *testing.T) {
 func TestResultCollector_DrainSkipsUnknownPending(t *testing.T) {
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(1, nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(1, nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	ch := make(chan ResultItem, 1)
@@ -97,8 +97,8 @@ func TestResultCollector_DrainSkipsUnknownPending(t *testing.T) {
 func TestResultCollector_DrainProcessesAllResultsAfterCancel(t *testing.T) {
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
-	pending := NewPendingRequests()
-	tracker := NewProgressTracker(3, nil, "test-job", logr.Discard())
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(3, nil, "test-job", 0, logr.Discard())
 	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
 
 	results := []ResultItem{
@@ -139,7 +139,7 @@ func TestResultCollector_DrainProcessesAllResultsAfterCancel(t *testing.T) {
 }
 
 func TestProgressTracker_AddFailed(t *testing.T) {
-	tracker := NewProgressTracker(10, nil, "test-job", logr.Discard())
+	tracker := NewProgressTracker(10, nil, "test-job", 0, logr.Discard())
 	tracker.AddFailed(5)
 	counts := tracker.Counts()
 	if counts.Failed != 5 {
@@ -151,7 +151,7 @@ func TestProgressTracker_AddFailed(t *testing.T) {
 }
 
 func TestProgressTracker_RecordSuccessAndFailure(t *testing.T) {
-	tracker := NewProgressTracker(3, nil, "test-job", logr.Discard())
+	tracker := NewProgressTracker(3, nil, "test-job", 0, logr.Discard())
 	tracker.RecordSuccess(ResultItem{RequestID: "r1"})
 	tracker.RecordSuccess(ResultItem{RequestID: "r2"})
 	tracker.RecordFailure(nil)

@@ -23,8 +23,8 @@ func makeItems(n int, model string) []RequestItem {
 	items := make([]RequestItem, n)
 	for i := range items {
 		items[i] = RequestItem{
-			RequestID: "req-" + model + "-" + string(rune('0'+i)),
-			CustomID:  "c-" + string(rune('0'+i)),
+			RequestID: fmt.Sprintf("req-%s-%d", model, i),
+			CustomID:  fmt.Sprintf("c-%d", i),
 			ModelID:   model,
 			Endpoint:  "/v1/chat/completions",
 		}
