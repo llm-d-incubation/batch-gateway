@@ -76,7 +76,7 @@ values_file_for_scenario() {
         0|1) echo "" ;;  # No batch-gateway deployed
         2)   echo "${SCRIPT_DIR}/helm-values/scenario-2-ungated.yaml" ;;
         3)   echo "${SCRIPT_DIR}/helm-values/scenario-3-admission-control-aimd.yaml" ;;
-        4)   echo "${SCRIPT_DIR}/helm-values/scenario-4-aimd-flow-control.yaml" ;;
+        4)   echo "${SCRIPT_DIR}/helm-values/scenario-4-flow-control-aimd.yaml" ;;
         5)   echo "${SCRIPT_DIR}/helm-values/scenario-5-async.yaml" ;;
         6)   echo "${SCRIPT_DIR}/helm-values/scenario-6-low-concurrency.yaml" ;;
     esac
