@@ -39,7 +39,7 @@ BATCH_INTERNAL_GATEWAY_NAMESPACE="${BATCH_INTERNAL_GATEWAY_NAMESPACE:-${GATEWAY_
 
 # LLMInferenceService configuration
 MODEL_NAME="${MODEL_NAME:-facebook/opt-125m}"
-MODEL_URI="${MODEL_URI:-hf://sshleifer/tiny-gpt2}"
+MODEL_URI="${MODEL_URI:-hf://facebook/opt-125m}"
 MODEL_REPLICAS="${MODEL_REPLICAS:-1}"
 ISVC_NAME="${ISVC_NAME:-$(echo "${MODEL_NAME}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')}"
 SIM_IMAGE="${SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:v0.7.1}"
@@ -149,21 +149,15 @@ EOF
 }
 
 # ── 3. GatewayClass + Gateway ───────────────────────────────────────────────
-
-# Verify the inference gateway pod is healthy.
-# Especially after Kuadrant injects a WasmPlugin into the Gateway's Envoy proxy; if the wasm binary
-# fails to load the pod enters CrashLoopBackOff.
-check_inference_external_gateway() {
-    wait_for_deployment "istiod-openshift-gateway" "openshift-ingress"
-    wait_for_deployment "${GATEWAY_NAME}-${GATEWAY_CLASS_NAME}" "${GATEWAY_NAMESPACE}"
-}
-
 create_inference_external_gateway() {
     step "Creating OpenShift GatewayClass and Gateway..."
 
     # GatewayClass
     # During the creation of the GatewayClass resource, the Ingress Operator(in the openshift-ingress-operator namespace) installs a lightweight version of Red Hat OpenShift Service Mesh, an Istio custom resource, and a new deployment in the openshift-ingress namespace
-    kubectl apply -f - <<EOF
+    if kubectl get gatewayclass "${GATEWAY_CLASS_NAME}" &>/dev/null; then
+        log "GatewayClass '${GATEWAY_CLASS_NAME}' already exists. Skipping."
+    else
+        kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
@@ -171,6 +165,7 @@ metadata:
 spec:
   controllerName: openshift.io/gateway-controller/v1
 EOF
+    fi
 
     # Get cluster domain
     local domain
@@ -222,7 +217,8 @@ EOF
     fi
 
     step "Waiting for Istio control plane (istiod) to be ready..."
-    check_inference_external_gateway
+    wait_for_deployment "istiod-openshift-gateway" "openshift-ingress"
+    wait_for_deployment "${GATEWAY_NAME}-${GATEWAY_CLASS_NAME}" "${GATEWAY_NAMESPACE}"
 
     log "OpenShift Gateway created."
 }
@@ -1021,9 +1017,6 @@ EOF
         -n "${GATEWAY_NAMESPACE}" --timeout=180s 2>/dev/null \
         || die "TokenRateLimitPolicy not enforced after 180s."
 
-    sleep 15
-    check_inference_external_gateway
-
     log "TokenRateLimitPolicy applied."
 }
 
@@ -1079,9 +1072,6 @@ spec:
       counters:
       - expression: auth.identity.user.username
 EOF
-
-    sleep 15
-    check_inference_external_gateway
 
     log "RateLimitPolicy applied (20 req/min per user)."
 }
@@ -1263,12 +1253,16 @@ cmd_install() {
 
     check_prerequisites
 
+    # cert manager
     install_cert_manager_operator
     create_selfsigned_issuer
 
+    # lws: https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/ai_workloads/leader-worker-set-operator
     install_lws_operator
+
     create_inference_external_gateway
 
+    # rhcl: https://docs.redhat.com/en/documentation/red_hat_connectivity_link
     # TODO
     # Pin RHCL to 1.3.x to work around wasm plugin incompatibility with Service Mesh 3.x.
     # RHCL 1.4.x wasm plugin fails with 'allow_on_headers_stop_iteration' unknown field
@@ -1277,23 +1271,26 @@ cmd_install() {
     # install_connectivity_link
     install_connectivity_link_v1_3
 
+    # rhoai: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed
     install_rhoai_operator
     apply_dsci_and_dsc
 
+    # llm-d: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.5/html/deploy_models_using_distributed_inference_with_llm-d
     deploy_llm_inference_service
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         create_inference_objectives
     fi
     apply_llm_token_rate_limit
 
+    # batch gateway
     create_batch_internal_gateway
     create_batch_llm_httproute
     apply_batch_llm_auth_policy
-
     deploy_batch_gateway_rhoai
     apply_batch_auth_policy
     apply_batch_request_rate_limit
 
+    # verify
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         verify_flow_control_config
     fi
