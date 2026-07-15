@@ -68,7 +68,7 @@ func doTestHardCrashOrphanRecovery(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 50; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"orphan-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+			`{"custom_id":"orphan-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-orphan-recovery-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)
@@ -115,11 +115,11 @@ func doTestCancellingOrphanRecovery(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"cancel-orphan-fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, testModel, i))
+			`{"custom_id":"cancel-orphan-fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, testSimModel, i))
 	}
 	for i := 1; i <= 20; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"cancel-orphan-slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+			`{"custom_id":"cancel-orphan-slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-cancelling-orphan-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)

@@ -47,8 +47,14 @@ var (
 	testRunID = fmt.Sprintf("%d", time.Now().UnixNano())
 
 	// testModel is the model name used in batch input; configurable via TEST_MODEL env var.
-	testModel           = getEnvOrDefault("TEST_MODEL", "sim-model")
-	testModelB          = getEnvOrDefault("TEST_MODEL_B", "sim-model-b")
+	testModel  = getEnvOrDefault("TEST_MODEL", "sim-model")
+	testModelB = getEnvOrDefault("TEST_MODEL_B", "sim-model-b")
+	// testSimModel is the model name used in timing-dependent tests that require
+	// controlled latency (cancel, expiration, progress polling, orphan recovery,
+	// graceful shutdown). It should always point to a simulator with predictable
+	// inter-token latency. Defaults to testModel for dev-deploy where all models
+	// are simulated.
+	testSimModel        = getEnvOrDefault("TEST_SIM_MODEL", testModel)
 	testModel429        = getEnvOrDefault("TEST_MODEL_429", "sim-model-429")
 	testModelAlwaysFail = getEnvOrDefault("TEST_MODEL_ALWAYS_FAIL", "sim-model-always-fail")
 	testModelAIMD       = getEnvOrDefault("TEST_MODEL_AIMD", "sim-model-aimd")

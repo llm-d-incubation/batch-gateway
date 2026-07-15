@@ -74,11 +74,11 @@ func doTestBatchCancel(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, testModel, i))
+			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, testSimModel, i))
 	}
 	for i := 1; i <= 20; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, testModel, i))
+			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, testSimModel, i))
 	}
 	slowJSONL := strings.Join(lines, "\n")
 	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), slowJSONL)
@@ -521,7 +521,7 @@ func doTestBatchExpiration(t *testing.T) {
 	var blockerLines []string
 	for i := 1; i <= 50; i++ {
 		blockerLines = append(blockerLines, fmt.Sprintf(
-			`{"custom_id":"blocker-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Block %d"}]}}`, i, testModel, i))
+			`{"custom_id":"blocker-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Block %d"}]}}`, i, testSimModel, i))
 	}
 	blockerFileID := mustCreateFile(t, fmt.Sprintf("test-expiration-blocker-%s.jsonl", testRunID), strings.Join(blockerLines, "\n"))
 	blockerBatchID := mustCreateBatch(t, blockerFileID)
@@ -547,7 +547,7 @@ func doTestBatchExpiration(t *testing.T) {
 	var lines []string
 	for i := 1; i <= numRequests; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"expire-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Expire %d"}]}}`, i, testModel, i))
+			`{"custom_id":"expire-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Expire %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-expiration-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 
@@ -606,7 +606,7 @@ func doTestCancelIdempotentRetry(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 20; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"retry-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+			`{"custom_id":"retry-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-cancel-retry-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)
@@ -742,11 +742,11 @@ func doTestProgressPolling(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"fast %d"}]}}`, i, testModel, i))
+			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"fast %d"}]}}`, i, testSimModel, i))
 	}
 	for i := 1; i <= 15; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-progress-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)
