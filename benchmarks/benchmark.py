@@ -44,7 +44,7 @@ SCENARIO_NAMES = {
     1: "no-batch-gateway",
     2: "ungated",
     3: "admission-control-aimd",
-    4: "aimd-flow-control",
+    4: "flow-control-aimd",
     5: "async",
     6: "low-concurrency",
 }
