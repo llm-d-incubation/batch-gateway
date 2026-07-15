@@ -134,6 +134,9 @@ func TestDispatcher(t *testing.T) {
 	t.Run("MultiRequestBatch", func(t *testing.T) {
 		testDispatcherMultiRequestBatch(t, rdb)
 	})
+	t.Run("BatchCancel", func(t *testing.T) {
+		doTestBatchCancel(t)
+	})
 	t.Run("DispatchGate", func(t *testing.T) {
 		testDispatcherRedisGate(t, rdb)
 	})

@@ -47,6 +47,11 @@ const (
 	AttrRequestTotal     = "batch.request.total"
 	AttrRequestCompleted = "batch.request.completed"
 	AttrRequestFailed    = "batch.request.failed"
+	AttrModelCount       = "batch.model.count"
+	AttrRequestCount     = "batch.request.count"
+	AttrInputLineCount   = "batch.input.line_count"
+	AttrRejectedCount    = "batch.input.rejected_count"
+	AttrSizeBucket       = "batch.size_bucket"
 )
 
 // baseLoggerKey stores the logger captured before the first trace enrichment.

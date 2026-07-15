@@ -32,10 +32,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
@@ -221,7 +224,16 @@ func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jo
 		return fmt.Errorf("write model map: %w", err)
 	}
 
-	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), metrics.GetSizeBucket(int(lineCount)))
+	sizeBucket := metrics.GetSizeBucket(int(lineCount))
+	metrics.RecordPlanBuildDuration(time.Since(planBuildStart), sizeBucket)
+
+	uotel.SetAttr(ctx,
+		attribute.Int64(uotel.AttrInputLineCount, lineCount),
+		attribute.Int(uotel.AttrModelCount, len(modelToSafe)),
+		attribute.Int64(uotel.AttrRejectedCount, rejectedCount),
+		attribute.String(uotel.AttrSizeBucket, sizeBucket),
+	)
+
 	modelCounts := make(map[string]int, len(modelToSafe))
 	for model, safe := range modelToSafe {
 		modelCounts[model] = len(acc.entries[safe])

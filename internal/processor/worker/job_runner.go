@@ -168,12 +168,17 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	go p.heartbeat(heartbeatCtx, params.jobItem.ID, requestAbortFn)
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
-	if err := p.preProcessJob(ctx, sloCtx, userCancelCtx, params.jobInfo); err != nil {
+	ingestCtx, ingestSpan := uotel.StartSpan(ctx, "ingest-and-plan")
+	err = p.preProcessJob(ingestCtx, sloCtx, userCancelCtx, params.jobInfo)
+	if err != nil && !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
+		ingestSpan.RecordError(err)
+		ingestSpan.SetStatus(codes.Error, "pre-process failed")
+	}
+	ingestSpan.End()
+	if err != nil {
 		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
 		if !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
 			logger.Error(err, "Pre-processing failed")
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "pre-process failed")
 		}
 		p.handleJobError(ctx, params, err)
 		// No RecordJobProcessingDuration here: preprocessing is ingestion (parsing, plan
@@ -195,15 +200,16 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	transitionedToInProgress = true
 
 	// execution: execute inference requests
+	execCtx, execSpan := uotel.StartSpan(ctx, "execute-job")
 	var execErr error
-	requestCounts, execErr = p.executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx, params)
+	requestCounts, execErr = p.executeJob(execCtx, sloCtx, userCancelCtx, requestAbortCtx, params)
+	if execErr != nil && !errors.Is(execErr, errExpired) && !errors.Is(execErr, errCancelled) && !errors.Is(execErr, errShutdown) {
+		execSpan.RecordError(execErr)
+		execSpan.SetStatus(codes.Error, "execution failed")
+	}
+	execSpan.End()
 	params.requestCounts = requestCounts
 	if execErr != nil {
-		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
-		if !errors.Is(execErr, errExpired) && !errors.Is(execErr, errCancelled) && !errors.Is(execErr, errShutdown) {
-			span.RecordError(execErr)
-			span.SetStatus(codes.Error, "execution failed")
-		}
 		p.handleJobError(ctx, params, execErr)
 		// Record processing duration for any job that ran (partially or fully).
 		// executeJob always returns non-nil counts alongside its sentinel errors

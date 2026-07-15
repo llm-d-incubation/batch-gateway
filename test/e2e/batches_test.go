@@ -74,11 +74,11 @@ func doTestBatchCancel(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, i))
+			`{"custom_id":"fast-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"Hi %d"}]}}`, i, testModel, i))
 	}
 	for i := 1; i <= 20; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, i))
+			`{"custom_id":"slow-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"Tell me a long story %d"}]}}`, i, testModel, i))
 	}
 	slowJSONL := strings.Join(lines, "\n")
 	fileID := mustCreateFile(t, fmt.Sprintf("test-batch-cancel-%s.jsonl", testRunID), slowJSONL)
@@ -371,11 +371,6 @@ func doTestBatchMixedSuccessFailure(t *testing.T) {
 func doTestPassThroughHeaders(t *testing.T) {
 	t.Helper()
 
-	// Verify processor logs contain the pass-through header names
-	if !testKubectlAvailable {
-		t.Skip("kubectl not available, skipping processor log verification")
-	}
-
 	// Create batch with pass-through headers
 	fileID := mustCreateFile(t, fmt.Sprintf("test-pass-through-headers-%s.jsonl", testRunID), testJSONL)
 
@@ -403,6 +398,13 @@ func doTestPassThroughHeaders(t *testing.T) {
 	}
 	if finalBatch.ErrorFileID != "" {
 		t.Errorf("expected empty error_file_id, got %q", finalBatch.ErrorFileID)
+	}
+
+	// Verify processor logs contain the pass-through header names.
+	// Skip when kubectl is unavailable — the batch completion above already
+	// validates the core pass-through functionality.
+	if !testKubectlAvailable {
+		t.Skip("kubectl not available, skipping processor log verification")
 	}
 
 	out, err := exec.Command("kubectl", "logs",
