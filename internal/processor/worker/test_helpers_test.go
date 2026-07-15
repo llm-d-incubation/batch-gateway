@@ -51,15 +51,6 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func mustReadFile(t *testing.T, path string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%s): %v", path, err)
-	}
-	return b
-}
-
 // ---------------------------------------------------------------------------
 // Mock DB constructors
 // ---------------------------------------------------------------------------
