@@ -37,6 +37,7 @@ var (
 	testHelmRelease       = getEnvOrDefault("TEST_HELM_RELEASE", "batch-gateway")
 	testPostgresqlRelease = getEnvOrDefault("TEST_POSTGRESQL_RELEASE", "postgresql")
 	testRedisRelease      = getEnvOrDefault("TEST_REDIS_RELEASE", "redis")
+	testDBPod             = getEnvOrDefault("TEST_DB_POD", "")
 
 	// testDBClientType and testExchangeClientType are detected from Helm
 	// releases at startup; see detectDBClientType / detectExchangeClientType.
