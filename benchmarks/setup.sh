@@ -302,8 +302,8 @@ inferenceExtension:
           maxBytes: 536870912
           fairnessPolicyRef: global-strict-fairness-policy
           orderingPolicyRef: fcfs-ordering-policy
-        saturationDetector:
-          pluginRef: concurrency-detector
+      saturationDetector:
+        pluginRef: concurrency-detector
 VALUESEOF
         fi
 
