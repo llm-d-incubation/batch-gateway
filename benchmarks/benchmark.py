@@ -43,9 +43,10 @@ SCENARIO_NAMES = {
     0: "interactive-only",
     1: "no-batch-gateway",
     2: "ungated",
-    3: "aimd",
+    3: "admission-control-aimd",
     4: "aimd-flow-control",
     5: "async",
+    6: "low-concurrency",
 }
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -2506,7 +2507,7 @@ def main():
     # Validate scenarios
     for s in cfg.scenarios:
         if s not in SCENARIO_NAMES:
-            log(f"ERROR: Unknown scenario {s}. Valid: 0-5")
+            log(f"ERROR: Unknown scenario {s}. Valid: 0-6")
             sys.exit(1)
 
     # Rate sweep mode
