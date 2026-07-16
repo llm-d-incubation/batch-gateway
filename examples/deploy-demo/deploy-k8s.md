@@ -31,6 +31,7 @@ bash examples/deploy-demo/deploy-k8s.sh install
 | Internal Gateway | ClusterIP gateway for batch processor → LLM inference (bypasses rate limits, preserves AuthPolicy) |
 | InferenceObjective | GIE flow control CRDs — priority-based dispatch (interactive=100, batch=-1). Enabled by default (`ENABLE_FLOW_CONTROL=true`) |
 | batch-gateway | apiserver + processor + gc (Helm chart) |
+| async-processor | llm-d-async dispatcher for async dispatch mode (when `ENABLE_DISPATCHER=true`). Routes requests through Redis queues → Internal Gateway → EPP |
 
 #### Routing & Policies
 
@@ -57,6 +58,7 @@ Batch-route has no authorization — model-level authz is enforced downstream wh
 | Chart from a specific commit | `BATCH_DEV_VERSION=1f925ff bash examples/deploy-demo/deploy-k8s.sh install` |
 | Released OCI chart | `BATCH_RELEASE_VERSION=v0.1.0 bash examples/deploy-demo/deploy-k8s.sh install` |
 | Custom images | `BATCH_IMAGE_TAG=v0.2.0` <br> `BATCH_APISERVER_REPO=ghcr.io/llm-d/batch-gateway-apiserver` <br> `BATCH_PROCESSOR_REPO=ghcr.io/llm-d/batch-gateway-processor` <br> `BATCH_GC_REPO=ghcr.io/llm-d/batch-gateway-gc` <br> `bash examples/deploy-demo/deploy-k8s.sh install` |
+| With async dispatcher | `ENABLE_DISPATCHER=true bash examples/deploy-demo/deploy-k8s.sh install` |
 
 > `BATCH_RELEASE_VERSION` and `BATCH_DEV_VERSION` cannot be used together. See [Environment Variables](#environment-variables) for common parameters.
 
@@ -89,6 +91,7 @@ bash examples/deploy-demo/deploy-k8s.sh uninstall
 
 Default `uninstall` removes the batch-gateway footprint and associated gateway/policy resources:
 
+- Dispatcher Helm release (if deployed)
 - Helm releases and CRs in `BATCH_NAMESPACE` (`batch-route` HTTPRoute, Redis, PostgreSQL, MinIO)
 - Both Gateways: `GATEWAY_NAME` and `BATCH_INTERNAL_GATEWAY_NAME`
 - DestinationRule `${BATCH_INSTANCE_NAME}-backend-tls`
@@ -149,4 +152,6 @@ Use that only on **ephemeral or dedicated** demo clusters. See [issue #309](http
 | `ISTIO_VERSION` | `1.29.2` | Istio Helm chart version |
 | `ENABLE_FLOW_CONTROL` | `true` | Enable GIE priority-based flow control |
 | `BATCH_FLOW_CONTROL_OBJECTIVE` | `batch-sheddable` | InferenceObjective name for batch requests (priority -1) |
+| `ENABLE_DISPATCHER` | `false` | Deploy llm-d-async dispatcher for async dispatch mode |
+| `DISPATCHER_VERSION` | `v0.7.3` | llm-d-async version (image tag and chart version) |
 | `UNINSTALL_ALL` | `0` | Set to `1` to remove Kuadrant, Istio, cert-manager, CRDs (ephemeral clusters only) |
