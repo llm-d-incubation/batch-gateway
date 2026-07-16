@@ -62,7 +62,7 @@ func doTestPodDeleteMidJob(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 10; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"pod-del-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+			`{"custom_id":"pod-del-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-pod-delete-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)
@@ -124,7 +124,7 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	var lines []string
 	for i := 1; i <= 10; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"restart-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testModel, i))
+			`{"custom_id":"restart-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
 	fileID := mustCreateFile(t, fmt.Sprintf("test-rolling-restart-%s.jsonl", testRunID), strings.Join(lines, "\n"))
 	batchID := mustCreateBatch(t, fileID)
