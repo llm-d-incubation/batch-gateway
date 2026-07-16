@@ -1,9 +1,12 @@
 package pipeline
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -135,6 +138,57 @@ func TestResultCollector_DrainProcessesAllResultsAfterCancel(t *testing.T) {
 	errorLines := splitLines(errorData)
 	if len(errorLines) != 2 {
 		t.Fatalf("error lines = %d, want 2 (cancelled requests must still be written)", len(errorLines))
+	}
+}
+
+type failAfterNWriter struct {
+	remaining int
+}
+
+func (w *failAfterNWriter) Write(p []byte) (int, error) {
+	if w.remaining <= 0 {
+		return 0, fmt.Errorf("simulated write failure")
+	}
+	w.remaining--
+	return len(p), nil
+}
+
+func TestResultCollector_DrainDecrementsMetricsAfterWriteFailure(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(3, nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	collector.output = bufio.NewWriterSize(&failAfterNWriter{remaining: 1}, 1)
+
+	now := time.Now()
+	results := []ResultItem{
+		{RequestID: "req-1", CustomID: "c-1", SubmittedAt: now, Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}}},
+		{RequestID: "req-2", CustomID: "c-2", SubmittedAt: now, Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-2", Body: map[string]any{"ok": true}}},
+		{RequestID: "req-3", CustomID: "c-3", SubmittedAt: now, Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-3", Body: map[string]any{"ok": true}}},
+	}
+	for _, r := range results {
+		pending.Store(RequestItem{RequestID: r.RequestID, CustomID: r.CustomID, SubmittedAt: r.SubmittedAt})
+	}
+
+	ch := make(chan ResultItem, len(results))
+	for _, r := range results {
+		ch <- r
+	}
+	close(ch)
+
+	err := collector.Drain(context.Background(), ch)
+	if err == nil {
+		t.Fatal("expected write failure error from Drain")
+	}
+
+	var remaining int
+	pending.DrainUnresolved(func(_ RequestItem) {
+		remaining++
+	})
+	if remaining != 0 {
+		t.Fatalf("pending requests remaining = %d, want 0 (all should be resolved despite write failure)", remaining)
 	}
 }
 

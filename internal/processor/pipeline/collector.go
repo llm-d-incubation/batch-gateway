@@ -56,6 +56,11 @@ func (c *ResultCollector) Drain(ctx context.Context, resultCh <-chan ResultItem)
 		if !c.pending.Resolve(&msg) {
 			continue
 		}
+		if !msg.SubmittedAt.IsZero() {
+			metrics.DecProcessorInflightRequests()
+			metrics.DecModelInflightRequests(msg.ModelID)
+			metrics.RecordModelRequestExecutionDuration(time.Since(msg.SubmittedAt), msg.ModelID)
+		}
 		if firstErr != nil {
 			continue
 		}
@@ -93,12 +98,6 @@ func (c *ResultCollector) Receive(msg ResultItem) error {
 	}
 	if _, err := w.Write(lineBytes); err != nil {
 		return fmt.Errorf("write output for %s: %w", msg.RequestID, err)
-	}
-
-	if !msg.SubmittedAt.IsZero() {
-		metrics.DecProcessorInflightRequests()
-		metrics.DecModelInflightRequests(msg.ModelID)
-		metrics.RecordModelRequestExecutionDuration(time.Since(msg.SubmittedAt), msg.ModelID)
 	}
 
 	if line.isSuccess() {
