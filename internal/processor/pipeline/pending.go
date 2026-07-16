@@ -53,8 +53,9 @@ func (p *PendingRequests) Resolve(result *ResultItem) bool {
 	if result.Error != nil {
 		if _, ok := p.m.LoadAndDelete(result.RequestID); ok {
 			p.decrement()
+			return true
 		}
-		return true
+		return result.CustomID != ""
 	}
 	if result.CustomID != "" {
 		if _, ok := p.m.LoadAndDelete(result.RequestID); ok {

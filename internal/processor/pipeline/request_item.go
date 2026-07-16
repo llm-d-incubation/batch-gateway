@@ -45,10 +45,11 @@ func (r *RequestItem) ModelNotFound() *ResultItem {
 
 func (r *RequestItem) Error(code, message string) *ResultItem {
 	return &ResultItem{
-		RequestID: r.RequestID,
-		CustomID:  r.CustomID,
-		ModelID:   r.ModelID,
-		Error:     &OutputError{Code: code, Message: message},
+		RequestID:   r.RequestID,
+		CustomID:    r.CustomID,
+		ModelID:     r.ModelID,
+		SubmittedAt: r.SubmittedAt,
+		Error:       &OutputError{Code: code, Message: message},
 	}
 }
 

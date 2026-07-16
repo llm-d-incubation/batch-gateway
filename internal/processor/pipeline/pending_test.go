@@ -185,6 +185,47 @@ func TestPendingRequests(t *testing.T) {
 		}
 	})
 
+	t.Run("Error propagates SubmittedAt", func(t *testing.T) {
+		submitted := time.Now()
+		req := RequestItem{
+			RequestID:   "r1",
+			CustomID:    "c1",
+			ModelID:     "m1",
+			SubmittedAt: submitted,
+		}
+		result := req.Error("test_error", "some error")
+		if result.SubmittedAt != submitted {
+			t.Fatalf("SubmittedAt not propagated: got %v, want %v", result.SubmittedAt, submitted)
+		}
+	})
+
+	t.Run("resolve rejects broadcaster error for other job", func(t *testing.T) {
+		p := NewPendingRequests(0)
+		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})
+
+		// Simulate a broadcaster error result for a request NOT in this job's map
+		otherJobResult := &ResultItem{
+			RequestID: "other-job-req",
+			Error:     &OutputError{Code: "server_error", Message: "bad body"},
+		}
+		if p.Resolve(otherJobResult) {
+			t.Fatal("Resolve accepted error result from another job")
+		}
+	})
+
+	t.Run("resolve accepts inline error with CustomID", func(t *testing.T) {
+		p := NewPendingRequests(0)
+		// Inline errors from the dispatcher have CustomID set
+		inlineErr := &ResultItem{
+			RequestID: "r1",
+			CustomID:  "c1",
+			Error:     &OutputError{Code: "model_not_found", Message: "not found"},
+		}
+		if !p.Resolve(inlineErr) {
+			t.Fatal("Resolve rejected inline error with CustomID")
+		}
+	})
+
 	t.Run("drain unresolved unblocks Wait and returns remaining", func(t *testing.T) {
 		p := NewPendingRequests(0)
 		p.Store(RequestItem{RequestID: "r1", CustomID: "c1"})

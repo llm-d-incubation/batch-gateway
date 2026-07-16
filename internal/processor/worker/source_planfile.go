@@ -96,8 +96,10 @@ func (s *PlanFileSource) readEntry(entry planEntry, modelID string) (*pipeline.R
 	var req batch_types.Request
 	if err := json.Unmarshal(trimmed, &req); err != nil {
 		s.logger.Error(err, "Failed to parse request line, recording as error")
+		reqID := fmt.Sprintf("batch_req_%s", uuid.NewString())
 		return &pipeline.RequestItem{
-			RequestID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+			RequestID: reqID,
+			CustomID:  reqID,
 			ParseError: &pipeline.OutputError{
 				Code:    "parse_error",
 				Message: fmt.Sprintf("failed to parse request line: %v", err),

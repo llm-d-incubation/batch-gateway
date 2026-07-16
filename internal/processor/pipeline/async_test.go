@@ -158,6 +158,26 @@ func TestAsyncResult_BadJSONBody(t *testing.T) {
 	}
 }
 
+func TestSafeChannelSend(t *testing.T) {
+	b := NewResultBroadcaster(nil, logr.Discard())
+	result := ResultItem{RequestID: "req-1"}
+
+	t.Run("sends to open channel", func(t *testing.T) {
+		ch := make(chan ResultItem, 1)
+		b.safeChannelSend(result, ch)
+		got := <-ch
+		if got.RequestID != "req-1" {
+			t.Fatalf("RequestID = %q, want %q", got.RequestID, "req-1")
+		}
+	})
+
+	t.Run("recovers send on closed channel", func(t *testing.T) {
+		ch := make(chan ResultItem)
+		close(ch)
+		b.safeChannelSend(result, ch)
+	})
+}
+
 func TestAsyncResult_Success(t *testing.T) {
 	resp := &inference.GenerateResponse{
 		RequestID: "req-ok",
@@ -257,7 +277,7 @@ func TestAsyncDispatcher_ParseError(t *testing.T) {
 
 	items := []RequestItem{
 		{RequestID: "req-1", CustomID: "c-1", ModelID: "m1", Endpoint: "/v1/chat/completions"},
-		{RequestID: "req-bad", ParseError: &OutputError{Code: "parse_error", Message: "bad json"}},
+		{RequestID: "req-bad", CustomID: "req-bad", ParseError: &OutputError{Code: "parse_error", Message: "bad json"}},
 		{RequestID: "req-2", CustomID: "c-2", ModelID: "m1", Endpoint: "/v1/chat/completions"},
 	}
 

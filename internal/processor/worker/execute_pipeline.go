@@ -83,8 +83,8 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 	// Broadcasters propagate asynchronous responses to subscribers.
 	broadcasters := p.broadcasters.forModels(modelMap)
 
-	// The async dispatcher forwards requests to the async dispatcher
-	// and subscribes the result channels to the per-model broadcasters.
+	// The async dispatcher submits requests to the async queue and
+	// subscribes the result channel to the per-model broadcasters.
 	dispatcher := pipeline.NewAsyncDispatcher(
 		p.asyncInference,
 		broadcasters,

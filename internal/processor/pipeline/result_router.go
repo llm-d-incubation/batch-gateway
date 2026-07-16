@@ -114,13 +114,19 @@ func (b *ResultBroadcaster) Run(ctx context.Context) {
 	}
 }
 
-// safeChannelSend sends to `ch` and handles the panic if the channel was closed concurrently
-// (we received an unsubscription request). It is safe to just ignore the panic.
+// safeChannelSend sends to ch and recovers from the panic if the channel
+// was closed concurrently (subscriber unsubscribed). The only operation in
+// this function is a channel send, so the only possible panic is
+// "send on closed channel".
 func (b *ResultBroadcaster) safeChannelSend(result ResultItem, ch chan<- ResultItem) {
 	defer func() {
 		if r := recover(); r != nil {
-			b.logger.Info("Broadcast send recovered (subscriber likely unsubscribed)",
-				"requestID", result.RequestID, "panic", r)
+			if err, ok := r.(error); ok && err.Error() == "send on closed channel" {
+				b.logger.Info("Broadcast send recovered (subscriber unsubscribed)",
+					"requestID", result.RequestID)
+			} else {
+				panic(r)
+			}
 		}
 	}()
 	ch <- result
