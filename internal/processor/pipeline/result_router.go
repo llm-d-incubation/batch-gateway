@@ -136,21 +136,59 @@ func asyncResult(resp *inference.GenerateResponse, logger logr.Logger) ResultIte
 	result := ResultItem{
 		RequestID: resp.RequestID,
 	}
-	if resp.Response == nil {
-		result.Error = &OutputError{Code: "server_error", Message: "async response has no body"}
+
+	if resp.IsNonHTTPFailure() {
+		code := resp.ErrorCode
+		if code == "" {
+			code = "server_error"
+		}
+		msg := resp.ErrorMessage
+		if msg == "" {
+			msg = "async request failed"
+		}
+		result.Error = &OutputError{Code: code, Message: msg}
 		return result
 	}
-	var body map[string]any
-	if err := json.Unmarshal(resp.Response, &body); err != nil {
-		logger.Error(err, "Failed to unmarshal async response", "requestID", resp.RequestID)
-		result.Error = &OutputError{
-			Code:    "parse_error",
-			Message: fmt.Sprintf("response body could not be parsed: %v", err),
+
+	statusCode := resp.StatusCode
+	if statusCode == 0 {
+		// Legacy ResultMessage with only Payload — treat as HTTP 200.
+		statusCode = 200
+	}
+
+	if len(resp.Response) == 0 {
+		if statusCode >= 200 && statusCode < 300 {
+			result.Error = &OutputError{Code: "server_error", Message: "async response has no body"}
+			return result
+		}
+		// Non-2xx with empty body (e.g. 403 from auth): preserve status code.
+		result.Response = &batch_types.ResponseData{
+			StatusCode: statusCode,
+			RequestID:  resp.RequestID,
+			Body:       map[string]any{},
 		}
 		return result
 	}
+
+	var body map[string]any
+	if err := json.Unmarshal(resp.Response, &body); err != nil {
+		if statusCode >= 200 && statusCode < 300 {
+			logger.Error(err, "Failed to unmarshal async response", "requestID", resp.RequestID)
+			result.Error = &OutputError{
+				Code:    "parse_error",
+				Message: fmt.Sprintf("response body could not be parsed: %v", err),
+			}
+			return result
+		}
+		// Non-2xx with unparseable body: still preserve the HTTP status.
+		body = map[string]any{
+			"error": map[string]any{
+				"message": string(resp.Response),
+			},
+		}
+	}
 	result.Response = &batch_types.ResponseData{
-		StatusCode: 200,
+		StatusCode: statusCode,
 		RequestID:  resp.RequestID,
 		Body:       body,
 	}

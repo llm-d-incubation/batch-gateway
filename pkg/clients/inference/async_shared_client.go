@@ -78,8 +78,11 @@ func (c *asyncSharedClient) GetResult(ctx context.Context) (*GenerateResponse, e
 	}
 
 	return &GenerateResponse{
-		RequestID: result.ID,
-		Response:  []byte(result.Payload),
+		RequestID:    result.ID,
+		Response:     []byte(result.Payload),
+		StatusCode:   result.StatusCode,
+		ErrorCode:    result.ErrorCode,
+		ErrorMessage: result.ErrorMessage,
 	}, nil
 }
 

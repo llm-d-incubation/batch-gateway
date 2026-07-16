@@ -55,8 +55,9 @@ func (c *fakeAsyncClient) Close() error { return nil }
 func (c *fakeAsyncClient) deliver(requestID string, body map[string]any) {
 	resp, _ := json.Marshal(body)
 	c.results <- &inference.GenerateResponse{
-		RequestID: requestID,
-		Response:  resp,
+		RequestID:  requestID,
+		Response:   resp,
+		StatusCode: 200,
 	}
 }
 
@@ -127,34 +128,123 @@ func TestAsyncEndToEnd(t *testing.T) {
 	}
 }
 
-func TestAsyncResult_NilResponseBody(t *testing.T) {
-	resp := &inference.GenerateResponse{
-		RequestID: "req-nil-body",
-		Response:  nil,
+func TestAsyncResult(t *testing.T) {
+	tests := []struct {
+		name           string
+		resp           *inference.GenerateResponse
+		wantStatusCode int
+		wantErrCode    string
+		wantResponse   bool
+	}{
+		{
+			name: "nil body treated as empty 2xx",
+			resp: &inference.GenerateResponse{
+				RequestID: "req-nil-body",
+				Response:  nil,
+			},
+			wantErrCode: "server_error",
+		},
+		{
+			name: "bad JSON on 2xx is parse_error",
+			resp: &inference.GenerateResponse{
+				RequestID:  "req-bad-json",
+				Response:   []byte(`{not valid json`),
+				StatusCode: 200,
+			},
+			wantErrCode: "parse_error",
+		},
+		{
+			name: "legacy success without StatusCode defaults to 200",
+			resp: &inference.GenerateResponse{
+				RequestID: "req-ok",
+				Response:  []byte(`{"choices":[]}`),
+			},
+			wantStatusCode: 200,
+			wantResponse:   true,
+		},
+		{
+			name: "success with StatusCode 200",
+			resp: &inference.GenerateResponse{
+				RequestID:  "req-ok-200",
+				Response:   []byte(`{"choices":[]}`),
+				StatusCode: 200,
+			},
+			wantStatusCode: 200,
+			wantResponse:   true,
+		},
+		{
+			name: "HTTP 403 with empty body preserves status",
+			resp: &inference.GenerateResponse{
+				RequestID:  "req-403",
+				Response:   []byte{},
+				StatusCode: 403,
+			},
+			wantStatusCode: 403,
+			wantResponse:   true,
+		},
+		{
+			name: "HTTP 403 with JSON error body preserves status",
+			resp: &inference.GenerateResponse{
+				RequestID:  "req-403-json",
+				Response:   []byte(`{"error":{"message":"unauthorized"}}`),
+				StatusCode: 403,
+			},
+			wantStatusCode: 403,
+			wantResponse:   true,
+		},
+		{
+			name: "HTTP 422 with unparseable body preserves status",
+			resp: &inference.GenerateResponse{
+				RequestID:  "req-422",
+				Response:   []byte(`not-json`),
+				StatusCode: 422,
+			},
+			wantStatusCode: 422,
+			wantResponse:   true,
+		},
+		{
+			name: "non-HTTP failure uses ErrorCode",
+			resp: &inference.GenerateResponse{
+				RequestID:    "req-deadline",
+				StatusCode:   0,
+				ErrorCode:    "DEADLINE_EXCEEDED",
+				ErrorMessage: "deadline exceeded",
+			},
+			wantErrCode: "DEADLINE_EXCEEDED",
+		},
 	}
-	result := asyncResult(resp, logr.Discard())
-	if result.Error == nil {
-		t.Fatal("expected error for nil response body")
-	}
-	if result.Error.Code != "server_error" {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, "server_error")
-	}
-	if result.Response != nil {
-		t.Fatalf("expected nil response, got %+v", result.Response)
-	}
-}
 
-func TestAsyncResult_BadJSONBody(t *testing.T) {
-	resp := &inference.GenerateResponse{
-		RequestID: "req-bad-json",
-		Response:  []byte(`{not valid json`),
-	}
-	result := asyncResult(resp, logr.Discard())
-	if result.Error == nil {
-		t.Fatal("expected error for bad JSON body")
-	}
-	if result.Error.Code != "parse_error" {
-		t.Fatalf("error code = %q, want %q", result.Error.Code, "parse_error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := asyncResult(tt.resp, logr.Discard())
+			if tt.wantErrCode != "" {
+				if result.Error == nil {
+					t.Fatalf("expected error code %q, got nil error", tt.wantErrCode)
+				}
+				if result.Error.Code != tt.wantErrCode {
+					t.Fatalf("error code = %q, want %q", result.Error.Code, tt.wantErrCode)
+				}
+				if result.Response != nil {
+					t.Fatalf("expected nil response, got %+v", result.Response)
+				}
+				return
+			}
+			if result.Error != nil {
+				t.Fatalf("unexpected error: %+v", result.Error)
+			}
+			if !tt.wantResponse {
+				return
+			}
+			if result.Response == nil {
+				t.Fatal("expected response")
+			}
+			if result.Response.StatusCode != tt.wantStatusCode {
+				t.Fatalf("StatusCode = %d, want %d", result.Response.StatusCode, tt.wantStatusCode)
+			}
+			if result.Response.RequestID != tt.resp.RequestID {
+				t.Fatalf("RequestID = %q, want %q", result.Response.RequestID, tt.resp.RequestID)
+			}
+		})
 	}
 }
 
@@ -176,26 +266,6 @@ func TestSafeChannelSend(t *testing.T) {
 		close(ch)
 		b.safeChannelSend(result, ch)
 	})
-}
-
-func TestAsyncResult_Success(t *testing.T) {
-	resp := &inference.GenerateResponse{
-		RequestID: "req-ok",
-		Response:  []byte(`{"choices":[]}`),
-	}
-	result := asyncResult(resp, logr.Discard())
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %+v", result.Error)
-	}
-	if result.Response == nil {
-		t.Fatal("expected response")
-	}
-	if result.Response.StatusCode != 200 {
-		t.Fatalf("StatusCode = %d, want 200", result.Response.StatusCode)
-	}
-	if result.Response.RequestID != "req-ok" {
-		t.Fatalf("RequestID = %q, want %q", result.Response.RequestID, "req-ok")
-	}
 }
 
 func TestBroadcaster_RetriesTransientError(t *testing.T) {
