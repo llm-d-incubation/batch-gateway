@@ -111,7 +111,14 @@ func TestDispatcher(t *testing.T) {
 	rdb := newDispatcherRedisClient(t)
 	defer rdb.Close()
 
-	waitForReady(t, testApiserverObsURL, 30*time.Second)
+	waitForServerUp(t, testApiserverURL, 30*time.Second)
+
+	if resp, err := http.Get(testApiserverObsURL + "/ready"); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			waitForReady(t, testApiserverObsURL, 30*time.Second)
+		}
+	}
 
 	t.Cleanup(func() {
 		ctx := context.Background()
