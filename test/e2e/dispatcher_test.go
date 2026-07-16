@@ -50,6 +50,11 @@ var (
 	promPool        = "sim-pool-prom"
 	promReqQueue    = "llm-d-async:requests:" + promPool
 	promResultQueue = "llm-d-async:results:" + promPool
+
+	injectPool        = "sim-pool-inject"
+	injectReqQueue    = "llm-d-async:requests:" + injectPool
+	injectResultQueue = "llm-d-async:results:" + injectPool
+	injectModel       = "sim-model-inject"
 )
 
 func newDispatcherRedisClient(t *testing.T) *redis.Client {
@@ -134,6 +139,9 @@ func TestDispatcher(t *testing.T) {
 	t.Run("MultiRequestBatch", func(t *testing.T) {
 		testDispatcherMultiRequestBatch(t, rdb)
 	})
+	t.Run("HTTPErrorStatusPreserved", func(t *testing.T) {
+		testDispatcherHTTPErrorStatusPreserved(t, rdb)
+	})
 	t.Run("BatchCancel", func(t *testing.T) {
 		doTestBatchCancel(t)
 	})
@@ -146,6 +154,133 @@ func TestDispatcher(t *testing.T) {
 	t.Run("PrometheusGate", func(t *testing.T) {
 		testDispatcherPrometheusGate(t, rdb)
 	})
+}
+
+// testDispatcherHTTPErrorStatusPreserved verifies that an HTTP error status
+// from the async ResultMessage (e.g. 403 with an empty body) is preserved in
+// the batch output file instead of being collapsed into parse_error.
+//
+// Uses the consumer-less "sim-pool-inject" pool: no async-processor subscribes
+// to it, so the request stays in the queue deterministically until the test
+// removes it and injects a synthetic ResultMessage.
+func testDispatcherHTTPErrorStatusPreserved(t *testing.T, rdb *redis.Client) {
+	ctx := context.Background()
+
+	rdb.Del(ctx, injectReqQueue, injectResultQueue)
+	defer rdb.Del(ctx, injectReqQueue, injectResultQueue)
+
+	jsonl := fmt.Sprintf(
+		`{"custom_id":"dreq-403","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"expect 403"}]}}`,
+		injectModel)
+	fileID := mustCreateFile(t, fmt.Sprintf("dispatcher-http-error-%s.jsonl", testRunID), jsonl)
+	batchID := mustCreateBatch(t, fileID)
+	t.Logf("Created batch %s; waiting for request in %s", batchID, injectReqQueue)
+
+	reqID := waitAndStealQueuedRequestID(t, rdb, injectReqQueue, 30*time.Second)
+	t.Logf("Got request %s; injecting StatusCode=403 result", reqID)
+
+	resultBytes, err := json.Marshal(asyncapi.ResultMessage{
+		ID:         reqID,
+		StatusCode: http.StatusForbidden,
+		Payload:    "",
+	})
+	if err != nil {
+		t.Fatalf("marshal ResultMessage: %v", err)
+	}
+	if err := rdb.LPush(ctx, injectResultQueue, string(resultBytes)).Err(); err != nil {
+		t.Fatalf("LPUSH result: %v", err)
+	}
+
+	finalBatch := waitForRetryExhaustion(t, batchID, 2*time.Minute)
+
+	if finalBatch.Status != openai.BatchStatusCompleted {
+		t.Errorf("expected batch status %q, got %q", openai.BatchStatusCompleted, finalBatch.Status)
+	}
+	if finalBatch.RequestCounts.Completed != 0 {
+		t.Errorf("completed = %d, want 0", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 1 {
+		t.Errorf("failed = %d, want 1", finalBatch.RequestCounts.Failed)
+	}
+	if finalBatch.OutputFileID == "" {
+		t.Fatal("expected output_file_id with HTTP 403 response")
+	}
+	if finalBatch.ErrorFileID != "" {
+		t.Errorf("expected empty error_file_id (HTTP errors go to output), got %q", finalBatch.ErrorFileID)
+	}
+
+	output := fetchOutputFile(t, finalBatch)
+	var found403 bool
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rl batchResultLine
+		if err := json.Unmarshal([]byte(line), &rl); err != nil {
+			t.Fatalf("invalid output line: %v\n%s", err, line)
+		}
+		if rl.Error != nil {
+			t.Fatalf("expected HTTP response in output, got error file entry code=%q message=%q",
+				rl.Error.Code, rl.Error.Message)
+		}
+		if rl.Response == nil {
+			t.Fatal("expected response object in output line")
+		}
+		if rl.Response.StatusCode == http.StatusForbidden {
+			found403 = true
+		} else {
+			t.Errorf("status_code = %d, want 403", rl.Response.StatusCode)
+		}
+	}
+	if !found403 {
+		t.Errorf("expected status_code 403 in output file, got:\n%s", output)
+	}
+	t.Logf("Batch %s preserved HTTP 403 in output (no parse_error)", batchID)
+}
+
+// waitAndStealQueuedRequestID waits until a request appears in the Redis sorted
+// set queue, removes it, and returns the request ID from the InternalRequest envelope.
+func waitAndStealQueuedRequestID(t *testing.T, rdb *redis.Client, queue string, timeout time.Duration) string {
+	t.Helper()
+
+	ctx := context.Background()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		members, err := rdb.ZRange(ctx, queue, 0, 0).Result()
+		if err != nil {
+			t.Fatalf("ZRange %s: %v", queue, err)
+		}
+		if len(members) == 0 {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		member := members[0]
+		removed, err := rdb.ZRem(ctx, queue, member).Result()
+		if err != nil {
+			t.Fatalf("ZRem %s: %v", queue, err)
+		}
+		if removed == 0 {
+			// Another consumer won the race; retry.
+			continue
+		}
+
+		var ir asyncapi.InternalRequest
+		if err := json.Unmarshal([]byte(member), &ir); err != nil {
+			t.Fatalf("unmarshal InternalRequest: %v\n%s", err, member)
+		}
+		if ir.PublicRequest == nil {
+			t.Fatalf("InternalRequest missing PublicRequest: %s", member)
+		}
+		reqID := ir.PublicRequest.ReqID()
+		if reqID == "" {
+			t.Fatalf("empty request ID in queued message: %s", member)
+		}
+		return reqID
+	}
+	t.Fatalf("no request appeared in %s within %v", queue, timeout)
+	return ""
 }
 
 func testDispatcherBatchRoundTrip(t *testing.T, rdb *redis.Client) {
