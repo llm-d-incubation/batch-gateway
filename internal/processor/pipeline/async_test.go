@@ -275,6 +275,9 @@ func TestBroadcaster_RetriesTransientError(t *testing.T) {
 
 		client := &fakeAsyncClientWithErrors{
 			getResult: func(ctx context.Context) (*inference.GenerateResponse, error) {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				n := callCount.Add(1)
 				if n <= 3 {
 					return nil, transientErr
@@ -292,7 +295,6 @@ func TestBroadcaster_RetriesTransientError(t *testing.T) {
 		broadcaster.Subscribe(resultCh)
 
 		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
 		go broadcaster.Run(ctx)
 
 		// Advance past backoff sleeps: 100ms + 200ms + 400ms = 700ms
@@ -313,6 +315,18 @@ func TestBroadcaster_RetriesTransientError(t *testing.T) {
 
 		if n := callCount.Load(); n < 4 {
 			t.Fatalf("GetResult called %d times, want >= 4 (3 errors + 1 success)", n)
+		}
+
+		// Cancel and drain resultCh so broadcaster goroutines can exit
+		// before the synctest bubble closes.
+		cancel()
+		for {
+			synctest.Wait()
+			select {
+			case <-resultCh:
+			default:
+				return
+			}
 		}
 	})
 }
