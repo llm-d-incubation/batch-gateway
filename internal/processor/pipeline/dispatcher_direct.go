@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/go-logr/logr"
 
-	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
@@ -70,10 +68,6 @@ func (d *DirectDispatcher) submitRequest(
 
 	resp, clientErr := client.Generate(ctx, req)
 
-	metrics.DecModelInflightRequests(msg.ModelID)
-	metrics.DecProcessorInflightRequests()
-	metrics.RecordModelRequestExecutionDuration(time.Since(msg.SubmittedAt), msg.ModelID)
-
 	result := buildResult(msg, resp, clientErr, d.logger)
 	if ctx.Err() != nil && result.Error != nil && result.Response == nil {
 		code, message := cancelCode(ctx)
@@ -82,11 +76,14 @@ func (d *DirectDispatcher) submitRequest(
 	resultCh <- result
 }
 
+// All per-request metrics (inflight Dec, duration, error counts, token usage)
+// are recorded by the collector via SubmittedAt propagation — not here.
 func buildResult(msg RequestItem, resp *inference.GenerateResponse, clientErr *inference.ClientError, logger logr.Logger) ResultItem {
 	result := ResultItem{
-		RequestID: msg.RequestID,
-		CustomID:  msg.CustomID,
-		ModelID:   msg.ModelID,
+		RequestID:   msg.RequestID,
+		CustomID:    msg.CustomID,
+		ModelID:     msg.ModelID,
+		SubmittedAt: msg.SubmittedAt,
 	}
 	if resp != nil {
 		result.HadCapacityRetry = resp.HadCapacityRetry
@@ -94,22 +91,17 @@ func buildResult(msg RequestItem, resp *inference.GenerateResponse, clientErr *i
 
 	switch {
 	case clientErr != nil:
-		handleClientError(&result, msg.ModelID, clientErr, logger)
+		handleClientError(&result, clientErr, logger)
 	case resp == nil:
 		result.Error = &OutputError{Code: string(httpclient.ErrCategoryServer), Message: "inference returned no response"}
 	default:
-		handleSuccess(&result, msg.ModelID, resp, logger)
-	}
-
-	isSuccess := result.Error == nil && result.Response != nil && result.Response.StatusCode == 200
-	if !isSuccess {
-		metrics.RecordRequestError(msg.ModelID)
+		handleSuccess(&result, resp, logger)
 	}
 
 	return result
 }
 
-func handleClientError(result *ResultItem, modelID string, clientErr *inference.ClientError, logger logr.Logger) {
+func handleClientError(result *ResultItem, clientErr *inference.ClientError, logger logr.Logger) {
 	logger.V(logging.DEBUG).Info("Inference request failed", "requestId", result.RequestID, "error", clientErr.Message)
 
 	if clientErr.StatusCode <= 0 {
@@ -146,7 +138,7 @@ func handleClientError(result *ResultItem, modelID string, clientErr *inference.
 	}
 }
 
-func handleSuccess(result *ResultItem, modelID string, resp *inference.GenerateResponse, logger logr.Logger) {
+func handleSuccess(result *ResultItem, resp *inference.GenerateResponse, logger logr.Logger) {
 	var body map[string]any
 	if len(resp.Response) > 0 {
 		if err := json.Unmarshal(resp.Response, &body); err != nil {
@@ -165,6 +157,4 @@ func handleSuccess(result *ResultItem, modelID string, resp *inference.GenerateR
 		RequestID:  resp.RequestID,
 		Body:       body,
 	}
-
-	recordTokenUsage(body, modelID, logger)
 }

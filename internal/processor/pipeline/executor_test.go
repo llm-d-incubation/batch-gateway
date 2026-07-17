@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
 
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
 	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
@@ -627,6 +628,99 @@ func TestCancelCode_UserCancel(t *testing.T) {
 	if code != string(batch_types.ErrCodeBatchCancelled) {
 		t.Fatalf("cancelCode() = %q, want %q", code, batch_types.ErrCodeBatchCancelled)
 	}
+}
+
+// TestDirectDispatcher_MetricsNotDoubleCounted verifies that RecordRequestError
+// and RecordTokenUsage are each called exactly once per request, not twice
+// (once in buildResult/handleSuccess and again in the collector).
+func TestDirectDispatcher_MetricsNotDoubleCounted(t *testing.T) {
+	respBody, _ := json.Marshal(map[string]any{
+		"ok": true,
+		"usage": map[string]any{
+			"prompt_tokens":     float64(10),
+			"completion_tokens": float64(5),
+		},
+	})
+
+	var callCount atomic.Int32
+	client := &mockInferenceClientForE2E{
+		generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			n := callCount.Add(1)
+			if n == 1 {
+				return &inference.GenerateResponse{RequestID: req.RequestID, Response: respBody}, nil
+			}
+			return nil, &inference.ClientError{Category: httpclient.ErrCategoryServer, Message: "fail"}
+		},
+	}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	items := []RequestItem{
+		{RequestID: "req-ok", CustomID: "ok", ModelID: "m1", Endpoint: "/v1/chat/completions"},
+		{RequestID: "req-err", CustomID: "err", ModelID: "m1", Endpoint: "/v1/chat/completions"},
+	}
+
+	errorsBefore := getCounterValue(t, "request_errors_by_model_total", "m1")
+	promptBefore := getCounterValue(t, "batch_request_prompt_tokens_total", "m1")
+	genBefore := getCounterValue(t, "batch_request_generation_tokens_total", "m1")
+
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(len(items)), nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	executor := NewJobExecutor(JobExecutorConfig{
+		Source:     &sliceSource{items: items},
+		Dispatcher: NewDirectDispatcher(resolver, logr.Discard()),
+		Collector:  collector,
+		Tracker:    tracker,
+		Logger:     logr.Discard(),
+	})
+
+	if _, err := executor.Execute(context.Background()); err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	errorsAfter := getCounterValue(t, "request_errors_by_model_total", "m1")
+	promptAfter := getCounterValue(t, "batch_request_prompt_tokens_total", "m1")
+	genAfter := getCounterValue(t, "batch_request_generation_tokens_total", "m1")
+
+	errorsDelta := errorsAfter - errorsBefore
+	if errorsDelta != 1 {
+		t.Errorf("request_errors delta = %.0f, want 1 (must not double-count)", errorsDelta)
+	}
+
+	promptDelta := promptAfter - promptBefore
+	if promptDelta != 10 {
+		t.Errorf("prompt_tokens delta = %.0f, want 10 (must not double-count)", promptDelta)
+	}
+
+	genDelta := genAfter - genBefore
+	if genDelta != 5 {
+		t.Errorf("generation_tokens delta = %.0f, want 5 (must not double-count)", genDelta)
+	}
+}
+
+func getCounterValue(t *testing.T, name, model string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.Metric {
+			for _, lp := range m.Label {
+				if lp.GetName() == "model" && lp.GetValue() == model {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }
 
 var _ inference.InferenceClient = (*mockInferenceClient)(nil)
