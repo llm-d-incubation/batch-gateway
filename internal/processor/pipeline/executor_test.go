@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -721,6 +723,130 @@ func getCounterValue(t *testing.T, name, model string) float64 {
 		}
 	}
 	return 0
+}
+
+// TestJobExecutor_PersistenceFailureCancelsDispatch verifies that when the
+// collector encounters a write failure, dispatch is cancelled early: the slow
+// source should NOT deliver all requests because dispatchCtx is cancelled
+// after the first persistence error.
+func TestJobExecutor_PersistenceFailureCancelsDispatch(t *testing.T) {
+	const total = 20
+	var dispatched atomic.Int32
+	client := &mockInferenceClientForE2E{
+		generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			dispatched.Add(1)
+			body, _ := json.Marshal(map[string]any{"ok": true})
+			return &inference.GenerateResponse{RequestID: req.RequestID, Response: body}, nil
+		},
+	}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	items := makeItems(total, "m1")
+
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(total), nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	collector.output = bufio.NewWriterSize(&failAfterNWriter{remaining: 1}, 1)
+
+	source := &throttledSource{items: items, delay: 10 * time.Millisecond}
+
+	executor := NewJobExecutor(JobExecutorConfig{
+		Source:     source,
+		Dispatcher: NewPreDispatcher(NewDirectDispatcher(resolver, logr.Discard())),
+		Collector:  collector,
+		Tracker:    tracker,
+		Logger:     logr.Discard(),
+	})
+
+	_, err := executor.Execute(context.Background())
+	if err == nil {
+		t.Fatal("expected persistence error from Execute")
+	}
+
+	d := dispatched.Load()
+	if d >= int32(total) {
+		t.Fatalf("dispatched %d requests (all %d), want fewer: persistence failure should cancel dispatch early", d, total)
+	}
+	t.Logf("dispatched %d/%d requests before cancellation", d, total)
+}
+
+// throttledSource emits items with a configurable delay between sends,
+// respecting context cancellation.
+type throttledSource struct {
+	items []RequestItem
+	delay time.Duration
+}
+
+func (s *throttledSource) Produce(ctx context.Context, out chan<- RequestItem) error {
+	defer close(out)
+	for _, item := range s.items {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case out <- item:
+		}
+		if s.delay > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(s.delay):
+			}
+		}
+	}
+	return nil
+}
+
+// TestJobExecutor_PersistenceFailureReturnedNotCanceled verifies that Execute()
+// returns the collector's write error, not context.Canceled from the source.
+// When onPersistenceFailure cancels dispatchCtx, the source exits early with
+// context.Canceled. Without the fix, errgroup's sync.Once records that as the
+// first error, masking the persistence failure.
+func TestJobExecutor_PersistenceFailureReturnedNotCanceled(t *testing.T) {
+	const total = 10
+	client := &mockInferenceClientForE2E{
+		generateFn: func(_ context.Context, req *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			body, _ := json.Marshal(map[string]any{"ok": true})
+			return &inference.GenerateResponse{RequestID: req.RequestID, Response: body}, nil
+		},
+	}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	items := makeItems(total, "m1")
+
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(int64(total), nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	collector.output = bufio.NewWriterSize(&failAfterNWriter{remaining: 1}, 1)
+
+	source := &throttledSource{items: items, delay: 10 * time.Millisecond}
+
+	executor := NewJobExecutor(JobExecutorConfig{
+		Source:     source,
+		Dispatcher: NewPreDispatcher(NewDirectDispatcher(resolver, logr.Discard())),
+		Collector:  collector,
+		Tracker:    tracker,
+		Logger:     logr.Discard(),
+	})
+
+	_, err := executor.Execute(context.Background())
+	if err == nil {
+		t.Fatal("expected error from Execute")
+	}
+	if err == context.Canceled {
+		t.Fatalf("Execute() returned context.Canceled; want the persistence write error")
+	}
+	if !strings.Contains(err.Error(), "write") {
+		t.Errorf("Execute() error = %q; want an error containing 'write' (the persistence failure)", err)
+	}
+	t.Logf("Execute() correctly returned persistence error: %v", err)
 }
 
 var _ inference.InferenceClient = (*mockInferenceClient)(nil)
