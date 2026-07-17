@@ -80,7 +80,10 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 
 	// The dispatcher forwards requests for processing.
 	pending := pipeline.NewPendingRequests(modelMap.LineCount)
-	dispatcher := p.buildRequestDispatcher(modelMap, pending, logger)
+	dispatcher, err := p.buildRequestDispatcher(modelMap, pending, logger)
+	if err != nil {
+		return nil, fmt.Errorf("build dispatcher: %w", err)
+	}
 
 	// Collects the result and logs them.
 	resultCollector := pipeline.NewResultCollector(
@@ -117,17 +120,20 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 	return counts, nil
 }
 
-func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, logger logr.Logger) pipeline.RequestDispatcher {
+func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, logger logr.Logger) (pipeline.RequestDispatcher, error) {
 	switch {
 	case p.asyncInference != nil:
 		broadcasters := p.broadcasters.forModels(modelMap)
 		async := pipeline.NewAsyncDispatcher(p.asyncInference, broadcasters, pending, logger)
-		return pipeline.NewPreDispatcher(async)
+		return pipeline.NewPreDispatcher(async), nil
 	case p.cfg.Concurrency.AIMD.Enabled:
 		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits)
 		direct := pipeline.NewDirectDispatcher(p.inference, logger)
-		aimd := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
-		return pipeline.NewPreDispatcher(aimd)
+		aimd, err := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
+		if err != nil {
+			return nil, err
+		}
+		return pipeline.NewPreDispatcher(aimd), nil
 	default:
 		// AIMD is used even when adaptive limits are disabled: with AIMD.Enabled=false,
 		// EndpointAIMD.AIMD is nil so recordAIMDSignal is a no-op, but the semaphores
@@ -135,8 +141,11 @@ func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipe
 		// DirectDispatcher would dispatch all requests as unbounded goroutines.
 		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits)
 		direct := pipeline.NewDirectDispatcher(p.inference, logger)
-		aimd := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
-		return pipeline.NewPreDispatcher(aimd)
+		aimd, err := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
+		if err != nil {
+			return nil, err
+		}
+		return pipeline.NewPreDispatcher(aimd), nil
 	}
 }
 

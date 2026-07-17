@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -36,14 +37,17 @@ func NewAIMDDispatcher(
 	models map[string]*EndpointAIMD,
 	globalLimit int,
 	logger logr.Logger,
-) *AIMDDispatcher {
-	globalSem, _ := semaphore.New(globalLimit, nil)
+) (*AIMDDispatcher, error) {
+	globalSem, err := semaphore.New(globalLimit, nil)
+	if err != nil {
+		return nil, fmt.Errorf("global concurrency semaphore: %w", err)
+	}
 	return &AIMDDispatcher{
 		next:      next,
 		models:    models,
 		globalSem: globalSem,
 		logger:    logger,
-	}
+	}, nil
 }
 
 func (d *AIMDDispatcher) Run(ctx context.Context, requestCh <-chan RequestItem, resultCh chan<- ResultItem) error {

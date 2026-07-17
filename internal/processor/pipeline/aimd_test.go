@@ -72,9 +72,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(maxLimit, "m1"), dispatcher)
 
@@ -92,9 +95,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(1, "m1"), dispatcher)
 
@@ -112,9 +118,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(1, "m1"), dispatcher)
 
@@ -132,9 +141,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(1, "m1"), dispatcher)
 
@@ -159,10 +171,13 @@ func TestAIMDSignaling(t *testing.T) {
 		items := append(makeItems(1, "model-a"), makeItems(maxLimit, "model-b")...)
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct, map[string]*EndpointAIMD{
+		dispatcher, err := NewAIMDDispatcher(direct, map[string]*EndpointAIMD{
 			"model-a": {Sem: semA, AIMD: aimdA, Label: "ep-a"},
 			"model-b": {Sem: semB, AIMD: aimdB, Label: "ep-b"},
 		}, globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, items, dispatcher)
 
@@ -191,9 +206,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(1, "m1"), dispatcher)
 
@@ -211,9 +229,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(1, "m1"), dispatcher)
 
@@ -238,9 +259,12 @@ func TestAIMDSignaling(t *testing.T) {
 		globalLimit := 100
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 			globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(1, "m1"), dispatcher)
 
@@ -260,9 +284,12 @@ func TestAIMDSignaling(t *testing.T) {
 		}
 
 		direct := NewDirectDispatcher(resolver, logr.Discard())
-		dispatcher := NewAIMDDispatcher(direct,
+		dispatcher, err := NewAIMDDispatcher(direct,
 			map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: nil, Label: "test"}},
 			100, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		runPipeline(t, makeItems(3, "m1"), dispatcher)
 
@@ -296,9 +323,12 @@ func TestAIMDDrain_SLOExpiry_UsesBatchExpired(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(int64(len(items))), tracker, logr.Discard())
 
 	direct := NewDirectDispatcher(resolver, logr.Discard())
-	dispatcher := NewAIMDDispatcher(direct,
+	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		1, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     source,
@@ -356,9 +386,12 @@ func TestCancelDrainsUndispatched(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(int64(len(items))), tracker, logr.Discard())
 
 	direct := NewDirectDispatcher(resolver, logr.Discard())
-	dispatcher := NewAIMDDispatcher(direct,
+	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     source,
@@ -368,7 +401,7 @@ func TestCancelDrainsUndispatched(t *testing.T) {
 		Logger:     logr.Discard(),
 	})
 
-	_, err := executor.Execute(ctx)
+	_, err = executor.Execute(ctx)
 	_ = err
 
 	outputData := readFile(t, outputFile)
@@ -441,9 +474,12 @@ func TestCancelWithFastRequestsThrottled(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(int64(totalRequests)), tracker, logr.Discard())
 
 	direct := NewDirectDispatcher(resolver, logr.Discard())
-	dispatcher := NewAIMDDispatcher(direct,
+	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &ctxSource{items: items},
@@ -453,7 +489,7 @@ func TestCancelWithFastRequestsThrottled(t *testing.T) {
 		Logger:     logr.Discard(),
 	})
 
-	_, err := executor.Execute(ctx)
+	_, err = executor.Execute(ctx)
 	_ = err
 
 	outputData := readFile(t, outputFile)
@@ -524,9 +560,12 @@ func TestCancelInProgressThrottled(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(int64(totalRequests)), tracker, logr.Discard())
 
 	direct := NewDirectDispatcher(resolver, logr.Discard())
-	dispatcher := NewAIMDDispatcher(direct,
+	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 	// Use ctxSource which checks ctx on each send — like PlanFileSource does
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -537,7 +576,7 @@ func TestCancelInProgressThrottled(t *testing.T) {
 		Logger:     logr.Discard(),
 	})
 
-	_, err := executor.Execute(ctx)
+	_, err = executor.Execute(ctx)
 	_ = err
 
 	outputData := readFile(t, outputFile)
@@ -631,9 +670,12 @@ func TestCancelInProgress(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(int64(totalRequests)), tracker, logr.Discard())
 
 	direct := NewDirectDispatcher(resolver, logr.Discard())
-	dispatcher := NewAIMDDispatcher(direct,
+	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
@@ -643,7 +685,7 @@ func TestCancelInProgress(t *testing.T) {
 		Logger:     logr.Discard(),
 	})
 
-	_, err := executor.Execute(ctx)
+	_, err = executor.Execute(ctx)
 	_ = err
 
 	outputData := readFile(t, outputFile)
@@ -706,9 +748,12 @@ func TestExpiration(t *testing.T) {
 	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(int64(numRequests)), tracker, logr.Discard())
 
 	direct := NewDirectDispatcher(resolver, logr.Discard())
-	dispatcher := NewAIMDDispatcher(direct,
+	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
+		if err != nil {
+			t.Fatal(err)
+		}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
@@ -718,7 +763,7 @@ func TestExpiration(t *testing.T) {
 		Logger:     logr.Discard(),
 	})
 
-	_, err := executor.Execute(ctx)
+	_, err = executor.Execute(ctx)
 	_ = err
 
 	outputData := readFile(t, outputFile)
