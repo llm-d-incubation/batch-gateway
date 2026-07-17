@@ -1,16 +1,16 @@
-# Scenario 4: AIMD + llm-d Router flow control
-# Same processor AIMD config as scenario 3, plus two-layer protection:
+# Scenario 4: Flow control + AIMD
+# Same processor AIMD config as scenario 3, plus priority dispatch ordering:
 # - llm-d Router flowControl feature gate enabled (EndpointPickerConfig)
 # - Priority bands: interactive (100) + batch (-1, sheddable)
 # - InferenceObjective CRDs: interactive-default (100), batch-sheddable (-1)
 # - Processor sends x-gateway-inference-objective: "batch-sheddable" header
 #
-# With flow control active, the Router returns 429 for batch requests during
-# saturation. This triggers AIMD multiplicative decrease, producing the
-# expected sawtooth pattern. Lower perEndpoint (30) same as S3 for fair
-# comparison; the differentiator here is the Router's proactive 429 shedding.
+# Flow control's dispatch cycle dispatches one request per tick, highest
+# priority first. Interactive (100) always dispatches before batch (-1).
+# This priority ordering passively protects interactive latency.
+# AIMD is enabled but stays flat without 429s (ready for future integration).
 #
-# CRDs and Router overlay are deployed by setup.sh (scenario 4 block).
+# CRDs and Router overlay are deployed by setup.sh.
 processor:
   config:
     dispatchMode: sync

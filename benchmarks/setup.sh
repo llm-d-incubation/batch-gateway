@@ -264,7 +264,6 @@ inferenceExtension:
         - type: concurrency-detector
           parameters:
             maxConcurrency: 50
-            concurrencyMultiplier: 1
       saturationDetector:
         pluginRef: concurrency-detector
 VALUESEOF
@@ -285,7 +284,6 @@ inferenceExtension:
         - type: concurrency-detector
           parameters:
             maxConcurrency: 1000
-            concurrencyMultiplier: 1
       flowControl:
         maxBytes: 4294967296
         defaultRequestTTL: 30s

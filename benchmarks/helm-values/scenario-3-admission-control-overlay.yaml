@@ -18,6 +18,5 @@ inferenceExtension:
         - type: concurrency-detector
           parameters:
             maxConcurrency: 50
-            concurrencyMultiplier: 1
       saturationDetector:
         pluginRef: concurrency-detector

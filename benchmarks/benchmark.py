@@ -1185,6 +1185,7 @@ def _generate_narrative(results, cfg):
     ungated = next((r for r in results if r.scenario == 2), None)
     aimd = next((r for r in results if r.scenario == 3), None)
     fc = next((r for r in results if r.scenario == 4), None)
+    low_conc = next((r for r in results if r.scenario == 6), None)
 
     lines = []
     baseline_burst = _aggregate_phases(baseline.phases, "burst") if baseline else None
@@ -1217,6 +1218,14 @@ def _generate_narrative(results, cfg):
             lines.append(f"Flow control + AIMD (S4) achieved the best protection at "
                          f"{overhead:.0f}% above baseline ({fc_burst['ttft_p99']:.0f} ms) "
                          f"with priority dispatch ordering (interactive before batch).")
+
+    if low_conc:
+        low_conc_burst = _aggregate_phases(low_conc.phases, "burst")
+        if low_conc_burst and baseline_ttft:
+            overhead = ((low_conc_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
+            lines.append(f"Low concurrency (S6) limited interactive TTFT p99 impact to "
+                         f"{overhead:.0f}% above baseline ({low_conc_burst['ttft_p99']:.0f} ms) "
+                         f"using a fixed per-endpoint concurrency cap.")
 
     # Batch completion summary with per-job SLO status
     for r in results:
@@ -1320,7 +1329,7 @@ def generate_html_report(cfg, results):
         if result.batch_timeline:
             timelines_json[f"S{result.scenario} ({result.name})"] = result.batch_timeline
 
-    # AIMD dynamics data (scenarios 3-4)
+    # AIMD dynamics data (scenarios with AIMD enabled)
     aimd_chart_data = []
     for result in results:
         if result.aimd_metrics and "aimd_concurrency_limit_series" in result.aimd_metrics:
@@ -1565,7 +1574,7 @@ def generate_html_report(cfg, results):
             </div>
         </div>
 
-        <h2>AIMD Concurrency Dynamics (Scenarios 3-4)</h2>
+        <h2>AIMD Concurrency Dynamics</h2>
         <div class="chart-container">
             <canvas id="aimdChart"></canvas>
         </div>
@@ -1967,7 +1976,7 @@ def run_scenario(cfg, scenario):
              '{"claimName":"benchmark-results"}}]}}', "--"],
             cfg.context, namespace, check=False)
 
-    # Submit batch (scenarios 2-4 only)
+    # Submit batch (scenarios 2-6)
     if scenario >= 2:
         submit_batches(cfg, namespace)
         time.sleep(10)
@@ -2024,7 +2033,7 @@ def run_scenario(cfg, scenario):
             if metrics.completed > 0:
                 phases.append(metrics)
 
-    # Collect AIMD metrics for scenarios 3-4
+    # Collect AIMD metrics (scenarios with AIMD enabled: S3, S4)
     aimd_metrics = {}
     if scenario >= 3 and os.environ.get("PROMETHEUS_URL"):
         end_time = datetime.datetime.utcfromtimestamp(time.time())
@@ -2676,7 +2685,7 @@ def main():
                 "total_errors": sum(p.errors for p in burst_phases),
             }
 
-        # AIMD and flow control metrics (scenarios 3-4)
+        # AIMD and flow control metrics
         if result.aimd_metrics:
             scenario_data["aimd"] = {
                 k: v for k, v in result.aimd_metrics.items()
