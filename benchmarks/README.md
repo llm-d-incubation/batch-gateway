@@ -247,7 +247,6 @@ Compare TTFT p99 during burst phases across scenarios:
 | `DISPATCHER_VERSION` | No | `v0.7.3` | Async-processor image version (scenario 5) |
 | `DISPATCHER_CHART` | No | OCI chart | Async-processor Helm chart reference |
 | `DISPATCHER_CHART_VERSION` | No | `0.7.3` | Async-processor chart version |
-| `DISPATCHER_SOURCE` | No | — | Path to local llm-d-async checkout (overrides OCI chart) |
 
 ## Directory Structure
 

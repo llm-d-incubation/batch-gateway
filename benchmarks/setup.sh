@@ -33,7 +33,6 @@ set -euo pipefail
 #   DISPATCHER_VERSION — async-processor image version for scenario 5 (default: v0.7.3)
 #   DISPATCHER_CHART   — async-processor Helm chart reference (default: OCI chart)
 #   DISPATCHER_CHART_VERSION — async-processor chart version (default: 0.7.3)
-#   DISPATCHER_SOURCE  — path to local llm-d-async checkout (overrides OCI chart)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -174,7 +173,6 @@ DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.3}"
 DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}}"
 DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d-incubation/charts/async-processor}"
 DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.3}"
-DISPATCHER_SOURCE="${DISPATCHER_SOURCE:-}"
 
 # --- Inference backend ---
 if [ "${MODE}" = "sim" ]; then
@@ -584,19 +582,11 @@ spec:
 EOVLLMSVC
     fi
 
-    DISPATCHER_HELM_VERSION_FLAG=()
-    if [ -n "${DISPATCHER_SOURCE}" ] && [ -d "${DISPATCHER_SOURCE}" ]; then
-        DISPATCHER_CHART="${DISPATCHER_SOURCE}/charts/async-processor"
-        DISPATCHER_IMAGE="ghcr.io/llm-d-incubation/async-processor:dev-local"
-    else
-        DISPATCHER_HELM_VERSION_FLAG=(--version "${DISPATCHER_CHART_VERSION}")
-    fi
-
     DISPATCHER_IMAGE_REPO="$(echo "${DISPATCHER_IMAGE}" | cut -d: -f1)"
     DISPATCHER_IMAGE_TAG="$(echo "${DISPATCHER_IMAGE}" | cut -d: -f2)"
 
     ${H} upgrade --install async-processor "${DISPATCHER_CHART}" \
-        "${DISPATCHER_HELM_VERSION_FLAG[@]+"${DISPATCHER_HELM_VERSION_FLAG[@]}"}" \
+        --version "${DISPATCHER_CHART_VERSION}" \
         -n "${NAMESPACE}" \
         --set "ap.image.repository=${DISPATCHER_IMAGE_REPO}" \
         --set "ap.image.tag=${DISPATCHER_IMAGE_TAG}" \
@@ -606,7 +596,7 @@ EOVLLMSVC
         --set "ap.redis.url=redis://redis-master.${NAMESPACE}.svc.cluster.local:6379" \
         --set ap.redis.pollIntervalMs=500 \
         --set ap.redis.batchSize=10 \
-        --set-json "ap.redis.queuesConfig=[{\"queue_name\":\"llm-d-async:requests:${ASYNC_POOL_NAME}\",\"result_queue_name\":\"llm-d-async:results:${ASYNC_POOL_NAME}\",\"request_path_url\":\"/v1/completions\",\"igw_base_url\":\"${ASYNC_IGW_URL}\",\"gate_type\":\"endpoint-scrape\",\"gate_params\":{\"url\":\"${ASYNC_METRICS_URL}\",\"metric\":\"vllm:num_requests_waiting\",\"max_count_per_pod\":\"5\",\"fallback\":\"1.0\"}}]" \
+        --set-json "ap.redis.queuesConfig=[{\"queue_name\":\"llm-d-async:requests:${ASYNC_POOL_NAME}\",\"result_queue_name\":\"llm-d-async:results:${ASYNC_POOL_NAME}\",\"request_path_url\":\"/v1/chat/completions\",\"igw_base_url\":\"${ASYNC_IGW_URL}\",\"gate_type\":\"endpoint-scrape\",\"gate_params\":{\"url\":\"${ASYNC_METRICS_URL}\",\"metric\":\"vllm:num_requests_waiting\",\"max_count_per_pod\":\"5\",\"fallback\":\"1.0\"}}]" \
         --set ap.modelServerMonitor.enabled=false \
         --set ap.metrics.enabled=true \
         --set ap.metrics.port=9091 \
