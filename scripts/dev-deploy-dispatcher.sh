@@ -64,9 +64,10 @@ else
 fi
 
 step "Loading dispatcher image into Kind cluster '${KIND_CLUSTER_NAME}'..."
-if docker exec "${KIND_CLUSTER_NAME}-control-plane" ctr --namespace=k8s.io images list -q 2>/dev/null | grep -q "^${DISPATCHER_IMAGE}$"; then
-    log "Image already present in Kind node, skipping load"
-elif [[ "${CONTAINER_TOOL}" == "docker" ]]; then
+if [[ "${CONTAINER_TOOL}" == "docker" ]]; then
+    # kind load docker-image passes --all-platforms to ctr import, which fails
+    # on Apple Silicon for some multi-platform OCI images. Import the local image
+    # archive directly so repeated local rebuilds still refresh the node image.
     docker save "${DISPATCHER_IMAGE}" | docker exec -i "${KIND_CLUSTER_NAME}-control-plane" \
         ctr --namespace=k8s.io images import --snapshotter=overlayfs -
 else
