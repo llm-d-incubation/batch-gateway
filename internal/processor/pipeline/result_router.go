@@ -180,7 +180,7 @@ func asyncResult(resp *inference.GenerateResponse, logger logr.Logger) ResultIte
 			}
 			return result
 		}
-		// Non-2xx with unparseable body: still preserve the HTTP status.
+		// Non-2xx with unparsable body: still preserve the HTTP status.
 		body = map[string]any{
 			"error": map[string]any{
 				"message": string(resp.Response),

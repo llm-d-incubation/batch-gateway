@@ -193,7 +193,7 @@ func TestAsyncResult(t *testing.T) {
 			wantResponse:   true,
 		},
 		{
-			name: "HTTP 422 with unparseable body preserves status",
+			name: "HTTP 422 with unparsable body preserves status",
 			resp: &inference.GenerateResponse{
 				RequestID:  "req-422",
 				Response:   []byte(`not-json`),
