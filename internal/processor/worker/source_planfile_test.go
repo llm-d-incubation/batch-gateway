@@ -569,9 +569,10 @@ func TestPlanFileSource_Produce_BadPlanFile(t *testing.T) {
 
 // TestPlanFileSource_Produce_CancellationProducesAllEntries verifies that when
 // the context is cancelled mid-produce, ALL plan entries still reach the output
-// channel — either as normal items (produced before cancellation) or as items
-// that the downstream dispatcher can drain as cancelled. If entries are silently
-// dropped, completed + failed < total and the job's output files are incomplete.
+// channel with their original custom_id so the dispatcher can drain them as
+// cancelled without losing OpenAI request identity. If entries are dropped or
+// get synthetic custom_ids, completed + failed may match total while clients
+// cannot match error-file rows to their input.
 func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 	const totalRequests = 10
 	dir := t.TempDir()
@@ -616,7 +617,7 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 	resolver := inference.NewSingleClientResolver(client)
 	defer func() { _ = resolver.Close() }()
 
-	// Cancel the context immediately so the source hits ctx.Err() early.
+	// Cancel before Produce; identity must still come from the input lines.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -632,20 +633,24 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 	out := make(chan pipeline.RequestItem, totalRequests+1)
 	_ = source.Produce(ctx, out)
 
-	var produced, skippedIO int
+	seen := make(map[string]bool, totalRequests)
 	for item := range out {
-		produced++
 		if item.CustomID == item.RequestID {
-			skippedIO++
+			t.Errorf("custom_id %q equals request_id: cancel path must keep original input custom_id", item.CustomID)
 		}
+		if seen[item.CustomID] {
+			t.Errorf("duplicate custom_id %q", item.CustomID)
+		}
+		seen[item.CustomID] = true
 	}
 
-	if produced != totalRequests {
-		t.Fatalf("produced %d items, want %d: source dropped %d entries on cancellation",
-			produced, totalRequests, totalRequests-produced)
+	if len(seen) != totalRequests {
+		t.Fatalf("produced %d unique custom_ids, want %d", len(seen), totalRequests)
 	}
-	if skippedIO != totalRequests {
-		t.Fatalf("skippedIO %d items, want %d: source should skip I/O after cancellation",
-			skippedIO, totalRequests)
+	for i := range totalRequests {
+		want := fmt.Sprintf("c-%d", i)
+		if !seen[want] {
+			t.Errorf("missing custom_id %q after cancelled Produce", want)
+		}
 	}
 }
