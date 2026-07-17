@@ -5,8 +5,15 @@
 #   batch (priority -1). This priority ordering passively protects
 #   interactive latency.
 #
-# Uses concurrency-detector with generous maxConcurrency (1000) so that
-# saturation stays well below 1.0 and the dispatch cycle runs freely.
+# Saturation detector choice: concurrency-detector with generous maxConcurrency
+# (1000) is a benchmarking workaround — it keeps saturation artificially low so
+# the dispatch cycle runs freely without rejection. This isolates priority
+# ordering as the sole protection mechanism. For production, consider:
+#   - utilization-detector (reacts to real GPU pressure: queue depth, KV cache)
+#   - concurrency-detector with a tuned maxConcurrency matching model capacity
+# Both are currently affected by llm-d-router bugs (#1474, #2060) that make the
+# saturation signal unreliable. Once fixed, combine with priority-holdback-policy
+# for graduated per-band shedding.
 #
 # Priority bands:
 #   Interactive (100): low-latency, round-robin fairness, FCFS ordering
