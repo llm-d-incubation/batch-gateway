@@ -209,6 +209,11 @@ spec:
             - "8000"
             - --time-to-first-token=${SIM_TTFT}
             - --inter-token-latency=${SIM_ITL}
+$([ "${SCENARIO}" = "5" ] && cat <<FAKEARGS
+            - --fake-metrics
+            - '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}'
+FAKEARGS
+)
           ports:
             - containerPort: 8000
               name: modelserver
@@ -239,12 +244,9 @@ spec:
       name: http
 EOF
 
-    # --- Scenario 5 sim mode: enable fake metrics on inference-sim ---
+    # --- Scenario 5: log that fake-metrics is included in the deployment template ---
     if [ "${SCENARIO}" = "5" ]; then
-        log "  Enabling --fake-metrics on inference-sim for endpoint-scrape gate"
-        ${K} -n "${NAMESPACE}" patch deployment inference-sim --type=json \
-            -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--fake-metrics"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"{\"kv-cache-usage\": 0, \"waiting-requests\": 0, \"running-requests\": 0}"}]' >/dev/null
-        ${K} -n "${NAMESPACE}" rollout status deployment/inference-sim --timeout=120s >/dev/null
+        log "  inference-sim deployed with --fake-metrics for endpoint-scrape gate"
     fi
 
     # --- Scenario 4 sim mode: deploy GIE EPP with flow control ---
@@ -507,7 +509,7 @@ if [ -n "${VALUES_FILE}" ]; then
         fi
     fi
 
-    ${H} install batch-gateway \
+    ${H} upgrade --install batch-gateway \
         "${REPO_ROOT}/charts/batch-gateway/" \
         -n "${NAMESPACE}" \
         -f "${VALUES_FILE}" \
@@ -612,7 +614,7 @@ EOVLLMSVC
         --wait --timeout=120s >/dev/null
 
     log "  Waiting for async-processor to be ready..."
-    ${K} -n "${NAMESPACE}" wait --for=condition=available deployment/async-processor-async-processor --timeout=120s >/dev/null
+    ${K} -n "${NAMESPACE}" wait --for=condition=available deployment/async-processor --timeout=120s >/dev/null
     log "  Async-processor deployed (pool: ${ASYNC_POOL_NAME}, gate: endpoint-scrape)"
 fi
 
