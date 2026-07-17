@@ -5,13 +5,14 @@ Benchmark: Batch Gateway Effectiveness in Shared Clusters
 Orchestrates guidellm burst/idle cycles alongside batch workloads to measure
 whether gated dispatch protects interactive latency while batch makes SLO progress.
 
-Supports 6 scenarios:
+Supports 7 scenarios:
   0 - Interactive only (baseline)
   1 - No batch-gateway (batch as regular requests)
   2 - Ungated batch (aggressive concurrency, no AIMD)
-  3 - AIMD only (processor-side adaptive concurrency)
-  4 - AIMD + llm-d Router flow control (two-layer protection)
+  3 - Admission control + AIMD (saturation-based batch rejection + adaptive concurrency)
+  4 - Flow control + AIMD (priority dispatch ordering + adaptive concurrency)
   5 - Async processor (blocked on integration)
+  6 - Low batch concurrency (fixed perEndpoint cap, no AIMD)
 
 Usage:
     python3 benchmarks/benchmark.py \
@@ -1205,17 +1206,17 @@ def _generate_narrative(results, cfg):
         aimd_burst = _aggregate_phases(aimd.phases, "burst")
         if aimd_burst and baseline_ttft:
             overhead = ((aimd_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
-            lines.append(f"AIMD-gated batch (S3) protected interactive TTFT p99 within "
+            lines.append(f"Admission control + AIMD (S3) protected interactive TTFT p99 within "
                          f"{overhead:.0f}% of baseline ({aimd_burst['ttft_p99']:.0f} ms) "
-                         f"using lower static concurrency (perEndpoint: 30).")
+                         f"using saturation-based batch rejection and adaptive concurrency.")
 
     if fc:
         fc_burst = _aggregate_phases(fc.phases, "burst")
         if fc_burst and baseline_ttft:
             overhead = ((fc_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
-            lines.append(f"AIMD + flow control (S4) achieved the best protection at "
+            lines.append(f"Flow control + AIMD (S4) achieved the best protection at "
                          f"{overhead:.0f}% above baseline ({fc_burst['ttft_p99']:.0f} ms) "
-                         f"with proactive Router-side batch shedding.")
+                         f"with priority dispatch ordering (interactive before batch).")
 
     # Batch completion summary with per-job SLO status
     for r in results:

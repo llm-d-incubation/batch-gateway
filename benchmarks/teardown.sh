@@ -10,7 +10,7 @@ set -uo pipefail
 #
 # Required env vars:
 #   KUBE_CONTEXT       — kubectl context
-#   SCENARIO           — scenario number (0-5), or "all" to tear down all namespaces
+#   SCENARIO           — scenario number (0-6), or "all" to tear down all namespaces
 #
 # Optional:
 #   NAMESPACE          — override auto-generated namespace
@@ -71,14 +71,14 @@ teardown_namespace() {
 
 # Validate SCENARIO
 if [ -z "${SCENARIO:-}" ]; then
-    echo "ERROR: SCENARIO is not set (use 0-5 or 'all')" >&2
+    echo "ERROR: SCENARIO is not set (use 0-6 or 'all')" >&2
     exit 1
 fi
 
 # Handle SCENARIO=all
 if [ "${SCENARIO}" = "all" ]; then
     log "=== Tearing down ALL scenario namespaces ==="
-    for i in 0 1 2 3 4 5; do
+    for i in 0 1 2 3 4 5 6; do
         teardown_namespace "batch-bench-s${i}"
     done
     log "=== Teardown complete ==="
