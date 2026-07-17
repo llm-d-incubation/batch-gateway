@@ -635,7 +635,7 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 	var produced, skippedIO int
 	for item := range out {
 		produced++
-		if item.CustomID == "" {
+		if item.CustomID == item.RequestID {
 			skippedIO++
 		}
 	}

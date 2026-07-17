@@ -80,8 +80,10 @@ func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- p
 
 		for _, entry := range entries {
 			if ctx.Err() != nil {
+				reqID := fmt.Sprintf("batch_req_%s", uuid.NewString())
 				outgoingRequestCh <- pipeline.RequestItem{
-					RequestID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+					RequestID: reqID,
+					CustomID:  reqID,
 					ModelID:   modelID,
 				}
 				continue
