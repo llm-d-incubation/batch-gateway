@@ -1,0 +1,26 @@
+# Scenario 3: Admission control + AIMD
+# Processor sends x-gateway-inference-objective: "batch-sheddable" header.
+# The llm-d Router's admission controller (flow control feature gate OFF)
+# rejects sheddable requests (priority < 0) when saturation >= 1.0,
+# generating 429s that feed AIMD multiplicative decrease.
+#
+# InferenceObjective CRDs and Router overlay are deployed by setup.sh.
+processor:
+  config:
+    dispatchMode: sync
+    concurrency:
+      global: 60
+      perEndpoint: 30
+      recovery: 5
+      aimd:
+        enabled: true
+        min: 5
+        backoffFactor: 0.5
+        additiveIncrease: 1
+    globalInferenceGateway:
+      url: "http://llm-d-inference-gateway-istio:80"
+      inferenceObjective: "batch-sheddable"
+      requestTimeout: "30s"
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "10s"

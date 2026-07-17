@@ -31,11 +31,12 @@ func (o *outputLine) isSuccess() bool {
 // ResultCollector writes ResultItem values to JSONL and records progress.
 // Terminal actor — no out channel.
 type ResultCollector struct {
-	output  *bufio.Writer
-	errors  *bufio.Writer
-	pending *PendingRequests
-	tracker *ProgressTracker
-	logger  logr.Logger
+	output               *bufio.Writer
+	errors               *bufio.Writer
+	pending              *PendingRequests
+	tracker              *ProgressTracker
+	logger               logr.Logger
+	onPersistenceFailure func()
 }
 
 func NewResultCollector(outputFile, errorFile *os.File, pending *PendingRequests, tracker *ProgressTracker, logger logr.Logger) *ResultCollector {
@@ -69,6 +70,9 @@ func (c *ResultCollector) Drain(ctx context.Context, resultCh <-chan ResultItem)
 		if err := c.Receive(msg); err != nil {
 			firstErr = err
 			c.logger.Error(err, "Persistence failure, skipping further writes")
+			if c.onPersistenceFailure != nil {
+				c.onPersistenceFailure()
+			}
 		}
 	}
 	if flushErr := c.flushFiles(); flushErr != nil {

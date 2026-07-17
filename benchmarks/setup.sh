@@ -9,7 +9,7 @@ set -euo pipefail
 #
 # Required env vars:
 #   KUBE_CONTEXT       — kubectl context (e.g. coreweave-waldorf)
-#   SCENARIO           — scenario number (0-5)
+#   SCENARIO           — scenario number (0-6)
 #
 # Optional:
 #   MODE               — "sim" to use inference-sim instead of real vLLM (default: gpu)
@@ -63,8 +63,8 @@ for var in KUBE_CONTEXT SCENARIO; do
     fi
 done
 
-if [ "${SCENARIO}" -lt 0 ] || [ "${SCENARIO}" -gt 5 ]; then
-    echo "ERROR: SCENARIO must be 0-5, got: ${SCENARIO}" >&2
+if [ "${SCENARIO}" -lt 0 ] || [ "${SCENARIO}" -gt 6 ]; then
+    echo "ERROR: SCENARIO must be 0-6, got: ${SCENARIO}" >&2
     exit 1
 fi
 
@@ -78,9 +78,10 @@ values_file_for_scenario() {
     case "${SCENARIO}" in
         0|1) echo "" ;;  # No batch-gateway deployed
         2)   echo "${SCRIPT_DIR}/helm-values/scenario-2-ungated.yaml" ;;
-        3)   echo "${SCRIPT_DIR}/helm-values/scenario-3-aimd.yaml" ;;
-        4)   echo "${SCRIPT_DIR}/helm-values/scenario-4-aimd-flow-control.yaml" ;;
+        3)   echo "${SCRIPT_DIR}/helm-values/scenario-3-admission-control-aimd.yaml" ;;
+        4)   echo "${SCRIPT_DIR}/helm-values/scenario-4-flow-control-aimd.yaml" ;;
         5)   echo "${SCRIPT_DIR}/helm-values/scenario-5-async.yaml" ;;
+        6)   echo "${SCRIPT_DIR}/helm-values/scenario-6-low-concurrency.yaml" ;;
     esac
 }
 
@@ -163,7 +164,7 @@ spec:
       storage: 10Gi
 EOF
 
-# GIE (flow control) settings for sim mode scenario 4
+# GIE (EPP) settings for sim mode scenarios 3/4
 GIE_VERSION="${GIE_VERSION:-v1.5.0}"
 GIE_REPO="${GIE_REPO:-}"
 GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
@@ -242,14 +243,17 @@ spec:
       name: http
 EOF
 
-    # --- Scenario 5: log that fake-metrics is included in the deployment template ---
+    # --- Scenario 5 sim mode: enable fake metrics on inference-sim ---
     if [ "${SCENARIO}" = "5" ]; then
-        log "  inference-sim deployed with --fake-metrics for endpoint-scrape gate"
+        log "  Enabling --fake-metrics on inference-sim for endpoint-scrape gate"
+        ${K} -n "${NAMESPACE}" patch deployment inference-sim --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--fake-metrics"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"{\"kv-cache-usage\": 0, \"waiting-requests\": 0, \"running-requests\": 0}"}]' >/dev/null
+        ${K} -n "${NAMESPACE}" rollout status deployment/inference-sim --timeout=120s >/dev/null
     fi
 
-    # --- Scenario 4 sim mode: deploy GIE EPP with flow control ---
-    if [ "${SCENARIO}" = "4" ]; then
-        log "Deploying GIE EPP with flow control (sim mode, scenario 4)"
+    # --- Scenarios 3/4 sim mode: deploy GIE EPP ---
+    if [ "${SCENARIO}" = "3" ] || [ "${SCENARIO}" = "4" ]; then
+        log "Deploying GIE EPP (sim mode, scenario ${SCENARIO})"
 
         # Ensure GIE repo is available
         if [ -z "${GIE_REPO}" ] || [ ! -d "${GIE_REPO}" ]; then
@@ -266,12 +270,31 @@ EOF
         chart_dir="${GIE_REPO}/config/charts/standalone"
         (cd "${chart_dir}" && helm dependency build >/dev/null 2>&1)
 
-        # Create flow-control values
+        # Create EPP config values (scenario-specific)
         values_file="$(mktemp)"
-        cat > "${values_file}" <<'VALUESEOF'
+        epp_plugins_file="epp-plugins.yaml"
+
+        if [ "${SCENARIO}" = "3" ]; then
+            # S3: admission control only (no flowControl feature gate)
+            cat > "${values_file}" <<'VALUESEOF'
 inferenceExtension:
   pluginsCustomConfig:
-    flow-control-plugins.yaml: |
+    epp-plugins.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      plugins:
+        - type: concurrency-detector
+          parameters:
+            maxConcurrency: 50
+      saturationDetector:
+        pluginRef: concurrency-detector
+VALUESEOF
+        else
+            # S4: flow control with priority dispatch ordering
+            cat > "${values_file}" <<'VALUESEOF'
+inferenceExtension:
+  pluginsCustomConfig:
+    epp-plugins.yaml: |
       apiVersion: inference.networking.x-k8s.io/v1alpha1
       kind: EndpointPickerConfig
       featureGates:
@@ -280,10 +303,9 @@ inferenceExtension:
         - type: round-robin-fairness-policy
         - type: global-strict-fairness-policy
         - type: slo-deadline-ordering-policy
-        - type: utilization-detector
+        - type: concurrency-detector
           parameters:
-            queueDepthThreshold: 2
-            kvCacheUtilThreshold: 0.5
+            maxConcurrency: 1000
       flowControl:
         maxBytes: 4294967296
         defaultRequestTTL: 30s
@@ -301,8 +323,9 @@ inferenceExtension:
           fairnessPolicyRef: global-strict-fairness-policy
           orderingPolicyRef: fcfs-ordering-policy
       saturationDetector:
-        pluginRef: utilization-detector
+        pluginRef: concurrency-detector
 VALUESEOF
+        fi
 
         # Install EPP standalone chart
         epp_release="epp-bench"
@@ -316,7 +339,7 @@ VALUESEOF
             --set "inferencePool.modelServers.matchLabels.app=inference-sim" \
             --set "inferencePool.targetPorts[0].number=8000" \
             --set inferencePool.modelServerType=vllm \
-            --set inferenceExtension.pluginsConfigFile=flow-control-plugins.yaml \
+            --set "inferenceExtension.pluginsConfigFile=${epp_plugins_file}" \
             --set inferenceExtension.resources.requests.cpu=100m \
             --set inferenceExtension.resources.requests.memory=256Mi \
             --set inferenceExtension.resources.limits.memory=512Mi \
@@ -350,7 +373,7 @@ spec:
     group: inference.networking.k8s.io
     name: ${epp_release}
 EOOBJ
-        log "  Flow control ready: EPP at ${epp_release}-epp:8081"
+        log "  EPP ready: ${epp_release}-epp:8081 (scenario ${SCENARIO})"
     fi
 else
     # GPU mode: deploy real vLLM + llm-d Router + Istio Gateway
@@ -358,16 +381,17 @@ else
     # --- llm-d Router (EPP) ---
     log "Installing llm-d Router (${GUIDE_NAME})"
 
-    # Scenario 4: include flow-control overlay for priority-based scheduling
-    FLOW_CONTROL_OVERLAY=""
-    if [ "${SCENARIO}" = "4" ]; then
-        log "  Flow control: enabling EPP priority bands (interactive=100, batch=-1)"
+    # Scenarios 3/4: include router overlay for admission control / flow control
+    ROUTER_OVERLAY=""
+    if [ "${SCENARIO}" = "3" ]; then
+        log "  Admission control: enabling saturation-based rejection (batch priority=-1)"
+        ROUTER_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-3-admission-control-overlay-router.yaml"
+    elif [ "${SCENARIO}" = "4" ]; then
+        log "  Flow control: enabling EPP priority dispatch ordering (interactive=100, batch=-1)"
+        ROUTER_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay-router.yaml"
     fi
 
     if [ -n "${ROUTER_REPO:-}" ]; then
-        if [ "${SCENARIO}" = "4" ]; then
-            FLOW_CONTROL_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay-router.yaml"
-        fi
         # Local repo mode (development override)
         log "  Using local repo: ROUTER_REPO=${ROUTER_REPO}"
         chart_dir="${ROUTER_REPO}/config/charts/llm-d-router-gateway"
@@ -386,13 +410,16 @@ else
             --set router.modelServers.matchLabels.llm-d\\.ai/guide=optimized-baseline \
             --set router.inferencePool.modelServerProtocol=http \
             --set router.monitoring.prometheus.auth.enabled=true \
-            ${FLOW_CONTROL_OVERLAY} \
+            ${ROUTER_OVERLAY} \
             --set provider.name=istio \
             --set httpRoute.create=true \
             --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
     else
-        if [ "${SCENARIO}" = "4" ]; then
-            FLOW_CONTROL_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay.yaml"
+        # OCI mode uses inferenceExtension.* format for the overlay
+        if [ "${SCENARIO}" = "3" ]; then
+            ROUTER_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-3-admission-control-overlay.yaml"
+        elif [ "${SCENARIO}" = "4" ]; then
+            ROUTER_OVERLAY="-f ${SCRIPT_DIR}/helm-values/scenario-4-flow-control-overlay.yaml"
         fi
         # OCI mode (default — reproducible, pinned versions)
         log "  Using OCI chart: ghcr.io/llm-d/llm-d-router-gateway:${ROUTER_CHART_VERSION}"
@@ -413,7 +440,7 @@ else
             -f "${LLM_D_VALUES_DIR}/base.values.yaml" \
             -f "${LLM_D_VALUES_DIR}/guide.values.yaml" \
             -f "${LLM_D_VALUES_DIR}/monitoring.values.yaml" \
-            ${FLOW_CONTROL_OVERLAY} \
+            ${ROUTER_OVERLAY} \
             --set provider.name=istio \
             --set httpRoute.create=true \
             --set httpRoute.inferenceGatewayName=llm-d-inference-gateway >/dev/null
@@ -462,7 +489,7 @@ else
         --for=condition=Ready --timeout=600s >/dev/null
 fi
 
-# --- Batch Gateway (scenarios 2-5 only) ---
+# --- Batch Gateway (scenarios 2-6 only) ---
 VALUES_FILE=$(values_file_for_scenario)
 if [ -n "${VALUES_FILE}" ]; then
     log "Installing batch-gateway (scenario ${SCENARIO})"
@@ -488,8 +515,9 @@ if [ -n "${VALUES_FILE}" ]; then
 
     # In sim mode, replace all model gateways with a single entry
     if [ "${MODE}" = "sim" ]; then
-        if [ "${SCENARIO}" = "4" ]; then
-            # Scenario 4: route through EPP for flow control; null out globalInferenceGateway from values file
+        if [ "${SCENARIO}" = "3" ] || [ "${SCENARIO}" = "4" ]; then
+            # Scenarios 3/4: route through EPP for admission control / flow control;
+            # null out globalInferenceGateway from values file
             BG_EXTRA_ARGS+=(
                 --set-json "processor.config.globalInferenceGateway=null"
                 --set-json "processor.config.modelGateways={\"${MODEL}\":{\"url\":\"http://epp-bench-epp.${NAMESPACE}.svc.cluster.local:8081\",\"requestTimeout\":\"5m\",\"maxRetries\":3,\"initialBackoff\":\"2s\",\"maxBackoff\":\"30s\",\"inferenceObjective\":\"batch-sheddable\"}}"
@@ -523,9 +551,9 @@ else
     log "Skipping batch-gateway (not needed for scenario ${SCENARIO})"
 fi
 
-# --- Scenario 4: Flow control InferenceObjective CRDs ---
-if [ "${SCENARIO}" = "4" ]; then
-    log "Deploying InferenceObjective CRDs for flow control"
+# --- Scenarios 3/4: InferenceObjective CRDs for priority assignment ---
+if [ "${SCENARIO}" = "3" ] || [ "${SCENARIO}" = "4" ]; then
+    log "Deploying InferenceObjective CRDs for priority assignment"
     ${K} -n "${NAMESPACE}" apply -f - <<EOF
 apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferenceObjective

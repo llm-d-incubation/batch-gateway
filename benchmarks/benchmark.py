@@ -5,13 +5,14 @@ Benchmark: Batch Gateway Effectiveness in Shared Clusters
 Orchestrates guidellm burst/idle cycles alongside batch workloads to measure
 whether gated dispatch protects interactive latency while batch makes SLO progress.
 
-Supports 6 scenarios:
+Supports 7 scenarios:
   0 - Interactive only (baseline)
   1 - No batch-gateway (batch as regular requests)
   2 - Ungated batch (aggressive concurrency, no AIMD)
-  3 - AIMD only (processor-side adaptive concurrency)
-  4 - AIMD + llm-d Router flow control (two-layer protection)
+  3 - Admission control + AIMD (saturation-based batch rejection + adaptive concurrency)
+  4 - Flow control + AIMD (priority dispatch ordering + adaptive concurrency)
   5 - Async processor (async dispatch via llm-d-async with endpoint-scrape gate)
+  6 - Low batch concurrency (fixed perEndpoint cap, no AIMD)
 
 Usage:
     python3 benchmarks/benchmark.py \
@@ -43,9 +44,10 @@ SCENARIO_NAMES = {
     0: "interactive-only",
     1: "no-batch-gateway",
     2: "ungated",
-    3: "aimd",
-    4: "aimd-flow-control",
+    3: "admission-control-aimd",
+    4: "flow-control-aimd",
     5: "async",
+    6: "low-concurrency",
 }
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -1184,6 +1186,7 @@ def _generate_narrative(results, cfg):
     aimd = next((r for r in results if r.scenario == 3), None)
     fc = next((r for r in results if r.scenario == 4), None)
     async_proc = next((r for r in results if r.scenario == 5), None)
+    low_conc = next((r for r in results if r.scenario == 6), None)
 
     lines = []
     baseline_burst = _aggregate_phases(baseline.phases, "burst") if baseline else None
@@ -1205,17 +1208,25 @@ def _generate_narrative(results, cfg):
         aimd_burst = _aggregate_phases(aimd.phases, "burst")
         if aimd_burst and baseline_ttft:
             overhead = ((aimd_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
-            lines.append(f"AIMD-gated batch (S3) protected interactive TTFT p99 within "
+            lines.append(f"Admission control + AIMD (S3) protected interactive TTFT p99 within "
                          f"{overhead:.0f}% of baseline ({aimd_burst['ttft_p99']:.0f} ms) "
-                         f"using lower static concurrency (perEndpoint: 30).")
+                         f"using saturation-based batch rejection and adaptive concurrency.")
 
     if fc:
         fc_burst = _aggregate_phases(fc.phases, "burst")
         if fc_burst and baseline_ttft:
             overhead = ((fc_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
-            lines.append(f"AIMD + flow control (S4) achieved the best protection at "
+            lines.append(f"Flow control + AIMD (S4) achieved the best protection at "
                          f"{overhead:.0f}% above baseline ({fc_burst['ttft_p99']:.0f} ms) "
-                         f"with proactive Router-side batch shedding.")
+                         f"with priority dispatch ordering (interactive before batch).")
+
+    if low_conc:
+        low_conc_burst = _aggregate_phases(low_conc.phases, "burst")
+        if low_conc_burst and baseline_ttft:
+            overhead = ((low_conc_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
+            lines.append(f"Low concurrency (S6) limited interactive TTFT p99 impact to "
+                         f"{overhead:.0f}% above baseline ({low_conc_burst['ttft_p99']:.0f} ms) "
+                         f"using a fixed per-endpoint concurrency cap.")
 
     if async_proc:
         async_burst = _aggregate_phases(async_proc.phases, "burst")
@@ -1327,7 +1338,7 @@ def generate_html_report(cfg, results):
         if result.batch_timeline:
             timelines_json[f"S{result.scenario} ({result.name})"] = result.batch_timeline
 
-    # AIMD dynamics data (scenarios 3-4)
+    # AIMD dynamics data (scenarios with AIMD enabled)
     aimd_chart_data = []
     for result in results:
         if result.aimd_metrics and "aimd_concurrency_limit_series" in result.aimd_metrics:
@@ -1385,8 +1396,12 @@ def generate_html_report(cfg, results):
         burst_agg = _aggregate_phases(result.phases, "burst")
         idle_agg = _aggregate_phases(result.phases, "idle")
 
-        ttft_p99_burst = f"{burst_agg['ttft_p99']:.1f}" if burst_agg else "N/A"
-        itl_p99_burst = f"{burst_agg['itl_p99']:.1f}" if burst_agg else "N/A"
+        if burst_agg:
+            ttft_burst = f"{burst_agg['ttft_p50']:.0f} / {burst_agg['ttft_p95']:.0f} / {burst_agg['ttft_p99']:.0f}"
+            itl_burst = f"{burst_agg['itl_p50']:.0f} / {burst_agg['itl_p95']:.0f} / {burst_agg['itl_p99']:.0f}"
+        else:
+            ttft_burst = "N/A"
+            itl_burst = "N/A"
         idle_rps = f"{idle_agg['completed'] / max(1, cfg.idle_seconds * (cfg.cycles - cfg.warmup_cycles)):.2f}" if idle_agg else "N/A"
 
         if result.scenario <= 1:
@@ -1408,8 +1423,8 @@ def generate_html_report(cfg, results):
 
         summary_rows.append(
             f"<tr><td>S{result.scenario} ({result.name})</td>"
-            f"<td>{ttft_p99_burst}</td>"
-            f"<td>{itl_p99_burst}</td>"
+            f"<td>{ttft_burst}</td>"
+            f"<td>{itl_burst}</td>"
             f"<td>{idle_rps}</td>"
             f"<td>{batch_slo}</td>"
             f"<td>{batch_ttft_p50}</td></tr>"
@@ -1510,8 +1525,8 @@ def generate_html_report(cfg, results):
             <table>
                 <tr>
                     <th>Scenario</th>
-                    <th>Interactive TTFT p99 (burst)</th>
-                    <th>Interactive ITL p99 (burst)</th>
+                    <th>Interactive TTFT at peak (p50 / p95 / p99)</th>
+                    <th>Interactive ITL at peak (p50 / p95 / p99)</th>
                     <th>Batch idle throughput (req/s)</th>
                     <th>Batch SLO completion</th>
                     <th>Batch TTFT p50</th>
@@ -1572,7 +1587,7 @@ def generate_html_report(cfg, results):
             </div>
         </div>
 
-        <h2>AIMD Concurrency Dynamics (Scenarios 3-4)</h2>
+        <h2>AIMD Concurrency Dynamics</h2>
         <div class="chart-container">
             <canvas id="aimdChart"></canvas>
         </div>
@@ -1970,7 +1985,7 @@ def run_scenario(cfg, scenario):
              '{"claimName":"benchmark-results"}}]}}', "--"],
             cfg.context, namespace, check=False)
 
-    # Submit batch (scenarios 2-4 only)
+    # Submit batch (scenarios 2-6)
     if scenario >= 2:
         submit_batches(cfg, namespace)
         time.sleep(10)
@@ -2027,7 +2042,7 @@ def run_scenario(cfg, scenario):
             if metrics.completed > 0:
                 phases.append(metrics)
 
-    # Collect AIMD metrics for scenarios 3-4
+    # Collect AIMD metrics (scenarios with AIMD enabled: S3, S4)
     aimd_metrics = {}
     if scenario >= 3 and os.environ.get("PROMETHEUS_URL"):
         end_time = datetime.datetime.utcfromtimestamp(time.time())
@@ -2511,7 +2526,7 @@ def main():
     # Validate scenarios
     for s in cfg.scenarios:
         if s not in SCENARIO_NAMES:
-            log(f"ERROR: Unknown scenario {s}. Valid: 0-5")
+            log(f"ERROR: Unknown scenario {s}. Valid: 0-6")
             sys.exit(1)
 
     # Rate sweep mode
@@ -2679,7 +2694,7 @@ def main():
                 "total_errors": sum(p.errors for p in burst_phases),
             }
 
-        # AIMD and flow control metrics (scenarios 3-4)
+        # AIMD and flow control metrics
         if result.aimd_metrics:
             scenario_data["aimd"] = {
                 k: v for k, v in result.aimd_metrics.items()

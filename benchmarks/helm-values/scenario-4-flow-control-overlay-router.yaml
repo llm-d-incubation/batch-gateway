@@ -1,7 +1,19 @@
 # Flow control overlay for llm-d Router (router.epp.* format for v0.9.0+ charts).
-# Applied in scenario 4 to enable two-layer protection:
-#   Layer 1: Router EPP flow control (priority-based request scheduling)
-#   Layer 2: Processor AIMD (adaptive concurrency per endpoint)
+# Applied in scenario 4 to enable priority dispatch ordering:
+#   Flow control's dispatch cycle dispatches one request per tick, highest
+#   priority first. Interactive (priority 100) always dispatches before
+#   batch (priority -1). This priority ordering passively protects
+#   interactive latency.
+#
+# Saturation detector choice: concurrency-detector with generous maxConcurrency
+# (1000) is a benchmarking workaround — it keeps saturation artificially low so
+# the dispatch cycle runs freely without rejection. This isolates priority
+# ordering as the sole protection mechanism. For production, consider:
+#   - utilization-detector (reacts to real GPU pressure: queue depth, KV cache)
+#   - concurrency-detector with a tuned maxConcurrency matching model capacity
+# Both are currently affected by llm-d-router bugs (#1474, #2060) that make the
+# saturation signal unreliable. Once fixed, combine with priority-holdback-policy
+# for graduated per-band shedding.
 #
 # Priority bands:
 #   Interactive (100): low-latency, round-robin fairness, FCFS ordering
@@ -19,10 +31,9 @@ router:
           - type: round-robin-fairness-policy
           - type: global-strict-fairness-policy
           - type: slo-deadline-ordering-policy
-          - type: utilization-detector
+          - type: concurrency-detector
             parameters:
-              queueDepthThreshold: 2
-              kvCacheUtilThreshold: 0.5
+              maxConcurrency: 1000
         flowControl:
           maxBytes: 4294967296
           defaultRequestTTL: 30s
@@ -39,5 +50,5 @@ router:
             maxBytes: 536870912
             fairnessPolicyRef: global-strict-fairness-policy
             orderingPolicyRef: fcfs-ordering-policy
-          saturationDetector:
-            pluginRef: utilization-detector
+        saturationDetector:
+          pluginRef: concurrency-detector

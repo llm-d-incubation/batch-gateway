@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
@@ -39,6 +41,11 @@ func NewJobExecutor(cfg JobExecutorConfig) *JobExecutor {
 func (je *JobExecutor) Execute(ctx context.Context) (*openai.BatchRequestCounts, error) {
 	g, ctx := errgroup.WithContext(ctx)
 
+	dispatchCtx, dispatchCancel := context.WithCancel(ctx)
+	defer dispatchCancel()
+
+	je.collector.onPersistenceFailure = sync.OnceFunc(dispatchCancel)
+
 	requestCh := make(chan RequestItem)
 	resultCh := make(chan ResultItem, defaultResultBuffer)
 
@@ -52,13 +59,25 @@ func (je *JobExecutor) Execute(ctx context.Context) (*openai.BatchRequestCounts,
 		close(trackerDone)
 	}()
 
-	g.Go(func() error { return je.dispatcher.Run(ctx, requestCh, resultCh) })
+	g.Go(func() error { return je.dispatcher.Run(dispatchCtx, requestCh, resultCh) })
 
-	g.Go(func() error { return je.collector.Drain(ctx, resultCh) })
+	var collectorErr error
+	g.Go(func() error {
+		collectorErr = je.collector.Drain(ctx, resultCh)
+		return collectorErr
+	})
 
-	g.Go(func() error { return je.source.Produce(ctx, requestCh) })
+	g.Go(func() error { return je.source.Produce(dispatchCtx, requestCh) })
 
 	err := g.Wait()
+
+	// When onPersistenceFailure cancels dispatchCtx, the source returns
+	// context.Canceled before the collector finishes draining resultCh.
+	// errgroup records the first non-nil error (source's cancel), masking
+	// the root cause. Prefer the collector's persistence error.
+	if errors.Is(err, context.Canceled) && collectorErr != nil {
+		err = collectorErr
+	}
 
 	trackerCancel()
 	<-trackerDone
