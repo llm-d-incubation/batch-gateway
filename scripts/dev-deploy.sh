@@ -183,7 +183,7 @@ install_exchange() {
     if helm status "${REDIS_RELEASE}" -n "${NAMESPACE}" &>/dev/null; then
         local installed_chart
         installed_chart=$(helm get metadata "${REDIS_RELEASE}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.chart')
-        if [[ "${installed_chart}" == "${EXCHANGE_CLIENT_TYPE}-"* ]]; then
+        if [[ "${installed_chart}" == "${EXCHANGE_CLIENT_TYPE}" || "${installed_chart}" == "${EXCHANGE_CLIENT_TYPE}-"* ]]; then
             log "Exchange backend (${chart}) release '${REDIS_RELEASE}' is already installed. Skipping."
             return
         fi
