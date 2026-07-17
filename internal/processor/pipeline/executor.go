@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
@@ -39,6 +40,11 @@ func NewJobExecutor(cfg JobExecutorConfig) *JobExecutor {
 func (je *JobExecutor) Execute(ctx context.Context) (*openai.BatchRequestCounts, error) {
 	g, ctx := errgroup.WithContext(ctx)
 
+	dispatchCtx, dispatchCancel := context.WithCancel(ctx)
+	defer dispatchCancel()
+
+	je.collector.onPersistenceFailure = sync.OnceFunc(dispatchCancel)
+
 	requestCh := make(chan RequestItem)
 	resultCh := make(chan ResultItem, defaultResultBuffer)
 
@@ -52,11 +58,11 @@ func (je *JobExecutor) Execute(ctx context.Context) (*openai.BatchRequestCounts,
 		close(trackerDone)
 	}()
 
-	g.Go(func() error { return je.dispatcher.Run(ctx, requestCh, resultCh) })
+	g.Go(func() error { return je.dispatcher.Run(dispatchCtx, requestCh, resultCh) })
 
 	g.Go(func() error { return je.collector.Drain(ctx, resultCh) })
 
-	g.Go(func() error { return je.source.Produce(ctx, requestCh) })
+	g.Go(func() error { return je.source.Produce(dispatchCtx, requestCh) })
 
 	err := g.Wait()
 
