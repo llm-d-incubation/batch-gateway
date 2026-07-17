@@ -64,8 +64,11 @@ else
 fi
 
 step "Loading dispatcher image into Kind cluster '${KIND_CLUSTER_NAME}'..."
-if [[ "${CONTAINER_TOOL}" == "docker" ]]; then
-    kind load docker-image "${DISPATCHER_IMAGE}" --name "${KIND_CLUSTER_NAME}"
+if docker exec "${KIND_CLUSTER_NAME}-control-plane" ctr --namespace=k8s.io images list -q 2>/dev/null | grep -q "^${DISPATCHER_IMAGE}$"; then
+    log "Image already present in Kind node, skipping load"
+elif [[ "${CONTAINER_TOOL}" == "docker" ]]; then
+    docker save "${DISPATCHER_IMAGE}" | docker exec -i "${KIND_CLUSTER_NAME}-control-plane" \
+        ctr --namespace=k8s.io images import --snapshotter=overlayfs -
 else
     ${CONTAINER_TOOL} save "${DISPATCHER_IMAGE}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER_NAME}"
 fi

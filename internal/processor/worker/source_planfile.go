@@ -64,11 +64,11 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 	}
 }
 
-// Produce sends one item per plan entry to the channel. After context
-// cancellation, it skips I/O (ReadAt + Unmarshal) but still sends a
-// minimal item so the dispatcher's drain loop can account for it.
-// This avoids both silent entry drops and unnecessary I/O during shutdown.
-func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
+// Produce sends one item per plan entry to the channel. It always reads the
+// input line so each item retains the original custom_id: cancel / expire
+// drain still needs that identity in the error file even when inference is
+// skipped. Context cancellation is handled by the dispatcher drain path.
+func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
 	defer close(outgoingRequestCh)
 
 	for safeModelID, modelID := range s.modelMap.SafeToModel {
@@ -79,15 +79,6 @@ func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- p
 		}
 
 		for _, entry := range entries {
-			if ctx.Err() != nil {
-				reqID := fmt.Sprintf("batch_req_%s", uuid.NewString())
-				outgoingRequestCh <- pipeline.RequestItem{
-					RequestID: reqID,
-					CustomID:  reqID,
-					ModelID:   modelID,
-				}
-				continue
-			}
 			item, err := s.readEntry(entry, modelID)
 			if err != nil {
 				return err
