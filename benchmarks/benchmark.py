@@ -1387,8 +1387,12 @@ def generate_html_report(cfg, results):
         burst_agg = _aggregate_phases(result.phases, "burst")
         idle_agg = _aggregate_phases(result.phases, "idle")
 
-        ttft_p99_burst = f"{burst_agg['ttft_p99']:.1f}" if burst_agg else "N/A"
-        itl_p99_burst = f"{burst_agg['itl_p99']:.1f}" if burst_agg else "N/A"
+        if burst_agg:
+            ttft_burst = f"{burst_agg['ttft_p50']:.0f} / {burst_agg['ttft_p95']:.0f} / {burst_agg['ttft_p99']:.0f}"
+            itl_burst = f"{burst_agg['itl_p50']:.0f} / {burst_agg['itl_p95']:.0f} / {burst_agg['itl_p99']:.0f}"
+        else:
+            ttft_burst = "N/A"
+            itl_burst = "N/A"
         idle_rps = f"{idle_agg['completed'] / max(1, cfg.idle_seconds * (cfg.cycles - cfg.warmup_cycles)):.2f}" if idle_agg else "N/A"
 
         if result.scenario <= 1:
@@ -1410,8 +1414,8 @@ def generate_html_report(cfg, results):
 
         summary_rows.append(
             f"<tr><td>S{result.scenario} ({result.name})</td>"
-            f"<td>{ttft_p99_burst}</td>"
-            f"<td>{itl_p99_burst}</td>"
+            f"<td>{ttft_burst}</td>"
+            f"<td>{itl_burst}</td>"
             f"<td>{idle_rps}</td>"
             f"<td>{batch_slo}</td>"
             f"<td>{batch_ttft_p50}</td></tr>"
@@ -1512,8 +1516,8 @@ def generate_html_report(cfg, results):
             <table>
                 <tr>
                     <th>Scenario</th>
-                    <th>Interactive TTFT p99 (burst)</th>
-                    <th>Interactive ITL p99 (burst)</th>
+                    <th>Interactive TTFT at peak (p50 / p95 / p99)</th>
+                    <th>Interactive ITL at peak (p50 / p95 / p99)</th>
                     <th>Batch idle throughput (req/s)</th>
                     <th>Batch SLO completion</th>
                     <th>Batch TTFT p50</th>
