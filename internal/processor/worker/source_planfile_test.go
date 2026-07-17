@@ -632,13 +632,20 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 	out := make(chan pipeline.RequestItem, totalRequests+1)
 	_ = source.Produce(ctx, out)
 
-	var produced int
-	for range out {
+	var produced, skippedIO int
+	for item := range out {
 		produced++
+		if item.CustomID == "" {
+			skippedIO++
+		}
 	}
 
 	if produced != totalRequests {
 		t.Fatalf("produced %d items, want %d: source dropped %d entries on cancellation",
 			produced, totalRequests, totalRequests-produced)
+	}
+	if skippedIO != totalRequests {
+		t.Fatalf("skippedIO %d items, want %d: source should skip I/O after cancellation",
+			skippedIO, totalRequests)
 	}
 }

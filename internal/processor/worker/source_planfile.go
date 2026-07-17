@@ -64,6 +64,10 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 	}
 }
 
+// Produce sends one item per plan entry to the channel. After context
+// cancellation, it skips I/O (ReadAt + Unmarshal) but still sends a
+// minimal item so the dispatcher's drain loop can account for it.
+// This avoids both silent entry drops and unnecessary I/O during shutdown.
 func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
 	defer close(outgoingRequestCh)
 
@@ -75,6 +79,13 @@ func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- p
 		}
 
 		for _, entry := range entries {
+			if ctx.Err() != nil {
+				outgoingRequestCh <- pipeline.RequestItem{
+					RequestID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
+					ModelID:   modelID,
+				}
+				continue
+			}
 			item, err := s.readEntry(entry, modelID)
 			if err != nil {
 				return err

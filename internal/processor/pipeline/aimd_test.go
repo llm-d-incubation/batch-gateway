@@ -326,9 +326,9 @@ func TestAIMDDrain_SLOExpiry_UsesBatchExpired(t *testing.T) {
 	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		1, logr.Discard())
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     source,
@@ -389,9 +389,9 @@ func TestCancelDrainsUndispatched(t *testing.T) {
 	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     source,
@@ -477,9 +477,9 @@ func TestCancelWithFastRequestsThrottled(t *testing.T) {
 	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &ctxSource{items: items},
@@ -563,9 +563,9 @@ func TestCancelInProgressThrottled(t *testing.T) {
 	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Use ctxSource which checks ctx on each send — like PlanFileSource does
 	executor := NewJobExecutor(JobExecutorConfig{
@@ -673,9 +673,9 @@ func TestCancelInProgress(t *testing.T) {
 	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
@@ -751,9 +751,9 @@ func TestExpiration(t *testing.T) {
 	dispatcher, err := NewAIMDDispatcher(direct,
 		map[string]*EndpointAIMD{"m1": {Sem: sem, AIMD: aimd, Label: "test"}},
 		globalLimit, logr.Discard())
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	executor := NewJobExecutor(JobExecutorConfig{
 		Source:     &sliceSource{items: items},
