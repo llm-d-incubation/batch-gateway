@@ -230,6 +230,10 @@ type BatchRequestCounts struct {
 	Failed int64 `json:"failed"`
 }
 
+func (c *BatchRequestCounts) AllSucceeded() bool {
+	return c.Failed == 0 && c.Completed == c.Total
+}
+
 type BatchUsage struct {
 	// required. The number of input tokens.
 	InputTokens int64 `json:"input_tokens"`

@@ -880,6 +880,51 @@ func TestBatchHandler(t *testing.T) {
 			}
 		})
 
+		t.Run("CancelAlreadyCancelledBatch", func(t *testing.T) {
+			handler := setupTestHandler()
+
+			batchID := "batch-test-cancel-already-cancelled"
+			cancelledAt := time.Now().UTC().Unix()
+			batch := openai.Batch{
+				ID: batchID,
+				BatchSpec: openai.BatchSpec{
+					Object:           "batch",
+					InputFileID:      "file-abc123",
+					Endpoint:         openai.EndpointChatCompletions,
+					CompletionWindow: "24h",
+					CreatedAt:        time.Now().UTC().Unix(),
+				},
+				BatchStatusInfo: openai.BatchStatusInfo{
+					Status:      openai.BatchStatusCancelled,
+					CancelledAt: &cancelledAt,
+				},
+			}
+			item, err := converter.BatchToDBItem(&batch, common.DefaultTenantID, map[string]string{})
+			if err != nil {
+				t.Fatalf("Failed to convert batch to DB item: %v", err)
+			}
+			if err := handler.clients.BatchDB.DBStore(context.Background(), item); err != nil {
+				t.Fatalf("Failed to store item: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/batches/"+batchID+"/cancel", nil)
+			req.SetPathValue("batch_id", batchID)
+			rr := httptest.NewRecorder()
+			handler.CancelBatch(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Errorf("expected status %d for already-cancelled batch, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+			}
+
+			var respBatch openai.Batch
+			if err := json.NewDecoder(rr.Body).Decode(&respBatch); err != nil {
+				t.Fatalf("Failed to decode response body: %v", err)
+			}
+			if respBatch.Status != openai.BatchStatusCancelled {
+				t.Errorf("expected status %q, got %q", openai.BatchStatusCancelled, respBatch.Status)
+			}
+		})
+
 		t.Run("CancelInProgressBatch", func(t *testing.T) {
 			handler := setupTestHandler()
 

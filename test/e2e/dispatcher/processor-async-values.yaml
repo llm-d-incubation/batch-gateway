@@ -6,3 +6,5 @@ processor:
     modelGateways:
       sim-model:
         inferencePoolName: "sim-pool"
+      sim-model-inject:
+        inferencePoolName: "sim-pool-inject"

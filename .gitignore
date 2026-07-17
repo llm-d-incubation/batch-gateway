@@ -12,3 +12,4 @@ benchmarks/results/*
 .dispatcher-port-forward.pid
 .dispatcher-sim-port-forward.pid
 *.DS_Store
+.idea/

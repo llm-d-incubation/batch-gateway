@@ -51,15 +51,6 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func mustReadFile(t *testing.T, path string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile(%s): %v", path, err)
-	}
-	return b
-}
-
 // ---------------------------------------------------------------------------
 // Mock DB constructors
 // ---------------------------------------------------------------------------
@@ -100,45 +91,6 @@ func (m *mockInferenceClient) Generate(ctx context.Context, req *inference.Gener
 		RequestID: "server-req-1",
 		Response:  []byte(`{"choices":[{"message":{"content":"hello"}}]}`),
 	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Mock async inference client
-// ---------------------------------------------------------------------------
-
-type mockAsyncInferenceClient struct {
-	submitFn    func(ctx context.Context, req *inference.GenerateRequest) *inference.ClientError
-	getResultFn func(ctx context.Context) (*inference.GenerateResponse, error)
-	cancelFn    func(ctx context.Context) error
-	closeFn     func() error
-}
-
-func (m *mockAsyncInferenceClient) Submit(ctx context.Context, req *inference.GenerateRequest) *inference.ClientError {
-	if m.submitFn != nil {
-		return m.submitFn(ctx, req)
-	}
-	return nil
-}
-
-func (m *mockAsyncInferenceClient) GetResult(ctx context.Context) (*inference.GenerateResponse, error) {
-	if m.getResultFn != nil {
-		return m.getResultFn(ctx)
-	}
-	return nil, ctx.Err()
-}
-
-func (m *mockAsyncInferenceClient) Cancel(ctx context.Context) error {
-	if m.cancelFn != nil {
-		return m.cancelFn(ctx)
-	}
-	return nil
-}
-
-func (m *mockAsyncInferenceClient) Close() error {
-	if m.closeFn != nil {
-		return m.closeFn()
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------

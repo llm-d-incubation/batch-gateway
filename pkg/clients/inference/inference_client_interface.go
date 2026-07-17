@@ -35,12 +35,27 @@ type GenerateRequest struct {
 	Headers   map[string]string      // extra headers to forward to the endpoint
 }
 
-// GenerateResponse represents an inference generation response
+// GenerateResponse represents an inference generation response.
+//
+// For async results (from llm-d-async ResultMessage):
+//   - StatusCode > 0: an HTTP response was received; Response holds the body.
+//   - StatusCode == 0 with ErrorCode/ErrorMessage: no HTTP response (deadline,
+//     cancel, gate drop, etc.).
+//   - StatusCode == 0 with empty ErrorCode: legacy success payload (treat as 200).
 type GenerateResponse struct {
 	RequestID        string
 	Response         []byte
+	StatusCode       int    // HTTP status from async ResultMessage; 0 = unset/non-HTTP
+	ErrorCode        string // non-HTTP failure code from async ResultMessage
+	ErrorMessage     string // non-HTTP failure message from async ResultMessage
 	RawData          interface{}
 	HadCapacityRetry bool // true if any retry was caused by 429/5xx (not network error)
+}
+
+// IsNonHTTPFailure reports whether the response represents a failure that did
+// not produce an HTTP status (e.g. deadline exceeded, cancel, gate drop).
+func (r *GenerateResponse) IsNonHTTPFailure() bool {
+	return r.StatusCode == 0 && (r.ErrorCode != "" || r.ErrorMessage != "")
 }
 
 // ClientError represents an inference client error

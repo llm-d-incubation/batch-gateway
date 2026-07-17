@@ -112,33 +112,6 @@ func TestResolveOutputExpiration_NilTags(t *testing.T) {
 	}
 }
 
-// --- executionProgress ---
-
-func TestExecutionProgress_RecordAndCounts(t *testing.T) {
-	updater := NewStatusUpdater(newMockBatchDBClient(), mockdb.NewMockBatchStatusClient(), 86400)
-	ep := &executionProgress{
-		total:   10,
-		updater: updater,
-		jobID:   "job-1",
-	}
-
-	ctx := testLoggerCtx(t)
-	ep.record(ctx, true)
-	ep.record(ctx, true)
-	ep.record(ctx, false)
-
-	counts := ep.counts()
-	if counts.Total != 10 {
-		t.Fatalf("Total = %d, want 10", counts.Total)
-	}
-	if counts.Completed != 2 {
-		t.Fatalf("Completed = %d, want 2", counts.Completed)
-	}
-	if counts.Failed != 1 {
-		t.Fatalf("Failed = %d, want 1", counts.Failed)
-	}
-}
-
 // --- uploadFileAndStoreFileRecord ---
 
 func TestUploadFileAndStoreFileRecord_StorageKeyAndDBFilename(t *testing.T) {

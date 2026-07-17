@@ -75,6 +75,7 @@ type Processor struct {
 	inflight       db.InFlightClient               // in-flight job tracking for orphan recovery
 	inference      *inference.GatewayResolver      // model → gateway routing (sync)
 	asyncInference *inference.AsyncGatewayResolver // model → async client routing
+	broadcasters   *broadcasterRegistry            // per-model result broadcasters (async only)
 	files          *fileManager
 }
 
@@ -132,6 +133,15 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 
 	if err := p.initConcurrencyControls(logger, stopAccepting); err != nil {
 		return err
+	}
+
+	// If async inference is used (llm-d-async), set up a registry of ResultBroadcasters.
+	// These will propagate results from the async queues to the JobExecutor's individual result collectors.
+	if p.asyncInference != nil {
+		bs := newBroadcasterRegistry(p.asyncInference, logger)
+		bs.Run(ctx)
+		defer bs.Wait()
+		p.broadcasters = bs
 	}
 
 	return p.runPollingLoop(pollingCtx, ctx)

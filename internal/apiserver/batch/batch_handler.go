@@ -489,6 +489,11 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	trace.SpanFromContext(ctx).SetAttributes(spanAttrs...)
 
+	if batch.Status == openai.BatchStatusCancelled {
+		common.WriteJSONResponse(w, r, http.StatusOK, batch)
+		return
+	}
+
 	if !batch.Status.IsCancellable() {
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", fmt.Sprintf("Batch with status %s cannot be cancelled", batch.Status), nil)
 		common.WriteAPIError(w, r, apiErr)
