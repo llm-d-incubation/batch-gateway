@@ -194,6 +194,42 @@ func TestResultCollector_DrainDecrementsMetricsAfterWriteFailure(t *testing.T) {
 	}
 }
 
+func TestResultCollector_DrainCallsOnPersistenceFailure(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(3, nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	collector.output = bufio.NewWriterSize(&failAfterNWriter{remaining: 1}, 1)
+
+	var callCount int
+	collector.onPersistenceFailure = func() { callCount++ }
+
+	results := []ResultItem{
+		{RequestID: "req-1", CustomID: "c-1", Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}}},
+		{RequestID: "req-2", CustomID: "c-2", Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-2", Body: map[string]any{"ok": true}}},
+		{RequestID: "req-3", CustomID: "c-3", Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-3", Body: map[string]any{"ok": true}}},
+	}
+	for _, r := range results {
+		pending.Store(RequestItem{RequestID: r.RequestID, CustomID: r.CustomID})
+	}
+
+	ch := make(chan ResultItem, len(results))
+	for _, r := range results {
+		ch <- r
+	}
+	close(ch)
+
+	err := collector.Drain(context.Background(), ch)
+	if err == nil {
+		t.Fatal("expected write failure error from Drain")
+	}
+	if callCount != 1 {
+		t.Fatalf("onPersistenceFailure called %d times, want 1", callCount)
+	}
+}
+
 func TestResultCollector_DrainReturnsNilWhenCtxCancelled(t *testing.T) {
 	outputFile := tempFile(t)
 	errorFile := tempFile(t)
