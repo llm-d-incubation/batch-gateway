@@ -54,6 +54,7 @@ teardown_namespace() {
     # Non-helm resources
     ${K} -n "${NS}" delete -k "${SCRIPT_DIR}/manifests/vllm/" --ignore-not-found 2>/dev/null || true
     ${K} -n "${NS}" delete gateway llm-d-inference-gateway --ignore-not-found 2>/dev/null || true
+    ${K} -n "${NS}" delete svc vllm-metrics --ignore-not-found 2>/dev/null || true
     ${K} -n "${NS}" delete secret batch-gateway-secrets --ignore-not-found 2>/dev/null || true
     ${K} -n "${NS}" delete pvc --all --ignore-not-found 2>/dev/null || true
 
