@@ -19,7 +19,7 @@ package inference
 import (
 	"time"
 
-	"github.com/llm-d-incubation/llm-d-async/producer"
+	"github.com/llm-d/llm-d-async/producer"
 )
 
 const defaultDeadline = 5 * time.Minute

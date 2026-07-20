@@ -3,11 +3,8 @@ module github.com/llm-d/llm-d-batch-gateway/test/e2e
 go 1.25.0
 
 require (
-	github.com/llm-d-incubation/llm-d-async/api v0.7.3
-	github.com/llm-d-incubation/llm-d-async/producer v0.7.3
-)
-
-require (
+	github.com/llm-d/llm-d-async/api v0.7.4
+	github.com/llm-d/llm-d-async/producer v0.7.4
 	github.com/openai/openai-go/v3 v3.24.0
 	github.com/redis/go-redis/v9 v9.19.0
 	gopkg.in/yaml.v3 v3.0.1

@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/llm-d-incubation/llm-d-async/producer"
+	"github.com/llm-d/llm-d-async/producer"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/syncutil"

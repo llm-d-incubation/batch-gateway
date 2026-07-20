@@ -9,12 +9,12 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
-	asyncapi "github.com/llm-d-incubation/llm-d-async/api"
+	asyncapi "github.com/llm-d/llm-d-async/api"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 	httpclient "github.com/llm-d/llm-d-batch-gateway/pkg/clients/http"
 
-	"github.com/llm-d-incubation/llm-d-async/producer"
+	"github.com/llm-d/llm-d-async/producer"
 )
 
 // asyncSharedClient decouples submit from collect.

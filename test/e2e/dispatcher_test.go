@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	asyncapi "github.com/llm-d-incubation/llm-d-async/api"
-	"github.com/llm-d-incubation/llm-d-async/producer"
+	asyncapi "github.com/llm-d/llm-d-async/api"
+	"github.com/llm-d/llm-d-async/producer"
 	"github.com/openai/openai-go/v3"
 	"github.com/redis/go-redis/v9"
 )

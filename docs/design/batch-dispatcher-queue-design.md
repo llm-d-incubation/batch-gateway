@@ -6,7 +6,7 @@
 
 Related:
 - [Batch Dispatcher](batch-dispatcher.md)
-- [Dispatch Budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) (llm-d-async)
+- [Dispatch Budget](https://github.com/llm-d/llm-d-async/blob/main/docs/dispatch-budget.md) (llm-d-async)
 - [Batch Processor Design](batch_processor_architecture.md)
 - [Batch Inference Architecture](batch_inference_architecture.md)
 
@@ -14,12 +14,12 @@ Related:
 
 ## Summary
 
-This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed.
+This document describes the design of the request and result queues that connect the **batch-processor** to the **batch dispatcher** ([llm-d-async](https://github.com/llm-d/llm-d-async)). At this time we always assume that each target inference pool corresponds to a single connector. In other words, we assume that there will never be 2 queues targeting the same inference pool at once; we reserve this for future extensions, if needed.
 
 The batch-processor supports two mutually exclusive dispatch modes, selected via `dispatch_mode`:
 
 - **`sync`** (default): The executor dispatches inference requests directly to the inference gateway via HTTP, using the existing AIMD + semaphore flow control.
-- **`async`**: The executor enqueues individual requests into **the dispatcher's request queue**; **the dispatcher pulls and forwards** them to the inference gateway based on the [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md). A **result consumer** in the batch-processor reads completed responses from **the dispatcher's result queue** and routes them back to the appropriate job's output writer.
+- **`async`**: The executor enqueues individual requests into **the dispatcher's request queue**; **the dispatcher pulls and forwards** them to the inference gateway based on the [dispatch budget](https://github.com/llm-d/llm-d-async/blob/main/docs/dispatch-budget.md). A **result consumer** in the batch-processor reads completed responses from **the dispatcher's result queue** and routes them back to the appropriate job's output writer.
 
 This document describes the **async** dispatch mode and its queue design.
 
@@ -83,7 +83,7 @@ The Redis URL is read from a mounted secret at runtime (not stored in the config
 
 ### Dispatcher Configuration
 
-The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dispatch budget gating. The request queue is configured via the [JSON queues config file](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md#redis-sorted-set-persisted) (`--redis.ss.queues-config-file`); the result queue is configured via `--redis.ss.result-queue-name`:
+The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dispatch budget gating. The request queue is configured via the [JSON queues config file](https://github.com/llm-d/llm-d-async/blob/main/README.md#redis-sorted-set-persisted) (`--redis.ss.queues-config-file`); the result queue is configured via `--redis.ss.result-queue-name`:
 
 ```json
 [
@@ -107,7 +107,7 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 
 The queue names must match those derived by the batch-processor's `RequestQueueName()` and `ResultQueueName()` functions.
 
-The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. See the [llm-d-async README](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d-incubation/llm-d-async/tree/main/charts/async-processor) for the full configuration.
+The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. See the [llm-d-async README](https://github.com/llm-d/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
 ### Future Extension: Queue Registry
 
@@ -130,7 +130,7 @@ Note: The request queue is currently implemented by a **Redis SortedSet** that h
 
 Unlike direct dispatch to the inference gateway — where the EPP's flow control limits how many requests can be in-flight and excess requests are rejected with HTTP 429 — **the request queue is a passive buffer with no backpressure on writes**. The producer can enqueue requests as fast as it can read plan entries, without throttling or semaphore gating. This is safe because:
 
-1. **Flow control is deferred to the dispatcher.** The [dispatch budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) gates how many requests leave the queue per poll cycle. The gate returns a `budget` value in [0, 1] representing remaining system capacity (generally `budget = D − B`, where `D` is the dispatch budget and `B` is the reserved baseline). The dispatcher pops up to `max_SYS × budget` requests per cycle, where `max_SYS` is a configurable measure of total system capacity. Enqueuing more requests than the dispatcher can immediately process simply means they wait in the queue until capacity opens up — they do not reach the inference gateway or compete with online traffic.
+1. **Flow control is deferred to the dispatcher.** The [dispatch budget](https://github.com/llm-d/llm-d-async/blob/main/docs/dispatch-budget.md) gates how many requests leave the queue per poll cycle. The gate returns a `budget` value in [0, 1] representing remaining system capacity (generally `budget = D − B`, where `D` is the dispatch budget and `B` is the reserved baseline). The dispatcher pops up to `max_SYS × budget` requests per cycle, where `max_SYS` is a configurable measure of total system capacity. Enqueuing more requests than the dispatcher can immediately process simply means they wait in the queue until capacity opens up — they do not reach the inference gateway or compete with online traffic.
 
 2. **The queue is cheap storage.** Redis sorted sets are memory-efficient for this workload. Each request message is a few KB; even a full 50,000-request batch job at ~2 KB per message is ~100 MB — well within Redis capacity and far cheaper than holding in-flight HTTP connections.
 
@@ -140,7 +140,7 @@ Unlike direct dispatch to the inference gateway — where the EPP's flow control
 
 ### Message Format
 
-Request messages follow the wire format defined in the [llm-d-async README — Request Messages and Consumption](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md#request-messages-and-consumption). The `metadata` field carries batch-processor correlation data (`job_id`, `request_index`) that the dispatcher passes through opaquely and returns in the result. The `headers` field can carry HTTP headers that the dispatcher forwards to the inference gateway (e.g., fairness/SLO headers that the current executor attaches directly).
+Request messages follow the wire format defined in the [llm-d-async README — Request Messages and Consumption](https://github.com/llm-d/llm-d-async/blob/main/README.md#request-messages-and-consumption). The `metadata` field carries batch-processor correlation data (`job_id`, `request_index`) that the dispatcher passes through opaquely and returns in the result. The `headers` field can carry HTTP headers that the dispatcher forwards to the inference gateway (e.g., fairness/SLO headers that the current executor attaches directly).
 
 The sorted-set score is the request's SLO deadline (Unix timestamp), so earliest-deadline requests are dispatched first across all jobs sharing the same pool — providing cross-job deadline-aware scheduling.
 
@@ -175,7 +175,7 @@ As described above, the producer does not need to throttle enqueue operations. I
 
 ### Dispatcher (reads from request queue)
 
-The dispatcher ([llm-d-async](https://github.com/llm-d-incubation/llm-d-async)) periodically polls the sorted set. On each cycle, it computes the budget on its "Dispatch Gate" to determine the current dispatch budget $D$. If $D > B$ (the reserved baseline), it pops up to `max_SYS × budget` requests (lowest score = earliest deadline first) and forwards them to the inference gateway via HTTP. See [Dispatch Budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) for the full gating logic.
+The dispatcher ([llm-d-async](https://github.com/llm-d/llm-d-async)) periodically polls the sorted set. On each cycle, it computes the budget on its "Dispatch Gate" to determine the current dispatch budget $D$. If $D > B$ (the reserved baseline), it pops up to `max_SYS × budget` requests (lowest score = earliest deadline first) and forwards them to the inference gateway via HTTP. See [Dispatch Budget](https://github.com/llm-d/llm-d-async/blob/main/docs/dispatch-budget.md) for the full gating logic.
 
 The dispatcher requires no changes to support this integration, it already implements the Redis sorted-set flow with dispatch budget gating. Only the queue names need to match the naming convention.
 
@@ -189,7 +189,7 @@ Note: the result queue is currently implemented by a Redis list.
 
 ### Message Format
 
-Result messages follow the format defined in the [llm-d-async README — Results](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md#results). The `metadata` from the original request (containing `job_id` and `request_index`) is passed through by the dispatcher, allowing the consumer to route results back to the correct job.
+Result messages follow the format defined in the [llm-d-async README — Results](https://github.com/llm-d/llm-d-async/blob/main/README.md#results). The `metadata` from the original request (containing `job_id` and `request_index`) is passed through by the dispatcher, allowing the consumer to route results back to the correct job.
 
 **Example:**
 

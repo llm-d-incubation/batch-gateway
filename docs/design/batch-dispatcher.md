@@ -5,12 +5,12 @@ Related:
 - [\[PUBLIC\] EPP Flow Controller for Priority, Fairness, and Queuing](https://docs.google.com/document/d/1VZL7opFWuwgWquvgiOzLlXAJ633qZ9U-A0ZixGjBgaI/edit?tab=t.0#heading=h.hfyow92z2d0t)
 - [\[PUBLIC\] Improved Flow Control Request Management](https://docs.google.com/document/d/1JxzJc8gNv2wKK5-a8ohb0btn78ymVKw9XMIb4-S-ncA/edit?tab=t.0#heading=h.rutawybt03nl)
 - [https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/)
-- [Async Processor: Dispatch Gates](https://github.com/llm-d-incubation/llm-d-async/blob/main/README.md#dispatch-gates) (llm-d-async)
-- [Dispatch Budget](https://github.com/llm-d-incubation/llm-d-async/blob/main/docs/dispatch-budget.md) (llm-d-async)
+- [Async Processor: Dispatch Gates](https://github.com/llm-d/llm-d-async/blob/main/README.md#dispatch-gates) (llm-d-async)
+- [Dispatch Budget](https://github.com/llm-d/llm-d-async/blob/main/docs/dispatch-budget.md) (llm-d-async)
 
 ## Summary
 
-This document details the design of a **Batch Dispatcher** (sometimes also referred to as the [**Async Processor**](https://github.com/llm-d-incubation/llm-d-async)) to extend the existing "online batch processing agent" architecture (see [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)). While the **llm-d Router** acts as the primary component for scheduling and flow control, the Batch Dispatcher serves as a system-load aware gatekeeper. It ensures that batch workloads (low-priority and sheddable) are pulled from message queues and forwarded to the llm-d Router only when the inference pool has sufficient capacity. This prevents low-priority traffic from flooding the system and competing with realtime requests.
+This document details the design of a **Batch Dispatcher** (sometimes also referred to as the [**Async Processor**](https://github.com/llm-d/llm-d-async)) to extend the existing "online batch processing agent" architecture (see [\[Public Doc\] Serving Online Batch via Inference Gateway](https://docs.google.com/document/d/1notkq9s0qOmWmUNonZ8CfI-5jtGtHA4PGMI-xz8sGRE/edit?tab=t.0#heading=h.i76kzr3j3swj)). While the **llm-d Router** acts as the primary component for scheduling and flow control, the Batch Dispatcher serves as a system-load aware gatekeeper. It ensures that batch workloads (low-priority and sheddable) are pulled from message queues and forwarded to the llm-d Router only when the inference pool has sufficient capacity. This prevents low-priority traffic from flooding the system and competing with realtime requests.
 
 ## Problem statement
 
