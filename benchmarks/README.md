@@ -15,14 +15,15 @@ The benchmark compares dispatch strategies under a realistic traffic pattern: in
 | 2 | Ungated batch | sync, aggressive | Batch-gateway with high concurrency (global=200, perEndpoint=100), AIMD disabled. No flow control. |
 | 3 | AIMD only | sync, AIMD enabled | Processor reactively adjusts concurrency based on 429/5xx backpressure. Single layer. |
 | 4 | AIMD + flow control | sync, AIMD + Router | Two layers: Router prioritizes interactive (priority 100) over batch (priority -1, sheddable); AIMD adjusts on top. |
-| 5 | Async processor | async, budget gate | Async-processor with PromQL-based dispatch budget. **Blocked on integration.** |
+| 5 | Async processor | async, endpoint-scrape gate | Async dispatch via llm-d-async with endpoint-scrape gating on vLLM queue depth. |
 
 ### How to read results
 
 - **Scenario 0** = ideal interactive latency with no batch interference
 - **Scenarios 1-2** = how much batch degrades interactive without gating
-- **Scenarios 3-4** = how gated dispatch protects interactive while batch still makes progress
+- **Scenarios 3-5** = how gated dispatch protects interactive while batch still makes progress
 - **Scenario 3 vs 4** = incremental value of Router flow control on top of AIMD
+- **Scenario 5** = async dispatch path — batch goes through Redis queues + async-processor instead of sync HTTP
 
 ## Prerequisites
 
@@ -243,6 +244,9 @@ Compare TTFT p99 during burst phases across scenarios:
 | `GUIDE_NAME` | No | `optimized-baseline` | Inference pool name |
 | `BG_IMAGE_REPO` | No | — | Batch-gateway image repo override |
 | `BG_IMAGE_TAG` | No | — | Batch-gateway image tag override |
+| `DISPATCHER_VERSION` | No | `v0.7.3` | Async-processor image version (scenario 5) |
+| `DISPATCHER_CHART` | No | OCI chart | Async-processor Helm chart reference |
+| `DISPATCHER_CHART_VERSION` | No | `0.7.3` | Async-processor chart version |
 
 ## Directory Structure
 
