@@ -94,6 +94,8 @@ BATCH_APISERVER_REPO="${BATCH_APISERVER_REPO:-}"
 BATCH_PROCESSOR_REPO="${BATCH_PROCESSOR_REPO:-}"
 BATCH_GC_REPO="${BATCH_GC_REPO:-}"
 
+ENABLE_DISPATCHER="${ENABLE_DISPATCHER:-false}"
+
 # Temp directory cleanup (used by do_deploy_batch_gateway_helm)
 _BATCH_TMP_DIR=""
 _cleanup() {

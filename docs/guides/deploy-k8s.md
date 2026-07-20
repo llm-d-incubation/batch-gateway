@@ -48,6 +48,14 @@ The sections below walk through each step manually for understanding and customi
 5. Request is routed to **InferencePool** → **EPP** (endpoint picker) → **vLLM** model server, and the response is returned to the Processor, which adds the response to the batch job's output file
     - The Processor sets the `x-gateway-inference-objective: batch-sheddable` header, which assigns the request to the **batch priority band (priority -1)** in EPP's flow control. This band is **sheddable** — when the backend is saturated, batch requests are rejected immediately instead of queued, and the Processor retries with backoff
 
+**Async dispatch flow** (when `ENABLE_DISPATCHER=true`):
+
+Steps 1–2 are the same as above. Steps 3–5 change:
+
+3. **Processor** dequeues the batch job and sends inference requests to a **Redis queue** (keyed by `inferencePoolName`) instead of making HTTP calls directly. The user's Authorization header is included in the queue message (via `passThroughHeaders`)
+4. **async-processor** ([llm-d-async](https://github.com/llm-d/llm-d-async)) reads from the Redis queue and sends the request to the **Internal Gateway** with the user's original token (pass-through headers)
+5. The Internal Gateway routes through **batch-llm-route** → **InferencePool** → **EPP** → **vLLM** as before. The async-processor writes the result back to a Redis result queue, which the Processor reads to complete the batch job
+
 **Online inference flow**:
 1. Client sends an inference request (e.g. `POST /{ns}/{model}/v1/chat/completions`) to the External Gateway with a Kubernetes token
 2. Gateway matches `/{ns}/{model}/v1/*` → **llm-route** (HTTPRoute, manually created with URL rewrite rules)
@@ -170,6 +178,10 @@ export MODEL_NAME=random
 # Flow control
 export INTERACTIVE_FLOW_CONTROL_OBJECTIVE=interactive-default
 export BATCH_FLOW_CONTROL_OBJECTIVE=batch-sheddable
+
+# Async dispatcher (optional — set ENABLE_DISPATCHER=true to use)
+export ENABLE_DISPATCHER=false
+export DISPATCHER_VERSION=v0.7.3
 ```
 
 > **Note**: `GAIE_VERSION`, `ROUTER_CHART_VERSION`, and `ROUTER_GATEWAY_CHART` are automatically sourced from the llm-d repo's `guides/env.sh` after cloning (see step 3.2). You do not need to set them manually.
@@ -601,7 +613,7 @@ kubectl wait tokenratelimitpolicy/inference-token-limit \
 
 </details>
 
-### 3.8 Install Batch Gateway
+### 3.8 Batch Gateway Dependencies
 
 The batch processor routes inference requests through a separate, ClusterIP-only Internal Gateway to bypass the TokenRateLimitPolicy on the External Gateway while still enforcing model-level authorization (AuthPolicy).
 
@@ -848,8 +860,14 @@ kubectl create secret generic batch-gateway-secrets \
 
 </details>
 
+### 3.9 Install Batch Gateway
+
+Choose **one** of the two dispatch modes below (sync or async).
+
+#### 3.9.1 Option 1: Sync dispatch (default)
+
 <details>
-<summary>Install batch-gateway</summary>
+<summary>Sync dispatch: processor sends inference requests directly to the Internal Gateway</summary>
 
 ```bash
 # Discover the Internal Gateway's Service (ClusterIP, HTTP :80)
@@ -901,7 +919,226 @@ helm upgrade --install batch-gateway ./charts/batch-gateway \
 
 </details>
 
-### 3.9 Configure HTTPRoute and Policies for Batch Gateway
+#### 3.9.2 Option 2: Async dispatch
+
+Uses [llm-d-async](https://github.com/llm-d/llm-d-async). The async-processor uses a dispatch gate to control when requests are sent to the model server. This example uses the `prometheus-budget` gate. See [llm-d-async dispatch gates](https://github.com/llm-d/llm-d-async#per-queue-dispatch-gates) for other gate types (`redis`, `endpoint-scrape`, `prometheus-query`, etc.).
+
+The `prometheus-budget` gate requires **Prometheus** scraping EPP and vLLM metrics.
+
+> - **`dispatchMode: async`** + **`inferencePoolName`**: The processor sends requests to Redis queues (`llm-d-async:requests:<pool>`) instead of making HTTP calls. This replaces `modelGateways.<model>.url`/`requestTimeout`/`maxRetries`/etc.
+> - **`igw_base_url`**: The async-processor sends inference requests through the Internal Gateway (same path as sync). Pass-through headers (including Authorization) are forwarded, so AuthPolicy works.
+> - **`gate_type: prometheus-budget`**: Computes a dispatch budget from EPP flow control metrics (primary) with vLLM metrics fallback. Requires `prometheusURL` and `gate_params.pool`.
+
+<details>
+<summary>Deploy Prometheus (required for prometheus-budget gate)</summary>
+
+Deploy a minimal Prometheus instance scraping EPP and vLLM metrics. The `relabel_configs` add the `inference_pool` label from pod labels, which vLLM doesn't emit natively.
+
+```bash
+PROMETHEUS_NAME=prometheus
+
+kubectl apply -n "${LLM_NAMESPACE}" -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${PROMETHEUS_NAME}-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+    - job_name: 'epp'
+      metrics_path: /metrics
+      static_configs:
+      - targets: ['${LLMD_POOL_NAME}-epp.${LLM_NAMESPACE}.svc.cluster.local:9090']
+    - job_name: 'vllm'
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['${LLM_NAMESPACE}']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_llm_d_ai_model]
+        action: keep
+        regex: '.+'
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: '\${1}:8000'
+      metric_relabel_configs:
+      - target_label: inference_pool
+        replacement: '${LLMD_POOL_NAME}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${PROMETHEUS_NAME}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${PROMETHEUS_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${PROMETHEUS_NAME}
+    spec:
+      serviceAccountName: ${PROMETHEUS_NAME}
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v3.5.0
+        args:
+        - --config.file=/etc/prometheus/prometheus.yml
+        - --storage.tsdb.retention.time=1h
+        - --storage.tsdb.path=/tmp/prometheus
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+      volumes:
+      - name: config
+        configMap:
+          name: ${PROMETHEUS_NAME}-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${PROMETHEUS_NAME}
+spec:
+  selector:
+    app: ${PROMETHEUS_NAME}
+  ports:
+  - port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${PROMETHEUS_NAME}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${PROMETHEUS_NAME}
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${PROMETHEUS_NAME}
+subjects:
+- kind: ServiceAccount
+  name: ${PROMETHEUS_NAME}
+  namespace: ${LLM_NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: ${PROMETHEUS_NAME}
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+kubectl rollout status deployment/${PROMETHEUS_NAME} -n ${LLM_NAMESPACE} --timeout=120s
+```
+
+</details>
+
+<details>
+<summary>Deploy async-processor</summary>
+
+```bash
+DISPATCHER_RELEASE=dispatcher
+DISPATCHER_VERSION=${DISPATCHER_VERSION:-v0.7.3}
+DISPATCHER_IMAGE="ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}"
+DISPATCHER_CHART="oci://ghcr.io/llm-d-incubation/charts/async-processor"
+
+REDIS_SVC=redis-master   # or redis-valkey-primary for Valkey
+REDIS_HOST="${REDIS_SVC}.${BATCH_NAMESPACE}.svc.cluster.local"
+
+INTERNAL_GW_SVC=$(kubectl get svc -n ${BATCH_INTERNAL_GATEWAY_NAMESPACE} \
+    -l "gateway.networking.k8s.io/gateway-name=${BATCH_INTERNAL_GATEWAY_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}')
+
+PROMETHEUS_URL="http://prometheus.${LLM_NAMESPACE}.svc.cluster.local:9090"
+
+cat > /tmp/dispatcher-values.yaml <<YAML
+ap:
+  imagePullPolicy: IfNotPresent
+  messageQueueImpl: "redis-sortedset"
+  concurrency: 1
+  prometheusURL: "${PROMETHEUS_URL}"
+  prometheusCacheTTL: "0s"
+  redis:
+    enabled: true
+    url: "redis://${REDIS_HOST}:6379"
+    pollIntervalMs: 500
+    batchSize: 10
+    queuesConfig:
+      - queue_name: "llm-d-async:requests:${LLMD_POOL_NAME}"
+        result_queue_name: "llm-d-async:results:${LLMD_POOL_NAME}"
+        request_path_url: "/v1/chat/completions"
+        igw_base_url: "http://${INTERNAL_GW_SVC}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
+        gate_type: "prometheus-budget"
+        gate_params:
+          pool: "${LLMD_POOL_NAME}"
+          namespace: "${LLM_NAMESPACE}"
+          max_concurrency: "100"
+          baseline: "0.05"
+          fallback: "1.0"
+  modelServerMonitor:
+    enabled: false
+YAML
+
+IMAGE_REPO="${DISPATCHER_IMAGE%%:*}"
+IMAGE_TAG="${DISPATCHER_IMAGE##*:}"
+
+helm upgrade --install "${DISPATCHER_RELEASE}" "${DISPATCHER_CHART}" \
+    --version "${DISPATCHER_VERSION#v}" \
+    --namespace "${BATCH_NAMESPACE}" \
+    --values /tmp/dispatcher-values.yaml \
+    --set "ap.image.repository=${IMAGE_REPO}" \
+    --set "ap.image.tag=${IMAGE_TAG}"
+
+kubectl rollout status deployment/${DISPATCHER_RELEASE}-async-processor \
+    -n ${BATCH_NAMESPACE} --timeout=120s
+```
+
+</details>
+
+<details>
+<summary>Install batch-gateway with async dispatch</summary>
+
+The helm install uses the same `global.*`, `apiserver.tls.*`, and storage args as sync, but replaces the `modelGateways` section:
+
+```bash
+helm upgrade --install batch-gateway ./charts/batch-gateway \
+    --namespace ${BATCH_NAMESPACE} \
+    --set "global.secretName=batch-gateway-secrets" \
+    --set "global.dbClient.type=postgresql" \
+    --set "global.fileClient.type=s3" \
+    --set "global.fileClient.s3.endpoint=http://minio.${BATCH_NAMESPACE}.svc.cluster.local:9000" \
+    --set "global.fileClient.s3.region=${MINIO_REGION}" \
+    --set "global.fileClient.s3.bucket=${MINIO_BUCKET}" \
+    --set "global.fileClient.s3.accessKeyId=${MINIO_USER}" \
+    --set "global.fileClient.s3.prefix=${MINIO_BUCKET}" \
+    --set "global.fileClient.s3.usePathStyle=true" \
+    --set "global.fileClient.s3.autoCreateBucket=true" \
+    --set "processor.config.dispatchMode=async" \
+    --set "processor.config.asyncDispatch.resultPollTimeout=30s" \
+    --set "processor.config.modelGateways.${MODEL_NAME}.inferencePoolName=${LLMD_POOL_NAME}" \
+    --set "processor.config.modelGateways.${MODEL_NAME}.inferenceObjective=${BATCH_FLOW_CONTROL_OBJECTIVE}" \
+    --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}" \
+    --set apiserver.tls.enabled=true \
+    --set apiserver.tls.certManager.enabled=true \
+    --set apiserver.tls.certManager.issuerName=selfsigned-issuer \
+    --set apiserver.tls.certManager.issuerKind=ClusterIssuer \
+    --set "apiserver.tls.certManager.dnsNames={batch-gateway-apiserver,batch-gateway-apiserver.${BATCH_NAMESPACE}.svc.cluster.local,localhost}"
+```
+
+</details>
+
+### 3.10 Configure HTTPRoute and Policies for Batch Gateway
 
 <details>
 <summary>Create HTTPRoute and DestinationRule for Batch API Server</summary>
@@ -1007,7 +1244,7 @@ EOF
 
 </details>
 
-### 3.10 Verify Installation
+### 3.11 Verify Installation
 
 After completing all installation steps, verify that all components are running:
 
@@ -1032,6 +1269,14 @@ kubectl get httproute -A
 echo "=== Flow Control ==="
 kubectl get inferenceobjective -n ${LLM_NAMESPACE}
 # Expected: interactive-default (priority 100), batch-sheddable (priority -1)
+
+# If ENABLE_DISPATCHER=true:
+echo "=== Async Dispatcher ==="
+kubectl get pods -n ${BATCH_NAMESPACE} -l app.kubernetes.io/name=async-processor
+# Expected: dispatcher-async-processor (1/1 Running)
+kubectl get configmap batch-gateway-processor-config -n ${BATCH_NAMESPACE} \
+    -o jsonpath='{.data}' | grep dispatch_mode
+# Expected: dispatch_mode: "async"
 ```
 
 ## 4. Test
