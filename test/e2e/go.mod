@@ -6,7 +6,7 @@ require (
 	github.com/llm-d/llm-d-async/api v0.7.4
 	github.com/llm-d/llm-d-async/producer v0.7.4
 	github.com/openai/openai-go/v3 v3.24.0
-	github.com/redis/go-redis/v9 v9.19.0
+	github.com/redis/go-redis/v9 v9.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
