@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown benchmark-gpu benchmark-gpu-teardown
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench test-bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown benchmark-gpu benchmark-gpu-teardown
 
 SHELL := /usr/bin/env bash
 
@@ -190,6 +190,11 @@ test-coverage-func:
 bench:
 	@echo "Running benchmarks (benchtime=$(BENCHTIME))..."
 	$(GO) test -bench=. -benchmem -benchtime=$(BENCHTIME) ./...
+
+## test-bench: Run system-level benchmarks (preprocessor, executor, queue, file I/O)
+test-bench:
+	@echo "Running system benchmarks (benchtime=$(BENCHTIME))..."
+	$(GO) test -bench=. -benchmem -benchtime=$(BENCHTIME) -tags=bench ./test/benchmark/...
 
 ## lint: Run golangci-lint
 lint:
