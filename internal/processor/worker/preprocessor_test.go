@@ -1957,16 +1957,20 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	if !errors.Is(execErr, errExpired) {
 		t.Fatalf("expected errExpired, got: %v", execErr)
 	}
-	if counts.Failed != 1 {
-		t.Fatalf("Failed = %d, want 1 (model_not_found from ingestion)", counts.Failed)
+	// Failed = 2: 1 model_not_found (ingestion) + 1 batch_expired (pipeline drain for model-a).
+	if counts.Failed != 2 {
+		t.Fatalf("Failed = %d, want 2 (1 model_not_found + 1 batch_expired)", counts.Failed)
 	}
 
-	// error.jsonl should still have the model_not_found entry (not truncated by execution).
+	// error.jsonl should have both the model_not_found and batch_expired entries.
 	errorBytesAfter, err := os.ReadFile(errorPath)
 	if err != nil {
 		t.Fatalf("read error file after execution: %v", err)
 	}
 	if !bytes.Contains(errorBytesAfter, []byte(`"model_not_found"`)) {
 		t.Fatalf("error file lost model_not_found entry after early SLO:\n%s", errorBytesAfter)
+	}
+	if !bytes.Contains(errorBytesAfter, []byte(`"batch_expired"`)) {
+		t.Fatalf("error file missing batch_expired entry for undispatched request:\n%s", errorBytesAfter)
 	}
 }
