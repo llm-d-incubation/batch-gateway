@@ -28,12 +28,6 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 		return nil, fmt.Errorf("read model map: %w", err)
 	}
 
-	if sloCtx.Err() == context.DeadlineExceeded {
-		logger.V(logging.INFO).Info("SLO already expired at execution start",
-			"total", modelMap.LineCount)
-		return &openai.BatchRequestCounts{Total: modelMap.LineCount, Failed: modelMap.RejectedCount}, errExpired
-	}
-
 	files, err := p.openDataFiles(params)
 	if err != nil {
 		return nil, err

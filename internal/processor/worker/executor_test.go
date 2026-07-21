@@ -379,8 +379,9 @@ func TestExecuteJob_AbortCtxCancel_AbortsInflightRequests(t *testing.T) {
 }
 
 // TestExecuteJob_SLOExpiredBeforeDispatch verifies that when the SLO deadline has already
-// passed before execution begins, executeJob returns errExpired immediately with the total
-// request count and no output/error files are written (early-exit fast path).
+// passed before execution begins, the pipeline still runs and drains all requests as
+// batch_expired errors. This ensures that handleExpired can upload a non-empty error file
+// and the DB reflects Failed == Total.
 func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -393,7 +394,6 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{}, requests, map[string]string{"m1": "m1"})
 
 	ctx := testLoggerCtx(t)
-	// SLO deadline already in the past: early check fires before any files are opened.
 	sloCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer cancel()
 
@@ -408,25 +408,33 @@ func TestExecuteJob_SLOExpiredBeforeDispatch(t *testing.T) {
 		t.Fatal("expected non-nil counts")
 		return
 	}
-	// Early exit: total is known from the model map, but no requests were dispatched or drained.
 	if counts.Total != 3 {
 		t.Fatalf("Total = %d, want 3", counts.Total)
 	}
 	if counts.Completed != 0 {
 		t.Fatalf("Completed = %d, want 0", counts.Completed)
 	}
-	if counts.Failed != 0 {
-		t.Fatalf("Failed = %d, want 0 (no drain on early exit)", counts.Failed)
+	if counts.Failed != 3 {
+		t.Fatalf("Failed = %d, want 3 (all requests drained as batch_expired)", counts.Failed)
 	}
 
-	// No output or error files are written on early exit: files are only opened after the SLO check.
-	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
 	errorPath, _ := env.p.jobErrorFilePath(jobInfo.JobID, jobInfo.TenantID)
-	if _, statErr := os.Stat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("output.jsonl should not exist on early SLO exit, got stat err: %v", statErr)
+	errorData, readErr := os.ReadFile(errorPath)
+	if readErr != nil {
+		t.Fatalf("error.jsonl should exist: %v", readErr)
 	}
-	if _, statErr := os.Stat(errorPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("error.jsonl should not exist on early SLO exit, got stat err: %v", statErr)
+	errorLines := bytes.Count(bytes.TrimSpace(errorData), []byte("\n")) + 1
+	if errorLines != 3 {
+		t.Fatalf("error.jsonl lines = %d, want 3", errorLines)
+	}
+
+	outputPath, _ := env.p.jobOutputFilePath(jobInfo.JobID, jobInfo.TenantID)
+	outputData, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatalf("output.jsonl should exist: %v", readErr)
+	}
+	if len(outputData) != 0 {
+		t.Fatalf("output.jsonl should be empty, got %d bytes", len(outputData))
 	}
 }
 

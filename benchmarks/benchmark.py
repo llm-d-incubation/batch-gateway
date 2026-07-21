@@ -11,7 +11,7 @@ Supports 7 scenarios:
   2 - Ungated batch (aggressive concurrency, no AIMD)
   3 - Admission control + AIMD (saturation-based batch rejection + adaptive concurrency)
   4 - Flow control + AIMD (priority dispatch ordering + adaptive concurrency)
-  5 - Async processor (blocked on integration)
+  5 - Async processor (async dispatch via llm-d-async with endpoint-scrape gate)
   6 - Low batch concurrency (fixed perEndpoint cap, no AIMD)
 
 Usage:
@@ -1185,6 +1185,7 @@ def _generate_narrative(results, cfg):
     ungated = next((r for r in results if r.scenario == 2), None)
     aimd = next((r for r in results if r.scenario == 3), None)
     fc = next((r for r in results if r.scenario == 4), None)
+    async_proc = next((r for r in results if r.scenario == 5), None)
     low_conc = next((r for r in results if r.scenario == 6), None)
 
     lines = []
@@ -1226,6 +1227,14 @@ def _generate_narrative(results, cfg):
             lines.append(f"Low concurrency (S6) limited interactive TTFT p99 impact to "
                          f"{overhead:.0f}% above baseline ({low_conc_burst['ttft_p99']:.0f} ms) "
                          f"using a fixed per-endpoint concurrency cap.")
+
+    if async_proc:
+        async_burst = _aggregate_phases(async_proc.phases, "burst")
+        if async_burst and baseline_ttft:
+            overhead = ((async_burst["ttft_p99"] - baseline_ttft) / baseline_ttft) * 100
+            lines.append(f"Async dispatch (S5) limited interactive TTFT p99 impact to "
+                         f"{overhead:.0f}% above baseline ({async_burst['ttft_p99']:.0f} ms) "
+                         f"using async-processor with endpoint-scrape gating.")
 
     # Batch completion summary with per-job SLO status
     for r in results:
@@ -1947,10 +1956,6 @@ def run_scenario(cfg, scenario):
     name = SCENARIO_NAMES[scenario]
     namespace = namespace_for_scenario(scenario)
     log(f"━━━ Scenario {scenario}: {name} ━━━")
-
-    if scenario == 5:
-        log("  ERROR: Scenario 5 (async) is blocked on async-processor integration")
-        return ScenarioResult(scenario=scenario, name=name)
 
     # Verify namespace exists
     try:

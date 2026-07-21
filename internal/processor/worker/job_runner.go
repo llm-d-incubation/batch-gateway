@@ -386,14 +386,14 @@ func (p *Processor) uploadPartialResults(
 //
 //	uploadPartialResults uploads nothing, requestCounts is nil, DB counts remain zero.
 //
-// (2) deadline expired before dispatch began — executeJob skips dispatch:
+// (2) deadline expired before or at dispatch start — the pipeline runs with an
 //
-//	no completions are written to the output file, but error.jsonl may already contain
-//	model_not_found lines from ingestion. uploadPartialResults uploads whatever exists.
+//	already-cancelled context: PreDispatcher drains all requests as batch_expired
+//	errors to error.jsonl. requestCounts has Failed == Total.
 //
 // (3) deadline expired during execution — completed requests remain in the output file
 //
-//	and undispatched entries were drained as "batch_expired" by drainUnprocessedRequests.
+//	and undispatched entries were drained as batch_expired by the dispatcher chain.
 //
 // In all cases, this function uploads whatever files exist and transitions the job to expired status.
 // Uses a detached context so that a concurrent SIGTERM cannot abort the upload or DB write.

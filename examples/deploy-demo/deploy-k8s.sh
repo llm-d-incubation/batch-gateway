@@ -60,6 +60,13 @@ ENABLE_FLOW_CONTROL="${ENABLE_FLOW_CONTROL:-true}"
 INTERACTIVE_FLOW_CONTROL_OBJECTIVE="${INTERACTIVE_FLOW_CONTROL_OBJECTIVE:-interactive-default}"
 BATCH_FLOW_CONTROL_OBJECTIVE="${BATCH_FLOW_CONTROL_OBJECTIVE:-batch-sheddable}"
 
+# Async dispatcher (llm-d-async) — ENABLE_DISPATCHER is set in common.sh
+DISPATCHER_RELEASE="${DISPATCHER_RELEASE:-dispatcher}"
+DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.3}"
+DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}}"
+DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d-incubation/charts/async-processor}"
+DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.3}"
+
 # ── Infrastructure ────────────────────────────────────────────────────────────
 
 install_cert_manager() {
@@ -373,16 +380,16 @@ init_test() {
     set_gateway_url
 
     step "Waiting for gateway to be accessible..."
-    local retries=30
+    local retries=60
     for i in $(seq 1 "${retries}"); do
-        if curl -sk -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/" &>/dev/null; then
+        if curl -sk --connect-timeout 5 --max-time 10 -o /dev/null -w "%{http_code}" "${GATEWAY_URL}/" &>/dev/null; then
             log "Gateway is accessible."
             break
         fi
         if [ "$i" -eq "${retries}" ]; then
             die "Gateway not accessible after ${retries} attempts."
         fi
-        sleep 2
+        sleep 3
     done
 }
 
@@ -644,32 +651,390 @@ uninstall_llmd() {
     timeout_delete 30s inferencepool --all -n "${LLM_NAMESPACE}" || true
 }
 
-# ── Batch Gateway ─────────────────────────────────────────────────────────────
+# ── Async Dispatcher (llm-d-async) ───────────────────────────────────────────
 
-deploy_batch_gateway_k8s() {
-    banner "Installing Batch Gateway"
+install_prometheus() {
+    local prom_name="prometheus"
 
-    # Route batch processor through the Internal Gateway (ClusterIP, no rate limit)
-    # instead of the external Gateway. The Internal Gateway still uses EPP and
-    # enforces AuthPolicy (model access check with user's original token).
+    if kubectl get deployment "${prom_name}" -n "${LLM_NAMESPACE}" &>/dev/null; then
+        log "Prometheus already exists in ${LLM_NAMESPACE}. Skipping."
+        return
+    fi
+
+    step "Installing Prometheus"
+    kubectl apply -n "${LLM_NAMESPACE}" -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${prom_name}-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+    - job_name: 'epp'
+      metrics_path: /metrics
+      static_configs:
+      - targets: ['${LLMD_POOL_NAME}-epp.${LLM_NAMESPACE}.svc.cluster.local:9090']
+    - job_name: 'vllm'
+      metrics_path: /metrics
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['${LLM_NAMESPACE}']
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_llm_d_ai_model]
+        action: keep
+        regex: '.+'
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: '\${1}:8000'
+      metric_relabel_configs:
+      - target_label: inference_pool
+        replacement: '${LLMD_POOL_NAME}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${prom_name}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${prom_name}
+  template:
+    metadata:
+      labels:
+        app: ${prom_name}
+    spec:
+      serviceAccountName: ${prom_name}
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v3.5.0
+        args:
+        - --config.file=/etc/prometheus/prometheus.yml
+        - --storage.tsdb.retention.time=1h
+        - --storage.tsdb.path=/tmp/prometheus
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+      volumes:
+      - name: config
+        configMap:
+          name: ${prom_name}-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${prom_name}
+spec:
+  selector:
+    app: ${prom_name}
+  ports:
+  - port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${prom_name}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${prom_name}
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${prom_name}
+subjects:
+- kind: ServiceAccount
+  name: ${prom_name}
+  namespace: ${LLM_NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: ${prom_name}
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+    wait_for_deployment "${prom_name}" "${LLM_NAMESPACE}" 120s
+    log "Prometheus installed (scraping EPP + vLLM metrics)."
+}
+
+deploy_dispatcher() {
+    banner "Installing Async Dispatcher (llm-d-async)"
+
+    install_prometheus
+
+    # Reuse batch-internal-gateway: async-processor passes through the user's
+    # Authorization header (captured at batch creation), so AuthPolicy works.
     local internal_gw_svc
     internal_gw_svc=$(kubectl get svc -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" \
         -l "gateway.networking.k8s.io/gateway-name=${BATCH_INTERNAL_GATEWAY_NAME}" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
     [ -z "${internal_gw_svc}" ] && die "No service found for Internal Gateway '${BATCH_INTERNAL_GATEWAY_NAME}'."
-    local model_url="http://${internal_gw_svc}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
-    log "Model URL (via Internal Gateway): ${model_url}"
+
+    local redis_svc="${BATCH_REDIS_RELEASE}-master"
+    if [[ "${BATCH_EXCHANGE_CLIENT_TYPE}" == "valkey" ]]; then
+        redis_svc="${BATCH_REDIS_RELEASE}-valkey-primary"
+    fi
+    local redis_host="${redis_svc}.${BATCH_NAMESPACE}.svc.cluster.local"
+    local redis_url="redis://${redis_host}:6379"
+    local prometheus_url="http://prometheus.${LLM_NAMESPACE}.svc.cluster.local:9090"
+
+    local igw_base_url="http://${internal_gw_svc}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
+    log "Dispatcher igw_base_url (via Internal Gateway): ${igw_base_url}"
+    log "Dispatcher Redis: ${redis_url}"
+    log "Dispatcher Prometheus: ${prometheus_url}"
+
+    local image_repo="${DISPATCHER_IMAGE%%:*}"
+    local image_tag="${DISPATCHER_IMAGE##*:}"
+
+    local values_file
+    values_file=$(mktemp)
+    cat > "${values_file}" <<YAML
+ap:
+  imagePullPolicy: IfNotPresent
+  messageQueueImpl: "redis-sortedset"
+  concurrency: 1
+  prometheusURL: "${prometheus_url}"
+  prometheusCacheTTL: "0s"
+  redis:
+    enabled: true
+    url: "${redis_url}"
+    pollIntervalMs: 500
+    batchSize: 10
+    queuesConfig:
+      - queue_name: "llm-d-async:requests:${LLMD_POOL_NAME}"
+        result_queue_name: "llm-d-async:results:${LLMD_POOL_NAME}"
+        request_path_url: "/v1/chat/completions"
+        igw_base_url: "${igw_base_url}"
+        gate_type: "prometheus-budget"
+        gate_params:
+          pool: "${LLMD_POOL_NAME}"
+          namespace: "${LLM_NAMESPACE}"
+          max_concurrency: "100"
+          baseline: "0.05"
+          fallback: "1.0"
+  modelServerMonitor:
+    enabled: false
+YAML
+
+    step "Deploying async-processor (release: ${DISPATCHER_RELEASE})..."
+    local helm_cmd=(helm)
+    if helm status "${DISPATCHER_RELEASE}" -n "${BATCH_NAMESPACE}" &>/dev/null; then
+        log "Release '${DISPATCHER_RELEASE}' already exists. Upgrading..."
+        helm_cmd+=(upgrade --reset-values)
+    else
+        helm_cmd+=(install)
+    fi
+    "${helm_cmd[@]}" "${DISPATCHER_RELEASE}" "${DISPATCHER_CHART}" \
+        --version "${DISPATCHER_CHART_VERSION}" \
+        --namespace "${BATCH_NAMESPACE}" \
+        --values "${values_file}" \
+        --set "ap.image.repository=${image_repo}" \
+        --set "ap.image.tag=${image_tag}" \
+        --wait --timeout=120s
+
+    rm -f "${values_file}"
+
+    wait_for_deployment "${DISPATCHER_RELEASE}-async-processor" "${BATCH_NAMESPACE}" 120s
+
+    log "Async dispatcher deployed."
+}
+
+verify_dispatcher_config() {
+    banner "Verifying Async Dispatcher configuration"
+
+    local errors=0
+
+    local config_yaml
+    config_yaml=$(kubectl get configmap "${BATCH_INSTANCE_NAME}-processor-config" -n "${BATCH_NAMESPACE}" \
+        -o jsonpath='{.data.config\.yaml}' 2>/dev/null || echo "")
+
+    # 1. Processor dispatch mode
+    step "Checking batch processor dispatch mode..."
+    local dispatch_mode
+    dispatch_mode=$(echo "${config_yaml}" | yq '.dispatch_mode // "sync"')
+    if [ "${dispatch_mode}" = "async" ]; then
+        log "Processor configured with dispatch_mode: async"
+    else
+        warn "Processor dispatch_mode is '${dispatch_mode}', expected 'async'"
+        errors=$((errors + 1))
+    fi
+
+    # 2. Processor inferencePoolName
+    step "Checking batch processor inferencePoolName..."
+    local pool_name
+    pool_name=$(echo "${config_yaml}" | yq ".model_gateways.${MODEL_NAME}.inference_pool_name // \"\"")
+    if [ -n "${pool_name}" ]; then
+        log "Processor inference_pool_name: ${pool_name}"
+    else
+        warn "Processor missing inference_pool_name for model '${MODEL_NAME}'"
+        errors=$((errors + 1))
+    fi
+
+    # 3. Async-processor started successfully
+    local ap_deploy="${DISPATCHER_RELEASE}-async-processor"
+    step "Checking async-processor startup logs..."
+    local ap_logs
+    ap_logs=$(kubectl logs "deployment/${ap_deploy}" -n "${BATCH_NAMESPACE}" 2>/dev/null || echo "")
+    if echo "${ap_logs}" | grep -q "Async Processor starting"; then
+        log "Async-processor started successfully"
+    else
+        warn "Async-processor startup log not found"
+        errors=$((errors + 1))
+    fi
+
+    # 4. Prometheus has the metrics that prometheus-budget gate needs
+    step "Checking Prometheus metrics for prometheus-budget gate..."
+    local prom_url="http://prometheus.${LLM_NAMESPACE}.svc.cluster.local:9090"
+
+    local prom_query_pod="prom-verify-$(date +%s)"
+    local prom_queries=(
+        "inference_pool_ready_pods{name=\"${LLMD_POOL_NAME}\"}"
+        "vllm:num_requests_running{inference_pool=\"${LLMD_POOL_NAME}\"}"
+    )
+    local prom_labels=(
+        "inference_pool_ready_pods (shared: ready pods count)"
+        "vllm:num_requests_running with inference_pool label (fallback source)"
+    )
+
+    for i in "${!prom_queries[@]}"; do
+        local query="${prom_queries[$i]}"
+        local label="${prom_labels[$i]}"
+        local result
+        prom_query_pod="prom-verify-${i}-$(date +%s)"
+        result=$(kubectl run "${prom_query_pod}" --rm -i --restart=Never --quiet \
+            --image=curlimages/curl -n "${LLM_NAMESPACE}" -- \
+            curl -sf -G "${prom_url}/api/v1/query" --data-urlencode "query=${query}" 2>/dev/null) || true
+        local data_count
+        data_count=$(echo "${result}" | jq '.data.result | length' 2>/dev/null || echo "0")
+        if [ "${data_count}" -gt 0 ]; then
+            log "${label}: ${data_count} series found"
+        else
+            warn "${label}: no data in Prometheus"
+            errors=$((errors + 1))
+        fi
+    done
+
+    if [ "${errors}" -gt 0 ]; then
+        die "Dispatcher config verification failed with ${errors} error(s)."
+    fi
+    log "Dispatcher configuration verified."
+}
+
+verify_dispatcher_runtime() {
+    banner "Verifying Async Dispatcher"
+
+    step "Setting up port-forward to async-processor metrics..."
+    local ap_deploy="${DISPATCHER_RELEASE}-async-processor"
+    local ap_metrics_port=19090
+    kubectl port-forward -n "${BATCH_NAMESPACE}" \
+        "deployment/${ap_deploy}" "${ap_metrics_port}:9090" &>/dev/null &
+    local pf_pid=$!
+
+    local attempt
+    for attempt in $(seq 1 15); do
+        if curl -sf "http://localhost:${ap_metrics_port}/metrics" &>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! curl -sf "http://localhost:${ap_metrics_port}/metrics" &>/dev/null; then
+        kill "${pf_pid}" 2>/dev/null || true
+        die "Cannot reach async-processor metrics on port ${ap_metrics_port}."
+    fi
+
+    local metrics_body
+    metrics_body=$(curl -sf "http://localhost:${ap_metrics_port}/metrics")
+    local errors=0
+
+    step "Checking async-processor successful requests..."
+    local success_count
+    success_count=$(echo "${metrics_body}" | { grep "^llm_d_async_async_successful_requests_total" || true; } \
+        | awk '{sum+=$2} END {printf "%d", sum}')
+    if [ "${success_count}" -gt 0 ]; then
+        log "Async-processor completed ${success_count} successful request(s)."
+    else
+        warn "No successful requests via async-processor."
+        errors=$((errors + 1))
+    fi
+
+    step "Checking async-processor worker pool..."
+    local pool_limit
+    pool_limit=$(echo "${metrics_body}" | { grep "^llm_d_async_async_pool_worker_limit" || true; } \
+        | awk '{sum+=$2} END {printf "%d", sum}')
+    if [ "${pool_limit}" -gt 0 ]; then
+        log "Worker pool active: pool_worker_limit=${pool_limit}"
+    else
+        warn "Worker pool not active (pool_worker_limit=0)."
+        errors=$((errors + 1))
+    fi
+
+    step "Checking dispatch gate budget..."
+    local budget_line
+    budget_line=$(echo "${metrics_body}" | { grep "^llm_d_async_async_dispatch_budget" || true; } | head -1)
+    if [ -n "${budget_line}" ]; then
+        local budget_val
+        budget_val=$(echo "${budget_line}" | awk '{print $2}')
+        log "Gate budget: ${budget_val} (${budget_line})"
+    else
+        warn "Gate budget metric not found — dispatch gate is not active."
+        errors=$((errors + 1))
+    fi
+
+    kill "${pf_pid}" 2>/dev/null || true
+
+    if [ "${errors}" -gt 0 ]; then
+        die "Async dispatcher runtime verification failed with ${errors} error(s). Review output above."
+    fi
+    log "Async dispatcher verification passed."
+}
+
+# ── Batch Gateway ─────────────────────────────────────────────────────────────
+
+deploy_batch_gateway_k8s() {
+    banner "Installing Batch Gateway"
 
     local model_key="${MODEL_NAME}"
-
     local helm_args=(
-        --set "processor.config.modelGateways.${model_key}.url=${model_url}"
-        --set "processor.config.modelGateways.${model_key}.requestTimeout=${GW_REQUEST_TIMEOUT}"
-        --set "processor.config.modelGateways.${model_key}.maxRetries=${GW_MAX_RETRIES}"
-        --set "processor.config.modelGateways.${model_key}.initialBackoff=${GW_INITIAL_BACKOFF}"
-        --set "processor.config.modelGateways.${model_key}.maxBackoff=${GW_MAX_BACKOFF}"
         --set "apiserver.config.batchAPI.passThroughHeaders={Authorization}"
     )
+
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+        # Async dispatch: processor sends requests via Redis to async-processor
+        helm_args+=(
+            --set "processor.config.dispatchMode=async"
+            --set "processor.config.asyncDispatch.resultPollTimeout=30s"
+            --set "processor.config.modelGateways.${model_key}.inferencePoolName=${LLMD_POOL_NAME}"
+        )
+        log "Async dispatch enabled: processor will route through llm-d-async (pool: ${LLMD_POOL_NAME})"
+    else
+        # Sync dispatch: processor sends requests directly through Internal Gateway
+        local internal_gw_svc
+        internal_gw_svc=$(kubectl get svc -n "${BATCH_INTERNAL_GATEWAY_NAMESPACE}" \
+            -l "gateway.networking.k8s.io/gateway-name=${BATCH_INTERNAL_GATEWAY_NAME}" \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        [ -z "${internal_gw_svc}" ] && die "No service found for Internal Gateway '${BATCH_INTERNAL_GATEWAY_NAME}'."
+        local model_url="http://${internal_gw_svc}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
+        log "Model URL (via Internal Gateway): ${model_url}"
+
+        helm_args+=(
+            --set "processor.config.modelGateways.${model_key}.url=${model_url}"
+            --set "processor.config.modelGateways.${model_key}.requestTimeout=${GW_REQUEST_TIMEOUT}"
+            --set "processor.config.modelGateways.${model_key}.maxRetries=${GW_MAX_RETRIES}"
+            --set "processor.config.modelGateways.${model_key}.initialBackoff=${GW_INITIAL_BACKOFF}"
+            --set "processor.config.modelGateways.${model_key}.maxBackoff=${GW_MAX_BACKOFF}"
+        )
+    fi
 
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         helm_args+=(
@@ -842,14 +1207,19 @@ cmd_install() {
         kubectl label namespace "${ns}" llm-d.ai/gateway-route=true --overwrite
     done
 
+    # cert manager
     install_cert_manager
     create_selfsigned_issuer
+
+    # llm-d deps
     install_llmd_deps
     install_istio
+
+    # kuadrant
     install_kuadrant
 
+    # llm-d
     create_inference_external_gateway
-
     deploy_llmd_model
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         create_inference_objectives
@@ -858,14 +1228,21 @@ cmd_install() {
     apply_llm_auth_policy
     apply_llm_token_rate_limit
 
+    # batch gateway
     create_batch_internal_gateway
     create_batch_llm_route
     apply_batch_llm_auth_policy
-
     deploy_batch_gateway_k8s
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+        deploy_dispatcher
+    fi
     apply_batch_auth_policy
     apply_batch_request_rate_limit
 
+    # verify
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+        verify_dispatcher_config
+    fi
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         verify_flow_control_config
     fi
@@ -881,6 +1258,9 @@ cmd_install() {
         log "  Batch Gateway version: ${BATCH_DEV_VERSION} (commit chart)"
     else
         log "  Batch Gateway version: latest (local chart)"
+    fi
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+        log "  Async dispatcher: ${DISPATCHER_RELEASE} (${DISPATCHER_IMAGE})"
     fi
     log "Run '$0 test' to verify."
 }
@@ -947,6 +1327,10 @@ EOF
         "${inference_payload}" \
         || test_failures=$?
 
+    if [ "${ENABLE_DISPATCHER}" = "true" ]; then
+        verify_dispatcher_runtime
+    fi
+
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
         verify_flow_control_runtime
     fi
@@ -976,6 +1360,12 @@ cmd_uninstall() {
     kubectl delete authpolicy batch-route-auth -n "${BATCH_NAMESPACE}" 2>/dev/null || true
     kubectl delete authpolicy llm-route-auth -n "${LLM_NAMESPACE}" 2>/dev/null || true
     kubectl delete tokenratelimitpolicy inference-token-limit -n "${LLM_NAMESPACE}" 2>/dev/null || true
+
+    step "Removing dispatcher resources..."
+    helm uninstall "${DISPATCHER_RELEASE}" -n "${BATCH_NAMESPACE}" --timeout 60s 2>/dev/null || true
+    kubectl delete deployment,svc,sa prometheus -n "${LLM_NAMESPACE}" 2>/dev/null || true
+    kubectl delete configmap prometheus-config -n "${LLM_NAMESPACE}" 2>/dev/null || true
+    kubectl delete clusterrole,clusterrolebinding prometheus 2>/dev/null || true
 
     step "Removing Internal Gateway resources..."
     kubectl delete authpolicy batch-llm-route-auth -n "${LLM_NAMESPACE}" 2>/dev/null || true
@@ -1068,11 +1458,14 @@ usage() {
     echo "  BATCH_RELEASE_VERSION  Install released OCI chart (e.g. v1.0.0)"
     echo "  ENABLE_FLOW_CONTROL   Enable GIE flow control (default: true)"
     echo "  BATCH_FLOW_CONTROL_OBJECTIVE InferenceObjective name for batch (default: batch-sheddable)"
+    echo "  ENABLE_DISPATCHER      Deploy llm-d-async dispatcher for async dispatch (default: false)"
+    echo "  DISPATCHER_VERSION     llm-d-async version (default: v0.7.3)"
     echo "  UNINSTALL_ALL          Set to 1 to also remove Kuadrant/Istio/cert-manager and CRDs (ephemeral clusters only)"
     echo ""
     echo "Examples:"
     echo "  $0 install"
     echo "  MODEL_NAME=my-model LLMD_VERSION=v0.8.1 $0 install"
+    echo "  ENABLE_DISPATCHER=true $0 install"
     exit "${1:-0}"
 }
 
