@@ -13,7 +13,7 @@ Integration tests validate feature-level behavior through the real HTTP stack â€
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Docker or Podman (optional, for inference client tests)
 - S3-compatible service (optional, for S3 tests â€” set `S3_TEST_ENDPOINT`)
 

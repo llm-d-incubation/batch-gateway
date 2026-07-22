@@ -5,7 +5,7 @@ End-to-end tests for the batch-gateway. They run against a live deployment and c
 ## Prerequisites
 
 - `kubectl`, `helm`, `kind`, Docker or Podman
-- Go 1.25+
+- Go 1.26+
 
 ## 1. Deploy the server
 
