@@ -311,13 +311,24 @@ func doTestRetryExhaustion(t *testing.T) {
 //   - Mixed load with metrics: verify batch completion alongside interactive
 //     traffic with retry/shedding counters. Requires EPP to export scheduling metrics.
 
-// detectGIEDeployed checks whether at least one EPP deployment exists
-// in the test namespace.
+// detectGIEDeployed checks whether at least one EPP deployment exists.
+// It searches testEPPNamespace (TEST_EPP_NAMESPACE) if set, otherwise
+// testNamespace. Set TEST_GIE_DEPLOYED=true to force-enable GIE tests
+// when the EPP naming convention differs (e.g. RHOAI).
 func detectGIEDeployed(t *testing.T) bool {
 	t.Helper()
 
+	if strings.EqualFold(getEnvOrDefault("TEST_GIE_DEPLOYED", ""), "true") {
+		return true
+	}
+
+	ns := testEPPNamespace
+	if ns == "" {
+		ns = testNamespace
+	}
+
 	out, err := exec.Command("kubectl", "get", "deployments",
-		"-n", testNamespace,
+		"-n", ns,
 		"-o", "name",
 	).CombinedOutput()
 	if err != nil {

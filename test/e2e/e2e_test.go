@@ -39,6 +39,10 @@ var (
 	testPostgresqlRelease = getEnvOrDefault("TEST_POSTGRESQL_RELEASE", "postgresql")
 	testRedisRelease      = getEnvOrDefault("TEST_REDIS_RELEASE", "redis")
 	testDBPod             = getEnvOrDefault("TEST_DB_POD", "")
+	testDBNamespace       = getEnvOrDefault("TEST_DB_NAMESPACE", "")
+	testDBName            = getEnvOrDefault("TEST_DB_NAME", "postgres")
+	testDBUser            = getEnvOrDefault("TEST_DB_USER", "postgres")
+	testEPPNamespace      = getEnvOrDefault("TEST_EPP_NAMESPACE", "")
 
 	// testDBClientType and testExchangeClientType are detected from Helm
 	// releases at startup; see detectDBClientType / detectExchangeClientType.

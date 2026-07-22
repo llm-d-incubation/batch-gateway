@@ -52,11 +52,19 @@ func expireInPostgresql(t *testing.T, table, id string) {
 		podName = fmt.Sprintf("%s-0", testPostgresqlRelease)
 	}
 
+	ns := testDBNamespace
+	if ns == "" {
+		ns = testNamespace
+	}
+
 	sql := fmt.Sprintf("UPDATE %s SET expiry = 1 WHERE id = '%s'", table, id)
-	cmd := fmt.Sprintf(`PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")" psql -U postgres -d postgres -c %q`, sql)
+	cmd := fmt.Sprintf(
+		`PGPASSWORD="${POSTGRESQL_PASSWORD:-$(cat "$POSTGRES_PASSWORD_FILE" 2>/dev/null)}" psql -U %s -d %s -c %q`,
+		testDBUser, testDBName, sql,
+	)
 	out, err := exec.Command("kubectl", "exec",
 		podName,
-		"-n", testNamespace,
+		"-n", ns,
 		"--", "bash", "-c", cmd,
 	).CombinedOutput()
 	if err != nil {
