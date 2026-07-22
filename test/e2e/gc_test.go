@@ -59,7 +59,7 @@ func expireInPostgresql(t *testing.T, table, id string) {
 
 	sql := fmt.Sprintf("UPDATE %s SET expiry = 1 WHERE id = '%s'", table, id)
 	cmd := fmt.Sprintf(
-		`PGPASSWORD="${POSTGRESQL_PASSWORD:-$(cat "$POSTGRES_PASSWORD_FILE" 2>/dev/null)}" psql -U %s -d %s -c %q`,
+		`PGPASSWORD="${POSTGRESQL_PASSWORD:-$(cat "$POSTGRES_PASSWORD_FILE" 2>/dev/null)}" psql -U '%s' -d '%s' -c %q`,
 		testDBUser, testDBName, sql,
 	)
 	out, err := exec.Command("kubectl", "exec",
