@@ -147,6 +147,99 @@ file_client:
 		}
 	})
 
+	t.Run("TLSFlags", func(t *testing.T) {
+		tests := []struct {
+			name             string
+			enableSSL        bool
+			args             []string
+			wantMinVersion   string
+			wantCipherSuites string
+			wantErr          bool
+		}{
+			{
+				name:           "no TLS flags leaves fields empty",
+				args:           nil,
+				wantMinVersion: "",
+			},
+			{
+				name:           "tls-min-version flag is parsed",
+				args:           []string{"--tls-min-version=VersionTLS13"},
+				wantMinVersion: "VersionTLS13",
+			},
+			{
+				name:             "tls-cipher-suites flag is parsed",
+				args:             []string{"--tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+				wantCipherSuites: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+			},
+			{
+				name:      "invalid tls-min-version rejected when SSL enabled",
+				enableSSL: true,
+				args:      []string{"--tls-min-version=VersionTLS10"},
+				wantErr:   true,
+			},
+			{
+				name:      "invalid cipher suite rejected when SSL enabled",
+				enableSSL: true,
+				args:      []string{"--tls-cipher-suites=UNKNOWN_CIPHER"},
+				wantErr:   true,
+			},
+			{
+				name:             "TLS flags ignored when SSL disabled",
+				args:             []string{"--tls-min-version=VersionTLS13", "--tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+				wantMinVersion:   "VersionTLS13",
+				wantCipherSuites: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				configFile := filepath.Join(tmpDir, "config.yaml")
+				yamlConfig := `
+host: 0.0.0.0
+port: "8080"
+db_client:
+  type: "mock"
+file_client:
+  type: "fs"
+  fs_base_path: "/tmp/batch-gateway"
+`
+				if tt.enableSSL {
+					setupTestSSLFiles(t)
+					defer cleanupTestSSLFiles(t)
+					yamlConfig += `ssl_cert_file: testdata/cert.pem
+ssl_key_file: testdata/key.pem
+`
+				}
+
+				if err := os.WriteFile(configFile, []byte(yamlConfig), 0644); err != nil {
+					t.Fatalf("Failed to create test config file: %v", err)
+				}
+
+				oldArgs := os.Args
+				defer func() { os.Args = oldArgs }()
+
+				os.Args = append([]string{"test", "--config=" + configFile}, tt.args...)
+
+				config := NewConfig()
+				err := config.Load()
+
+				if (err != nil) != tt.wantErr {
+					t.Fatalf("Load() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if tt.wantErr {
+					return
+				}
+				if config.TLSMinVersion != tt.wantMinVersion {
+					t.Errorf("TLSMinVersion = %q, want %q", config.TLSMinVersion, tt.wantMinVersion)
+				}
+				if config.TLSCipherSuites != tt.wantCipherSuites {
+					t.Errorf("TLSCipherSuites = %q, want %q", config.TLSCipherSuites, tt.wantCipherSuites)
+				}
+			})
+		}
+	})
+
 	t.Run("LoadNegative", func(t *testing.T) {
 		t.Run("MissingConfigFile", func(t *testing.T) {
 			// Save original os.Args and restore after test

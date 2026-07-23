@@ -23,6 +23,7 @@ import (
 	"os"
 
 	sharedcfg "github.com/llm-d/llm-d-batch-gateway/internal/shared/config"
+	utls "github.com/llm-d/llm-d-batch-gateway/internal/util/tls"
 	"gopkg.in/yaml.v3"
 	"k8s.io/klog/v2"
 )
@@ -110,6 +111,8 @@ type ServerConfig struct {
 	ObservabilityPort string            `yaml:"observability_port"`
 	SSLCertFile       string            `yaml:"ssl_cert_file"`
 	SSLKeyFile        string            `yaml:"ssl_key_file"`
+	TLSMinVersion     string            `yaml:"-"`
+	TLSCipherSuites   string            `yaml:"-"`
 	InputHeaders      map[string]string `yaml:"input_headers"`
 
 	// HTTP server timeout configurations (in seconds)
@@ -150,6 +153,8 @@ func (c *ServerConfig) Load() error {
 
 	var configFile string
 	fs.StringVar(&configFile, "config", "cmd/apiserver/config.yaml", "path to YAML config file")
+	fs.StringVar(&c.TLSMinVersion, "tls-min-version", "", "minimum TLS version (VersionTLS12 or VersionTLS13)")
+	fs.StringVar(&c.TLSCipherSuites, "tls-cipher-suites", "", "comma-separated list of TLS cipher suite names")
 
 	// Parse all flags (klog flags and application flags)
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -175,13 +180,19 @@ func (c *ServerConfig) Validate() error {
 		return fmt.Errorf("both ssl-cert-file and ssl-private-key-file must be provided together")
 	}
 
-	// Verify SSL files exist if provided
-	if c.SSLCertFile != "" {
+	// Verify SSL files exist and TLS profile flags are valid when TLS is enabled
+	if c.SSLEnabled() {
 		if _, err := os.Stat(c.SSLCertFile); err != nil {
 			return fmt.Errorf("ssl cert file not found: %w", err)
 		}
 		if _, err := os.Stat(c.SSLKeyFile); err != nil {
 			return fmt.Errorf("ssl key file not found: %w", err)
+		}
+		if _, err := utls.ParseMinVersion(c.TLSMinVersion); err != nil {
+			return fmt.Errorf("invalid --tls-min-version: %w", err)
+		}
+		if _, err := utls.ParseCipherSuites(c.TLSCipherSuites); err != nil {
+			return fmt.Errorf("invalid --tls-cipher-suites: %w", err)
 		}
 	}
 

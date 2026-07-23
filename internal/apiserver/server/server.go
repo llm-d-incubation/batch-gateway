@@ -37,6 +37,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/readiness"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
+	utls "github.com/llm-d/llm-d-batch-gateway/internal/util/tls"
 )
 
 type Server struct {
@@ -171,11 +172,36 @@ func (s *Server) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		minVersion, err := utls.ParseMinVersion(s.config.TLSMinVersion)
+		if err != nil {
+			return fmt.Errorf("failed to configure TLS: %w", err)
+		}
+		cipherSuites, err := utls.ParseCipherSuites(s.config.TLSCipherSuites)
+		if err != nil {
+			return fmt.Errorf("failed to configure TLS: %w", err)
+		}
+		if minVersion >= tls.VersionTLS13 && len(cipherSuites) > 0 {
+			s.logger.Info("--tls-cipher-suites has no effect with TLS 1.3; cipher suites are fixed by the TLS 1.3 specification")
+			cipherSuites = nil
+		}
 		httpserver.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			MinVersion:   minVersion,
+			CipherSuites: cipherSuites,
+			NextProtos:   []string{"h2", "http/1.1"},
 		}
-		s.logger.Info("API server TLS configured", "minVersion", "TLS 1.2")
+		minVersionLog := s.config.TLSMinVersion
+		if minVersionLog == "" {
+			minVersionLog = "VersionTLS12"
+		}
+		cipherSuitesLog := s.config.TLSCipherSuites
+		if cipherSuitesLog == "" {
+			cipherSuitesLog = "Go defaults"
+		}
+		s.logger.Info("API server TLS configured",
+			"minVersion", minVersionLog,
+			"cipherSuites", cipherSuitesLog,
+		)
 	} else if s.config.SSLCertFile != "" || s.config.SSLKeyFile != "" {
 		err := fmt.Errorf("both tls-cert-file and tls-private-key-file must be provided to enable TLS")
 		return err
