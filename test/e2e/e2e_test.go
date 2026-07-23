@@ -27,10 +27,10 @@ import (
 )
 
 var (
-	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://localhost:8000")
-	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://localhost:8081")
+	testApiserverURL      = getEnvOrDefault("TEST_APISERVER_URL", "https://127.0.0.1:8000")
+	testApiserverObsURL   = getEnvOrDefault("TEST_APISERVER_OBS_URL", "http://127.0.0.1:8081")
 	testProcessorObsURL   = getEnvOrDefault("TEST_PROCESSOR_OBS_URL", "")
-	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "http://localhost:16686")
+	testJaegerURL         = getEnvOrDefault("TEST_JAEGER_URL", "http://127.0.0.1:16686")
 	testAPIKey            = getEnvOrDefault("TEST_API_KEY", "unused")
 	testTenantHeader      = getEnvOrDefault("TEST_TENANT_HEADER", "X-MaaS-Username")
 	testTenantID          = getEnvOrDefault("TEST_TENANT_ID", "default")

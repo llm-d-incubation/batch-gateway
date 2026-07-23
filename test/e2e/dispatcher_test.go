@@ -32,8 +32,8 @@ import (
 )
 
 var (
-	testRedisURL          = getEnvOrDefault("TEST_REDIS_URL", "redis://localhost:6399")
-	testSimURL            = getEnvOrDefault("TEST_SIM_URL", "http://localhost:8099")
+	testRedisURL          = getEnvOrDefault("TEST_REDIS_URL", "redis://127.0.0.1:6399")
+	testSimURL            = getEnvOrDefault("TEST_SIM_URL", "http://127.0.0.1:8099")
 	dispatcherPool        = "sim-pool"
 	dispatcherReqQueue    = "llm-d-async:requests:" + dispatcherPool
 	dispatcherResultQueue = "llm-d-async:results:" + dispatcherPool

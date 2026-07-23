@@ -207,7 +207,7 @@ log "Processor reconfigured for async dispatch."
 # ── Port-forward Redis to host ───────────────────────────────────────────────
 # Kind only exposes ports declared in extraPortMappings at cluster creation.
 # Use kubectl port-forward to make Redis accessible from the host.
-step "Setting up Redis port-forward on localhost:${DISPATCHER_REDIS_PORT}..."
+step "Setting up Redis port-forward on 127.0.0.1:${DISPATCHER_REDIS_PORT}..."
 
 # Kill any previous port-forward
 if [[ -f "${PID_FILE}" ]]; then
@@ -223,29 +223,29 @@ if [[ "${EXCHANGE_CLIENT_TYPE}" == "valkey" ]]; then
 fi
 
 kubectl port-forward "svc/${redis_svc}" "${DISPATCHER_REDIS_PORT}:6379" \
-    --namespace "${NAMESPACE}" &
+    --address 127.0.0.1 --namespace "${NAMESPACE}" &
 PORT_FORWARD_PID=$!
 echo "${PORT_FORWARD_PID}" > "${PID_FILE}"
 
 # Wait for the port-forward to be ready
 for i in $(seq 1 10); do
-    if nc -z localhost "${DISPATCHER_REDIS_PORT}" 2>/dev/null; then
+    if nc -z 127.0.0.1 "${DISPATCHER_REDIS_PORT}" 2>/dev/null; then
         break
     fi
     sleep 0.5
 done
 
-if ! nc -z localhost "${DISPATCHER_REDIS_PORT}" 2>/dev/null; then
+if ! nc -z 127.0.0.1 "${DISPATCHER_REDIS_PORT}" 2>/dev/null; then
     die "Port-forward to Redis failed to start"
 fi
 
-log "Redis accessible at localhost:${DISPATCHER_REDIS_PORT}"
+log "Redis accessible at 127.0.0.1:${DISPATCHER_REDIS_PORT}"
 
 # ── Port-forward vLLM sim to host ────────────────────────────────────────────
 DISPATCHER_SIM_PORT="${DISPATCHER_SIM_PORT:-8099}"
 SIM_PID_FILE="${REPO_ROOT}/.dispatcher-sim-port-forward.pid"
 
-step "Setting up vLLM sim port-forward on localhost:${DISPATCHER_SIM_PORT}..."
+step "Setting up vLLM sim port-forward on 127.0.0.1:${DISPATCHER_SIM_PORT}..."
 
 if [[ -f "${SIM_PID_FILE}" ]]; then
     old_pid=$(cat "${SIM_PID_FILE}")
@@ -254,31 +254,31 @@ if [[ -f "${SIM_PID_FILE}" ]]; then
 fi
 
 kubectl port-forward "svc/${VLLM_SIM_NAME}" "${DISPATCHER_SIM_PORT}:8000" \
-    --namespace "${NAMESPACE}" &
+    --address 127.0.0.1 --namespace "${NAMESPACE}" &
 SIM_PF_PID=$!
 echo "${SIM_PF_PID}" > "${SIM_PID_FILE}"
 
 for i in $(seq 1 10); do
-    if nc -z localhost "${DISPATCHER_SIM_PORT}" 2>/dev/null; then
+    if nc -z 127.0.0.1 "${DISPATCHER_SIM_PORT}" 2>/dev/null; then
         break
     fi
     sleep 0.5
 done
 
-if ! nc -z localhost "${DISPATCHER_SIM_PORT}" 2>/dev/null; then
+if ! nc -z 127.0.0.1 "${DISPATCHER_SIM_PORT}" 2>/dev/null; then
     die "Port-forward to vLLM sim failed to start"
 fi
 
-log "vLLM sim accessible at localhost:${DISPATCHER_SIM_PORT}"
+log "vLLM sim accessible at 127.0.0.1:${DISPATCHER_SIM_PORT}"
 
 log ""
 log "Dispatcher is ready."
 log ""
 log "Usage:"
 log "  ENABLE_DISPATCHER=true make test-e2e"
-log "  ENABLE_DISPATCHER=true TEST_REDIS_URL=redis://localhost:${DISPATCHER_REDIS_PORT} go test ./test/e2e/ -run TestDispatcher -v -count=1"
+log "  ENABLE_DISPATCHER=true TEST_REDIS_URL=redis://127.0.0.1:${DISPATCHER_REDIS_PORT} go test ./test/e2e/ -run TestDispatcher -v -count=1"
 log ""
-log "Jaeger UI: http://localhost:${JAEGER_PORT}  (traces from both batch-gateway and async-processor)"
+log "Jaeger UI: http://127.0.0.1:${JAEGER_PORT}  (traces from both batch-gateway and async-processor)"
 log "To stop port-forwards: make dev-clean"
 log ""
 if [[ -n "${DISPATCHER_SOURCE}" ]]; then
