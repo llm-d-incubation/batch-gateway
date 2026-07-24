@@ -45,6 +45,15 @@ spec:
         args:
         - --config=/etc/config/config.yaml
         - --v={{ .Values.apiserver.logging.verbosity }}
+        {{- if .Values.apiserver.tls.minVersion }}
+        - --tls-min-version={{ .Values.apiserver.tls.minVersion }}
+        {{- end }}
+        {{- if .Values.apiserver.tls.cipherSuites }}
+        - --tls-cipher-suites={{ .Values.apiserver.tls.cipherSuites }}
+        {{- end }}
+        {{- if .Values.apiserver.tls.nextProtos }}
+        - --tls-next-protos={{ .Values.apiserver.tls.nextProtos }}
+        {{- end }}
         {{- if .Values.global.otel.endpoint }}
         env:
         - name: POD_NAME

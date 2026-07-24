@@ -112,6 +112,11 @@ type ServerConfig struct {
 	SSLKeyFile        string            `yaml:"ssl_key_file"`
 	InputHeaders      map[string]string `yaml:"input_headers"`
 
+	// TLS configuration
+	TLSMinVersion   string `yaml:"tls_min_version"`
+	TLSCipherSuites string `yaml:"tls_cipher_suites"`
+	TLSNextProtos   string `yaml:"tls_next_protos"`
+
 	// HTTP server timeout configurations (in seconds)
 	ReadHeaderTimeoutSeconds int64 `yaml:"read_header_timeout_seconds"`
 	ReadTimeoutSeconds       int64 `yaml:"read_timeout_seconds"`
@@ -150,6 +155,9 @@ func (c *ServerConfig) Load() error {
 
 	var configFile string
 	fs.StringVar(&configFile, "config", "cmd/apiserver/config.yaml", "path to YAML config file")
+	fs.StringVar(&c.TLSMinVersion, "tls-min-version", "", "Minimum TLS version (VersionTLS12, VersionTLS13)")
+	fs.StringVar(&c.TLSCipherSuites, "tls-cipher-suites", "", "Comma-separated list of TLS cipher suites")
+	fs.StringVar(&c.TLSNextProtos, "tls-next-protos", "", "Comma-separated list of ALPN protocols (default: h2,http/1.1)")
 
 	// Parse all flags (klog flags and application flags)
 	if err := fs.Parse(os.Args[1:]); err != nil {

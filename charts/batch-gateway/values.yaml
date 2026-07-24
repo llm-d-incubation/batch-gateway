@@ -215,6 +215,10 @@ apiserver:
       issuerName: ""
       issuerKind: ClusterIssuer
       dnsNames: []
+    # TLS security profile configuration (injected by operators)
+    minVersion: ""          # Minimum TLS version (VersionTLS12, VersionTLS13)
+    cipherSuites: ""        # Comma-separated list of TLS cipher suites
+    nextProtos: ""          # Comma-separated list of ALPN protocols (default: h2,http/1.1)
 
   # ServiceMonitor for Prometheus Operator auto-discovery.
   # Scrapes the observability port (default 8081) where /metrics is served.

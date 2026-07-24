@@ -35,6 +35,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/middleware"
 	"github.com/llm-d/llm-d-batch-gateway/internal/apiserver/readiness"
+	tlspkg "github.com/llm-d/llm-d-batch-gateway/internal/tls"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 )
@@ -171,11 +172,18 @@ func (s *Server) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
+		tlsOpts, err := tlspkg.Resolve(s.logger, s.config.TLSMinVersion, s.config.TLSCipherSuites, s.config.TLSNextProtos)
+		if err != nil {
+			return fmt.Errorf("failed to resolve TLS configuration: %w", err)
+		}
+
 		httpserver.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
 		}
-		s.logger.Info("API server TLS configured", "minVersion", "TLS 1.2")
+		for _, opt := range tlsOpts {
+			opt(httpserver.TLSConfig)
+		}
 	} else if s.config.SSLCertFile != "" || s.config.SSLKeyFile != "" {
 		err := fmt.Errorf("both tls-cert-file and tls-private-key-file must be provided to enable TLS")
 		return err
