@@ -653,7 +653,7 @@ uninstall_llmd() {
 
 # ── Async Dispatcher (llm-d-async) ───────────────────────────────────────────
 
-install_prometheus() {
+install_prometheus_for_dispatcher() {
     local prom_name="prometheus"
 
     if kubectl get deployment "${prom_name}" -n "${LLM_NAMESPACE}" &>/dev/null; then
@@ -771,7 +771,7 @@ EOF
 deploy_dispatcher() {
     banner "Installing Async Dispatcher (llm-d-async)"
 
-    install_prometheus
+    install_prometheus_for_dispatcher
 
     # Reuse batch-internal-gateway: async-processor passes through the user's
     # Authorization header (captured at batch creation), so AuthPolicy works.
@@ -893,111 +893,13 @@ verify_dispatcher_config() {
         errors=$((errors + 1))
     fi
 
-    # 4. Prometheus has the metrics that prometheus-budget gate needs
-    step "Checking Prometheus metrics for prometheus-budget gate..."
-    local prom_url="http://prometheus.${LLM_NAMESPACE}.svc.cluster.local:9090"
-
-    local prom_query_pod="prom-verify-$(date +%s)"
-    local prom_queries=(
-        "inference_pool_ready_pods{name=\"${LLMD_POOL_NAME}\"}"
-        "vllm:num_requests_running{inference_pool=\"${LLMD_POOL_NAME}\"}"
-    )
-    local prom_labels=(
-        "inference_pool_ready_pods (shared: ready pods count)"
-        "vllm:num_requests_running with inference_pool label (fallback source)"
-    )
-
-    for i in "${!prom_queries[@]}"; do
-        local query="${prom_queries[$i]}"
-        local label="${prom_labels[$i]}"
-        local result
-        prom_query_pod="prom-verify-${i}-$(date +%s)"
-        result=$(kubectl run "${prom_query_pod}" --rm -i --restart=Never --quiet \
-            --image=curlimages/curl -n "${LLM_NAMESPACE}" -- \
-            curl -sf -G "${prom_url}/api/v1/query" --data-urlencode "query=${query}" 2>/dev/null) || true
-        local data_count
-        data_count=$(echo "${result}" | jq '.data.result | length' 2>/dev/null || echo "0")
-        if [ "${data_count}" -gt 0 ]; then
-            log "${label}: ${data_count} series found"
-        else
-            warn "${label}: no data in Prometheus"
-            errors=$((errors + 1))
-        fi
-    done
-
     if [ "${errors}" -gt 0 ]; then
         die "Dispatcher config verification failed with ${errors} error(s)."
     fi
     log "Dispatcher configuration verified."
 }
 
-verify_dispatcher_runtime() {
-    banner "Verifying Async Dispatcher"
-
-    step "Setting up port-forward to async-processor metrics..."
-    local ap_deploy="${DISPATCHER_RELEASE}-async-processor"
-    local ap_metrics_port=19090
-    kubectl port-forward -n "${BATCH_NAMESPACE}" \
-        "deployment/${ap_deploy}" "${ap_metrics_port}:9090" &>/dev/null &
-    local pf_pid=$!
-
-    local attempt
-    for attempt in $(seq 1 15); do
-        if curl -sf "http://localhost:${ap_metrics_port}/metrics" &>/dev/null; then
-            break
-        fi
-        sleep 1
-    done
-    if ! curl -sf "http://localhost:${ap_metrics_port}/metrics" &>/dev/null; then
-        kill "${pf_pid}" 2>/dev/null || true
-        die "Cannot reach async-processor metrics on port ${ap_metrics_port}."
-    fi
-
-    local metrics_body
-    metrics_body=$(curl -sf "http://localhost:${ap_metrics_port}/metrics")
-    local errors=0
-
-    step "Checking async-processor successful requests..."
-    local success_count
-    success_count=$(echo "${metrics_body}" | { grep "^llm_d_async_async_successful_requests_total" || true; } \
-        | awk '{sum+=$2} END {printf "%d", sum}')
-    if [ "${success_count}" -gt 0 ]; then
-        log "Async-processor completed ${success_count} successful request(s)."
-    else
-        warn "No successful requests via async-processor."
-        errors=$((errors + 1))
-    fi
-
-    step "Checking async-processor worker pool..."
-    local pool_limit
-    pool_limit=$(echo "${metrics_body}" | { grep "^llm_d_async_async_pool_worker_limit" || true; } \
-        | awk '{sum+=$2} END {printf "%d", sum}')
-    if [ "${pool_limit}" -gt 0 ]; then
-        log "Worker pool active: pool_worker_limit=${pool_limit}"
-    else
-        warn "Worker pool not active (pool_worker_limit=0)."
-        errors=$((errors + 1))
-    fi
-
-    step "Checking dispatch gate budget..."
-    local budget_line
-    budget_line=$(echo "${metrics_body}" | { grep "^llm_d_async_async_dispatch_budget" || true; } | head -1)
-    if [ -n "${budget_line}" ]; then
-        local budget_val
-        budget_val=$(echo "${budget_line}" | awk '{print $2}')
-        log "Gate budget: ${budget_val} (${budget_line})"
-    else
-        warn "Gate budget metric not found — dispatch gate is not active."
-        errors=$((errors + 1))
-    fi
-
-    kill "${pf_pid}" 2>/dev/null || true
-
-    if [ "${errors}" -gt 0 ]; then
-        die "Async dispatcher runtime verification failed with ${errors} error(s). Review output above."
-    fi
-    log "Async dispatcher verification passed."
-}
+# verify_dispatcher_runtime is defined in common.sh
 
 # ── Batch Gateway ─────────────────────────────────────────────────────────────
 
@@ -1328,7 +1230,7 @@ EOF
         || test_failures=$?
 
     if [ "${ENABLE_DISPATCHER}" = "true" ]; then
-        verify_dispatcher_runtime
+        verify_dispatcher_runtime "${DISPATCHER_RELEASE}-async-processor" "${LLMD_POOL_NAME}"
     fi
 
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then
