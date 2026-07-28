@@ -35,6 +35,8 @@ spec:
             - "random"
             - "--served-model-name"
             - "random"
+            - "--fake-metrics"
+            - '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}'
           ports:
             - name: modelserver
               containerPort: 8000
