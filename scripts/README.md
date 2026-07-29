@@ -13,5 +13,5 @@
 
 | Script                  | Description                                                                                                                                               |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `generate-release.sh`   | Creates and pushes a `v*.*.*` tag from `main` (default) or a `release-vX.Y.Z` branch, which triggers the GitHub release workflows. See [managing releases](../docs/guides/managing-releases.md). |
+| `generate-release.sh`   | Creates a `release-<version>` branch and `v*.*.*` tag on GitHub from a given commit SHA via the `gh` CLI (no local git changes). Triggers the Release workflow. See [managing releases](../docs/guides/managing-releases.md). |
 | `publish-helm-chart.sh` | Packages the helm chart for a tag and pushes it to `oci://ghcr.io/llm-d/charts` (invoked as `make publish-helm-chart` in release CI).          |
