@@ -19,25 +19,14 @@ package worker
 import "errors"
 
 // Sentinel errors used for routing within the processor worker.
+// The cancellation-cause sentinels (cancelled / expired / shutdown) live in the
+// batchctx package, which owns the abort context and its cause mapping.
 
 var (
-	// errCancelled signals a user-initiated batch job cancellation.
-	// Returned by preprocessor and executor when userCancelCtx is cancelled.
-	errCancelled = errors.New("batch job cancelled")
-
-	// errExpired signals that the batch SLO deadline was reached during execution.
-	// Returned by executor when the SLO context expires.
-	errExpired = errors.New("batch SLO expired")
-
 	// errRequestInputRead signals a fatal failure reading a request entry from the
 	// plan input file. Unlike per-request errors (which are embedded in output),
 	// this prevents the entire model from processing further.
 	errRequestInputRead = errors.New("failed to read request from input file")
-
-	// errShutdown signals that the processor is shutting down (SIGTERM).
-	// The job is left in its current non-terminal state for the orphan
-	// reconciler to detect and transition to a terminal state.
-	errShutdown = errors.New("processor shutting down")
 
 	// errFinalizeFailedOver signals that a terminal status transition (completed,
 	// cancelled) or an upload failed, but the fallback to failed status with

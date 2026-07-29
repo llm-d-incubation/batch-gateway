@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
@@ -105,14 +106,6 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 
 	jobStart := time.Now()
 
-	// If an SLO deadline is set, create a child context that cancels when the deadline fires.
-	// This context is passed to executeJob to bound dispatch and trigger expiration handling.
-	sloCtx, sloCancel := ctx, func() {}
-	if params.task != nil && !params.task.SLO.IsZero() {
-		sloCtx, sloCancel = context.WithDeadline(ctx, params.task.SLO)
-	}
-	defer sloCancel()
-
 	// event watcher for cancel event
 	eventWatcher, err := p.event.ECConsumerGetChannel(ctx, params.jobInfo.JobID)
 	if err != nil {
@@ -137,21 +130,33 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	}
 	defer eventWatcher.CloseFn()
 
-	// userCancelCtx is a user-cancel-only signal: it is derived from context.Background so that
-	// SIGTERM and SLO expiry do NOT propagate into it. userCancelCtx.Err() != nil exclusively means
-	// the user requested cancellation via the API.
-	userCancelCtx, userCancelFn := context.WithCancel(context.Background())
-	params.userCancelFn = userCancelFn
-	defer userCancelFn()
+	// abortCtx is the single context that drives every phase. It carries the
+	// process-batch span + logger values but records *why* it was cancelled via
+	// context.Cause, so the terminal state can be classified from one signal:
+	//   - SLO deadline  -> context.DeadlineExceeded (from WithDeadline below)
+	//   - user cancel    -> batchctx.ErrCancelled (watchCancel)
+	//   - SIGTERM        -> batchctx.ErrShutdown (AfterFunc on the parent ctx)
+	//   - reconciler/IO  -> context.Canceled (heartbeat / fatal I/O; neutral)
+	// The deadline is placed on WithoutCancel(ctx) so SIGTERM cannot mask an SLO
+	// expiry as a plain cancellation, and vice versa.
+	abortBase := context.WithoutCancel(ctx)
+	sloStop := context.CancelFunc(func() {})
+	if params.task != nil && !params.task.SLO.IsZero() {
+		abortBase, sloStop = context.WithDeadline(abortBase, params.task.SLO)
+	}
+	defer sloStop()
 
-	// requestAbortCtx is derived from sloCtx so SLO expiry and SIGTERM propagate automatically
-	// to all dispatch loops and inference calls. User cancel is wired via AfterFunc so that
-	// cancelling userCancelCtx automatically cancels requestAbortCtx without manual dispatch.
-	// Fatal I/O errors in executor.go still call requestAbortFn directly.
-	requestAbortCtx, requestAbortFn := context.WithCancel(sloCtx)
-	context.AfterFunc(userCancelCtx, requestAbortFn)
-	params.requestAbortFn = requestAbortFn
-	defer requestAbortFn()
+	// One cancel-cause func drives every phase; each source is a no-arg closure
+	// that bakes its own cause. First call wins — batchctx.Cause reads it back to
+	// classify the terminal state. The cleanup defer uses the neutral
+	// context.Canceled so a normal return is not mistaken for an abort.
+	abortCtx, abortCause := context.WithCancelCause(abortBase)
+	defer abortCause(context.Canceled)
+	params.cancelUser = func() { abortCause(batchctx.ErrCancelled) }
+
+	// SIGTERM / pod shutdown propagates from the original ctx as ErrShutdown.
+	stopShutdown := context.AfterFunc(ctx, func() { abortCause(batchctx.ErrShutdown) })
+	defer stopShutdown()
 
 	// watch for cancel event
 	params.eventWatcher = eventWatcher
@@ -160,24 +165,24 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// Start heartbeat: periodically refreshes the in-flight entry so the
 	// orphan reconciler knows this job is still being actively processed.
 	// On each tick it also checks the DB status — if the reconciler acted
-	// (terminal status or reverted to validating), it calls requestAbortFn
-	// to stop all in-flight requests. The processor's terminal CAS write
-	// will then fail with ErrConflict, and the processor yields.
+	// (terminal status or reverted to validating), it aborts (neutral
+	// context.Canceled) to stop all in-flight requests. The processor's terminal
+	// CAS write will then fail with ErrConflict, and the processor yields.
 	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
 	defer heartbeatCancel()
-	go p.heartbeat(heartbeatCtx, params.jobItem.ID, requestAbortFn)
+	go p.heartbeat(heartbeatCtx, params.jobItem.ID, func() { abortCause(context.Canceled) })
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
-	ingestCtx, ingestSpan := uotel.StartSpan(ctx, "ingest-and-plan")
-	err = p.preProcessJob(ingestCtx, sloCtx, userCancelCtx, params.jobInfo)
-	if err != nil && !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
+	ingestCtx, ingestSpan := uotel.StartSpan(abortCtx, "ingest-and-plan")
+	err = p.preProcessJob(ingestCtx, params.jobInfo)
+	if err != nil && !batchctx.IsTerminal(err) {
 		ingestSpan.RecordError(err)
 		ingestSpan.SetStatus(codes.Error, "pre-process failed")
 	}
 	ingestSpan.End()
 	if err != nil {
-		// errExpired, errCancelled, and errShutdown are expected terminal states, not system errors.
-		if !errors.Is(err, errExpired) && !errors.Is(err, errCancelled) && !errors.Is(err, errShutdown) {
+		// Terminal states (expired/cancelled/shutdown) are expected, not system errors.
+		if !batchctx.IsTerminal(err) {
 			logger.Error(err, "Pre-processing failed")
 		}
 		p.handleJobError(ctx, params, err)
@@ -200,10 +205,10 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	transitionedToInProgress = true
 
 	// execution: execute inference requests
-	execCtx, execSpan := uotel.StartSpan(ctx, "execute-job")
+	execCtx, execSpan := uotel.StartSpan(abortCtx, "execute-job")
 	var execErr error
-	requestCounts, execErr = p.executeJobAsync(execCtx, sloCtx, userCancelCtx, requestAbortCtx, params)
-	if execErr != nil && !errors.Is(execErr, errExpired) && !errors.Is(execErr, errCancelled) && !errors.Is(execErr, errShutdown) {
+	requestCounts, execErr = p.executeJobAsync(execCtx, params)
+	if execErr != nil && !batchctx.IsTerminal(execErr) {
 		execSpan.RecordError(execErr)
 		execSpan.SetStatus(codes.Error, "execution failed")
 	}
@@ -213,7 +218,7 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 		p.handleJobError(ctx, params, execErr)
 		// Record processing duration for any job that ran (partially or fully).
 		// executeJob always returns non-nil counts alongside its sentinel errors
-		// (errExpired, errCancelled, errShutdown, system errors) because partial
+		// (batchctx.ErrExpired, batchctx.ErrCancelled, batchctx.ErrShutdown, system errors) because partial
 		// work was done. The nil guard remains defensive for unexpected future paths.
 		if requestCounts != nil {
 			metrics.RecordJobProcessingDuration(time.Since(jobStart), metrics.GetSizeBucket(int(requestCounts.Total)))
@@ -222,8 +227,8 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	}
 
 	// finalization: upload output, update status to completed
-	if err := p.finalizeJob(ctx, userCancelCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
-		if errors.Is(err, errCancelled) {
+	if err := p.finalizeJob(abortCtx, params.updater, params.jobItem, params.jobInfo, requestCounts); err != nil {
+		if errors.Is(err, batchctx.ErrCancelled) {
 			// Cancel arrived during finalization — DB already updated to cancelled.
 			// Treat as successful cancellation (same as handleCancelled).
 			// Use background context: ctx may be cancelled (SIGTERM) and cleanup is local I/O only.
@@ -305,9 +310,9 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 	logger := logr.FromContextOrDiscard(ctx)
 
 	switch {
-	case errors.Is(err, errCancelled):
+	case errors.Is(err, batchctx.ErrCancelled):
 		// User-initiated cancel at any phase. requestCounts is nil for ingestion-phase cancels
-		// (preProcessJob returns errCancelled before execution begins) and non-nil for
+		// (preProcessJob returns batchctx.ErrCancelled before execution begins) and non-nil for
 		// execution-phase cancels (executeJob returns partial counts). handleCancelled
 		// uses requestCounts == nil as the signal to skip partial-output upload.
 		if cancelErr := p.handleCancelled(ctx, params); cancelErr != nil {
@@ -318,7 +323,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 			}
 		}
 
-	case errors.Is(err, errExpired):
+	case errors.Is(err, batchctx.ErrExpired):
 		// SLO deadline reached. requestCounts may be nil if SLO expired during preprocessing
 		// (before executeJob ran). handleExpired and UpdateExpiredStatus both tolerate nil
 		// counts — the DB field is left at zero, which is correct since no requests were processed.
@@ -326,7 +331,7 @@ func (p *Processor) handleJobError(ctx context.Context, params *jobExecutionPara
 			logger.Error(expiredErr, "Failed to finalize expired job")
 		}
 
-	case errors.Is(err, errShutdown):
+	case errors.Is(err, batchctx.ErrShutdown):
 		// SIGTERM received — leave the job in its current state for the orphan
 		// reconciler to handle. The reconciler detects non-terminal jobs that
 		// are not in the queue and have a stale (or missing) in-flight entry,

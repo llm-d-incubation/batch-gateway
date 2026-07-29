@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-logr/logr"
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
@@ -89,7 +90,6 @@ var finalizationTimeout = 5 * time.Minute
 // creates file records in the database, and updates job status to completed.
 func (p *Processor) finalizeJob(
 	ctx context.Context,
-	userCancelCtx context.Context,
 	updater *StatusUpdater,
 	dbJob *db.BatchItem,
 	jobInfo *batch_types.JobInfo,
@@ -157,9 +157,9 @@ func (p *Processor) finalizeJob(
 	}
 
 	// Best-effort: honour a user cancel that arrived during finalization.
-	// userCancelCtx is background-derived so it only fires for explicit user cancellation;
-	// SLO expiry and SIGTERM do not propagate here.
-	if userCancelCtx.Err() != nil {
+	// Only an explicit user cancel routes here — context.Cause is batchctx.ErrCancelled
+	// exclusively for user cancellation; SLO expiry and SIGTERM are other causes.
+	if errors.Is(context.Cause(ctx), batchctx.ErrCancelled) {
 		logger.V(logging.INFO).Info("Cancel requested during finalization; finalizing as cancelled")
 		if err := updater.UpdateCancelledStatus(ioCtx, dbJob, requestCounts, outputFileID, errorFileID); err != nil {
 			logger.Error(err, "Failed to update cancelled status, falling back to failed with file IDs preserved")
@@ -169,7 +169,7 @@ func (p *Processor) finalizeJob(
 			return fmt.Errorf("cancelled status write failed: %w", errFinalizeFailedOver)
 		}
 		setRequestCountAttrs(ctx, requestCounts)
-		return errCancelled
+		return batchctx.ErrCancelled
 	}
 
 	// finalizing → completed

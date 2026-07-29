@@ -15,6 +15,7 @@ import (
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d/llm-d-batch-gateway/internal/files_store/mock"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
@@ -102,7 +103,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -251,7 +252,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -372,16 +373,13 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 	}
 	defer evCh.CloseFn()
 
-	userCancelCtx, userCancelFn := context.WithCancel(ctx)
-	requestAbortCtx, requestAbortFn := context.WithCancel(ctx)
-	context.AfterFunc(userCancelCtx, requestAbortFn)
+	abortCtx, cause := context.WithCancelCause(ctx)
 
 	params := &jobExecutionParams{
-		eventWatcher:   evCh,
-		updater:        updater,
-		jobItem:        jobItem,
-		userCancelFn:   userCancelFn,
-		requestAbortFn: requestAbortFn,
+		eventWatcher: evCh,
+		updater:      updater,
+		jobItem:      jobItem,
+		cancelUser:   func() { cause(batchctx.ErrCancelled) },
 	}
 	go p.watchCancel(ctx, params)
 
@@ -389,18 +387,14 @@ func TestWatchCancel_SetsFlag_CancelsInferContext(t *testing.T) {
 		{ID: jobID, Type: db.BatchEventCancel, TTL: 60},
 	})
 
-	// Verify userCancelFn was called (user-cancel signal).
+	// Verify watchCancel tripped the user-cancel layer with the ErrCancelled cause.
 	select {
-	case <-userCancelCtx.Done():
+	case <-abortCtx.Done():
+		if !errors.Is(batchctx.Cause(abortCtx), batchctx.ErrCancelled) {
+			t.Fatalf("expected batchctx.ErrCancelled cause, got: %v", batchctx.Cause(abortCtx))
+		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("userCancelCtx was not cancelled within 2s after cancel event")
-	}
-
-	// Verify requestAbortFn was called (dispatch abort signal).
-	select {
-	case <-requestAbortCtx.Done():
-	case <-time.After(2 * time.Second):
-		t.Fatal("requestAbortCtx was not cancelled within 2s after cancel event")
+		t.Fatal("abort context was not cancelled within 2s after cancel event")
 	}
 
 	// Verify that watchCancel does NOT update status to cancelling
@@ -480,19 +474,19 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	userCancelCtx, abortFn := context.WithCancel(ctx)
-	abortFn()
-	err = p.preProcessJob(ctx, ctx, userCancelCtx, jobInfo)
-	if !errors.Is(err, errCancelled) {
-		t.Fatalf("expected errCancelled, got: %v", err)
+	cancelCtx, cancel := context.WithCancelCause(ctx)
+	cancel(batchctx.ErrCancelled)
+	err = p.preProcessJob(cancelCtx, jobInfo)
+	if !errors.Is(err, batchctx.ErrCancelled) {
+		t.Fatalf("expected batchctx.ErrCancelled, got: %v", err)
 	}
 }
 
-// TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled verifies that when both userCancelCtx
-// and ctx (SIGTERM) are cancelled, preProcessJob returns errCancelled — not errShutdown.
-// This matches processModel's priority (SLO > cancel > shutdown) and ensures the job
-// is cancelled rather than left for the orphan reconciler.
-func TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled(t *testing.T) {
+// TestPreProcess_CancelBeforeSIGTERM_ReturnsErrCancelled verifies first-cause-wins:
+// when a user cancel is recorded before a later SIGTERM on the same abort context,
+// preProcessJob returns batchctx.ErrCancelled — the shutdown is a no-op on the
+// already-cancelled context, so the job is cancelled rather than left for the reconciler.
+func TestPreProcess_CancelBeforeSIGTERM_ReturnsErrCancelled(t *testing.T) {
 	ctx := testLoggerCtx(t)
 
 	workDir := t.TempDir()
@@ -552,16 +546,17 @@ func TestPreProcess_CancelPlusSIGTERM_ReturnsErrCancelled(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	// Both ctx (SIGTERM) and userCancelCtx are cancelled.
-	shutdownCtx, shutdownCancel := context.WithCancel(ctx)
-	shutdownCancel()
+	// Both fire, but the user cancel is recorded first. The shutdown layer is the
+	// parent; the user-cancel layer is nested below it (as in runJob). Tripping the
+	// inner cancel first sets the cause; the later shutdown is a no-op on it.
+	shutdownBase, tripShutdown := context.WithCancelCause(ctx)
+	cancelCtx, cancelUser := context.WithCancelCause(shutdownBase)
+	cancelUser(batchctx.ErrCancelled)  // user cancel first
+	tripShutdown(batchctx.ErrShutdown) // SIGTERM second — no-op on the already-cancelled inner layer
 
-	userCancelCtx, userCancelFn := context.WithCancel(ctx)
-	userCancelFn()
-
-	err = p.preProcessJob(shutdownCtx, shutdownCtx, userCancelCtx, jobInfo)
-	if !errors.Is(err, errCancelled) {
-		t.Fatalf("expected errCancelled when both SIGTERM and user cancel fire, got: %v", err)
+	err = p.preProcessJob(cancelCtx, jobInfo)
+	if !errors.Is(err, batchctx.ErrCancelled) {
+		t.Fatalf("expected batchctx.ErrCancelled when user cancel is recorded before SIGTERM, got: %v", err)
 	}
 }
 
@@ -591,7 +586,7 @@ func TestPreProcess_SLOExpiredDuringIngestion_ReturnsErrExpired(t *testing.T) {
 	}
 
 	// A single request is enough: sloCtx is already expired, so the ingestion loop
-	// returns errExpired on the first iteration before reading any lines.
+	// returns batchctx.ErrExpired on the first iteration before reading any lines.
 	lines := makeInputLines([]string{"any-model"}) // content irrelevant; loop exits before reading
 	var remoteBuf bytes.Buffer
 	for _, ln := range lines {
@@ -625,13 +620,13 @@ func TestPreProcess_SLOExpiredDuringIngestion_ReturnsErrExpired(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	// Use a context with a deadline in the past so sloCtx.Err() == DeadlineExceeded immediately.
+	// Use a context with a deadline in the past so context.Cause == DeadlineExceeded immediately.
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer sloCancel()
 
-	err = p.preProcessJob(ctx, sloCtx, context.Background(), jobInfo)
-	if !errors.Is(err, errExpired) {
-		t.Fatalf("expected errExpired, got: %v", err)
+	err = p.preProcessJob(sloCtx, jobInfo)
+	if !errors.Is(err, batchctx.ErrExpired) {
+		t.Fatalf("expected batchctx.ErrExpired, got: %v", err)
 	}
 }
 
@@ -1377,7 +1372,7 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	err = p.preProcessJob(ctx, ctx, context.Background(), jobInfo)
+	err = p.preProcessJob(ctx, jobInfo)
 	if err == nil {
 		t.Fatal("expected preProcessJob to fail for input with stream: true")
 	}
@@ -1444,7 +1439,7 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	err = p.preProcessJob(ctx, ctx, context.Background(), jobInfo)
+	err = p.preProcessJob(ctx, jobInfo)
 	if err == nil {
 		t.Fatal("expected preProcessJob to fail for duplicate custom_id")
 	}
@@ -1514,7 +1509,7 @@ func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("expected preProcessJob to succeed with unique custom_ids, got: %v", err)
 	}
 }
@@ -1592,7 +1587,7 @@ func TestPreProcess_UnregisteredModel_RejectedToErrorFile(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1711,7 +1706,7 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1754,7 +1749,7 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 		t.Fatalf("plan files = %d, want 0", planFiles)
 	}
 
-	counts, execErr := p.executeJob(ctx, ctx, ctx, ctx, &jobExecutionParams{
+	counts, execErr := p.executeJob(ctx, &jobExecutionParams{
 		updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
 		jobInfo: jobInfo,
 	})
@@ -1846,7 +1841,7 @@ func TestPreProcess_ReEnqueue_TruncatesStaleErrorFile(t *testing.T) {
 		t.Fatalf("WriteFile stale error: %v", err)
 	}
 
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1931,7 +1926,7 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	}
 
 	// Run ingestion — should reject model-b and write to error.jsonl.
-	if err := p.preProcessJob(ctx, ctx, context.Background(), jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1946,16 +1941,16 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 		t.Fatalf("error file lines before execution = %d, want 1", len(errorLines))
 	}
 
-	// Simulate early SLO expiration: create an already-expired sloCtx.
+	// Simulate early SLO expiration: create an already-expired context.
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	defer sloCancel()
 
-	counts, execErr := p.executeJob(ctx, sloCtx, context.Background(), sloCtx, &jobExecutionParams{
+	counts, execErr := p.executeJob(sloCtx, &jobExecutionParams{
 		updater: NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400),
 		jobInfo: jobInfo,
 	})
-	if !errors.Is(execErr, errExpired) {
-		t.Fatalf("expected errExpired, got: %v", execErr)
+	if !errors.Is(execErr, batchctx.ErrExpired) {
+		t.Fatalf("expected batchctx.ErrExpired, got: %v", execErr)
 	}
 	// Failed = 2: 1 model_not_found (ingestion) + 1 batch_expired (pipeline drain for model-a).
 	if counts.Failed != 2 {
