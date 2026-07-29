@@ -755,6 +755,45 @@ func setSimAdminConfig(t *testing.T, simService string, body string) {
 	}
 }
 
+// trySetSimFakeMetrics sends a POST to the simulator's /fake_metrics endpoint
+// via a curl pod running in the cluster. It returns an error so cleanup paths
+// can report restore failures without halting the rest of cleanup.
+// Requires the simulator to be started with --fake-metrics flag.
+func trySetSimFakeMetrics(t *testing.T, simService string, body string) error {
+	t.Helper()
+
+	ensureE2ECurlPod(t)
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/fake_metrics", simService, testNamespace)
+	out, err := exec.Command("kubectl", "exec",
+		"-n", testNamespace,
+		e2eCurlPod,
+		"--",
+		"curl", "-sS", "-X", "POST",
+		"-H", "Content-Type: application/json",
+		"-d", body,
+		"--fail",
+		url,
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("POST %s failed: %w\n%s", url, err, out)
+	}
+	t.Logf("POST %s: %s", url, strings.TrimSpace(string(out)))
+	return nil
+}
+
+// setSimFakeMetrics sends a POST to the simulator's /fake_metrics endpoint
+// via a curl pod running in the cluster. Used to dynamically control the
+// metrics values reported by the simulator (e.g. waiting-requests, kv-cache-usage)
+// for EPP utilization-detector saturation testing.
+func setSimFakeMetrics(t *testing.T, simService string, body string) {
+	t.Helper()
+
+	if err := trySetSimFakeMetrics(t, simService, body); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // waitForModelInflight polls the processor's model_inflight_requests metric
 // until it reports > 0 for the given model, proving that at least one request
 // has been dispatched. With 100% failure injection, the gauge remains elevated
