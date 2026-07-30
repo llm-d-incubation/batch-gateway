@@ -164,7 +164,7 @@ flowchart TD
     phase2 -->|"SLO expired"| expiredState["expired — partial output"]
     phase2 -->|"user cancel"| cancelledState["cancelled — partial output"]
     phase2 -->|"system error"| failedPartial["failed — partial output"]
-    phase2 -->|"pod shutdown"| reenqueue["re-enqueued — partial flushed to disk"]
+    phase2 -->|"pod shutdown"| reconcile["left for orphan reconciler — partial flushed to disk"]
     phase3 -->|"upload failure"| failedPreserved["failed — surviving file IDs preserved"]
 ```
 
@@ -224,10 +224,12 @@ Terminal states are removed from the priority queue.
 
 #### 3. Context Hierarchy
 
-The processor uses a layered context tree to propagate cancellation signals.
-The critical invariant is the **fork** at `ctx`: `pollingCtx` and `jobCtx` are siblings, so cancelling the polling loop does not kill in-flight jobs.
+The processor uses two levels of contexts:
 
-A second critical invariant is the **isolation** of `userCancelCtx`: it is derived from `context.Background()` (not from `ctx` or `sloCtx`), so SIGTERM and SLO expiry **never** propagate into it. `userCancelCtx.Err() != nil` exclusively means the user requested cancellation via the API.
+1.  A **fork** at the processor root `ctx` into `pollingCtx` and `jobCtx`, so cancelling the polling loop does not kill in-flight jobs.
+2.  Per job, a **single abort context** (`abortCtx`) that drives every phase (ingestion, execution, finalization). It records **why** it was cancelled via `context.WithCancelCause`, so the terminal state is classified from that one signal with `batchctx.Cause`.
+
+The routing sentinels and the cause↔sentinel mapping live in the `internal/processor/batchctx` package.
 
 ```mermaid
 graph TD
@@ -238,32 +240,29 @@ graph TD
 
     pollingCtx -.-> polling["acquire · dequeue · DB fetch · validate · poll wait"]
 
-    jobCtx --> sloCtx(["sloCtx — SLO deadline"])
-    jobCtx -.-> watchCancel["watchCancel goroutine"]
+    jobCtx -->|"WithoutCancel (values only) + WithDeadline(SLO) + WithCancelCause"| abortCtx(["abortCtx — drives ingestion, execution, finalization"])
 
-    sloCtx --> requestAbortCtx(["requestAbortCtx — stop dispatch pipeline + abort in-flight"])
-
-    bg(["context.Background() — isolated"])
-    bg --> userCancelCtx(["userCancelCtx — user cancel only"])
-    watchCancel -->|"userCancelFn()"| userCancelCtx
-    userCancelCtx -.->|"context.AfterFunc → requestAbortFn()"| requestAbortCtx
+    slo["SLO deadline"] -.->|"DeadlineExceeded"| abortCtx
+    watchCancel["watchCancel goroutine"] -.->|"cause(ErrCancelled)"| abortCtx
+    ctx -.->|"AfterFunc → cause(ErrShutdown)"| abortCtx
+    reconciler["heartbeat / reconciler · fatal I/O · normal cleanup"] -.->|"cause(Canceled) — neutral"| abortCtx
 ```
 
 | Context | Derived from | Cancelled by | Blast radius |
 |---------|-------------|-------------|--------------|
-| `ctx` | (processor root) | SIGTERM / SIGINT | Everything — polling loop exits, in-flight jobs return `errShutdown` and are re-enqueued |
+| `ctx` | (processor root) | SIGTERM / SIGINT | Everything — polling loop exits; each job's `abortCtx` receives `batchctx.ErrShutdown` (via `AfterFunc`); in-flight jobs are left in place for the orphan reconciler to terminalize |
 | `pollingCtx` | `ctx` | Semaphore double-release guard (also inherits `ctx` cancellation) | **Polling loop + pre-launch** — acquire, dequeue, DB fetch, validation, and guard re-enqueue all use `pollingCtx`. Stops accepting new jobs; running jobs unaffected. Jobs dequeued but not yet launched are re-enqueued (fallback: marked failed). |
-| `jobCtx` | `ctx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). One per active worker — up to `NumWorkers` can exist concurrently. Created only at launch commit, **after** all pre-launch checks pass. **Not** cancelled when only `pollingCtx` is cancelled (e.g. semaphore guard). |
-| `sloCtx` | `jobCtx` | SLO deadline fires (`context.DeadlineExceeded`) | Propagates into `requestAbortCtx`; stops dispatch; in-flight requests finish; undispatched drained as `batch_expired` |
-| `requestAbortCtx` | `sloCtx` | SLO deadline (propagated), SIGTERM (propagated via `ctx → jobCtx → sloCtx`), `requestAbortFn()` via `context.AfterFunc(userCancelCtx, requestAbortFn)` on user cancel, the heartbeat when the orphan reconciler acts, or a fatal I/O error in the source | Cancels the dispatch pipeline (passed as the single context to `JobExecutor.Execute`) and aborts in-flight HTTP inference requests immediately |
-| `userCancelCtx` | `context.Background()` | `userCancelFn()` called by `watchCancel` on user cancel **only** | User-cancel signal only — checked in error-routing paths to distinguish user cancel from SLO expiry or pod shutdown. SIGTERM and SLO expiry **do not** propagate here. |
+| `jobCtx` | `ctx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). One per active worker — up to `NumWorkers` can exist concurrently. Supplies the span + logger values to `abortCtx`. |
+| `abortCtx` | `WithCancelCause(WithDeadline(WithoutCancel(jobCtx), slo))` | First `cause(...)` call wins: SLO deadline → `context.DeadlineExceeded`; user cancel → `batchctx.ErrCancelled`; SIGTERM → `batchctx.ErrShutdown`; orphan reconciler / fatal I/O / normal cleanup → neutral `context.Canceled` | The single context for ingestion, execution, and finalization. Cancels the dispatch pipeline and aborts in-flight HTTP inference requests immediately. `batchctx.Cause(abortCtx)` reads the recorded cause back to classify the terminal state. |
 
 **Design notes:**
--   The fork at `ctx` is intentional: `pollingCtx` controls the polling loop, `jobCtx` controls the job lifecycle. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. **SIGTERM / SIGINT cancel `ctx`**, so both polling and jobs see cancellation simultaneously.
--   `requestAbortCtx` is derived from `sloCtx`, so SLO expiry and SIGTERM (via `ctx → jobCtx → sloCtx`) propagate automatically to both the dispatch pipeline and in-flight inference requests. It is passed as the single execution context to `JobExecutor.Execute`; the pipeline itself does not distinguish *why* it was cancelled — `executeJobAsync` inspects `sloCtx`/`userCancelCtx`/`ctx` after `Execute` returns to choose the terminal status.
--   `userCancelCtx` is intentionally **isolated** from the `sloCtx` chain. This prevents SLO expiry or SIGTERM from being misclassified as user cancellation. Cancellation reason routing (`errCancelled` vs `errExpired` vs `errShutdown`) depends on this isolation being correct.
--   On user cancel: `watchCancel` calls `userCancelFn()` only. `requestAbortFn()` is triggered automatically via `context.AfterFunc(userCancelCtx, requestAbortFn)` wired in `runJob`, so `userCancelCtx` cancellation propagates into `requestAbortCtx` without watchCancel knowing about dispatch.
--   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
+-   The fork at `ctx` is intentional: `pollingCtx` controls the polling loop, `jobCtx` controls the job lifecycle. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. **SIGTERM / SIGINT cancel `ctx`**, so both the polling loop and running jobs see cancellation simultaneously — the polling loop via `pollingCtx`, and a running job via the `AfterFunc(ctx, …)` that injects `batchctx.ErrShutdown` into its `abortCtx` (see the `WithoutCancel` note below).
+-   **Single context, cause-encoded reason.** Every phase runs under `abortCtx`. Each cancellation source bakes its reason into the cancel *cause* — a no-arg closure calling `cause(sentinel)` — and `executeJobAsync`/`classifyOutcome` read it back via `batchctx.Cause` to choose the terminal state.
+-   **Why `WithoutCancel` + a re-injected shutdown cause.** The SLO deadline is placed on `context.WithoutCancel(jobCtx)`, so `jobCtx` cancellation (SIGTERM) does **not** propagate automatically as a plain `context.Canceled` — that would mask an SLO expiry as an ordinary cancel (and vice versa). SIGTERM is instead re-injected explicitly as `batchctx.ErrShutdown` via `context.AfterFunc(ctx, …)`, keeping each reason distinct and unambiguous.
+-   **First-call-wins.** `WithCancelCause` records only the first cause; a later concurrent signal never overwrites it. `batchctx.Cause` maps it: `DeadlineExceeded` → `ErrExpired`, `ErrCancelled`, `ErrShutdown`, and anything else (neutral `context.Canceled`) → `nil`, which routes as a system error rather than a terminal user/shutdown/expiry state.
+-   **Neutral `context.Canceled`.** The cleanup defer, the heartbeat/orphan-reconciler abort, and fatal I/O all cancel with `context.Canceled`, so a normal return or a reconciler-driven stop is not misclassified as a terminal state — the reconciler path yields (its terminal CAS write fails with `ErrConflict`).
+-   **Shutdown after success.** `classifyOutcome` ignores `ErrShutdown` when every request already succeeded (`counts.AllSucceeded()`), so a job that finished just before SIGTERM landed still finalizes normally instead of being abandoned.
+-   `watchCancel` runs in a separate goroutine and calls `params.cancelUser` (which trips `cause(batchctx.ErrCancelled)`); it does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
 -   Pre-launch operations (DB fetch, conversion, expired/runnable checks) run under `pollingCtx` so they abort promptly when the guard fires. `jobCtx` is created from `jobBaseCtx` only at the moment we commit to launching `runJob`.
 -   On semaphore double-release: guard cancels `pollingCtx` → pre-launch aborts or guard re-enqueue fires → `Run` returns → `main.go` sets `ready=false` → K8s removes the pod from service (readiness probe fails). If re-enqueue also fails, the job is marked failed as a terminal fallback. The pod is restarted only if a liveness probe or restart policy triggers it.
 
@@ -616,7 +615,7 @@ Concretely:
 
 **Implementation:**
 
-SLO is enforced via `context.WithDeadline(ctx, slo)` on the job execution context, which propagates to `requestAbortCtx` (see [Context Hierarchy](#3-context-hierarchy)). When the deadline fires:
+SLO is enforced via a `context.WithDeadline` on the job's `abortCtx` (see [Context Hierarchy](#3-context-hierarchy)); expiry surfaces as `context.DeadlineExceeded`, which `batchctx.Cause` maps to `ErrExpired`. When the deadline fires:
 1.  New request dispatch stops — the dispatcher chain observes the cancelled context and stops forwarding requests downstream (in sync mode, semaphore acquisition also fails on the expired context)
 2.  In-flight inference requests that complete (even after the deadline fires) are written to the **output** file with whatever response the inference client returns — SLO expiry does not overwrite in-flight results. Requests where the inference call itself fails due to context cancellation are written to the output file with the HTTP error response from the backend.
 3.  Requests that were never dispatched (still pending in `requestCh` or the pending map) are drained by the dispatcher chain as error results and written to the error file as `batch_expired`
@@ -641,7 +640,7 @@ For all terminal states where work was interrupted (expired, cancelled, failed),
 -   **Failed (execution system error)**: Undispatched requests are drained as `batch_failed`, partial output is uploaded, status transitions to `failed`.
 -   **Failed (ingestion)**: No output files exist — nothing to preserve. Status transitions to `failed` without file IDs.
 -   **Failed (finalization — upload failure)**: Upload retries (exponential backoff) are exhausted inside `finalizeJob`. The two uploads (output and error files) run independently — a failure in one does not cancel the other. The job is marked `failed` with whatever file IDs survived, so the successfully-uploaded artifact remains reachable via the API (`errFinalizeFailedOver`). If the terminal DB write itself fails after uploads succeeded, the fallback also preserves file IDs.
--   **Graceful shutdown (pod termination)**: Output and error writers are flushed to disk before returning `errShutdown`. The job is re-enqueued for another worker. If re-enqueue fails, partial results are uploaded and the job is marked `failed` with file IDs (`handleFailed` with non-nil `jobInfo`). On container restart with emptyDir intact, startup recovery can also upload partial output from the flushed files.
+-   **Graceful shutdown (pod termination)**: `abortCtx` is cancelled with cause `batchctx.ErrShutdown`, and output and error writers are flushed to disk. The job is **left in its current non-terminal state for the orphan reconciler** to detect and terminalize — `handleJobError` does not upload or re-enqueue on shutdown. The in-flight entry is cleaned up by the `runJob` defer (or, on SIGKILL, becomes stale and is likewise handled by the reconciler). On container restart with emptyDir intact, startup recovery can upload partial output from the flushed files.
 
 Partial upload in error handlers (`handleExpired`, `handleCancelled`, `handleFailed`) is best-effort: upload failures are logged but do not block the terminal status transition. In contrast, `finalizeJob` (the happy-path finalization) treats upload failures as hard errors and falls back to `failed` status with surviving file IDs (`errFinalizeFailedOver`).
 
