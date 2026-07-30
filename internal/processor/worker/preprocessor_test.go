@@ -483,6 +483,35 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 }
 
 // TestPreProcess_CancelBeforeSIGTERM_ReturnsErrCancelled verifies first-cause-wins:
+// TestPreProcess_GenuineErrorNotMaskedByCancel verifies that a real preprocessing
+// failure which coincides with a cancelled context surfaces as itself, not
+// reclassified as a terminal cancel/expiry/shutdown. The empty-InputFileID check
+// returns before the loop's cause-check, so only the deferred wrapper could mask it.
+func TestPreProcess_GenuineErrorNotMaskedByCancel(t *testing.T) {
+	p := mustNewProcessor(t, config.NewConfig(), &clientset.Clientset{})
+
+	// Context is cancelled with a user-cancel cause...
+	ctx, cancel := context.WithCancelCause(testLoggerCtx(t))
+	cancel(batchctx.ErrCancelled)
+
+	// ...but the failure is a genuine config error, not a cancellation.
+	jobInfo := &batch_types.JobInfo{
+		JobID:    "job-genuine-err",
+		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{InputFileID: ""}},
+	}
+
+	err := p.preProcessJob(ctx, jobInfo)
+	if err == nil {
+		t.Fatal("expected an error for empty input file ID")
+	}
+	if batchctx.IsTerminal(err) {
+		t.Fatalf("genuine error was masked as a terminal state: %v", err)
+	}
+	if !strings.Contains(err.Error(), "input file ID is empty") {
+		t.Fatalf("expected 'input file ID is empty', got: %v", err)
+	}
+}
+
 // when a user cancel is recorded before a later SIGTERM on the same abort context,
 // preProcessJob returns batchctx.ErrCancelled — the shutdown is a no-op on the
 // already-cancelled context, so the job is cancelled rather than left for the reconciler.

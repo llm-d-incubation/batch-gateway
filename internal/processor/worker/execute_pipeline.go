@@ -100,19 +100,27 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 	// Finally, start and wait for completion.
 	counts, execErr := executor.Execute(ctx)
 
-	// Classify the terminal state from the abort cause (first-cause-wins). Expiry
-	// and user cancel are terminal regardless of progress; a shutdown that lands
-	// after every request already succeeded is ignored so the job still finalizes.
-	// Any other stop surfaces the executor's own error (nil on the happy path).
-	switch cause := batchctx.Cause(ctx); {
+	return counts, classifyOutcome(batchctx.Cause(ctx), counts, execErr)
+}
+
+// classifyOutcome maps the abort cause, request counts, and executor error to the
+// job's terminal error (nil = complete). Expiry and user cancel are terminal
+// regardless of progress; a shutdown that lands after every request already
+// succeeded is ignored so the job still finalizes. Any other stop surfaces the
+// executor's own error (nil on the happy path).
+func classifyOutcome(cause error, counts *openai.BatchRequestCounts, execErr error) error {
+	switch {
 	case errors.Is(cause, batchctx.ErrExpired), errors.Is(cause, batchctx.ErrCancelled):
-		return counts, cause
-	case counts.AllSucceeded():
-		return counts, nil
+		return cause
 	case errors.Is(cause, batchctx.ErrShutdown):
-		return counts, cause
+		if counts.AllSucceeded() {
+			return nil // finished before shutdown landed — let the job finalize
+		}
+		return cause
 	}
-	return counts, execErr
+	// No terminal cause: surface the executor's error, if any (e.g. a persistence
+	// failure that arrived after every request was recorded as completed).
+	return execErr
 }
 
 func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, logger logr.Logger) (pipeline.RequestDispatcher, error) {

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -51,11 +52,12 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
 
-	// The single ctx now also cancels the input-file download, so an I/O error
-	// may actually be an abort in disguise. If ctx was cancelled for a known
-	// reason, route to that terminal sentinel rather than a generic failure.
+	// The single ctx now also cancels the input-file download, so a cancellation
+	// can surface as an I/O error. Reclassify only errors that actually stem from
+	// ctx cancellation (they wrap ctx.Err()); a genuine preprocessing failure that
+	// merely races a cancel must still surface as-is with its diagnostics.
 	defer func() {
-		if err != nil {
+		if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			if s := batchctx.Cause(ctx); s != nil {
 				err = s
 			}

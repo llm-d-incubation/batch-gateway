@@ -28,6 +28,39 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
+func TestClassifyOutcome(t *testing.T) {
+	persistErr := errors.New("output file flush failed")
+	allSucceeded := &openai.BatchRequestCounts{Total: 2, Completed: 2, Failed: 0}
+	partial := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
+
+	tests := []struct {
+		name    string
+		cause   error
+		counts  *openai.BatchRequestCounts
+		execErr error
+		want    error
+	}{
+		{name: "expired wins over progress", cause: batchctx.ErrExpired, counts: allSucceeded, want: batchctx.ErrExpired},
+		{name: "cancelled wins over progress", cause: batchctx.ErrCancelled, counts: allSucceeded, want: batchctx.ErrCancelled},
+		{name: "shutdown after all succeeded finalizes", cause: batchctx.ErrShutdown, counts: allSucceeded, want: nil},
+		{name: "shutdown with work left is terminal", cause: batchctx.ErrShutdown, counts: partial, want: batchctx.ErrShutdown},
+		{name: "happy path", cause: nil, counts: allSucceeded, want: nil},
+		{name: "executor error surfaces", cause: nil, counts: partial, execErr: persistErr, want: persistErr},
+		// Regression: a persistence/flush error can arrive after every request was
+		// recorded as completed (AllSucceeded), with no cancel/expiry/shutdown cause.
+		// The outcome must be the executor error, not a masked success.
+		{name: "persistence error not masked by all-succeeded", cause: nil, counts: allSucceeded, execErr: persistErr, want: persistErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyOutcome(tt.cause, tt.counts, tt.execErr); !errors.Is(got, tt.want) {
+				t.Fatalf("classifyOutcome(%v, counts, %v) = %v, want %v", tt.cause, tt.execErr, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExecuteJob_SingleModel(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
