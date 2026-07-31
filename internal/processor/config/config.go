@@ -81,6 +81,12 @@ const (
 	DispatchModeAsync DispatchMode = "async"
 )
 
+// AsyncModelConfig describes the async dispatch target for a single model.
+type AsyncModelConfig struct {
+	// InferencePoolName identifies the async dispatch pool for this model.
+	InferencePoolName string `yaml:"inference_pool_name"`
+}
+
 // AsyncDispatchConfig holds configuration for the llm-d-async dispatch backend.
 // Only used when DispatchMode == "async".
 type AsyncDispatchConfig struct {
@@ -92,6 +98,10 @@ type AsyncDispatchConfig struct {
 	// ResultPollTimeout is the timeout per GetResult poll cycle.
 	// Controls how long each blocking poll waits before retrying.
 	ResultPollTimeout time.Duration `yaml:"result_poll_timeout"`
+
+	// Models maps model names to their async dispatch targets.
+	// Required when DispatchMode == "async".
+	Models map[string]AsyncModelConfig `yaml:"models"`
 }
 
 type ProcessorConfig struct {
@@ -219,8 +229,8 @@ type ModelGatewayConfig struct {
 	TLSClientCertFile     string `yaml:"tls_client_cert_file,omitempty"`
 	TLSClientKeyFile      string `yaml:"tls_client_key_file,omitempty"`
 
-	// InferencePoolName identifies the async dispatch pool for this model/gateway.
-	// Required when dispatch_mode is "async". Ignored in sync mode.
+	// Deprecated: use AsyncDispatchConfig.Models instead.
+	// InferencePoolName was used to identify the async dispatch pool for this model.
 	InferencePoolName string `yaml:"inference_pool_name"`
 }
 
@@ -382,16 +392,15 @@ func (c *ProcessorConfig) Validate() error {
 }
 
 func (c *ProcessorConfig) validateGateways() error {
-	if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
-		return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
-	}
-	if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
-		return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
-	}
-
 	switch c.DispatchMode {
 	case DispatchModeSync, DispatchMode(""):
 		c.DispatchMode = DispatchModeSync
+		if c.GlobalInferenceGateway == nil && len(c.ModelGateways) == 0 {
+			return fmt.Errorf("either global_inference_gateway or model_gateways must be configured")
+		}
+		if c.GlobalInferenceGateway != nil && len(c.ModelGateways) > 0 {
+			return fmt.Errorf("global_inference_gateway and model_gateways are mutually exclusive")
+		}
 		return c.validateSyncDispatchConfig()
 	case DispatchModeAsync:
 		return c.validateAsyncDispatchConfig()
@@ -419,14 +428,14 @@ func (c *ProcessorConfig) validateAsyncDispatchConfig() error {
 		return fmt.Errorf("async_dispatch.result_poll_timeout must be > 0")
 	}
 	if c.GlobalInferenceGateway != nil {
-		return fmt.Errorf("global_inference_gateway is not supported with dispatch_mode %q; use model_gateways with inference_pool_name", DispatchModeAsync)
+		return fmt.Errorf("global_inference_gateway is not supported with dispatch_mode %q; use async_dispatch.models", DispatchModeAsync)
 	}
-	if len(c.ModelGateways) == 0 {
-		return fmt.Errorf("model_gateways must be configured when dispatch_mode is %q", DispatchModeAsync)
+	if len(c.AsyncDispatchConfig.Models) == 0 {
+		return fmt.Errorf("async_dispatch.models must be configured when dispatch_mode is %q", DispatchModeAsync)
 	}
-	for model, gw := range c.ModelGateways {
-		if gw.InferencePoolName == "" {
-			return fmt.Errorf("model_gateways[%s].inference_pool_name must be set when dispatch_mode is %q", model, DispatchModeAsync)
+	for model, m := range c.AsyncDispatchConfig.Models {
+		if m.InferencePoolName == "" {
+			return fmt.Errorf("async_dispatch.models[%s].inference_pool_name must be set", model)
 		}
 	}
 	return nil
@@ -569,9 +578,9 @@ func ResolveModelGateways(cfg *ProcessorConfig) (*ResolvedGateways, error) {
 	result := &ResolvedGateways{}
 
 	if cfg.IsAsync() {
-		models := make(map[string]string, len(cfg.ModelGateways))
-		for model, gw := range cfg.ModelGateways {
-			models[model] = gw.InferencePoolName
+		models := make(map[string]string, len(cfg.AsyncDispatchConfig.Models))
+		for model, m := range cfg.AsyncDispatchConfig.Models {
+			models[model] = m.InferencePoolName
 		}
 		result.Async = &inference.AsyncClientConfig{
 			Models:            models,
