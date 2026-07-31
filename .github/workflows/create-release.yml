@@ -108,8 +108,6 @@ jobs:
       - name: Extract metadata
         id: meta
         run: |
-          COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
           BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
 
@@ -121,7 +119,6 @@ jobs:
           push: true
         env:
           REGISTRY: ghcr.io/llm-d
-          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
           BUILD_DATE: ${{ steps.meta.outputs.build_date }}
           VERSION: ${{ github.ref_name }}
           TAG: ${{ github.ref_name }}
@@ -129,11 +126,8 @@ jobs:
       - name: Output image tags
         run: |
           echo "Images pushed:"
-          echo "  - ghcr.io/llm-d/batch-gateway-apiserver:${{ steps.meta.outputs.commit_sha }}"
           echo "  - ghcr.io/llm-d/batch-gateway-apiserver:${{ github.ref_name }}"
-          echo "  - ghcr.io/llm-d/batch-gateway-processor:${{ steps.meta.outputs.commit_sha }}"
           echo "  - ghcr.io/llm-d/batch-gateway-processor:${{ github.ref_name }}"
-          echo "  - ghcr.io/llm-d/batch-gateway-gc:${{ steps.meta.outputs.commit_sha }}"
           echo "  - ghcr.io/llm-d/batch-gateway-gc:${{ github.ref_name }}"
 
   release:

@@ -6,7 +6,7 @@ This guide describes how to create a new release of Batch Gateway and manage rel
 
 - **Release workflow** (`.github/workflows/create-release.yml`): Runs when a tag matching `v*.*.*` is pushed. It **only proceeds if that tag points at a commit on `main` or on a `release-vX.Y.Z` branch** (reachable from `origin/main` or from such a branch on `origin`), then runs these steps in order:
   1. **Build binaries** (parallel with images): Linux amd64 and arm64, packaged as **`.tar.gz`** with **`SHA256SUMS`**.
-  2. **Build and push Docker images** (parallel with binaries): all three images tagged with the version and commit SHA, pushed to GHCR.
+  2. **Build and push Docker images** (parallel with binaries): all three images tagged with the version (e.g. `v0.4.0`), pushed to GHCR.
   3. **Publish Helm chart**: pins image tags in `values.yaml` to the release version, packages the chart, publishes it to `oci://ghcr.io/llm-d/charts/batch-gateway`, appends chart digest to `SHA256SUMS`.
   4. **Create GitHub Release**: generated release notes, all `.tar.gz` and `.tgz` assets, `SHA256SUMS`.
   Docker images are guaranteed to exist before the Helm chart is published.
