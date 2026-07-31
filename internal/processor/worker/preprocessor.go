@@ -104,7 +104,7 @@ func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jo
 	// Production paths hit Processor.validate() in prepare() before work runs.
 	// The guard also avoids panicking if a future caller wires a nil resolver.
 	isPerModelGateway := p.inference != nil && !p.inference.IsGlobal()
-	registeredModels := make(map[string]bool) // modelID -> registered (per-model only)
+	registeredModels := make(map[string]bool) // route key -> registered (per-model only)
 
 	// Always truncate error.jsonl at the start of ingestion so that re-enqueued
 	// jobs don't carry stale error entries from a previous attempt.
@@ -171,10 +171,14 @@ func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jo
 		seenCustomIDs[requestMeta.CustomID] = struct{}{}
 
 		if isPerModelGateway {
-			registered, checked := registeredModels[requestMeta.ModelID]
+			// Look up the gateway by the route key (tenant-scoped when
+			// route_key_by_tenant is enabled). The raw model ID stays in the
+			// error message and plan grouping below.
+			lookupID := routeKey(p.cfg.RouteKeyByTenant, jobInfo.TenantID, requestMeta.ModelID)
+			registered, checked := registeredModels[lookupID]
 			if !checked {
-				registered = p.inference.ClientFor(requestMeta.ModelID) != nil
-				registeredModels[requestMeta.ModelID] = registered
+				registered = p.inference.ClientFor(lookupID) != nil
+				registeredModels[lookupID] = registered
 			}
 			if !registered {
 				// No plan entry exists yet, so generate a UUID for the batch request ID.

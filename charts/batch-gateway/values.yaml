@@ -393,6 +393,10 @@ processor:
     #     inferenceObjective: "batch-sheddable-b"   # references gie-b pool
     #     requestTimeout: "2m"
     #     maxRetries: 1
+    # Scope modelGateways lookups by the persisted job tenant ID. When enabled,
+    # configure keys as "<tenantID>/<modelID>". The forwarded request body keeps
+    # its original model ID so the runtime still receives its served model name.
+    routeKeyByTenant: false
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
     # Whether to send x-gateway-inference-fairness-id on inference requests.

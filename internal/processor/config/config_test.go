@@ -89,6 +89,9 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.SendFairnessHeader {
 		t.Fatalf("SendFairnessHeader = true, want false by default")
 	}
+	if c.RouteKeyByTenant {
+		t.Fatalf("RouteKeyByTenant = true, want false by default")
+	}
 
 	want90Days := int64(90 * 24 * 60 * 60)
 	if c.DefaultOutputExpirationSeconds != want90Days {
@@ -562,6 +565,7 @@ model_gateways:
 default_output_expiration_seconds: 86400
 progress_ttl_seconds: 3600
 send_fairness_header: true
+route_key_by_tenant: true
 `)
 
 	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
@@ -638,6 +642,9 @@ send_fairness_header: true
 	}
 	if !c.SendFairnessHeader {
 		t.Fatalf("SendFairnessHeader = false, want true")
+	}
+	if !c.RouteKeyByTenant {
+		t.Fatalf("RouteKeyByTenant = false, want true")
 	}
 }
 
