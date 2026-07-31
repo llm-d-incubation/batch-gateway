@@ -403,8 +403,10 @@ processor:
     #   models:
     #     "llama-3":
     #       inferencePoolName: "pool-a"
+    #       inferenceObjective: "batch-sheddable-a"  # optional: GIE InferenceObjective CRD name
     #     "mistral":
     #       inferencePoolName: "pool-b"
+    #       inferenceObjective: "batch-sheddable-b"
 
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours

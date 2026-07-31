@@ -878,6 +878,33 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 			modelID: "any-model",
 			want:    "",
 		},
+		{
+			name: "async model objective set",
+			cfg: ProcessorConfig{
+				AsyncDispatchConfig: AsyncDispatchConfig{
+					Models: map[string]AsyncModelConfig{
+						"llama-3": {
+							InferencePoolName:  "pool-a",
+							InferenceObjective: "batch-sheddable-a",
+						},
+					},
+				},
+			},
+			modelID: "llama-3",
+			want:    "batch-sheddable-a",
+		},
+		{
+			name: "async model without objective returns empty",
+			cfg: ProcessorConfig{
+				AsyncDispatchConfig: AsyncDispatchConfig{
+					Models: map[string]AsyncModelConfig{
+						"llama-3": {InferencePoolName: "pool-a"},
+					},
+				},
+			},
+			modelID: "llama-3",
+			want:    "",
+		},
 	}
 
 	for _, tt := range tests {

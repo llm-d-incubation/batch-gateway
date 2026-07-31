@@ -85,6 +85,11 @@ const (
 type AsyncModelConfig struct {
 	// InferencePoolName identifies the async dispatch pool for this model.
 	InferencePoolName string `yaml:"inference_pool_name"`
+
+	// InferenceObjective is the name of a GIE InferenceObjective CRD sent in
+	// the x-gateway-inference-objective header on inference requests.
+	// When empty, the header is not sent.
+	InferenceObjective string `yaml:"inference_objective"`
 }
 
 // AsyncDispatchConfig holds configuration for the llm-d-async dispatch backend.
@@ -249,6 +254,9 @@ func (c *ProcessorConfig) IsAsync() bool {
 // gateway that will handle requests for modelID.
 // Returns "" when no objective is configured, which means the header is not sent.
 func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
+	if m, ok := c.AsyncDispatchConfig.Models[modelID]; ok {
+		return m.InferenceObjective
+	}
 	if c.GlobalInferenceGateway != nil {
 		return c.GlobalInferenceGateway.InferenceObjective
 	}

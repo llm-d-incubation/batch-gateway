@@ -53,6 +53,9 @@ data:
         {{- range $model, $cfg := .Values.processor.config.asyncDispatch.models }}
         {{ $model | quote }}:
           inference_pool_name: {{ $cfg.inferencePoolName | quote }}
+          {{- if $cfg.inferenceObjective }}
+          inference_objective: {{ $cfg.inferenceObjective | quote }}
+          {{- end }}
         {{- end }}
       {{- end }}
     {{- end }}
