@@ -11,6 +11,7 @@
 <!-- Describe how you verified the changes work correctly -->
 - [ ] Unit tests added/updated/verified
 - [ ] Integration/e2e tests added/updated/verified
+- [ ] Dispatcher/async e2e tests verified (if async dispatch changes)
 - [ ] Manual testing performed
 
 ## Checklist
@@ -19,6 +20,7 @@
 - [ ] Code follows project [contributing guidelines](CONTRIBUTING.md)
 - [ ] CI checks pass (`make ci`)
 - [ ] E2E tests pass (`make test-e2e`)
+- [ ] Dispatcher e2e tests pass (`ENABLE_DISPATCHER=true make test-e2e`) — if async dispatch is affected
 
 ## Related Issues
 

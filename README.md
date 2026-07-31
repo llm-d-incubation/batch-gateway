@@ -200,6 +200,10 @@ make test-all
 
 # Run E2E tests (requires a kind cluster)
 make test-e2e
+
+# Run dispatcher E2E tests (async dispatch mode)
+ENABLE_DISPATCHER=true make dev-deploy
+ENABLE_DISPATCHER=true make test-e2e
 ```
 
 #### 3. Run Locally
