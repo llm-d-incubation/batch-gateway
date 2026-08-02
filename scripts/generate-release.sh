@@ -56,9 +56,9 @@ fi
 COMMIT_SHA="$1"
 VERSION="$2"
 
-# Validate commit SHA (at least 7 hex chars)
-if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{7,}$ ]]; then
-    echo "Error: commit-sha must be a hex SHA of at least 7 characters (got: ${COMMIT_SHA})" >&2
+# Validate commit SHA (7-40 hex chars, either case)
+if [[ ! "$COMMIT_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    echo "Error: commit-sha must be a hex SHA of 7-40 characters (got: ${COMMIT_SHA})" >&2
     exit 1
 fi
 

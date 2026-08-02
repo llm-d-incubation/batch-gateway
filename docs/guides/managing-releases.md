@@ -101,8 +101,8 @@ To remove a release and its tag (e.g. after a test release):
    ```bash
    gh api repos/{owner}/{repo}/git/refs/tags/<tag> --method DELETE
    ```
-3. **Delete the release branch** if no longer needed:
+3. **Delete the release branch** (final releases only) if no longer needed:
    ```bash
-   gh api repos/{owner}/{repo}/git/refs/heads/release-<version> --method DELETE
+   gh api repos/{owner}/{repo}/git/refs/heads/release-<tag> --method DELETE
    ```
 4. **Docker images and Helm charts** already pushed to GHCR for that tag are **not** removed. Delete them in the **Packages** area of the repo if needed.

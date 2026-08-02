@@ -108,7 +108,7 @@ publish-helm-chart:
 	export GITHUB_ACTOR="$(GITHUB_ACTOR)"; \
 	./scripts/publish-helm-chart.sh
 
-## generate-release: Create a release branch and tag on GitHub from a commit SHA (requires REL_SHA, REL_VERSION; uses gh CLI, no local git changes)
+## generate-release: Create a tag (and a release branch for final releases) on GitHub from a commit SHA (requires REL_SHA, REL_VERSION; uses gh CLI, no local git changes)
 generate-release:
 	@if [ -z "$(REL_SHA)" ] || [ -z "$(REL_VERSION)" ]; then \
 	  echo "Error: REL_SHA and REL_VERSION are required."; \
