@@ -125,6 +125,9 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 	}, nil); err != nil {
 		return err
 	}
+
+	dbJob.Status = statusBytes
+
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Batch status updated successfully", "newStatus", newStatus)
 	return nil
