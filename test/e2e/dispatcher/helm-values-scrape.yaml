@@ -1,6 +1,6 @@
 ap:
   imagePullPolicy: Never
-  messageQueueImpl: "redis-sortedset"
+  transport: "redis-sortedset"
   concurrency: 1
   prometheusCacheTTL: "0s"
   otel:
@@ -8,17 +8,17 @@ ap:
     insecure: true
     sampler: "always_on"
     samplerArg: "1.0"
-    redisTracing: false
   metrics:
     enabled: true
     port: 9091
     secure: false
-  redis:
-    enabled: true
-    url: "redis://redis-master.default.svc.cluster.local:6379"
-    pollIntervalMs: 500
-    batchSize: 10
-    queuesConfig:
+  transportConfig:
+    urlSecret:
+      url: "redis://redis-master.default.svc.cluster.local:6379"
+    result_queue_name: "result-list"
+    poll_interval_ms: 500
+    batch_size: 10
+    queues:
       - queue_name: "llm-d-async:requests:sim-pool-scrape"
         result_queue_name: "llm-d-async:results:sim-pool-scrape"
         request_path_url: "/v1/completions"

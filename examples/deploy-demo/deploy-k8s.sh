@@ -802,16 +802,17 @@ deploy_dispatcher() {
     cat > "${values_file}" <<YAML
 ap:
   imagePullPolicy: IfNotPresent
-  messageQueueImpl: "redis-sortedset"
+  transport: "redis-sortedset"
   concurrency: 1
   prometheusURL: "${prometheus_url}"
   prometheusCacheTTL: "0s"
-  redis:
-    enabled: true
-    url: "${redis_url}"
-    pollIntervalMs: 500
-    batchSize: 10
-    queuesConfig:
+  transportConfig:
+    urlSecret:
+      url: "${redis_url}"
+    result_queue_name: "result-list"
+    poll_interval_ms: 500
+    batch_size: 10
+    queues:
       - queue_name: "llm-d-async:requests:${LLMD_POOL_NAME}"
         result_queue_name: "llm-d-async:results:${LLMD_POOL_NAME}"
         request_path_url: "/v1/chat/completions"
