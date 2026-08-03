@@ -63,8 +63,8 @@ BATCH_FLOW_CONTROL_OBJECTIVE="${BATCH_FLOW_CONTROL_OBJECTIVE:-batch-sheddable}"
 # Async dispatcher (llm-d-async) — ENABLE_DISPATCHER is set in common.sh
 DISPATCHER_RELEASE="${DISPATCHER_RELEASE:-dispatcher}"
 DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.3}"
-DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}}"
-DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d-incubation/charts/async-processor}"
+DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d/llm-d-async:${DISPATCHER_VERSION}}"
+DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d/charts/llm-d-async}"
 DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.3}"
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
@@ -846,7 +846,7 @@ YAML
 
     rm -f "${values_file}"
 
-    wait_for_deployment "${DISPATCHER_RELEASE}-async-processor" "${BATCH_NAMESPACE}" 120s
+    wait_for_deployment "${DISPATCHER_RELEASE}-llm-d-async" "${BATCH_NAMESPACE}" 120s
 
     log "Async dispatcher deployed."
 }
@@ -883,7 +883,7 @@ verify_dispatcher_config() {
     fi
 
     # 3. Async-processor started successfully
-    local ap_deploy="${DISPATCHER_RELEASE}-async-processor"
+    local ap_deploy="${DISPATCHER_RELEASE}-llm-d-async"
     step "Checking async-processor startup logs..."
     local ap_logs
     ap_logs=$(kubectl logs "deployment/${ap_deploy}" -n "${BATCH_NAMESPACE}" 2>/dev/null || echo "")
@@ -1231,7 +1231,7 @@ EOF
         || test_failures=$?
 
     if [ "${ENABLE_DISPATCHER}" = "true" ]; then
-        verify_dispatcher_runtime "${DISPATCHER_RELEASE}-async-processor" "${LLMD_POOL_NAME}"
+        verify_dispatcher_runtime "${DISPATCHER_RELEASE}-llm-d-async" "${LLMD_POOL_NAME}"
     fi
 
     if [ "${ENABLE_FLOW_CONTROL}" = "true" ]; then

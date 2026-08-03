@@ -1050,8 +1050,8 @@ kubectl rollout status deployment/${PROMETHEUS_NAME} -n ${LLM_NAMESPACE} --timeo
 ```bash
 DISPATCHER_RELEASE=dispatcher
 DISPATCHER_VERSION=${DISPATCHER_VERSION:-v0.7.3}
-DISPATCHER_IMAGE="ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}"
-DISPATCHER_CHART="oci://ghcr.io/llm-d-incubation/charts/async-processor"
+DISPATCHER_IMAGE="ghcr.io/llm-d/llm-d-async:${DISPATCHER_VERSION}"
+DISPATCHER_CHART="oci://ghcr.io/llm-d/charts/llm-d-async"
 
 REDIS_SVC=redis-master   # or redis-valkey-primary for Valkey
 REDIS_HOST="${REDIS_SVC}.${BATCH_NAMESPACE}.svc.cluster.local"

@@ -13,7 +13,7 @@ KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-batch-gateway-dev}"
 DISPATCHER_RELEASE="${DISPATCHER_RELEASE:-dispatcher}"
 DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.4}"
 DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d/llm-d-async:${DISPATCHER_VERSION}}"
-DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d/charts/async-processor}"
+DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d/charts/llm-d-async}"
 DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.4}"
 DISPATCHER_REDIS_PORT="${DISPATCHER_REDIS_PORT:-6399}"
 PID_FILE="${REPO_ROOT}/.dispatcher-port-forward.pid"
@@ -49,7 +49,7 @@ if [[ -n "${DISPATCHER_SOURCE}" ]]; then
         die "DISPATCHER_SOURCE directory not found: ${DISPATCHER_SOURCE}"
     fi
     DISPATCHER_IMAGE="ghcr.io/llm-d/llm-d-async:dev-local"
-    DISPATCHER_CHART="${DISPATCHER_SOURCE}/charts/async-processor"
+    DISPATCHER_CHART="${DISPATCHER_SOURCE}/charts/llm-d-async"
     unset DISPATCHER_CHART_VERSION
     step "Building async-processor image from ${DISPATCHER_SOURCE}..."
     ${CONTAINER_TOOL} build -t "${DISPATCHER_IMAGE}" "${DISPATCHER_SOURCE}"
@@ -124,11 +124,11 @@ log "Dispatchers deployed."
 
 # ── Verify dispatchers ───────────────────────────────────────────────────────
 step "Waiting for dispatcher pods to be ready..."
-kubectl wait --for=condition=available deployment/"${DISPATCHER_RELEASE}-async-processor" \
+kubectl wait --for=condition=available deployment/"${DISPATCHER_RELEASE}-llm-d-async" \
     --namespace "${NAMESPACE}" --timeout=60s
-kubectl wait --for=condition=available deployment/"${DISPATCHER_SCRAPE_RELEASE}-async-processor" \
+kubectl wait --for=condition=available deployment/"${DISPATCHER_SCRAPE_RELEASE}-llm-d-async" \
     --namespace "${NAMESPACE}" --timeout=60s
-kubectl wait --for=condition=available deployment/"${DISPATCHER_PROM_RELEASE}-async-processor" \
+kubectl wait --for=condition=available deployment/"${DISPATCHER_PROM_RELEASE}-llm-d-async" \
     --namespace "${NAMESPACE}" --timeout=60s
 
 # ── Add vllm-sim to Prometheus scrape targets ────────────────────────────────
