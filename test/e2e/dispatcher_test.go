@@ -88,7 +88,7 @@ func newDispatcherProducer(t *testing.T, rdb *redis.Client, poolName string) *pr
 	return p
 }
 
-// detectDispatcherDeployed checks whether at least one async-processor
+// detectDispatcherDeployed checks whether at least one llm-d-async
 // deployment exists in the test namespace.
 func detectDispatcherDeployed(t *testing.T) bool {
 	t.Helper()
@@ -102,7 +102,7 @@ func detectDispatcherDeployed(t *testing.T) bool {
 		return false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "async-processor") {
+		if strings.Contains(line, "llm-d-async") {
 			return true
 		}
 	}
@@ -160,7 +160,7 @@ func TestDispatcher(t *testing.T) {
 // from the async ResultMessage (e.g. 403 with an empty body) is preserved in
 // the batch output file instead of being collapsed into parse_error.
 //
-// Uses the consumer-less "sim-pool-inject" pool: no async-processor subscribes
+// Uses the consumer-less "sim-pool-inject" pool: no llm-d-async subscribes
 // to it, so the request stays in the queue deterministically until the test
 // removes it and injects a synthetic ResultMessage.
 func testDispatcherHTTPErrorStatusPreserved(t *testing.T, rdb *redis.Client) {

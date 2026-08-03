@@ -45,7 +45,7 @@ func TestDispatcherOTelTraces(t *testing.T) {
 
 // testCrossServiceTracePropagation verifies that a batch processed through the
 // async dispatcher produces a connected trace spanning both batch-gateway and
-// async-processor. The batch-gateway injects trace context into
+// llm-d-async. The batch-gateway injects trace context into
 // RequestMessage.Metadata, the async processor extracts it, and both services
 // export spans to the same Jaeger instance under the same trace ID.
 func testCrossServiceTracePropagation(t *testing.T, jaegerClient *http.Client) {
@@ -62,8 +62,8 @@ func testCrossServiceTracePropagation(t *testing.T, jaegerClient *http.Client) {
 		t.Fatalf("Expected 1 completed request, got %d", batch.RequestCounts.Completed)
 	}
 
-	// Poll Jaeger for traces from batch-gateway that contain async-processor spans.
-	// The batch-gateway creates a "process-batch" span, and the async-processor
+	// Poll Jaeger for traces from batch-gateway that contain llm-d-async spans.
+	// The batch-gateway creates a "process-batch" span, and llm-d-async
 	// creates a "process-request" child span under the same trace ID.
 	type jaegerSpan struct {
 		OperationName string `json:"operationName"`
@@ -89,7 +89,7 @@ func testCrossServiceTracePropagation(t *testing.T, jaegerClient *http.Client) {
 		default:
 		}
 
-		resp, err := jaegerClient.Get(testJaegerURL + "/api/traces?service=async-processor&limit=20&lookback=5m")
+		resp, err := jaegerClient.Get(testJaegerURL + "/api/traces?service=llm-d-async&limit=20&lookback=5m")
 		if err != nil {
 			t.Logf("Jaeger query failed (retrying): %v", err)
 			time.Sleep(2 * time.Second)
@@ -114,7 +114,7 @@ func testCrossServiceTracePropagation(t *testing.T, jaegerClient *http.Client) {
 					services[proc.ServiceName] = true
 				}
 			}
-			if services["batch-gateway"] && services["async-processor"] {
+			if services["batch-gateway"] && services["llm-d-async"] {
 				found = trace
 				break
 			}
@@ -132,7 +132,7 @@ func testCrossServiceTracePropagation(t *testing.T, jaegerClient *http.Client) {
 	}
 
 	if !spanOps["process-request"] {
-		t.Error("Expected 'process-request' span from async-processor in trace")
+		t.Error("Expected 'process-request' span from llm-d-async in trace")
 	}
 
 	// Collect service names for logging
