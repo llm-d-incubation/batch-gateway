@@ -1,4 +1,4 @@
-.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown benchmark-gpu benchmark-gpu-teardown
+.PHONY: help build build-apiserver build-processor build-gc run-apiserver run-processor run-gc run-apiserver-dev run-processor-dev run-gc-dev build-release package-release publish-helm-chart generate-release test test-coverage test-coverage-func clean lint fmt vet tidy install-tools deps-get deps-verify bench check check-container-tool ci image-build image-build-apiserver image-build-processor image-build-gc test-regression test-integration test-all test-e2e test-helm test-scripts dev-deploy dev-clean dev-rm-cluster pre-commit benchmark-local benchmark-local-teardown benchmark-gpu benchmark-gpu-teardown
 
 SHELL := /usr/bin/env bash
 
@@ -108,16 +108,13 @@ publish-helm-chart:
 	export GITHUB_ACTOR="$(GITHUB_ACTOR)"; \
 	./scripts/publish-helm-chart.sh
 
-## generate-release: Create and push a release tag (requires REL_VERSION; optional REL_BRANCH=main|release-vX.Y.Z , default main)
+## generate-release: Create a tag (and a release branch for final releases) on GitHub from a commit SHA (requires REL_SHA, REL_VERSION; uses gh CLI, no local git changes)
 generate-release:
-	@if [ -z "$(REL_VERSION)" ]; then \
-	  echo "Error: REL_VERSION is required. Example: make generate-release REL_VERSION=0.0.1"; exit 1; \
+	@if [ -z "$(REL_SHA)" ] || [ -z "$(REL_VERSION)" ]; then \
+	  echo "Error: REL_SHA and REL_VERSION are required."; \
+	  echo "Example: make generate-release REL_SHA=<commit-sha> REL_VERSION=0.4.0"; exit 1; \
 	fi
-	@if [ -n "$(REL_BRANCH)" ]; then \
-	  ./scripts/generate-release.sh $(REL_VERSION) $(REL_BRANCH); \
-	else \
-	  ./scripts/generate-release.sh $(REL_VERSION); \
-	fi
+	@./scripts/generate-release.sh $(REL_SHA) $(REL_VERSION)
 
 ## run-apiserver: Run the apiserver
 run-apiserver: build-apiserver
@@ -171,6 +168,11 @@ test:
 	fi; \
 	rm -f $$OUT; \
 	exit $$TEST_EXIT
+
+## test-scripts: Run shell script tests (stubbed-gh, no cluster/network needed)
+test-scripts:
+	@echo "Running shell script tests..."
+	@bash scripts/generate-release_test.sh
 
 ## test-coverage: Run tests with coverage
 test-coverage:
@@ -330,8 +332,8 @@ test-integration:
 		(echo "\n❌ Integration tests failed" && exit 1)
 	@echo "\n✅ Integration tests passed!"
 
-## test-all: Run all tests (unit + regression + integration)
-test-all: test test-regression test-integration
+## test-all: Run all tests (unit + regression + integration + scripts)
+test-all: test test-regression test-integration test-scripts
 
 KIND_CLUSTER_NAME ?= batch-gateway-dev
 
