@@ -749,6 +749,31 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "async explicit queue names accepted",
+			mutate: func(c *ProcessorConfig) {
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {
+						InferencePoolName: "pool-a",
+						RequestQueueName:  "custom:req:a",
+						ResultQueueName:   "custom:res:a",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "async partial queue names rejected",
+			mutate: func(c *ProcessorConfig) {
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {
+						InferencePoolName: "pool-a",
+						RequestQueueName:  "custom:req:a",
+					},
+				}
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -946,14 +971,42 @@ func TestResolveModelGateways_Async(t *testing.T) {
 		if len(resolved.Async.Models) != 2 {
 			t.Fatalf("Models count = %d, want 2", len(resolved.Async.Models))
 		}
-		if resolved.Async.Models["model-a"] != "pool-a" {
-			t.Errorf("Models[model-a] = %q, want %q", resolved.Async.Models["model-a"], "pool-a")
+		if resolved.Async.Models["model-a"].PoolName != "pool-a" {
+			t.Errorf("Models[model-a].PoolName = %q, want %q", resolved.Async.Models["model-a"].PoolName, "pool-a")
 		}
-		if resolved.Async.Models["model-b"] != "pool-b" {
-			t.Errorf("Models[model-b] = %q, want %q", resolved.Async.Models["model-b"], "pool-b")
+		if resolved.Async.Models["model-b"].PoolName != "pool-b" {
+			t.Errorf("Models[model-b].PoolName = %q, want %q", resolved.Async.Models["model-b"].PoolName, "pool-b")
 		}
 		if resolved.Async.ResultPollTimeout != 10*time.Second {
 			t.Errorf("ResultPollTimeout = %v, want %v", resolved.Async.ResultPollTimeout, 10*time.Second)
+		}
+	})
+
+	t.Run("passes explicit queue names through", func(t *testing.T) {
+		cfg := NewConfig()
+		cfg.DispatchMode = DispatchModeAsync
+		cfg.AsyncDispatchConfig = AsyncDispatchConfig{
+			ResultPollTimeout: 10 * time.Second,
+			Models: map[string]AsyncModelConfig{
+				"model-a": {
+					InferencePoolName: "pool-a",
+					RequestQueueName:  "custom:req:a",
+					ResultQueueName:   "custom:res:a",
+				},
+			},
+		}
+
+		resolved, err := ResolveModelGateways(cfg)
+		if err != nil {
+			t.Fatalf("ResolveModelGateways() error: %v", err)
+		}
+
+		m := resolved.Async.Models["model-a"]
+		if m.RequestQueueName != "custom:req:a" {
+			t.Errorf("RequestQueueName = %q, want %q", m.RequestQueueName, "custom:req:a")
+		}
+		if m.ResultQueueName != "custom:res:a" {
+			t.Errorf("ResultQueueName = %q, want %q", m.ResultQueueName, "custom:res:a")
 		}
 	})
 

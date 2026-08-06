@@ -56,6 +56,12 @@ data:
           {{- if $cfg.inferenceObjective }}
           inference_objective: {{ $cfg.inferenceObjective | quote }}
           {{- end }}
+          {{- if $cfg.requestQueueName }}
+          request_queue_name: {{ $cfg.requestQueueName | quote }}
+          {{- end }}
+          {{- if $cfg.resultQueueName }}
+          result_queue_name: {{ $cfg.resultQueueName | quote }}
+          {{- end }}
         {{- end }}
       {{- end }}
     {{- end }}

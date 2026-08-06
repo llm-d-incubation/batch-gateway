@@ -90,6 +90,20 @@ type AsyncModelConfig struct {
 	// the x-gateway-inference-objective header on inference requests.
 	// When empty, the header is not sent.
 	InferenceObjective string `yaml:"inference_objective"`
+
+	// RequestQueueName overrides the Redis sorted-set queue name used to
+	// submit inference requests. When empty, the name is derived from
+	// InferencePoolName as "llm-d-async:requests:<pool>".
+	// Deprecated fallback: the derived naming convention will be removed in
+	// a future release. Set explicit queue names for new deployments.
+	RequestQueueName string `yaml:"request_queue_name"`
+
+	// ResultQueueName overrides the Redis sorted-set queue name used to
+	// read inference results. When empty, the name is derived from
+	// InferencePoolName as "llm-d-async:results:<pool>".
+	// Deprecated fallback: the derived naming convention will be removed in
+	// a future release. Set explicit queue names for new deployments.
+	ResultQueueName string `yaml:"result_queue_name"`
 }
 
 // AsyncDispatchConfig holds configuration for the llm-d-async dispatch backend.
@@ -445,6 +459,9 @@ func (c *ProcessorConfig) validateAsyncDispatchConfig() error {
 		if m.InferencePoolName == "" {
 			return fmt.Errorf("async_dispatch.models[%s].inference_pool_name must be set", model)
 		}
+		if (m.RequestQueueName == "") != (m.ResultQueueName == "") {
+			return fmt.Errorf("async_dispatch.models[%s]: request_queue_name and result_queue_name must both be set or both be empty", model)
+		}
 	}
 	return nil
 }
@@ -586,9 +603,13 @@ func ResolveModelGateways(cfg *ProcessorConfig) (*ResolvedGateways, error) {
 	result := &ResolvedGateways{}
 
 	if cfg.IsAsync() {
-		models := make(map[string]string, len(cfg.AsyncDispatchConfig.Models))
+		models := make(map[string]inference.AsyncModelPoolConfig, len(cfg.AsyncDispatchConfig.Models))
 		for model, m := range cfg.AsyncDispatchConfig.Models {
-			models[model] = m.InferencePoolName
+			models[model] = inference.AsyncModelPoolConfig{
+				PoolName:         m.InferencePoolName,
+				RequestQueueName: m.RequestQueueName,
+				ResultQueueName:  m.ResultQueueName,
+			}
 		}
 		result.Async = &inference.AsyncClientConfig{
 			Models:            models,
