@@ -906,6 +906,7 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 		{
 			name: "async model objective set",
 			cfg: ProcessorConfig{
+				DispatchMode: DispatchModeAsync,
 				AsyncDispatchConfig: AsyncDispatchConfig{
 					Models: map[string]AsyncModelConfig{
 						"llama-3": {
@@ -921,6 +922,7 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 		{
 			name: "async model without objective returns empty",
 			cfg: ProcessorConfig{
+				DispatchMode: DispatchModeAsync,
 				AsyncDispatchConfig: AsyncDispatchConfig{
 					Models: map[string]AsyncModelConfig{
 						"llama-3": {InferencePoolName: "pool-a"},
@@ -929,6 +931,32 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 			},
 			modelID: "llama-3",
 			want:    "",
+		},
+		{
+			name: "sync mode ignores leftover async config",
+			cfg: ProcessorConfig{
+				DispatchMode: DispatchModeSync,
+				ModelGateways: map[string]ModelGatewayConfig{
+					"llama-3": {
+						URL:                "http://gw:8000",
+						InferenceObjective: "sync-objective",
+						RequestTimeout:     ptr.To(5 * time.Minute),
+						MaxRetries:         ptr.To(3),
+						InitialBackoff:     ptr.To(1 * time.Second),
+						MaxBackoff:         ptr.To(60 * time.Second),
+					},
+				},
+				AsyncDispatchConfig: AsyncDispatchConfig{
+					Models: map[string]AsyncModelConfig{
+						"llama-3": {
+							InferencePoolName:  "pool-a",
+							InferenceObjective: "stale-async-objective",
+						},
+					},
+				},
+			},
+			modelID: "llama-3",
+			want:    "sync-objective",
 		},
 	}
 

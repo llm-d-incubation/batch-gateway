@@ -268,8 +268,11 @@ func (c *ProcessorConfig) IsAsync() bool {
 // gateway that will handle requests for modelID.
 // Returns "" when no objective is configured, which means the header is not sent.
 func (c *ProcessorConfig) InferenceObjectiveFor(modelID string) string {
-	if m, ok := c.AsyncDispatchConfig.Models[modelID]; ok {
-		return m.InferenceObjective
+	if c.IsAsync() {
+		if m, ok := c.AsyncDispatchConfig.Models[modelID]; ok {
+			return m.InferenceObjective
+		}
+		return ""
 	}
 	if c.GlobalInferenceGateway != nil {
 		return c.GlobalInferenceGateway.InferenceObjective
