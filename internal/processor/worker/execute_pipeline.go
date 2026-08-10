@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -9,12 +10,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/pipeline"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
-func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Starting execution (v2 pipeline)")
 
@@ -39,11 +41,10 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 		return nil, err
 	}
 
+	// A zero SLODeadline means "no SLO"; the source treats it accordingly.
 	var sloDeadline time.Time
-	var hasSLO bool
-	if dl, ok := sloCtx.Deadline(); ok {
-		sloDeadline = dl
-		hasSLO = true
+	if params.task != nil {
+		sloDeadline = params.task.SLO
 	}
 
 	logPassThroughHeaders(params, logger)
@@ -67,7 +68,6 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 		Cfg:                p.cfg,
 		PassThroughHeaders: params.jobInfo.PassThroughHeaders,
 		SLODeadline:        sloDeadline,
-		HasSLO:             hasSLO,
 		TenantID:           params.jobInfo.TenantID,
 		Logger:             logger,
 	})
@@ -98,20 +98,29 @@ func (p *Processor) executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx 
 	})
 
 	// Finally, start and wait for completion.
-	counts, execErr := executor.Execute(requestAbortCtx)
+	counts, execErr := executor.Execute(ctx)
 
+	return counts, classifyOutcome(batchctx.Cause(ctx), counts, execErr)
+}
+
+// classifyOutcome maps the abort cause, request counts, and executor error to the
+// job's terminal error (nil = complete). Expiry and user cancel are terminal
+// regardless of progress; a shutdown that lands after every request already
+// succeeded is ignored so the job still finalizes. Any other stop surfaces the
+// executor's own error (nil on the happy path).
+func classifyOutcome(cause error, counts *openai.BatchRequestCounts, execErr error) error {
 	switch {
-	case sloCtx.Err() == context.DeadlineExceeded:
-		return counts, errExpired
-	case userCancelCtx.Err() != nil:
-		return counts, errCancelled
-	case ctx.Err() != nil && !counts.AllSucceeded():
-		return counts, errShutdown
-	case execErr != nil:
-		return counts, execErr
+	case errors.Is(cause, batchctx.ErrExpired), errors.Is(cause, batchctx.ErrCancelled):
+		return cause
+	case errors.Is(cause, batchctx.ErrShutdown):
+		if counts.AllSucceeded() {
+			return nil // finished before shutdown landed — let the job finalize
+		}
+		return cause
 	}
-
-	return counts, nil
+	// No terminal cause: surface the executor's error, if any (e.g. a persistence
+	// failure that arrived after every request was recorded as completed).
+	return execErr
 }
 
 func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, logger logr.Logger) (pipeline.RequestDispatcher, error) {

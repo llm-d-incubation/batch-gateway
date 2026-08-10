@@ -14,6 +14,7 @@ import (
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
 	filesapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
@@ -284,13 +285,14 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 		},
 	}
 
-	// Simulate that the worker observed the cancel request before writing the final status.
-	cancelledCtx, cancelFn := context.WithCancel(ctx)
-	cancelFn()
+	// Simulate that the worker observed the cancel request before writing the final status:
+	// the abort context carries the batchctx.ErrCancelled cause.
+	cancelledCtx, cancelFn := context.WithCancelCause(ctx)
+	cancelFn(batchctx.ErrCancelled)
 
-	err := p.finalizeJob(ctx, cancelledCtx, updater, staleJob, jobInfo, counts)
-	if !errors.Is(err, errCancelled) {
-		t.Fatalf("expected errCancelled, got: %v", err)
+	err := p.finalizeJob(cancelledCtx, updater, staleJob, jobInfo, counts)
+	if !errors.Is(err, batchctx.ErrCancelled) {
+		t.Fatalf("expected batchctx.ErrCancelled, got: %v", err)
 	}
 
 	// Verify that the final status written to the DB is cancelled, not completed.
@@ -310,9 +312,8 @@ func TestFinalizeJob_CancelRequested_FinalizesCancelled(t *testing.T) {
 }
 
 // TestFinalizeJob_ShutdownDuringFinalization_CompletesNotCancelled verifies that a SIGTERM
-// (ctx cancelled) during finalization does NOT route the job to cancelled.
-// userCancelCtx is derived from context.Background(), so SIGTERM does not propagate into it.
-// The job must transition to completed regardless of whether the parent ctx is cancelled.
+// (batchctx.ErrShutdown cause) during finalization does NOT route the job to cancelled.
+// Only the batchctx.ErrCancelled cause takes the cancel path; the job must transition to completed.
 func TestFinalizeJob_ShutdownDuringFinalization_CompletesNotCancelled(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.WorkDir = t.TempDir()
@@ -361,14 +362,11 @@ func TestFinalizeJob_ShutdownDuringFinalization_CompletesNotCancelled(t *testing
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
-	// Simulate SIGTERM: parent ctx is cancelled.
-	// userCancelCtx is derived from context.Background() — NOT from ctx — so it is not cancelled.
-	shutdownCtx, shutdownCancel := context.WithCancel(testLoggerCtx(t))
-	shutdownCancel() // SIGTERM fires
+	// Simulate SIGTERM: the abort context carries the ErrShutdown cause (not ErrCancelled).
+	shutdownCtx, shutdownCancel := context.WithCancelCause(testLoggerCtx(t))
+	shutdownCancel(batchctx.ErrShutdown) // SIGTERM fires
 
-	userCancelCtx := context.Background() // no user cancel
-
-	err := p.finalizeJob(shutdownCtx, userCancelCtx, updater, staleJob, jobInfo, counts)
+	err := p.finalizeJob(shutdownCtx, updater, staleJob, jobInfo, counts)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -438,7 +436,7 @@ func TestFinalizeJob_CompletedWriteFails_FallsBackToFailedWithFileIDs(t *testing
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
 	ctx := testLoggerCtx(t)
-	err := p.finalizeJob(ctx, context.Background(), updater, staleJob, jobInfo, counts)
+	err := p.finalizeJob(ctx, updater, staleJob, jobInfo, counts)
 
 	// Must return errFinalizeFailedOver (fallback succeeded).
 	if !errors.Is(err, errFinalizeFailedOver) {
@@ -514,12 +512,12 @@ func TestFinalizeJob_CancelledWriteFails_FallsBackToFailedWithFileIDs(t *testing
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 1, Completed: 1, Failed: 0}
 
-	// userCancelCtx is cancelled → finalization takes the cancel path.
 	ctx := testLoggerCtx(t)
-	userCancelCtx, userCancelFn := context.WithCancel(context.Background())
-	userCancelFn()
+	// The abort context carries the ErrCancelled cause → finalization takes the cancel path.
+	cancelledCtx, cancelFn := context.WithCancelCause(ctx)
+	cancelFn(batchctx.ErrCancelled)
 
-	err := p.finalizeJob(ctx, userCancelCtx, updater, staleJob, jobInfo, counts)
+	err := p.finalizeJob(cancelledCtx, updater, staleJob, jobInfo, counts)
 
 	if !errors.Is(err, errFinalizeFailedOver) {
 		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
@@ -598,7 +596,7 @@ func TestFinalizeJob_OneUploadFails_FailedWithSurvivingFileID(t *testing.T) {
 	counts := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
 
 	ctx := testLoggerCtx(t)
-	err := p.finalizeJob(ctx, context.Background(), updater, staleJob, jobInfo, counts)
+	err := p.finalizeJob(ctx, updater, staleJob, jobInfo, counts)
 	if !errors.Is(err, errFinalizeFailedOver) {
 		t.Fatalf("expected errFinalizeFailedOver, got: %v", err)
 	}
@@ -723,7 +721,7 @@ func TestFinalizeJob_UploadsFilesInParallel(t *testing.T) {
 	jobInfo := &batch_types.JobInfo{JobID: jobID, TenantID: tenantID}
 	counts := &openai.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}
 
-	err := p.finalizeJob(ctx, context.Background(), updater, dbJob, jobInfo, counts)
+	err := p.finalizeJob(ctx, updater, dbJob, jobInfo, counts)
 	if err != nil {
 		t.Fatalf("finalizeJob returned error: %v", err)
 	}

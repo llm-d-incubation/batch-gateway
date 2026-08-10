@@ -45,9 +45,9 @@ func (p *Processor) watchCancel(ctx context.Context, params *jobExecutionParams)
 			if event.Type == db.BatchEventCancel {
 				logger.V(logging.INFO).Info("watchCancel: cancel event received")
 
-				// userCancelFn marks userCancelCtx as cancelled. requestAbortCtx is
-				// automatically cancelled via context.AfterFunc wired in runJob.
-				params.userCancelFn()
+				// Trip the user-cancel layer so batchctx.Cause attributes the
+				// stop to a user cancellation.
+				params.cancelUser()
 
 				// We don't update the DB status to 'cancelling' here because
 				// the API server already wrote 'cancelling' before sending this event.

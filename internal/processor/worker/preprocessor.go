@@ -34,6 +34,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/metrics"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
@@ -47,9 +48,21 @@ import (
 // error entries for requests targeting unregistered models.
 // The rejected count is persisted in model_map.json so executeJob can
 // seed BatchRequestCounts.Failed without an extra parameter.
-func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jobInfo *batch_types.JobInfo) error {
+func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo) (err error) {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
+
+	// The single ctx now also cancels the input-file download, so a cancellation
+	// can surface as an I/O error. Reclassify only errors that actually stem from
+	// ctx cancellation (they wrap ctx.Err()); a genuine preprocessing failure that
+	// merely races a cancel must still surface as-is with its diagnostics.
+	defer func() {
+		if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			if s := batchctx.Cause(ctx); s != nil {
+				err = s
+			}
+		}
+	}()
 	planBuildStart := time.Now()
 	jobID := jobInfo.JobID
 	inputFileID := jobInfo.BatchJob.InputFileID
@@ -130,18 +143,11 @@ func (p *Processor) preProcessJob(ctx, sloCtx, userCancelCtx context.Context, jo
 	inputFileReader := bufio.NewReaderSize(reader, 1024*1024)
 
 	for {
-		// Priority: SLO expiry > user cancel > pod shutdown, matching processModel's
-		// drain switch. This ensures a user cancel is honoured even when SIGTERM arrives
-		// concurrently, instead of re-enqueueing a job the user asked to cancel.
-		if errors.Is(sloCtx.Err(), context.DeadlineExceeded) {
-			return errExpired
-		}
-		if userCancelCtx.Err() != nil {
-			logger.V(logging.INFO).Info("preProcess: cancel requested")
-			return errCancelled
-		}
-		if ctx.Err() != nil {
-			return errShutdown
+		// The abort context records why it stopped (SLO / user cancel / SIGTERM);
+		// batchctx.Cause maps that to the terminal routing sentinel. First-cause
+		// wins, so a user cancel racing SIGTERM is honoured by whichever fired first.
+		if s := batchctx.Cause(ctx); s != nil {
+			return s
 		}
 
 		// read a line from the input file
