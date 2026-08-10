@@ -1,92 +1,147 @@
 #!/bin/bash
-# Generates a release by creating and pushing a version tag from main or a release-vX.Y.Z branch.
-# This triggers the create-release and ci-release workflows.
+# Creates a version tag on GitHub, and for final releases also creates a release branch.
+# All operations use the gh CLI against the GitHub API — no local git changes are made.
+# Always targets llm-d/llm-d-batch-gateway regardless of local remotes.
 #
-# Usage: ./scripts/generate-release.sh <version> [branch]
-#   branch defaults to main; must be main or release-vX.Y.Z (same form as a version tag, e.g. release-v0.1.0).
+# Usage: ./scripts/generate-release.sh <commit-sha> <version>
+#   commit-sha  Commit SHA (full or abbreviated) to release from.
+#               Obtain from GitHub (UI, gh CLI) — no local clone needed:
+#                 gh api repos/{owner}/{repo}/commits/main --jq '.sha'
+#                 gh api repos/{owner}/{repo}/commits/<branch> --jq '.sha'
+#                 gh pr view <number> --json mergeCommit --jq '.mergeCommit.oid'
+#   version     Semver version: vX.Y.Z for a final release, or vX.Y.Z-<pre-release>
+#               for a pre-release (e.g. v0.4.0-rc1, v1.0.0-alpha.1).
+#               The 'v' prefix is added automatically if omitted.
 #
-# Example: ./scripts/generate-release.sh 1.0.0
-#          ./scripts/generate-release.sh 0.1.1 release-v0.1.0
-#          ./scripts/generate-release.sh v1.0.0
-#          ./scripts/generate-release.sh v0.0.0-test              # test tag from main
-#          ./scripts/generate-release.sh v0.0.0-test release-v0.0.1   # test tag from a release branch
+# Behavior:
+#   Final release (e.g. v0.1.9):
+#     - Creates branch release-v0.1.9 from <commit-sha>
+#     - Creates tag v0.1.9 on <commit-sha>
+#   Pre-release (e.g. v0.1.9-rc1):
+#     - Creates tag v0.1.9-rc1 on <commit-sha> (expected to be on main)
+#     - No branch is created
 #
-# The version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test). The 'v' prefix is added if omitted.
-# When tagging from release-vX.Y.Z, the version must be vX.Y.*.
+# Pushing the tag triggers the Release workflow (create-release.yml).
+#
+# Examples:
+#   ./scripts/generate-release.sh abc1234 0.4.0       # final release
+#   ./scripts/generate-release.sh abc1234 v0.4.0-rc1  # pre-release
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <version> [branch]"
+    echo "Usage: $0 <commit-sha> <version>"
     echo ""
-    echo "Creates and pushes a release tag from the given branch (default: main)."
-    echo "Branch must be main or release-vX.Y.Z (same form as a tag, e.g. release-v0.1.0). Triggers create-release and ci-release workflows."
+    echo "Creates a version tag on GitHub. For final releases (vX.Y.Z), also creates"
+    echo "a release-vX.Y.Z branch. Pre-releases (vX.Y.Z-<suffix>) only create a tag."
+    echo ""
+    echo "Arguments:"
+    echo "  commit-sha  Commit SHA (full or abbreviated) to release from."
+    echo "              Get it from GitHub without a local clone:"
+    echo "                gh api repos/{owner}/{repo}/commits/main --jq '.sha'"
+    echo "                gh pr view <number> --json mergeCommit --jq '.mergeCommit.oid'"
+    echo "  version     vX.Y.Z (final) or vX.Y.Z-<pre-release> (e.g. v0.4.0-rc1, v1.0.0-alpha.1)."
+    echo "              The 'v' prefix is added automatically if omitted."
     echo ""
     echo "Examples:"
-    echo "  $0 1.0.0                    # tags v1.0.0 from main"
-    echo "  $0 0.1.1 release-v0.1.0     # hotfix tag from release branch"
-    echo "  $0 v1.0.0                   # tags as v1.0.0 from main"
-    echo "  $0 v0.0.0-test              # test tag from main"
-    echo "  $0 v0.0.0-test release-v0.0.1   # test tag from a release branch"
-    echo ""
-    echo "The tagged commit must already be on the branch you select (merge or push there first)."
+    echo "  $0 abc1234 0.4.0        # final: creates release-v0.4.0 branch + tag"
+    echo "  $0 abc1234 v0.4.0-rc1   # pre-release: tag only, no branch"
     exit 1
 }
 
-if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+if [ $# -ne 2 ]; then
     usage
 fi
 
-VERSION="$1"
-BRANCH="${2:-main}"
+COMMIT_SHA="$1"
+VERSION="$2"
 
-# Semver-like tag body: vX.Y.Z or vX.Y.Z-suffix (release branches are release-<same>, e.g. release-v0.1.0)
-_SEMVER_V='v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?'
-
-if [[ "$BRANCH" != "main" && ! "$BRANCH" =~ ^release-${_SEMVER_V}$ ]]; then
-    echo "Error: branch must be 'main' or 'release-vX.Y.Z' matching the tag pattern (e.g. release-v0.1.0) (got: ${BRANCH})" >&2
+# Validate commit SHA (7-40 hex chars, either case)
+if [[ ! "$COMMIT_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    echo "Error: commit-sha must be a hex SHA of 7-40 characters (got: ${COMMIT_SHA})" >&2
     exit 1
 fi
-# Add 'v' prefix if not present
+
+# Normalize version (add v prefix if missing)
 if [[ ! "$VERSION" =~ ^v ]]; then
     VERSION="v${VERSION}"
 fi
 
-# Validate semver-like format (v*.*.* or v*.*.*-suffix for test tags)
-if [[ ! "$VERSION" =~ ^${_SEMVER_V}$ ]]; then
-    echo "Error: version must match v*.*.* (e.g. v1.0.0) or v*.*.*-suffix (e.g. v0.0.0-test)" >&2
+# Validate semver-like format (vX.Y.Z or vX.Y.Z-<pre-release> e.g. v0.4.0-rc1, v1.0.0-alpha.1)
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+    echo "Error: version must be vX.Y.Z or vX.Y.Z-<pre-release> (e.g. v0.4.0, v0.4.0-rc1, v1.0.0-alpha.1) (got: ${VERSION})" >&2
     exit 1
 fi
 
-# If tagging from release-vX.Y.Z, ensure the tag stays on that release line (vX.Y.*).
-if [[ "$BRANCH" =~ ^release-v([0-9]+)\.([0-9]+)\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
-    BRANCH_MAJOR="${BASH_REMATCH[1]}"
-    BRANCH_MINOR="${BASH_REMATCH[2]}"
-    if [[ "$VERSION" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
-        VERSION_MAJOR="${BASH_REMATCH[1]}"
-        VERSION_MINOR="${BASH_REMATCH[2]}"
-        if [[ "$VERSION_MAJOR" != "$BRANCH_MAJOR" || "$VERSION_MINOR" != "$BRANCH_MINOR" ]]; then
-            echo "Error: version ${VERSION} is not valid for branch ${BRANCH}. Expected v${BRANCH_MAJOR}.${BRANCH_MINOR}.* for this release branch." >&2
-            exit 1
-        fi
-    fi
+# Determine if this is a final release or a pre-release
+IS_PRERELEASE=false
+if [[ "$VERSION" == *-* ]]; then
+    IS_PRERELEASE=true
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-cd "${REPO_ROOT}"
+REPO="llm-d/llm-d-batch-gateway"
 
-echo "Generating release ${VERSION} from branch ${BRANCH}..."
-echo "  - Checking out ${BRANCH} and pulling latest"
-git checkout "${BRANCH}"
-git pull origin "${BRANCH}"
+command -v gh >/dev/null 2>&1 || {
+    echo "Error: gh CLI is required (https://cli.github.com/)" >&2
+    exit 1
+}
+gh auth status >/dev/null 2>&1 || {
+    echo "Error: gh CLI is not authenticated. Run: gh auth login" >&2
+    exit 1
+}
 
-echo "  - Creating tag ${VERSION}"
-git tag "${VERSION}"
+echo "Repository : ${REPO}"
+echo "Commit SHA : ${COMMIT_SHA}"
+echo "Tag        : ${VERSION}"
+if [ "$IS_PRERELEASE" = true ]; then
+    echo "Type       : pre-release (tag only, no branch)"
+else
+    echo "Type       : final release (branch + tag)"
+    echo "Branch     : release-${VERSION}"
+fi
+echo ""
 
-echo "  - Pushing tag ${VERSION} to origin"
-git push origin "${VERSION}"
+echo "Verifying commit exists..."
+# Resolve to the full 40-char SHA: the create-ref API operates on raw objects
+# and rejects abbreviated SHAs with a 422, whereas commits/{sha} resolves ref-ish values.
+RESOLVED_SHA="$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" --jq '.sha' 2>/dev/null)" || {
+    echo "Error: commit ${COMMIT_SHA} not found in ${REPO}" >&2
+    exit 1
+}
+echo "Commit verified (${RESOLVED_SHA})."
+echo ""
+
+# create_ref idempotently points a ref at RESOLVED_SHA. If the ref already
+# exists at the same SHA it is left as-is, so a re-run after a partial failure
+# (e.g. the branch was created but the tag POST failed) is safe. If it exists
+# at a different SHA it is an error rather than a silent move.
+create_ref() {
+    local ref="$1"  # e.g. refs/heads/release-v1.2.3
+    local existing
+    if existing="$(gh api "repos/${REPO}/git/ref/${ref#refs/}" --jq '.object.sha' 2>/dev/null)"; then
+        if [ "$existing" = "$RESOLVED_SHA" ]; then
+            echo "  ${ref} already at ${RESOLVED_SHA}, skipping."
+            return 0
+        fi
+        echo "Error: ${ref} already exists at ${existing} (want ${RESOLVED_SHA}); delete it or re-run with the matching SHA" >&2
+        return 1
+    fi
+    gh api "repos/${REPO}/git/refs" \
+        --method POST \
+        -f "ref=${ref}" \
+        -f "sha=${RESOLVED_SHA}"
+}
+
+if [ "$IS_PRERELEASE" = false ]; then
+    echo "Creating branch release-${VERSION}..."
+    create_ref "refs/heads/release-${VERSION}"
+    echo "Branch release-${VERSION} ready."
+fi
+
+echo "Creating tag ${VERSION}..."
+create_ref "refs/tags/${VERSION}"
+echo "Tag ${VERSION} ready."
 
 echo ""
-echo "Release tag ${VERSION} pushed. Workflows (create-release, ci-release) will run automatically."
-echo "Monitor progress in the Actions tab of your repository."
+echo "Done. The Release workflow will run automatically."
+echo "Monitor progress at: https://github.com/${REPO}/actions"

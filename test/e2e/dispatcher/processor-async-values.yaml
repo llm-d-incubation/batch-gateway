@@ -3,8 +3,8 @@ processor:
     dispatchMode: async
     asyncDispatch:
       resultPollTimeout: "30s"
-    modelGateways:
-      sim-model:
-        inferencePoolName: "sim-pool"
-      sim-model-inject:
-        inferencePoolName: "sim-pool-inject"
+      models:
+        sim-model:
+          inferencePoolName: "sim-pool"
+        sim-model-inject:
+          inferencePoolName: "sim-pool-inject"

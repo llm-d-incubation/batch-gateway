@@ -7,6 +7,7 @@
 [![apiserver](https://img.shields.io/github/v/release/llm-d/llm-d-batch-gateway?label=apiserver)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-apiserver)
 [![processor](https://img.shields.io/github/v/release/llm-d/llm-d-batch-gateway?label=processor)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-processor)
 [![gc](https://img.shields.io/github/v/release/llm-d/llm-d-batch-gateway?label=gc)](https://github.com/llm-d/llm-d-batch-gateway/pkgs/container/batch-gateway-gc)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fllm-d%2Fllm-d-batch-gateway.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fllm-d%2Fllm-d-batch-gateway?ref=badge_shield)
 
 ## Overview
 
@@ -44,7 +45,7 @@ The system is designed to facilitate efficient processing of batch workloads in 
 - **Kubernetes Native**: Helm charts with OpenShift compatibility.
 - **Observability**: Prometheus metrics and Open Telemetry integration.
 - **Health Checks**: Liveness and readiness probes for the system components.
-- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Processor connections to HTTPS llm-d Routers can use custom CAs and mTLS; see [Processor inference TLS](docs/guides/processor-inference-tls.md). Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-llm-route), [RHOAI](docs/guides/deploy-rhoai.md#15-security-boundary-batch-route-vs-llm-route), and [MaaS](docs/guides/deploy-maas.md#15-security-boundary-batch-route-vs-llm-route) deployment guides.
+- **Security**: TLS support, non-root execution, capability dropping, read-only filesystem. Processor connections to HTTPS llm-d Routers can use custom CAs and mTLS; see [Processor inference TLS](docs/guides/processor-inference-tls.md). Gateway deployments: batch API admission and per-model inference authorization are enforced on separate routes; see **Security boundary** in the [Kubernetes](docs/guides/deploy-k8s.md#15-security-boundary-batch-route-vs-batch-llm-route-vs-llm-route) deployment guide.
 
 ## Architecture
 
@@ -458,6 +459,8 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fllm-d%2Fllm-d-batch-gateway.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fllm-d%2Fllm-d-batch-gateway?ref=badge_large)
 
 ## Related Projects
 
