@@ -51,6 +51,6 @@ func newBatchRequestID(requestID string) string {
 
 // Deprecated: executeJob delegates to executeJobAsync. Kept so existing
 // tests compile until they are migrated or removed.
-func (p *Processor) executeJob(ctx, sloCtx, userCancelCtx, requestAbortCtx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
-	return p.executeJobAsync(ctx, sloCtx, userCancelCtx, requestAbortCtx, params)
+func (p *Processor) executeJob(ctx context.Context, params *jobExecutionParams) (*openai.BatchRequestCounts, error) {
+	return p.executeJobAsync(ctx, params)
 }

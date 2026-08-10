@@ -29,7 +29,6 @@ type PlanFileSource struct {
 	cfg                *config.ProcessorConfig
 	passThroughHeaders map[string]string
 	sloDeadline        time.Time
-	hasSLO             bool
 	tenantID           string
 	logger             logr.Logger
 }
@@ -44,7 +43,6 @@ type PlanFileSourceConfig struct {
 	Cfg                *config.ProcessorConfig
 	PassThroughHeaders map[string]string
 	SLODeadline        time.Time
-	HasSLO             bool
 	TenantID           string
 	Logger             logr.Logger
 }
@@ -58,7 +56,6 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 		cfg:                cfg.Cfg,
 		passThroughHeaders: cfg.PassThroughHeaders,
 		sloDeadline:        cfg.SLODeadline,
-		hasSLO:             cfg.HasSLO,
 		tenantID:           cfg.TenantID,
 		logger:             cfg.Logger,
 	}
@@ -135,7 +132,7 @@ func (s *PlanFileSource) mergeHeaders(headers map[string]string, modelID string)
 		headers = make(map[string]string)
 	}
 
-	if s.hasSLO {
+	if !s.sloDeadline.IsZero() {
 		ms := time.Until(s.sloDeadline).Milliseconds()
 		if ms >= 0 {
 			headers[sloTTFTMSHeader] = strconv.FormatInt(ms, 10)

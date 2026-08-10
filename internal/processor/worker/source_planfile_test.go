@@ -40,7 +40,6 @@ func TestMergeHeaders(t *testing.T) {
 		want := 5*time.Second + 100*time.Millisecond
 		s := &PlanFileSource{
 			cfg:         config.NewConfig(),
-			hasSLO:      true,
 			sloDeadline: time.Now().Add(want),
 			logger:      logr.Discard(),
 		}
@@ -60,7 +59,6 @@ func TestMergeHeaders(t *testing.T) {
 	t.Run("SLO deadline in the past omits header", func(t *testing.T) {
 		s := &PlanFileSource{
 			cfg:         config.NewConfig(),
-			hasSLO:      true,
 			sloDeadline: time.Now().Add(-time.Second),
 			logger:      logr.Discard(),
 		}
@@ -73,7 +71,6 @@ func TestMergeHeaders(t *testing.T) {
 	t.Run("preserves existing headers", func(t *testing.T) {
 		s := &PlanFileSource{
 			cfg:         config.NewConfig(),
-			hasSLO:      true,
 			sloDeadline: time.Now().Add(time.Minute),
 			logger:      logr.Discard(),
 		}
@@ -192,7 +189,6 @@ func TestMergeHeaders(t *testing.T) {
 		}
 		s := &PlanFileSource{
 			cfg:         cfg,
-			hasSLO:      true,
 			sloDeadline: time.Now().Add(10 * time.Second),
 			tenantID:    "tenant-xyz",
 			logger:      logr.Discard(),
