@@ -108,13 +108,19 @@ func (s *PlanFileSource) readEntry(entry planEntry, modelID string) (*pipeline.R
 		}, nil
 	}
 
+	// When route_key_by_tenant is enabled, scope the gateway lookup key by
+	// tenant so identically-named models of different tenants route to their
+	// own backends (model_gateways entries keyed "<tenantID>/<modelID>").
+	// The request body itself is forwarded verbatim to the inference backend.
+	lookupID := routeKey(s.cfg.RouteKeyByTenant, s.tenantID, modelID)
+
 	headers := maps.Clone(s.passThroughHeaders)
-	headers = s.mergeHeaders(headers, modelID)
+	headers = s.mergeHeaders(headers, lookupID)
 
 	return &pipeline.RequestItem{
 		RequestID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
 		CustomID:  req.CustomID,
-		ModelID:   modelID,
+		ModelID:   lookupID,
 		Endpoint:  req.URL,
 		Body:      req.Body,
 		Headers:   headers,

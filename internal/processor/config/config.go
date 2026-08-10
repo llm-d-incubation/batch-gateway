@@ -174,6 +174,14 @@ type ProcessorConfig struct {
 	// Ignored when GlobalInferenceGateway is set.
 	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
+	// RouteKeyByTenant scopes model_gateways lookups by the job's tenant ID:
+	// when enabled, requests resolve gateways under "<tenantID>/<modelID>",
+	// so identically-named models of different tenants route to their own
+	// backends on a shared apiserver. The forwarded request body is left
+	// untouched (the runtime still sees the bare model name). Default false
+	// keeps bare-model lookups.
+	RouteKeyByTenant bool `yaml:"route_key_by_tenant"`
+
 	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
 	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
 	// 0 means no expiration (keep until explicitly deleted).

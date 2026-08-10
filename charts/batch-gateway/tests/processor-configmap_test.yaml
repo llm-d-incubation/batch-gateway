@@ -388,6 +388,20 @@ tests:
           path: data["config.yaml"]
           pattern: 'send_fairness_header: true'
 
+  - it: should not render route_key_by_tenant when false (default)
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'route_key_by_tenant:'
+
+  - it: should render route_key_by_tenant when enabled
+    set:
+      processor.config.routeKeyByTenant: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'route_key_by_tenant: true'
+
   - it: should not render ConfigMap when processor is disabled
     set:
       processor.enabled: false
