@@ -353,6 +353,27 @@ tests:
           path: data["config.yaml"]
           pattern: 'global_inference_gateway:[\s\S]*inference_objective:'
 
+  - it: should render async_dispatch.models when configured
+    set:
+      processor.config.dispatchMode: async
+      processor.config.asyncDispatch:
+        resultPollTimeout: "30s"
+        models:
+          "sim-model":
+            inferencePoolName: "sim-pool"
+          "sim-model-inject":
+            inferencePoolName: "sim-pool-inject"
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'dispatch_mode: "async"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'async_dispatch:[\s\S]*models:[\s\S]*"sim-model":[\s\S]*inference_pool_name: "sim-pool"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: '"sim-model-inject":[\s\S]*inference_pool_name: "sim-pool-inject"'
+
   - it: should not render send_fairness_header when false (default)
     asserts:
       - notMatchRegex:
@@ -366,6 +387,20 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'send_fairness_header: true'
+
+  - it: should not render route_key_by_tenant when false (default)
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: 'route_key_by_tenant:'
+
+  - it: should render route_key_by_tenant when enabled
+    set:
+      processor.config.routeKeyByTenant: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'route_key_by_tenant: true'
 
   - it: should not render ConfigMap when processor is disabled
     set:

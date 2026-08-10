@@ -393,6 +393,30 @@ processor:
     #     inferenceObjective: "batch-sheddable-b"   # references gie-b pool
     #     requestTimeout: "2m"
     #     maxRetries: 1
+    # Scope modelGateways lookups by the persisted job tenant ID. When enabled,
+    # configure keys as "<tenantID>/<modelID>". The forwarded request body keeps
+    # its original model ID so the runtime still receives its served model name.
+    routeKeyByTenant: false
+
+    # Async dispatch mode (alternative to sync).
+    # Set dispatchMode: "async" and configure asyncDispatch.models instead
+    # of modelGateways. Each model maps to a Redis-backed inference pool.
+    # Queue names can be set explicitly; when omitted they are derived from
+    # inferencePoolName (deprecated — set explicit names for new deployments).
+    # dispatchMode: "async"
+    # asyncDispatch:
+    #   resultPollTimeout: "30s"
+    #   models:
+    #     "llama-3":
+    #       inferencePoolName: "pool-a"
+    #       inferenceObjective: "batch-sheddable-a"  # optional: GIE InferenceObjective CRD name
+    #       requestQueueName: "llm-d-async:requests:pool-a"  # optional: explicit request queue
+    #       resultQueueName: "llm-d-async:results:pool-a"    # optional: explicit result queue
+    #     "mistral":
+    #       inferencePoolName: "pool-b"
+    #       inferenceObjective: "batch-sheddable-b"
+    #       requestQueueName: "llm-d-async:requests:pool-b"
+    #       resultQueueName: "llm-d-async:results:pool-b"
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
     # Whether to send x-gateway-inference-fairness-id on inference requests.

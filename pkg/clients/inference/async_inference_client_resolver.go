@@ -31,11 +31,18 @@ import (
 
 const asyncQueuePrefix = "llm-d-async:"
 
+// AsyncModelPoolConfig holds the resolved pool and queue settings for one async model.
+type AsyncModelPoolConfig struct {
+	PoolName         string
+	RequestQueueName string
+	ResultQueueName  string
+}
+
 // AsyncClientConfig holds the resolved configuration for async dispatch.
 type AsyncClientConfig struct {
 	RedisURL          string
-	Models            map[string]string // model name -> pool name
-	ResultPollTimeout time.Duration     // per-poll timeout in the result dispatcher loop
+	Models            map[string]AsyncModelPoolConfig
+	ResultPollTimeout time.Duration // per-poll timeout in the result dispatcher loop
 }
 
 // AsyncGatewayResolver routes models to shared AsyncInferenceClient instances.
@@ -113,12 +120,12 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 	rdb := redis.NewClient(opts)
 
 	poolToModel := make(map[string]string, len(config.Models))
-	for model, poolName := range config.Models {
-		if existing, ok := poolToModel[poolName]; ok {
+	for model, mcfg := range config.Models {
+		if existing, ok := poolToModel[mcfg.PoolName]; ok {
 			_ = rdb.Close()
-			return nil, fmt.Errorf("models %q and %q both map to pool %q: each pool must have a single consumer", existing, model, poolName)
+			return nil, fmt.Errorf("models %q and %q both map to pool %q: each pool must have a single consumer", existing, model, mcfg.PoolName)
 		}
-		poolToModel[poolName] = model
+		poolToModel[mcfg.PoolName] = model
 	}
 
 	if config.ResultPollTimeout <= 0 {
@@ -129,11 +136,22 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 	pools := make(map[string]*asyncPool, len(config.Models))
 	var closers []io.Closer
 
-	for model, poolName := range config.Models {
+	for model, mcfg := range config.Models {
+		reqQueue := mcfg.RequestQueueName
+		resQueue := mcfg.ResultQueueName
+		// Deprecated: derived queue names from pool name. Set explicit
+		// request_queue_name / result_queue_name in async model config.
+		if reqQueue == "" {
+			reqQueue = asyncQueuePrefix + "requests:" + mcfg.PoolName
+		}
+		if resQueue == "" {
+			resQueue = asyncQueuePrefix + "results:" + mcfg.PoolName
+		}
+
 		p, err := producer.NewRedisSortedSetProducer(
 			producer.RedisSortedSetConfig{
-				RequestQueueName: asyncQueuePrefix + "requests:" + poolName,
-				ResultQueueName:  asyncQueuePrefix + "results:" + poolName,
+				RequestQueueName: reqQueue,
+				ResultQueueName:  resQueue,
 			},
 			producer.WithRedisClient(rdb),
 		)
@@ -142,7 +160,7 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 				_ = c.Close()
 			}
 			_ = rdb.Close()
-			return nil, fmt.Errorf("failed to create producer for model %q (pool %s): %w", model, poolName, err)
+			return nil, fmt.Errorf("failed to create producer for model %q (pool %s): %w", model, mcfg.PoolName, err)
 		}
 
 		pools[model] = &asyncPool{

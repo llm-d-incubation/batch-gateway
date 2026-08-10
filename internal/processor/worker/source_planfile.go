@@ -29,7 +29,6 @@ type PlanFileSource struct {
 	cfg                *config.ProcessorConfig
 	passThroughHeaders map[string]string
 	sloDeadline        time.Time
-	hasSLO             bool
 	tenantID           string
 	logger             logr.Logger
 }
@@ -44,7 +43,6 @@ type PlanFileSourceConfig struct {
 	Cfg                *config.ProcessorConfig
 	PassThroughHeaders map[string]string
 	SLODeadline        time.Time
-	HasSLO             bool
 	TenantID           string
 	Logger             logr.Logger
 }
@@ -58,7 +56,6 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 		cfg:                cfg.Cfg,
 		passThroughHeaders: cfg.PassThroughHeaders,
 		sloDeadline:        cfg.SLODeadline,
-		hasSLO:             cfg.HasSLO,
 		tenantID:           cfg.TenantID,
 		logger:             cfg.Logger,
 	}
@@ -111,13 +108,19 @@ func (s *PlanFileSource) readEntry(entry planEntry, modelID string) (*pipeline.R
 		}, nil
 	}
 
+	// When route_key_by_tenant is enabled, scope the gateway lookup key by
+	// tenant so identically-named models of different tenants route to their
+	// own backends (model_gateways entries keyed "<tenantID>/<modelID>").
+	// The request body itself is forwarded verbatim to the inference backend.
+	lookupID := routeKey(s.cfg.RouteKeyByTenant, s.tenantID, modelID)
+
 	headers := maps.Clone(s.passThroughHeaders)
-	headers = s.mergeHeaders(headers, modelID)
+	headers = s.mergeHeaders(headers, lookupID)
 
 	return &pipeline.RequestItem{
 		RequestID: fmt.Sprintf("batch_req_%s", uuid.NewString()),
 		CustomID:  req.CustomID,
-		ModelID:   modelID,
+		ModelID:   lookupID,
 		Endpoint:  req.URL,
 		Body:      req.Body,
 		Headers:   headers,
@@ -129,7 +132,7 @@ func (s *PlanFileSource) mergeHeaders(headers map[string]string, modelID string)
 		headers = make(map[string]string)
 	}
 
-	if s.hasSLO {
+	if !s.sloDeadline.IsZero() {
 		ms := time.Until(s.sloDeadline).Milliseconds()
 		if ms >= 0 {
 			headers[sloTTFTMSHeader] = strconv.FormatInt(ms, 10)
