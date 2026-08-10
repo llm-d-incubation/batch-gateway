@@ -26,20 +26,18 @@ import (
 
 // jobExecutionParams holds the job-scoped state shared across processing stages.
 // Contexts are NOT stored here — they are passed explicitly per Go convention.
-// userCancelFn and requestAbortFn are exceptions: they are cancel functions stored
-// here so that the watchCancel goroutine can call them when a cancel event arrives.
-// userCancelFn cancels userCancelCtx (user-cancel signal, derived from context.Background).
-// requestAbortFn cancels requestAbortCtx (dispatch loop control, derived from sloCtx) to stop
-// dispatch immediately when the user cancels.
+// cancelUser is an exception: it is a no-arg closure that trips the abort
+// context's cause func with batchctx.ErrCancelled, stored here so the watchCancel
+// goroutine can call it when a user cancel event arrives. The recorded cause is
+// later read via batchctx.Cause to classify the terminal state.
 type jobExecutionParams struct {
 	updater *StatusUpdater
 	jobItem *db.BatchItem
 	jobInfo *batch_types.JobInfo
 	task    *db.BatchJobPriority
 
-	eventWatcher   *db.BatchEventsChan
-	userCancelFn   context.CancelFunc
-	requestAbortFn context.CancelFunc
+	eventWatcher *db.BatchEventsChan
+	cancelUser   context.CancelFunc
 
 	requestCounts *openai.BatchRequestCounts
 }
