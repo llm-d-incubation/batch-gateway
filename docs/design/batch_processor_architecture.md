@@ -1,7 +1,7 @@
 # Batch Processor Design
 
--   **Revision**: 8
--   **Last Updated**: 2026-04-28
+-   **Revision**: 9
+-   **Last Updated**: 2026-07-29
 
 -------------------------------------------------------------------
 
@@ -143,10 +143,9 @@ flowchart TD
 
     subgraph phase2 ["Execution"]
         direction TB
-        dispatch["Dispatch requests concurrently per model"]
-        dispatch --> readPlan["Read plan entry, read input line"]
-        readPlan --> sendInfer["Send to inference client"]
-        sendInfer --> writeResult["Write result to output.jsonl or error.jsonl"]
+        source["RequestSource: read plan entry + input line → RequestItem"]
+        source --> dispatch["Dispatcher chain: gate, then dispatch (HTTP or async queue)"]
+        dispatch --> collect["ResultCollector: write result to output.jsonl or error.jsonl"]
     end
 
     phase2 --> phase3
@@ -165,7 +164,7 @@ flowchart TD
     phase2 -->|"SLO expired"| expiredState["expired — partial output"]
     phase2 -->|"user cancel"| cancelledState["cancelled — partial output"]
     phase2 -->|"system error"| failedPartial["failed — partial output"]
-    phase2 -->|"pod shutdown"| reenqueue["re-enqueued — partial flushed to disk"]
+    phase2 -->|"pod shutdown"| reconcile["left for orphan reconciler — partial flushed to disk"]
     phase3 -->|"upload failure"| failedPreserved["failed — surviving file IDs preserved"]
 ```
 
@@ -179,10 +178,12 @@ flowchart TD
 
 **Execution**
 
-1.  One goroutine per model dispatches requests concurrently, bounded by global and per-endpoint semaphores
-2.  For each plan entry: read the input line at the recorded offset, parse, send to the inference client
-3.  Write the response to `output.jsonl` (success) or `error.jsonl` (inference error)
-4.  If interrupted (SLO expiry, cancel, system error): drain undispatched entries to `error.jsonl` with the appropriate error code, flush writers, and return partial counts
+Execution runs as a **channel-based pipeline** of concurrent actors, orchestrated by a `JobExecutor` (see [Execution](#execution) below): a single request source feeds a composable dispatcher chain that emits results to a collector.
+
+1.  A single `RequestSource` reads plan entries (in `PrefixHash`-sorted order), reads each input line at the recorded offset, parses it, and emits a `RequestItem` onto the request channel
+2.  A dispatcher chain gates and dispatches each request — either directly over HTTP (**sync** mode) or by enqueuing to the llm-d-async request queue (**async** mode) — and emits a `ResultItem` onto the result channel
+3.  A `ResultCollector` writes each response to `output.jsonl` (success) or `error.jsonl` (inference error) and updates progress counters
+4.  If interrupted (SLO expiry, cancel, system error): the dispatcher chain drains undispatched entries as error results with the appropriate error code, the collector flushes writers, and the executor returns partial counts
 
 **Finalization**
 
@@ -223,10 +224,12 @@ Terminal states are removed from the priority queue.
 
 #### 3. Context Hierarchy
 
-The processor uses a layered context tree to propagate cancellation signals.
-The critical invariant is the **fork** at `ctx`: `pollingCtx` and `jobCtx` are siblings, so cancelling the polling loop does not kill in-flight jobs.
+The processor uses two levels of contexts:
 
-A second critical invariant is the **isolation** of `userCancelCtx`: it is derived from `context.Background()` (not from `ctx` or `sloCtx`), so SIGTERM and SLO expiry **never** propagate into it. `userCancelCtx.Err() != nil` exclusively means the user requested cancellation via the API.
+1.  A **fork** at the processor root `ctx` into `pollingCtx` and `jobCtx`, so cancelling the polling loop does not kill in-flight jobs.
+2.  Per job, a **single abort context** (`abortCtx`) that drives every phase (ingestion, execution, finalization). It records **why** it was cancelled via `context.WithCancelCause`, so the terminal state is classified from that one signal with `batchctx.Cause`.
+
+The routing sentinels and the cause↔sentinel mapping live in the `internal/processor/batchctx` package.
 
 ```mermaid
 graph TD
@@ -237,32 +240,29 @@ graph TD
 
     pollingCtx -.-> polling["acquire · dequeue · DB fetch · validate · poll wait"]
 
-    jobCtx --> sloCtx(["sloCtx — SLO deadline"])
-    jobCtx -.-> watchCancel["watchCancel goroutine"]
+    jobCtx -->|"WithoutCancel (values only) + WithDeadline(SLO) + WithCancelCause"| abortCtx(["abortCtx — drives ingestion, execution, finalization"])
 
-    sloCtx --> requestAbortCtx(["requestAbortCtx — stop dispatch + abort in-flight"])
-
-    bg(["context.Background() — isolated"])
-    bg --> userCancelCtx(["userCancelCtx — user cancel only"])
-    watchCancel -->|"userCancelFn()"| userCancelCtx
-    userCancelCtx -.->|"context.AfterFunc → requestAbortFn()"| requestAbortCtx
+    slo["SLO deadline"] -.->|"DeadlineExceeded"| abortCtx
+    watchCancel["watchCancel goroutine"] -.->|"cause(ErrCancelled)"| abortCtx
+    ctx -.->|"AfterFunc → cause(ErrShutdown)"| abortCtx
+    reconciler["heartbeat / reconciler · fatal I/O · normal cleanup"] -.->|"cause(Canceled) — neutral"| abortCtx
 ```
 
 | Context | Derived from | Cancelled by | Blast radius |
 |---------|-------------|-------------|--------------|
-| `ctx` | (processor root) | SIGTERM / SIGINT | Everything — polling loop exits, in-flight jobs return `errShutdown` and are re-enqueued |
+| `ctx` | (processor root) | SIGTERM / SIGINT | Everything — polling loop exits; each job's `abortCtx` receives `batchctx.ErrShutdown` (via `AfterFunc`); in-flight jobs are left in place for the orphan reconciler to terminalize |
 | `pollingCtx` | `ctx` | Semaphore double-release guard (also inherits `ctx` cancellation) | **Polling loop + pre-launch** — acquire, dequeue, DB fetch, validation, and guard re-enqueue all use `pollingCtx`. Stops accepting new jobs; running jobs unaffected. Jobs dequeued but not yet launched are re-enqueued (fallback: marked failed). |
-| `jobCtx` | `ctx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). One per active worker — up to `NumWorkers` can exist concurrently. Created only at launch commit, **after** all pre-launch checks pass. **Not** cancelled when only `pollingCtx` is cancelled (e.g. semaphore guard). |
-| `sloCtx` | `jobCtx` | SLO deadline fires (`context.DeadlineExceeded`) | Propagates into `requestAbortCtx`; stops dispatch; in-flight requests finish; undispatched drained as `batch_expired` |
-| `requestAbortCtx` | `sloCtx` | SLO deadline (propagated), SIGTERM (propagated via `ctx → jobCtx → sloCtx`), or `requestAbortFn()` triggered by `context.AfterFunc(userCancelCtx, requestAbortFn)` on user cancel | Stops the dispatch loop and aborts in-flight HTTP inference requests immediately |
-| `userCancelCtx` | `context.Background()` | `userCancelFn()` called by `watchCancel` on user cancel **only** | User-cancel signal only — checked in error-routing paths to distinguish user cancel from SLO expiry or pod shutdown. SIGTERM and SLO expiry **do not** propagate here. |
+| `jobCtx` | `ctx` | Parent `ctx` cancellation (SIGTERM / SIGINT) | Single job lifecycle (passed to `runJob`). One per active worker — up to `NumWorkers` can exist concurrently. Supplies the span + logger values to `abortCtx`. |
+| `abortCtx` | `WithCancelCause(WithDeadline(WithoutCancel(jobCtx), slo))` | First `cause(...)` call wins: SLO deadline → `context.DeadlineExceeded`; user cancel → `batchctx.ErrCancelled`; SIGTERM → `batchctx.ErrShutdown`; orphan reconciler / fatal I/O / normal cleanup → neutral `context.Canceled` | The single context for ingestion, execution, and finalization. Cancels the dispatch pipeline and aborts in-flight HTTP inference requests immediately. `batchctx.Cause(abortCtx)` reads the recorded cause back to classify the terminal state. |
 
 **Design notes:**
--   The fork at `ctx` is intentional: `pollingCtx` controls the polling loop, `jobCtx` controls the job lifecycle. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. **SIGTERM / SIGINT cancel `ctx`**, so both polling and jobs see cancellation simultaneously.
--   `requestAbortCtx` is derived from `sloCtx`, so SLO expiry and SIGTERM (via `ctx → jobCtx → sloCtx`) propagate automatically to both the dispatch loop and in-flight inference requests.
--   `userCancelCtx` is intentionally **isolated** from the `sloCtx` chain. This prevents SLO expiry or SIGTERM from being misclassified as user cancellation. Cancellation reason routing (`errCancelled` vs `errExpired` vs `errShutdown`) depends on this isolation being correct.
--   On user cancel: `watchCancel` calls `userCancelFn()` only. `requestAbortFn()` is triggered automatically via `context.AfterFunc(userCancelCtx, requestAbortFn)` wired in `runJob`, so `userCancelCtx` cancellation propagates into `requestAbortCtx` without watchCancel knowing about dispatch.
--   `watchCancel` runs in a separate goroutine and does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
+-   The fork at `ctx` is intentional: `pollingCtx` controls the polling loop, `jobCtx` controls the job lifecycle. Cancelling `pollingCtx` (e.g. on semaphore double-release) stops new-job intake while in-flight jobs finish normally. **SIGTERM / SIGINT cancel `ctx`**, so both the polling loop and running jobs see cancellation simultaneously — the polling loop via `pollingCtx`, and a running job via the `AfterFunc(ctx, …)` that injects `batchctx.ErrShutdown` into its `abortCtx` (see the `WithoutCancel` note below).
+-   **Single context, cause-encoded reason.** Every phase runs under `abortCtx`. Each cancellation source bakes its reason into the cancel *cause* — a no-arg closure calling `cause(sentinel)` — and `executeJobAsync`/`classifyOutcome` read it back via `batchctx.Cause` to choose the terminal state.
+-   **Why `WithoutCancel` + a re-injected shutdown cause.** The SLO deadline is placed on `context.WithoutCancel(jobCtx)`, so `jobCtx` cancellation (SIGTERM) does **not** propagate automatically as a plain `context.Canceled` — that would mask an SLO expiry as an ordinary cancel (and vice versa). SIGTERM is instead re-injected explicitly as `batchctx.ErrShutdown` via `context.AfterFunc(ctx, …)`, keeping each reason distinct and unambiguous.
+-   **First-call-wins.** `WithCancelCause` records only the first cause; a later concurrent signal never overwrites it. `batchctx.Cause` maps it: `DeadlineExceeded` → `ErrExpired`, `ErrCancelled`, `ErrShutdown`, and anything else (neutral `context.Canceled`) → `nil`, which routes as a system error rather than a terminal user/shutdown/expiry state.
+-   **Neutral `context.Canceled`.** The cleanup defer, the heartbeat/orphan-reconciler abort, and fatal I/O all cancel with `context.Canceled`, so a normal return or a reconciler-driven stop is not misclassified as a terminal state — the reconciler path yields (its terminal CAS write fails with `ErrConflict`).
+-   **Shutdown after success.** `classifyOutcome` ignores `ErrShutdown` when every request already succeeded (`counts.AllSucceeded()`), so a job that finished just before SIGTERM landed still finalizes normally instead of being abandoned.
+-   `watchCancel` runs in a separate goroutine and calls `params.cancelUser` (which trips `cause(batchctx.ErrCancelled)`); it does not update DB status to `cancelling` — the API server already did that before sending the cancel event.
 -   Pre-launch operations (DB fetch, conversion, expired/runnable checks) run under `pollingCtx` so they abort promptly when the guard fires. `jobCtx` is created from `jobBaseCtx` only at the moment we commit to launching `runJob`.
 -   On semaphore double-release: guard cancels `pollingCtx` → pre-launch aborts or guard re-enqueue fires → `Run` returns → `main.go` sets `ready=false` → K8s removes the pod from service (readiness probe fails). If re-enqueue also fails, the job is marked failed as a terminal fallback. The pod is restarted only if a liveness probe or restart policy triggers it.
 
@@ -382,73 +382,88 @@ Each plan file functions as a per-model execution queue.
 
 -------------------------------------------------------------------
 
-##### Scheduling Policy: Per-Model Goroutines with Semaphore-Based Concurrency Control
+##### Scheduling Policy: Channel-Based Dispatch Pipeline
+
+Execution is a pipeline of concurrent actors connected by channels and orchestrated by a `JobExecutor`. The executor creates a `requestCh` and a `resultCh`, then starts the actors under an `errgroup`: the `RequestSource` produces onto `requestCh`, the dispatcher chain consumes `requestCh` and produces onto `resultCh`, and the `ResultCollector` drains `resultCh`. A `ProgressTracker` runs alongside them, pushing throttled progress updates to the status store. Shutdown cascades: closing `requestCh` drains the dispatcher, which closes `resultCh`, which ends the collector.
 
 **Scheduling semantics:**
-- Each model runs in its own goroutine, independently dispatching requests from its plan file.
-- (Updated) There is no central round-robin scheduler or model selection loop.
-- Concurrency is controlled by two levels of semaphores:
-  - **Global semaphore** (`GlobalConcurrency`): fixed ceiling for total in-flight requests across all workers in a processor.
-  - **Per-endpoint semaphore** (`PerModelMaxConcurrency`): adaptive limit per inference endpoint, controlled by an AIMD controller that adjusts the effective limit within `[MinConcurrency, PerModelMaxConcurrency]` based on 429/5xx backpressure. Models sharing the same inference endpoint share one semaphore and one AIMD controller.
-- Fairness across models is achieved naturally through goroutine scheduling and the global semaphore: no single model can monopolize all slots because each endpoint is independently bounded by its AIMD-controlled limit.
+- A single `RequestSource` (`PlanFileSource`) reads the per-model plan files sequentially and emits one `RequestItem` per entry onto `requestCh`. There is no per-model goroutine and no central round-robin scheduler — the source is a single producer. The source does **not** sort: it emits entries in the order they already appear in the plan files (sorted by `PrefixHash` at ingestion time — see [Downstream-aware ordering](#downstream-aware-ordering) below).
+- Concurrency is introduced in the **dispatch stage**, not at the source. The dispatcher is a composable chain (`RequestDispatcher`); each stage reads `RequestItem` values and writes `ResultItem` values, optionally delegating to a downstream dispatcher. **Only the leaf dispatcher is required** — it terminates the chain and actually dispatches the request (`DirectDispatcher` for sync, `AsyncDispatcher` for async). The other stages (`PreDispatcher`, `AIMDDispatcher`) are **optional** wrappers, composed in as needed; the leaf can run on its own (as it does in tests):
+  - **`PreDispatcher`** (optional) — cross-cutting concerns shared by all backends: filters out parse errors (emitting them as error results), stamps `SubmittedAt`, increments in-flight metrics, and drains remaining requests as errors when the context is cancelled.
+  - **`AIMDDispatcher`** (optional; sync mode) — the concurrency gate. This is the **only** stage that holds semaphores. It pairs a per-endpoint adaptive semaphore with a global semaphore, acquires a slot before forwarding each request downstream, and releases the slot when the corresponding result returns (also feeding the 429/5xx/capacity-retry signals into the AIMD controller).
+  - **`DirectDispatcher`** (leaf; sync mode) — spawns one goroutine per request that calls `client.Generate()` over HTTP and emits the result. It performs no throttling of its own; back-pressure comes entirely from the `AIMDDispatcher` in front of it. (In production the executor always wraps `DirectDispatcher` in an `AIMDDispatcher`, even when adaptive limits are disabled, so fixed per-endpoint + global limits still apply — otherwise dispatch would be unbounded.)
+  - **`AsyncDispatcher`** (leaf; async mode) — submits each request to the llm-d-async request queue (fire-and-forget) and records it in a `PendingRequests` map. Results are not read inline: they arrive out-of-band via **`ResultBroadcaster`s** — a separate, long-lived component (one per model/pool, started by the `Processor` and **shared across all jobs**) that continuously watches each pool's result queue via the shared client's `GetResult()` loop and fans every result to all subscribed jobs' `resultCh`. Each job's `AsyncDispatcher` subscribes its `resultCh` while it runs; the collector matches incoming results back to its own pending entries by request ID and drops the rest. This stage holds **no semaphores** — flow control is delegated entirely to the dispatcher's dispatch budget. See [Batch Dispatcher Queue Design — Consumer](batch-dispatcher-queue-design.md#consumer-batch-processor) for the full result-collection mechanics.
+- **Fairness across models** is preserved by the `AIMDDispatcher`: each endpoint is independently bounded by its own AIMD-controlled semaphore, and the shared global semaphore caps total in-flight requests, so no single model can monopolize capacity.
 
-**Downstream-aware ordering:**
-- Plan entries are already sorted by `PrefixHash` during ingestion.
+##### Downstream-aware ordering
+- Plan entries are sorted by `PrefixHash` **during ingestion**, when the plan files are written — not during execution. The execution pipeline reads and dispatches entries in that pre-sorted order without re-sorting.
 - This groups requests with the same system prompt together, enabling the downstream llm-d Router to maximize KV prefix cache hits by routing similar requests to the same backend pod.
+
+###### Dispatch Pipeline
+``` mermaid
+flowchart LR
+    src["RequestSource<br/>(PlanFileSource)<br/>read plan entry + input line"]
+    pre["PreDispatcher<br/>parse-error filter,<br/>SubmittedAt, inflight metrics,<br/>drain-on-cancel"]
+    gate{"dispatch_mode"}
+    aimd["AIMDDispatcher<br/>per-endpoint + global<br/>semaphores (gate)"]
+    direct["DirectDispatcher<br/>goroutine per request<br/>→ client.Generate()"]
+    async["AsyncDispatcher<br/>fire-and-forget<br/>queue submit"]
+    bcast["ResultBroadcaster<br/>GetResult() loop"]
+    coll["ResultCollector<br/>write output.jsonl / error.jsonl,<br/>record progress"]
+    tracker["ProgressTracker<br/>throttled status pushes"]
+
+    src -->|requestCh| pre
+    pre --> gate
+    gate -->|sync| aimd
+    aimd --> direct
+    direct -->|resultCh| coll
+    gate -->|async| async
+    async -.->|llm-d-async queues| bcast
+    bcast -->|resultCh| coll
+    coll --> tracker
+```
 
 ###### Scheduling and Execution Sequence
 ``` mermaid
 sequenceDiagram
-    participant Ex as Executor
-    participant GS as GlobalSemaphore
+    participant S as RequestSource
+    participant P as PreDispatcher
+    participant A as AIMDDispatcher
     participant ES as EndpointSemaphore
-    participant E as Goroutine
+    participant GS as GlobalSemaphore
+    participant D as DirectDispatcher
     participant B as Inference Backend
-    participant W as Result Writer
+    participant C as ResultCollector
 
-    Note over Ex: Launch one goroutine per model
-
-    par Model A Goroutine
-        loop For each plan entry (sorted by PrefixHash)
-            Ex->>ES: Acquire endpoint slot
-            Ex->>GS: Acquire global slot
-            Ex->>E: Dispatch request (async)
-            activate E
-            E->>E: ReadAt(input.jsonl, offset, length)
-            E->>B: POST inference request
-            B-->>E: Return response
-            E->>W: Write result
-            E->>GS: Release global slot
-            E->>ES: Release endpoint slot
-            deactivate E
-        end
-    and Model B Goroutine
-        loop For each plan entry (sorted by PrefixHash)
-            Ex->>ES: Acquire endpoint slot
-            Ex->>GS: Acquire global slot
-            Ex->>E: Dispatch request (async)
-            activate E
-            E->>B: POST inference request
-            B-->>E: Return response
-            E->>W: Write result
-            E->>GS: Release global slot
-            E->>ES: Release endpoint slot
-            deactivate E
-        end
+    loop For each plan entry (sorted by PrefixHash)
+        S->>P: RequestItem (requestCh)
+        P->>P: filter parse errors, stamp SubmittedAt, inc inflight
+        P->>A: forward RequestItem
+        A->>ES: Acquire endpoint slot
+        A->>GS: Acquire global slot
+        A->>D: forward RequestItem
+        activate D
+        D->>B: POST inference request (one goroutine per request)
+        B-->>D: Return response
+        D->>A: ResultItem
+        deactivate D
+        A->>ES: Release endpoint slot
+        A->>GS: Release global slot
+        A->>C: forward ResultItem (resultCh)
+        C->>C: write output.jsonl / error.jsonl, record progress
     end
-
-    Ex->>W: Signal Completion
-    W-->>Ex: Finalize & Close File
 ```
 
-###### Algorithm:
-1.  Executor launches one goroutine per model.
-2.  Each goroutine iterates its plan entries in order (already sorted by `PrefixHash` during ingestion) and dispatches requests concurrently, subject to:
+###### Algorithm (sync mode):
+1.  The `JobExecutor` creates `requestCh` and `resultCh` and starts the source, dispatcher chain, and collector under an `errgroup`.
+2.  The `RequestSource` emits one `RequestItem` per plan entry, in `PrefixHash`-sorted order, onto `requestCh`.
+3.  The `PreDispatcher` filters parse errors, stamps `SubmittedAt`, records in-flight metrics, and forwards each request to the `AIMDDispatcher`.
+4.  The `AIMDDispatcher` acquires concurrency slots before forwarding each request to the `DirectDispatcher`:
     - `PerModelMaxConcurrency` (per-endpoint adaptive semaphore, acquired **first**: AIMD-controlled limit per inference endpoint. Models sharing the same endpoint share one semaphore. Protects downstream from too many requests being dumped at once)
     - `GlobalConcurrency` (global semaphore, acquired **second**: fixed ceiling for in-flight requests across all workers. Protects system resources from unbounded goroutine growth)
-    - **Acquisition order: per-endpoint before global.** This prevents starving other endpoints — if the goroutine blocks waiting for a global slot, only an endpoint slot is held, not a global one that other endpoints could use. Release order is LIFO (global first, then per-endpoint).
-3.  When a model's plan is fully drained, its goroutine exits.
-4.  The executor waits for all model goroutines to complete before finalizing.
+    - **Acquisition order: per-endpoint before global.** This prevents starving other endpoints — if the dispatcher blocks waiting for a global slot, only an endpoint slot is held, not a global one that other endpoints could use. Slots are released when the corresponding result returns.
+5.  The `DirectDispatcher` spawns one goroutine per request that calls `client.Generate()` and emits a `ResultItem`. The `AIMDDispatcher` releases the slots and feeds the status code into the AIMD controller.
+6.  The `ResultCollector` drains `resultCh`, writes each result, and records progress; when `resultCh` closes it flushes and returns.
 
 Goals:
 -   Maximize downstream prefix cache efficiency via sorted dispatch order
@@ -472,6 +487,9 @@ A potential improvement is to sort by the system prompt string lexicographically
 -------------------------------------------------------------------
 
 ###### Concurrency Budget Terms
+
+These budgets apply to **sync mode** only, and are enforced by the `AIMDDispatcher` stage of the dispatch chain (the sole holder of semaphores). In async mode there are no local concurrency budgets — flow control is delegated to the llm-d-async dispatch budget.
+
 **Global Concurrency** (`GlobalConcurrency`): Fixed ceiling for total in-flight inference calls across all workers and endpoints.
     - Default: 100
 **Min Concurrency** (`MinConcurrency`): Floor for the per-endpoint AIMD controller. The effective concurrency limit for any single endpoint will never drop below this value.
@@ -509,15 +527,21 @@ Approaches:
 -   Create metadata file
 -   Provide plan readers
 
-#### Scheduler
--   Per-model goroutine lifecycle management
--   Global (fixed) and per-endpoint (AIMD-controlled) concurrency control via semaphores
+#### JobExecutor
+-   Orchestrates the execution pipeline: creates `requestCh`/`resultCh`, starts the source, dispatcher chain, and collector under an `errgroup`, and runs the `ProgressTracker` alongside
+-   Waits for the cascade shutdown and returns the final `BatchRequestCounts`
 
-#### Executor
--   Read request via offset/length
--   Resolve per-model inference client via `GatewayResolver`
--   Call inference backend
--   Return result
+#### RequestSource
+-   Read each request via offset/length from `input.jsonl` (in `PrefixHash`-sorted plan order)
+-   Assemble headers (SLO deadline, inference objective, fairness ID) and pass-through headers
+-   Produce `RequestItem` values onto `requestCh` (single producer, no per-model goroutines)
+
+#### Dispatcher chain (`RequestDispatcher`)
+Composable chain; only the leaf is required.
+-   `PreDispatcher` (optional): filter parse errors, stamp `SubmittedAt`, record in-flight metrics, drain-on-cancel
+-   `AIMDDispatcher` (optional, sync): global (fixed) and per-endpoint (AIMD-controlled) concurrency control via semaphores — the only stage holding semaphores
+-   `DirectDispatcher` (leaf, sync): resolve the inference client via `GatewayResolver`, call the backend (one goroutine per request), emit `ResultItem`
+-   `AsyncDispatcher` (leaf, async): submit to the llm-d-async request queue, track in `PendingRequests`; results arrive via `ResultBroadcaster`s
 
 ###### Gateway Routing
 The processor supports two mutually exclusive gateway modes. Exactly one must be configured; `Validate()` enforces this at startup.
@@ -556,12 +580,17 @@ Each per-model entry must be fully specified — there is no inheritance between
 
 `GatewayResolver` (in `pkg/clients/inference/inference_client_resolver.go`) manages the client pool. `NewGlobalResolver` creates a single client for all models; `NewPerModelResolver` creates per-model clients, sharing instances when settings are identical to reuse connection pools.
 
-#### ResultWriter
+#### ResultCollector
+-   Drain `resultCh`; for async results, resolve request metadata via `PendingRequests`
+-   Write successful responses to `output.jsonl`, failed responses to `error.jsonl`
+-   Update metrics (in-flight, execution duration, token usage, request errors)
+-   Record per-request progress via the `ProgressTracker`
 
--   Write successful responses to `output.jsonl`
--   Write failed responses to `error.jsonl`
--   Update metrics
--   Finalize job (upload non-empty files, set `output_file_id` / `error_file_id` on job record)
+#### ProgressTracker
+-   Maintain atomic completed/failed counters
+-   Push throttled progress updates to the status store on a background ticker, plus a final push on shutdown
+
+Finalization (flush, upload non-empty files, set `output_file_id` / `error_file_id` on the job record) runs as a separate step after execution completes — see the **Finalization** phase in [Job Lifecycle](#1-job-lifecycle).
 
 -------------------------------------------------------------------
 ### Failure Handling
@@ -586,10 +615,10 @@ Concretely:
 
 **Implementation:**
 
-SLO is enforced via `context.WithDeadline(ctx, slo)` on the job execution context. When the deadline fires:
-1.  New request dispatch stops — semaphore acquisition fails on the expired context, breaking the dispatch loop
+SLO is enforced via a `context.WithDeadline` on the job's `abortCtx` (see [Context Hierarchy](#3-context-hierarchy)); expiry surfaces as `context.DeadlineExceeded`, which `batchctx.Cause` maps to `ErrExpired`. When the deadline fires:
+1.  New request dispatch stops — the dispatcher chain observes the cancelled context and stops forwarding requests downstream (in sync mode, semaphore acquisition also fails on the expired context)
 2.  In-flight inference requests that complete (even after the deadline fires) are written to the **output** file with whatever response the inference client returns — SLO expiry does not overwrite in-flight results. Requests where the inference call itself fails due to context cancellation are written to the output file with the HTTP error response from the backend.
-3.  Requests that were never dispatched (pending in the plan but not yet started) are drained to the error file as `batch_expired`
+3.  Requests that were never dispatched (still pending in `requestCh` or the pending map) are drained by the dispatcher chain as error results and written to the error file as `batch_expired`
 4.  Requests that already completed successfully remain in the output file
 
 The job then transitions directly `in_progress → expired` (no `finalizing` transient state).
@@ -611,7 +640,7 @@ For all terminal states where work was interrupted (expired, cancelled, failed),
 -   **Failed (execution system error)**: Undispatched requests are drained as `batch_failed`, partial output is uploaded, status transitions to `failed`.
 -   **Failed (ingestion)**: No output files exist — nothing to preserve. Status transitions to `failed` without file IDs.
 -   **Failed (finalization — upload failure)**: Upload retries (exponential backoff) are exhausted inside `finalizeJob`. The two uploads (output and error files) run independently — a failure in one does not cancel the other. The job is marked `failed` with whatever file IDs survived, so the successfully-uploaded artifact remains reachable via the API (`errFinalizeFailedOver`). If the terminal DB write itself fails after uploads succeeded, the fallback also preserves file IDs.
--   **Graceful shutdown (pod termination)**: Output and error writers are flushed to disk before returning `errShutdown`. The job is re-enqueued for another worker. If re-enqueue fails, partial results are uploaded and the job is marked `failed` with file IDs (`handleFailed` with non-nil `jobInfo`). On container restart with emptyDir intact, startup recovery can also upload partial output from the flushed files.
+-   **Graceful shutdown (pod termination)**: `abortCtx` is cancelled with cause `batchctx.ErrShutdown`, and output and error writers are flushed to disk. The job is **left in its current non-terminal state for the orphan reconciler** to detect and terminalize — `handleJobError` does not upload or re-enqueue on shutdown. The in-flight entry is cleaned up by the `runJob` defer (or, on SIGKILL, becomes stale and is likewise handled by the reconciler). On container restart with emptyDir intact, startup recovery can upload partial output from the flushed files.
 
 Partial upload in error handlers (`handleExpired`, `handleCancelled`, `handleFailed`) is best-effort: upload failures are logged but do not block the terminal status transition. In contrast, `finalizeJob` (the happy-path finalization) treats upload failures as hard errors and falls back to `failed` status with surviving file IDs (`errFinalizeFailedOver`).
 
