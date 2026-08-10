@@ -28,8 +28,11 @@ func TestNewAsyncResolver(t *testing.T) {
 		mr := miniredis.RunT(t)
 
 		cfg := AsyncClientConfig{
-			RedisURL:          "redis://" + mr.Addr(),
-			Models:            map[string]string{"model-a": "pool-a", "model-b": "pool-b"},
+			RedisURL: "redis://" + mr.Addr(),
+			Models: map[string]AsyncModelPoolConfig{
+				"model-a": {PoolName: "pool-a"},
+				"model-b": {PoolName: "pool-b"},
+			},
 			ResultPollTimeout: time.Second,
 		}
 
@@ -53,8 +56,10 @@ func TestNewAsyncResolver(t *testing.T) {
 		mr := miniredis.RunT(t)
 
 		r, err := NewAsyncResolver(AsyncClientConfig{
-			RedisURL:          "redis://" + mr.Addr(),
-			Models:            map[string]string{"model-a": "pool-a"},
+			RedisURL: "redis://" + mr.Addr(),
+			Models: map[string]AsyncModelPoolConfig{
+				"model-a": {PoolName: "pool-a"},
+			},
 			ResultPollTimeout: time.Second,
 		}, testLogger(t))
 		if err != nil {
@@ -70,8 +75,11 @@ func TestNewAsyncResolver(t *testing.T) {
 		mr := miniredis.RunT(t)
 
 		_, err := NewAsyncResolver(AsyncClientConfig{
-			RedisURL:          "redis://" + mr.Addr(),
-			Models:            map[string]string{"model-a": "shared-pool", "model-b": "shared-pool"},
+			RedisURL: "redis://" + mr.Addr(),
+			Models: map[string]AsyncModelPoolConfig{
+				"model-a": {PoolName: "shared-pool"},
+				"model-b": {PoolName: "shared-pool"},
+			},
 			ResultPollTimeout: time.Second,
 		}, testLogger(t))
 		if err == nil {
@@ -81,8 +89,10 @@ func TestNewAsyncResolver(t *testing.T) {
 
 	t.Run("invalid Redis URL returns error", func(t *testing.T) {
 		_, err := NewAsyncResolver(AsyncClientConfig{
-			RedisURL:          "not-a-url",
-			Models:            map[string]string{"model-a": "pool-a"},
+			RedisURL: "not-a-url",
+			Models: map[string]AsyncModelPoolConfig{
+				"model-a": {PoolName: "pool-a"},
+			},
 			ResultPollTimeout: time.Second,
 		}, testLogger(t))
 		if err == nil {
@@ -94,8 +104,10 @@ func TestNewAsyncResolver(t *testing.T) {
 		mr := miniredis.RunT(t)
 
 		r, err := NewAsyncResolver(AsyncClientConfig{
-			RedisURL:          "redis://" + mr.Addr(),
-			Models:            map[string]string{"model-a": "pool-a"},
+			RedisURL: "redis://" + mr.Addr(),
+			Models: map[string]AsyncModelPoolConfig{
+				"model-a": {PoolName: "pool-a"},
+			},
 			ResultPollTimeout: time.Second,
 		}, testLogger(t))
 		if err != nil {
@@ -111,8 +123,10 @@ func TestNewAsyncResolver(t *testing.T) {
 		mr := miniredis.RunT(t)
 
 		r, err := NewAsyncResolver(AsyncClientConfig{
-			RedisURL:          "redis://" + mr.Addr(),
-			Models:            map[string]string{"model-a": "pool-a"},
+			RedisURL: "redis://" + mr.Addr(),
+			Models: map[string]AsyncModelPoolConfig{
+				"model-a": {PoolName: "pool-a"},
+			},
 			ResultPollTimeout: time.Second,
 		}, testLogger(t))
 		if err != nil {
