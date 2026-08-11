@@ -89,8 +89,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.SendFairnessHeader {
 		t.Fatalf("SendFairnessHeader = true, want false by default")
 	}
-	if c.RouteKeyByTenant {
-		t.Fatalf("RouteKeyByTenant = true, want false by default")
+	if c.RouteKeyMethod != RouteKeyMethodBare {
+		t.Fatalf("RouteKeyMethod = %q, want empty (bare) by default", c.RouteKeyMethod)
 	}
 
 	want90Days := int64(90 * 24 * 60 * 60)
@@ -565,7 +565,7 @@ model_gateways:
 default_output_expiration_seconds: 86400
 progress_ttl_seconds: 3600
 send_fairness_header: true
-route_key_by_tenant: true
+route_key_method: tenant
 `)
 
 	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
@@ -643,8 +643,33 @@ route_key_by_tenant: true
 	if !c.SendFairnessHeader {
 		t.Fatalf("SendFairnessHeader = false, want true")
 	}
-	if !c.RouteKeyByTenant {
-		t.Fatalf("RouteKeyByTenant = false, want true")
+	if c.RouteKeyMethod != RouteKeyMethodTenant {
+		t.Fatalf("RouteKeyMethod = %q, want %q", c.RouteKeyMethod, RouteKeyMethodTenant)
+	}
+}
+
+func TestValidate_RouteKeyMethod(t *testing.T) {
+	base := func() *ProcessorConfig {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		return c
+	}
+
+	c := base()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error for default route_key_method: %v", err)
+	}
+
+	c = base()
+	c.RouteKeyMethod = RouteKeyMethodTenant
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error for tenant route_key_method: %v", err)
+	}
+
+	c = base()
+	c.RouteKeyMethod = RouteKeyMethod("geography")
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() expected error for unknown route_key_method, got nil")
 	}
 }
 

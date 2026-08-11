@@ -11,6 +11,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/pipeline"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
@@ -74,7 +75,7 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 
 	// The dispatcher forwards requests for processing.
 	pending := pipeline.NewPendingRequests(modelMap.LineCount)
-	dispatcher, err := p.buildRequestDispatcher(modelMap, pending, logger)
+	dispatcher, err := p.buildRequestDispatcher(modelMap, pending, params.jobInfo.TenantID, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build dispatcher: %w", err)
 	}
@@ -123,14 +124,14 @@ func classifyOutcome(cause error, counts *openai.BatchRequestCounts, execErr err
 	return execErr
 }
 
-func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, logger logr.Logger) (pipeline.RequestDispatcher, error) {
+func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, tenantID string, logger logr.Logger) (pipeline.RequestDispatcher, error) {
 	switch {
 	case p.asyncInference != nil:
 		broadcasters := p.broadcasters.forModels(modelMap)
 		async := pipeline.NewAsyncDispatcher(p.asyncInference, broadcasters, pending, logger)
 		return pipeline.NewPreDispatcher(async), nil
 	case p.cfg.Concurrency.AIMD.Enabled:
-		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits)
+		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits, p.cfg.RouteKeyMethod, tenantID)
 		direct := pipeline.NewDirectDispatcher(p.inference, logger)
 		aimd, err := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
 		if err != nil {
@@ -142,7 +143,7 @@ func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipe
 		// EndpointAIMD.AIMD is nil so recordAIMDSignal is a no-op, but the semaphores
 		// still enforce fixed concurrency limits (global + per-endpoint). Without this,
 		// DirectDispatcher would dispatch all requests as unbounded goroutines.
-		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits)
+		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits, p.cfg.RouteKeyMethod, tenantID)
 		direct := pipeline.NewDirectDispatcher(p.inference, logger)
 		aimd, err := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
 		if err != nil {
@@ -215,10 +216,16 @@ func (p *Processor) openDataFiles(params *jobExecutionParams) (*dataFiles, error
 	return &dataFiles{input: inputFile, output: outputFile, error: errorFile}, nil
 }
 
-func buildAIMDModels(modelMap *modelMapFile, resolver *inference.GatewayResolver, endpointLimits map[inference.InferenceClient]*endpointLimit) map[string]*pipeline.EndpointAIMD {
+// buildAIMDModels keys per-endpoint concurrency state by route key: dispatch
+// items carry the route key as their ModelID, so the lookup key, the resolver
+// key and the map key must all be derived the same way. Keying by the bare
+// model ID would leave the map empty under tenant-scoped routing and silently
+// disable per-endpoint limiting and AIMD backoff.
+func buildAIMDModels(modelMap *modelMapFile, resolver *inference.GatewayResolver, endpointLimits map[inference.InferenceClient]*endpointLimit, method config.RouteKeyMethod, tenantID string) map[string]*pipeline.EndpointAIMD {
 	models := make(map[string]*pipeline.EndpointAIMD)
 	for _, modelID := range modelMap.SafeToModel {
-		client := resolver.ClientFor(modelID)
+		key := routeKey(method, tenantID, modelID)
+		client := resolver.ClientFor(key)
 		if client == nil {
 			continue
 		}
@@ -226,7 +233,7 @@ func buildAIMDModels(modelMap *modelMapFile, resolver *inference.GatewayResolver
 		if ep == nil {
 			continue
 		}
-		models[modelID] = &pipeline.EndpointAIMD{
+		models[key] = &pipeline.EndpointAIMD{
 			Sem:   ep.sem,
 			AIMD:  ep.aimd,
 			Label: ep.label,

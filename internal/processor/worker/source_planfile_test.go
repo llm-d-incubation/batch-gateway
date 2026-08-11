@@ -383,7 +383,7 @@ func TestPlanFileSource_Produce_TenantScopedLookup(t *testing.T) {
 	defer func() { _ = resolver.Close() }()
 
 	cfg := config.NewConfig()
-	cfg.RouteKeyByTenant = true
+	cfg.RouteKeyMethod = config.RouteKeyMethodTenant
 	cfg.ModelGateways = map[string]config.ModelGatewayConfig{
 		"inferset-a/m1": {
 			URL:                "http://gw-a:8000",
@@ -425,7 +425,7 @@ func TestPlanFileSource_Produce_TenantScopedLookup(t *testing.T) {
 		t.Errorf("objective header = %q, want %q", items[0].Headers[inferenceObjectiveHeader], "inferset-a-batch")
 	}
 
-	// With the default config (route_key_by_tenant off), the same tenant must
+	// With the default config (route_key_method empty), the same tenant must
 	// not affect the lookup key — guards the backward-compatible behavior.
 	cfgOff := config.NewConfig()
 	inputFile2, err := os.Open(inputPath)
@@ -444,11 +444,11 @@ func TestPlanFileSource_Produce_TenantScopedLookup(t *testing.T) {
 	})
 	outOff := make(chan pipeline.RequestItem, 10)
 	if err := sourceOff.Produce(context.Background(), outOff); err != nil {
-		t.Fatalf("Produce (route_key_by_tenant off) error: %v", err)
+		t.Fatalf("Produce (route_key_method empty) error: %v", err)
 	}
 	for item := range outOff {
 		if item.ModelID != "m1" {
-			t.Errorf("route_key_by_tenant off: ModelID = %q, want bare %q", item.ModelID, "m1")
+			t.Errorf("route_key_method empty: ModelID = %q, want bare %q", item.ModelID, "m1")
 		}
 	}
 }
