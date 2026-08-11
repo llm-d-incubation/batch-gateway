@@ -11,8 +11,8 @@ import (
 // gateways sharing one batch-apiserver). Otherwise the bare model ID is used,
 // preserving the default behavior.
 func routeKey(method config.RouteKeyMethod, tenantID, modelID string) string {
-	if method != config.RouteKeyMethodTenant || tenantID == "" {
-		return modelID
+	if method == config.RouteKeyMethodTenant && tenantID != "" {
+		return tenantID + "/" + modelID
 	}
-	return tenantID + "/" + modelID
+	return modelID
 }
