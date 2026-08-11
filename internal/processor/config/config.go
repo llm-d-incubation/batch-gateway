@@ -81,6 +81,17 @@ const (
 	DispatchModeAsync DispatchMode = "async"
 )
 
+// RouteKeyMethod selects how model_gateways lookup keys are derived from a
+// request model ID.
+type RouteKeyMethod string
+
+const (
+	// RouteKeyMethodBare (default, empty) keys lookups by the bare model ID.
+	RouteKeyMethodBare RouteKeyMethod = ""
+	// RouteKeyMethodTenant scopes lookups as "<tenantID>/<modelID>".
+	RouteKeyMethodTenant RouteKeyMethod = "tenant"
+)
+
 // AsyncModelConfig describes the async dispatch target for a single model.
 type AsyncModelConfig struct {
 	// InferencePoolName identifies the async dispatch pool for this model.
@@ -174,13 +185,13 @@ type ProcessorConfig struct {
 	// Ignored when GlobalInferenceGateway is set.
 	ModelGateways map[string]ModelGatewayConfig `yaml:"model_gateways"`
 
-	// RouteKeyByTenant scopes model_gateways lookups by the job's tenant ID:
-	// when enabled, requests resolve gateways under "<tenantID>/<modelID>",
-	// so identically-named models of different tenants route to their own
-	// backends on a shared apiserver. The forwarded request body is left
-	// untouched (the runtime still sees the bare model name). Default false
-	// keeps bare-model lookups.
-	RouteKeyByTenant bool `yaml:"route_key_by_tenant"`
+	// RouteKeyMethod selects how model_gateways lookup keys are derived.
+	// "tenant" scopes lookups by the job's tenant ID: requests resolve
+	// gateways under "<tenantID>/<modelID>", so identically-named models of
+	// different tenants route to their own backends on a shared apiserver.
+	// The forwarded request body is left untouched (the runtime still sees
+	// the bare model name). Empty (default) keeps bare-model lookups.
+	RouteKeyMethod RouteKeyMethod `yaml:"route_key_method"`
 
 	// DefaultOutputExpirationSeconds is the default TTL for batch output/error files in seconds.
 	// Used as fallback when the user does not provide output_expires_after in POST /v1/batches.
@@ -415,6 +426,12 @@ func (c *ProcessorConfig) Validate() error {
 
 	if c.ProgressTTLSeconds <= 0 {
 		return fmt.Errorf("progress_ttl_seconds must be > 0")
+	}
+
+	switch c.RouteKeyMethod {
+	case RouteKeyMethodBare, RouteKeyMethodTenant:
+	default:
+		return fmt.Errorf("route_key_method must be empty or %q, got %q", RouteKeyMethodTenant, c.RouteKeyMethod)
 	}
 
 	if err := c.validateGateways(); err != nil {

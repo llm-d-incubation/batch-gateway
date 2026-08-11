@@ -130,8 +130,8 @@ data:
     {{- if .Values.processor.config.sendFairnessHeader }}
     send_fairness_header: true
     {{- end }}
-    {{- if .Values.processor.config.routeKeyByTenant }}
-    route_key_by_tenant: true
+    {{- if .Values.processor.config.routeKeyMethod }}
+    route_key_method: {{ .Values.processor.config.routeKeyMethod | quote }}
     {{- end }}
     default_output_expiration_seconds: {{ .Values.processor.config.defaultOutputExpirationSeconds }}
     progress_ttl_seconds: {{ .Values.processor.config.progressTTLSeconds }}

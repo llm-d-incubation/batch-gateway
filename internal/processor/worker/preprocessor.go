@@ -178,9 +178,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 
 		if isPerModelGateway {
 			// Look up the gateway by the route key (tenant-scoped when
-			// route_key_by_tenant is enabled). The raw model ID stays in the
+			// route_key_method is "tenant"). The raw model ID stays in the
 			// error message and plan grouping below.
-			lookupID := routeKey(p.cfg.RouteKeyByTenant, jobInfo.TenantID, requestMeta.ModelID)
+			lookupID := routeKey(p.cfg.RouteKeyMethod, jobInfo.TenantID, requestMeta.ModelID)
 			registered, checked := registeredModels[lookupID]
 			if !checked {
 				registered = p.inference.ClientFor(lookupID) != nil
@@ -206,7 +206,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 					return fmt.Errorf("failed to write model_not_found error: %w", writeErr)
 				}
 				rejectedCount++
-				metrics.RecordRequestError(requestMeta.ModelID)
+				// Error metric rides the route key so labels stay consistent
+				// with the dispatch path, whose items carry the scoped ID.
+				metrics.RecordRequestError(lookupID)
 				logger.V(logging.DEBUG).Info("Rejected request for unregistered model",
 					"customId", requestMeta.CustomID, "model", requestMeta.ModelID)
 				offset += int64(len(line))

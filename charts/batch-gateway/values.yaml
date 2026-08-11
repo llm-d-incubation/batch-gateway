@@ -393,10 +393,12 @@ processor:
     #     inferenceObjective: "batch-sheddable-b"   # references gie-b pool
     #     requestTimeout: "2m"
     #     maxRetries: 1
-    # Scope modelGateways lookups by the persisted job tenant ID. When enabled,
+    # How modelGateways lookup keys are derived from a request model ID.
+    # Set to "tenant" to scope lookups by the persisted job tenant ID; then
     # configure keys as "<tenantID>/<modelID>". The forwarded request body keeps
     # its original model ID so the runtime still receives its served model name.
-    routeKeyByTenant: false
+    # Empty keeps bare-model lookups. Additional methods may be added later.
+    routeKeyMethod: ""
 
     # Async dispatch mode (alternative to sync).
     # Set dispatchMode: "async" and configure asyncDispatch.models instead
