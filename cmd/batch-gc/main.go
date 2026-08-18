@@ -43,6 +43,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/clientset"
 	ucom "github.com/llm-d/llm-d-batch-gateway/internal/util/com"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/interrupt"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 func main() {
@@ -70,6 +71,18 @@ func run() error {
 
 	logger.Info("Starting batch garbage collector", "dryRun", cfg.DryRun, "interval", cfg.Collector.Interval)
 
+	shutdownTracer, err := uotel.InitTracer(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to initialize tracer: %w", err)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := shutdownTracer(shutdownCtx); err != nil {
+			logger.Error(err, "Failed to shutdown tracer")
+		}
+	}()
+
 	if err := gcmetrics.InitMetrics(); err != nil {
 		return fmt.Errorf("failed to initialize metrics: %w", err)
 	}
@@ -78,6 +91,8 @@ func run() error {
 	defer cancel()
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-gc"
+	cfg.DBClientCfg.RedisCfg.EnableTracing = cfg.OTelCfg.RedisTracing
+	cfg.DBClientCfg.PostgreSQLCfg.EnableTracing = cfg.OTelCfg.PostgresqlTracing
 
 	clientOpts := []clientset.Option{
 		clientset.WithDB(cfg.DBClientCfg),
