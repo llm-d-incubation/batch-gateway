@@ -33,6 +33,7 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/failpoint"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
@@ -84,6 +85,8 @@ func (p *Processor) recoverStaleJobs(ctx context.Context) {
 	}
 
 	logger.V(logging.INFO).Info("Startup recovery: found stale job directories", "count", len(dirs))
+
+	failpoint.Inject("processor/recovery-found-job")
 
 	var grp errgroup.Group
 	grp.SetLimit(p.cfg.Concurrency.Recovery)
