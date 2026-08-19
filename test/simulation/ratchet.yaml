@@ -12,7 +12,8 @@ scenarios:
   F1c_create_compensation_partition: broken
   F4b_duplicate_execution: broken
   F3_terminal_overwrite: broken
-  F4a_worker_crash_strands_job: broken
+  F4a_worker_crash_strands_job: fixed
+  F4c_worker_crash_resume: fixed
   F2a_cancel_reverted: broken
   F2b_cancel_event_lost: broken
   F5_orphaned_blob: broken

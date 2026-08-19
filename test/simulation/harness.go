@@ -140,8 +140,19 @@ func simModel() string {
 // emits random token ids, so without ignore_eos a sampled EOS ends
 // generation after a few tokens and requests finish near-instantly.
 func inputJSONL(n, maxTokens int) string {
+	tokens := make([]int, n)
+	for i := range tokens {
+		tokens[i] = maxTokens
+	}
+	return inputJSONLTokens(tokens)
+}
+
+// inputJSONLTokens builds a batch input with one request per entry, each
+// generating exactly that many tokens, for scenarios that need mixed
+// durations in one batch.
+func inputJSONLTokens(tokens []int) string {
 	var b strings.Builder
-	for i := range n {
+	for i, maxTokens := range tokens {
 		fmt.Fprintf(&b,
 			`{"custom_id":"sim-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":%d,"min_tokens":%d,"ignore_eos":true,"messages":[{"role":"user","content":"simulation request %d"}]}}`+"\n",
 			i, simModel(), maxTokens, maxTokens, i)

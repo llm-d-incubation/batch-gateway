@@ -20,6 +20,7 @@ package simulation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -196,6 +197,83 @@ func TestF4aWorkerCrashStrandsJob(t *testing.T) {
 	detail := fmt.Sprintf("observed sequence %v, final %s, output_file=%v error_file=%v",
 		tl.statuses(), final.Status, final.OutputFileID != nil, final.ErrorFileID != nil)
 	judge(t, scenario, stranded, detail)
+}
+
+// TestF4cWorkerCrashResume guards the fix for F4a: per-request results are
+// written through to Postgres as they complete, the reconciler re-enqueues a
+// non-expired in_progress orphan instead of failing it, and the replacement
+// worker replays the persisted rows and executes only the remainder.
+//
+// Guarded invariant (work conservation, single delivery): after worker loss
+// the batch completes with every custom_id delivered exactly once.
+func TestF4cWorkerCrashResume(t *testing.T) {
+	const scenario = "F4c_worker_crash_resume"
+	h := newHarness(t, nil)
+	client := newAPIClient()
+
+	// Two ~1s requests complete and persist before the kill lands; two ~9s
+	// requests are still in flight and must be re-executed by the resume.
+	fileID, err := client.uploadFile("f4c.jsonl", inputJSONLTokens([]int{30, 30, 300, 300}))
+	if err != nil {
+		t.Fatalf("upload input file: %v", err)
+	}
+	batch, err := client.createBatch(fileID, "24h")
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tl := observe(ctx, client, batch.ID, h.rec)
+
+	if _, ok := waitForStatus(client, batch.ID, 60*time.Second, openai.BatchStatusInProgress); !ok {
+		t.Fatal("batch never reached in_progress")
+	}
+	time.Sleep(3500 * time.Millisecond)
+	h.kill("processor")
+	h.restart("processor")
+
+	final, terminal := waitForStatus(client, batch.ID, 2*time.Minute,
+		openai.BatchStatusFailed, openai.BatchStatusCompleted, openai.BatchStatusExpired)
+	if !terminal {
+		t.Fatalf("batch never terminalized after worker loss; last status %s", final.Status)
+	}
+	time.Sleep(1 * time.Second)
+	cancel()
+
+	violated := final.Status != openai.BatchStatusCompleted || final.OutputFileID == nil
+	delivered := map[string]int{}
+	if !violated {
+		content, err := client.fileContent(*final.OutputFileID)
+		if err != nil {
+			t.Fatalf("fetch output file: %v", err)
+		}
+		for _, raw := range strings.Split(strings.TrimSpace(content), "\n") {
+			var line struct {
+				CustomID string `json:"custom_id"`
+			}
+			if err := json.Unmarshal([]byte(raw), &line); err != nil {
+				t.Fatalf("parse output line %q: %v", raw, err)
+			}
+			delivered[line.CustomID]++
+		}
+		for i := range 4 {
+			if delivered[fmt.Sprintf("sim-%d", i)] != 1 {
+				violated = true
+			}
+		}
+		if len(delivered) != 4 {
+			violated = true
+		}
+	}
+
+	detail := fmt.Sprintf("observed sequence %v, final %s, delivered %v",
+		tl.statuses(), final.Status, delivered)
+	if served, ok := h.b.inferenceRequests(); ok {
+		h.rec.event("witness", map[string]any{"served": served})
+		detail += fmt.Sprintf(", engine served %d", served)
+	}
+	judge(t, scenario, violated, detail)
 }
 
 // TestF2aCancelReverted reproduces finding F2a: cancelling a queued batch is

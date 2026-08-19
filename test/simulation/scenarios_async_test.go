@@ -33,10 +33,14 @@ import (
 // the shared Redis result queue destructively. Kill the processor after
 // submission: the pending map dies with it, the replacement starts fresh
 // broadcasters with no subscribers, and when the results arrive they are
-// popped and discarded. The reconciler terminalizes the orphan as failed.
+// popped and discarded. With the reconciler re-enqueueing in_progress
+// orphans, the destruction manifests as duplicate spend: the discarded run
+// is re-executed in full, so the engine serves every request twice. Without
+// re-enqueue it manifested as a failed batch with no output.
 //
 // Violated invariant (work conservation): inference that was paid for and
-// whose results were durably produced must not be silently destroyed.
+// whose results were durably produced must not be silently destroyed —
+// neither dropped outright nor re-bought via full re-execution.
 func TestA1AsyncResultDestruction(t *testing.T) {
 	const scenario = "A1_async_result_destruction"
 	const lines = 4
@@ -97,9 +101,11 @@ func TestA1AsyncResultDestruction(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	cancelObs()
 
-	destroyed := final.Status == openai.BatchStatusFailed &&
+	strandedResults := final.Status == openai.BatchStatusFailed &&
 		final.OutputFileID == nil && final.ErrorFileID == nil &&
 		served >= lines && remaining == 0
+	duplicatedSpend := served > lines && remaining == 0
+	destroyed := strandedResults || duplicatedSpend
 	detail := fmt.Sprintf("observed sequence %v, final %s, engine served %d/%d, results left unconsumed %d, %s",
 		tl.statuses(), final.Status, served, lines, remaining, bridge)
 	judge(t, scenario, destroyed, detail)
