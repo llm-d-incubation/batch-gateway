@@ -70,6 +70,9 @@ type Config struct {
 
 	// FileClientCfg holds the file storage backend configuration.
 	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
+
+	// OTelCfg holds OpenTelemetry-related settings.
+	OTelCfg sharedcfg.OTelConfig `yaml:"otel"`
 }
 
 // Load reads and validates a Config from the given YAML file path.

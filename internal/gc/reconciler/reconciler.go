@@ -27,11 +27,13 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
 
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/batch_utils"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
+	uotel "github.com/llm-d/llm-d-batch-gateway/internal/util/otel"
 )
 
 const pageSize = 100
@@ -219,7 +221,11 @@ func (r *Reconciler) fetchNonTerminalJobs(ctx context.Context) ([]*db.BatchItem,
 // triageOrphan determines the correct recovery action for an orphaned job
 // based on its current status and SLO.
 func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result *Result) {
-	logger := logr.FromContextOrDiscard(ctx).WithValues("jobId", job.ID)
+	ctx = logr.NewContext(ctx, logr.FromContextOrDiscard(ctx).WithValues("jobId", job.ID))
+	ctx, span := uotel.StartSpan(ctx, "reconciler.triage")
+	defer span.End()
+	span.SetAttributes(attribute.String(uotel.AttrBatchID, job.ID))
+	logger := logr.FromContextOrDiscard(ctx)
 
 	var statusInfo openai.BatchStatusInfo
 	if err := json.Unmarshal(job.Status, &statusInfo); err != nil {
@@ -227,6 +233,7 @@ func (r *Reconciler) triageOrphan(ctx context.Context, job *db.BatchItem, result
 		result.Errors++
 		return
 	}
+	span.SetAttributes(attribute.String("batch.status", string(statusInfo.Status)))
 
 	sloExpired := isSLOExpired(job)
 
