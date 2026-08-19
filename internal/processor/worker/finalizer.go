@@ -174,6 +174,7 @@ func (p *Processor) finalizeJob(
 			return fmt.Errorf("cancelled status write failed: %w", errFinalizeFailedOver)
 		}
 		setRequestCountAttrs(ctx, requestCounts)
+		p.cleanupResultRows(ioCtx, dbJob.ID)
 		return batchctx.ErrCancelled
 	}
 
@@ -187,9 +188,22 @@ func (p *Processor) finalizeJob(
 	}
 
 	setRequestCountAttrs(ctx, requestCounts)
+	p.cleanupResultRows(ioCtx, dbJob.ID)
 
 	logger.V(logging.INFO).Info("Finalization completed", "outputFileID", outputFileID, "errorFileID", errorFileID)
 	return nil
+}
+
+// cleanupResultRows drops the batch's durable scratch rows once a terminal
+// status is written. Best-effort: leftover rows only cost storage until an
+// external sweep reclaims them.
+func (p *Processor) cleanupResultRows(ctx context.Context, batchID string) {
+	if p.resultDB == nil {
+		return
+	}
+	if err := p.resultDB.ResultDelete(ctx, batchID); err != nil {
+		logr.FromContextOrDiscard(ctx).Error(err, "Failed to delete result rows", "batchId", batchID)
+	}
 }
 
 // uploadOutputFile uploads the local output file to shared storage.

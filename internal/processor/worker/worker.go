@@ -72,6 +72,7 @@ type Processor struct {
 	updater *StatusUpdater
 
 	batchDB        db.BatchDBClient                // job status lookups (heartbeat DB check)
+	resultDB       db.ResultDBClient               // durable per-request scratch; nil = disabled
 	event          db.BatchEventChannelClient      // cancel-event subscription
 	inflight       db.InFlightClient               // in-flight job tracking for orphan recovery
 	inference      *inference.GatewayResolver      // model → gateway routing (sync)
@@ -100,6 +101,7 @@ func NewProcessor(
 		poller:         poller,
 		updater:        updater,
 		batchDB:        clients.BatchDB,
+		resultDB:       clients.ResultDB,
 		event:          clients.Event,
 		inflight:       clients.InFlight,
 		inference:      clients.Inference,

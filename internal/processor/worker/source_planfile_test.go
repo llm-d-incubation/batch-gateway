@@ -761,3 +761,69 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanFileSource_Produce_SkipsPersisted(t *testing.T) {
+	dir := t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "c-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"model": "m1", "prompt": "hello"}},
+		{CustomID: "c-2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"model": "m1", "prompt": "world"}},
+	}
+
+	inputPath := filepath.Join(dir, "input.jsonl")
+	var entries []planEntry
+	f, err := os.Create(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range requests {
+		data, _ := json.Marshal(req)
+		data = append(data, '\n')
+		offset, _ := f.Seek(0, 1)
+		entries = append(entries, planEntry{Offset: offset, Length: uint32(len(data))})
+		if _, err := f.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	inputFile, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inputFile.Close()
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		InputFile: inputFile,
+		PlansDir:  plansDir,
+		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
+		Resolver:  resolver,
+		Cfg:       config.NewConfig(),
+		Skip:      map[string]struct{}{"c-1": {}},
+		Logger:    logr.Discard(),
+	})
+
+	out := make(chan pipeline.RequestItem, 10)
+	if err := source.Produce(context.Background(), out); err != nil {
+		t.Fatalf("Produce error: %v", err)
+	}
+
+	var items []pipeline.RequestItem
+	for item := range out {
+		items = append(items, item)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("produced %d items, want 1 (c-1 skipped)", len(items))
+	}
+	if items[0].CustomID != "c-2" {
+		t.Errorf("item CustomID = %q, want %q", items[0].CustomID, "c-2")
+	}
+}

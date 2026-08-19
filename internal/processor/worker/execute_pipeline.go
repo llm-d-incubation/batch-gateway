@@ -10,10 +10,12 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 
+	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/pipeline"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
+	"github.com/llm-d/llm-d-batch-gateway/internal/util/failpoint"
 	"github.com/llm-d/llm-d-batch-gateway/internal/util/logging"
 )
 
@@ -61,18 +63,6 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 	)
 	tracker.AddFailed(modelMap.RejectedCount)
 
-	source := NewPlanFileSource(PlanFileSourceConfig{
-		InputFile:          files.input,
-		PlansDir:           plansDir,
-		ModelMap:           modelMap,
-		Resolver:           p.inference,
-		Cfg:                p.cfg,
-		PassThroughHeaders: params.jobInfo.PassThroughHeaders,
-		SLODeadline:        sloDeadline,
-		TenantID:           params.jobInfo.TenantID,
-		Logger:             logger,
-	})
-
 	// The dispatcher forwards requests for processing.
 	pending := pipeline.NewPendingRequests(modelMap.LineCount)
 	dispatcher, err := p.buildRequestDispatcher(modelMap, pending, params.jobInfo.TenantID, logger)
@@ -89,6 +79,24 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 		logger,
 	)
 
+	skip, err := p.setupResultPersistence(ctx, params.jobInfo.JobID, resultCollector, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		InputFile:          files.input,
+		PlansDir:           plansDir,
+		ModelMap:           modelMap,
+		Resolver:           p.inference,
+		Cfg:                p.cfg,
+		PassThroughHeaders: params.jobInfo.PassThroughHeaders,
+		SLODeadline:        sloDeadline,
+		TenantID:           params.jobInfo.TenantID,
+		Skip:               skip,
+		Logger:             logger,
+	})
+
 	// Orchestrates Job execution.
 	executor := pipeline.NewJobExecutor(pipeline.JobExecutorConfig{
 		Source:     source,
@@ -102,6 +110,48 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 	counts, execErr := executor.Execute(ctx)
 
 	return counts, classifyOutcome(batchctx.Cause(ctx), counts, execErr)
+}
+
+// setupResultPersistence replays results persisted by a previous attempt into
+// the collector and installs the write-through hook for new results. Returns
+// the custom_ids the source must skip. No-op (nil skip set) when the backend
+// has no result store.
+func (p *Processor) setupResultPersistence(
+	ctx context.Context,
+	jobID string,
+	collector *pipeline.ResultCollector,
+	logger logr.Logger,
+) (map[string]struct{}, error) {
+	if p.resultDB == nil {
+		return nil, nil
+	}
+
+	rows, err := p.resultDB.ResultGetAll(ctx, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("load persisted results: %w", err)
+	}
+
+	var skip map[string]struct{}
+	if len(rows) > 0 {
+		persisted := make([]pipeline.PersistedResult, len(rows))
+		for i, r := range rows {
+			persisted[i] = pipeline.PersistedResult{CustomID: r.CustomID, IsError: r.IsError, Line: r.Line}
+		}
+		skip, err = collector.Replay(persisted)
+		if err != nil {
+			return nil, fmt.Errorf("replay persisted results: %w", err)
+		}
+		logger.V(logging.INFO).Info("Resumed from persisted results", "count", len(rows))
+	}
+
+	collector.SetPersist(func(customID string, isError bool, line []byte) {
+		failpoint.Inject("processor/before-result-persist")
+		row := &db.ResultRow{BatchID: jobID, CustomID: customID, IsError: isError, Line: line}
+		if err := p.resultDB.ResultStore(ctx, row); err != nil {
+			logger.Error(err, "Failed to persist result row", "customId", customID)
+		}
+	})
+	return skip, nil
 }
 
 // classifyOutcome maps the abort cause, request counts, and executor error to the

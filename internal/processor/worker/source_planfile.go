@@ -30,6 +30,7 @@ type PlanFileSource struct {
 	passThroughHeaders map[string]string
 	sloDeadline        time.Time
 	tenantID           string
+	skip               map[string]struct{}
 	logger             logr.Logger
 }
 
@@ -44,7 +45,10 @@ type PlanFileSourceConfig struct {
 	PassThroughHeaders map[string]string
 	SLODeadline        time.Time
 	TenantID           string
-	Logger             logr.Logger
+	// Skip lists custom_ids whose results are already durably recorded;
+	// Produce drops their plan entries instead of dispatching them.
+	Skip   map[string]struct{}
+	Logger logr.Logger
 }
 
 func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
@@ -57,6 +61,7 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 		passThroughHeaders: cfg.PassThroughHeaders,
 		sloDeadline:        cfg.SLODeadline,
 		tenantID:           cfg.TenantID,
+		skip:               cfg.Skip,
 		logger:             cfg.Logger,
 	}
 }
@@ -79,6 +84,9 @@ func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pip
 			item, err := s.readEntry(entry, modelID)
 			if err != nil {
 				return err
+			}
+			if _, done := s.skip[item.CustomID]; done {
+				continue
 			}
 			outgoingRequestCh <- *item
 		}

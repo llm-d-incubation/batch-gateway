@@ -387,3 +387,130 @@ func TestProgressTracker_FlushOnCancel(t *testing.T) {
 			last.Completed, last.Failed)
 	}
 }
+
+func TestResultCollector_PersistHookReceivesEachLine(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(2, nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	type persisted struct {
+		customID string
+		isError  bool
+		line     []byte
+	}
+	var got []persisted
+	collector.SetPersist(func(customID string, isError bool, line []byte) {
+		got = append(got, persisted{customID: customID, isError: isError, line: line})
+	})
+
+	results := []ResultItem{
+		{
+			RequestID: "req-1",
+			CustomID:  "c-1",
+			Response:  &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}},
+		},
+		{
+			RequestID: "req-2",
+			CustomID:  "c-2",
+			Error:     &OutputError{Code: "SERVER_ERROR", Message: "connection refused"},
+		},
+	}
+	for _, r := range results {
+		pending.Store(RequestItem{RequestID: r.RequestID, CustomID: r.CustomID})
+	}
+	ch := make(chan ResultItem, len(results))
+	for _, r := range results {
+		ch <- r
+	}
+	close(ch)
+
+	if err := collector.Drain(context.Background(), ch); err != nil {
+		t.Fatalf("Drain error: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("persist calls = %d, want 2", len(got))
+	}
+	if got[0].customID != "c-1" || got[0].isError {
+		t.Fatalf("persist[0] = %q isError=%v, want c-1 isError=false", got[0].customID, got[0].isError)
+	}
+	if got[1].customID != "c-2" || !got[1].isError {
+		t.Fatalf("persist[1] = %q isError=%v, want c-2 isError=true", got[1].customID, got[1].isError)
+	}
+	for _, p := range got {
+		if len(p.line) == 0 || p.line[len(p.line)-1] == '\n' {
+			t.Fatalf("persisted line for %s must be non-empty without trailing newline", p.customID)
+		}
+		var line outputLine
+		if err := json.Unmarshal(p.line, &line); err != nil {
+			t.Fatalf("persisted line for %s is not valid JSON: %v", p.customID, err)
+		}
+	}
+}
+
+func TestResultCollector_ReplayRestoresFilesAndProgress(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	pending := NewPendingRequests(0)
+	tracker := NewProgressTracker(3, nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, pending, tracker, logr.Discard())
+
+	successLine, _ := json.Marshal(&outputLine{
+		ID:       "req-1",
+		CustomID: "c-1",
+		Response: &batch_types.ResponseData{StatusCode: 200, RequestID: "req-1", Body: map[string]any{"ok": true}},
+	})
+	errLine, _ := json.Marshal(&outputLine{
+		ID:       "req-2",
+		CustomID: "c-2",
+		Error:    &OutputError{Code: "SERVER_ERROR", Message: "connection refused"},
+	})
+
+	skip, err := collector.Replay([]PersistedResult{
+		{CustomID: "c-1", IsError: false, Line: successLine},
+		{CustomID: "c-2", IsError: true, Line: errLine},
+	})
+	if err != nil {
+		t.Fatalf("Replay error: %v", err)
+	}
+	if len(skip) != 2 {
+		t.Fatalf("skip set size = %d, want 2", len(skip))
+	}
+	for _, id := range []string{"c-1", "c-2"} {
+		if _, ok := skip[id]; !ok {
+			t.Fatalf("skip set missing %s", id)
+		}
+	}
+
+	// Replayed lines only reach disk on flush, same as live results.
+	ch := make(chan ResultItem)
+	close(ch)
+	if err := collector.Drain(context.Background(), ch); err != nil {
+		t.Fatalf("Drain error: %v", err)
+	}
+
+	if lines := splitLines(readFile(t, outputFile)); len(lines) != 1 {
+		t.Fatalf("output lines = %d, want 1", len(lines))
+	}
+	if lines := splitLines(readFile(t, errorFile)); len(lines) != 1 {
+		t.Fatalf("error lines = %d, want 1", len(lines))
+	}
+
+	counts := tracker.Counts()
+	if counts.Completed != 1 || counts.Failed != 1 {
+		t.Fatalf("counts: completed=%d failed=%d, want completed=1 failed=1", counts.Completed, counts.Failed)
+	}
+}
+
+func TestResultCollector_ReplayRejectsCorruptLine(t *testing.T) {
+	outputFile := tempFile(t)
+	errorFile := tempFile(t)
+	tracker := NewProgressTracker(1, nil, "test-job", 0, logr.Discard())
+	collector := NewResultCollector(outputFile, errorFile, NewPendingRequests(0), tracker, logr.Discard())
+
+	if _, err := collector.Replay([]PersistedResult{{CustomID: "c-1", Line: []byte("{not json")}}); err == nil {
+		t.Fatal("expected error for corrupt persisted line")
+	}
+}

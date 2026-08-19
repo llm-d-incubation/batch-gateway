@@ -37,6 +37,7 @@ type ResultCollector struct {
 	tracker              *ProgressTracker
 	logger               logr.Logger
 	onPersistenceFailure func()
+	persist              func(customID string, isError bool, line []byte)
 }
 
 func NewResultCollector(outputFile, errorFile *os.File, pending *PendingRequests, tracker *ProgressTracker, logger logr.Logger) *ResultCollector {
@@ -99,14 +100,16 @@ func (c *ResultCollector) Receive(msg ResultItem) error {
 	if err != nil {
 		return fmt.Errorf("marshal output for %s: %w", msg.RequestID, err)
 	}
-	lineBytes = append(lineBytes, '\n')
 
 	w := c.output
 	if line.Error != nil {
 		w = c.errors
 	}
-	if _, err := w.Write(lineBytes); err != nil {
+	if _, err := w.Write(append(lineBytes, '\n')); err != nil {
 		return fmt.Errorf("write output for %s: %w", msg.RequestID, err)
+	}
+	if c.persist != nil {
+		c.persist(line.CustomID, line.Error != nil, lineBytes)
 	}
 
 	if line.isSuccess() {
@@ -126,6 +129,45 @@ func (c *ResultCollector) Receive(msg ResultItem) error {
 	}
 
 	return nil
+}
+
+// SetPersist installs a hook called with each marshaled line (no trailing
+// newline) after the local file write.
+func (c *ResultCollector) SetPersist(fn func(customID string, isError bool, line []byte)) {
+	c.persist = fn
+}
+
+// PersistedResult is one row recovered from durable scratch storage.
+type PersistedResult struct {
+	CustomID string
+	IsError  bool
+	Line     []byte
+}
+
+// Replay writes recovered rows to the local files and progress tracker before
+// execution starts, returning the custom_ids the source must skip.
+func (c *ResultCollector) Replay(rows []PersistedResult) (map[string]struct{}, error) {
+	skip := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		var line outputLine
+		if err := json.Unmarshal(row.Line, &line); err != nil {
+			return nil, fmt.Errorf("unmarshal persisted result %s: %w", row.CustomID, err)
+		}
+		w := c.output
+		if row.IsError {
+			w = c.errors
+		}
+		if _, err := w.Write(append(row.Line, '\n')); err != nil {
+			return nil, fmt.Errorf("replay result %s: %w", row.CustomID, err)
+		}
+		if line.isSuccess() {
+			c.tracker.RecordSuccess(ResultItem{CustomID: row.CustomID})
+		} else {
+			c.tracker.RecordFailure(fmt.Errorf("%s: replayed failure", row.CustomID))
+		}
+		skip[row.CustomID] = struct{}{}
+	}
+	return skip, nil
 }
 
 func recordTokenUsage(body map[string]any, model string, logger logr.Logger) {
