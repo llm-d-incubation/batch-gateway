@@ -45,6 +45,7 @@ type Clientset struct {
 	File           fsapi.BatchFilesClient
 	BatchDB        dbapi.BatchDBClient
 	FileDB         dbapi.FileDBClient
+	ResultDB       dbapi.ResultDBClient // durable per-request scratch; nil when the backend does not support it
 	Queue          dbapi.BatchPriorityQueueClient
 	Event          dbapi.BatchEventChannelClient
 	Status         dbapi.BatchStatusClient
@@ -118,29 +119,34 @@ func NewRedisDBClients(ctx context.Context, cfg *uredis.RedisClientConfig) (dbap
 	return batchDB, fileDB, nil
 }
 
-// NewPostgreSQLDBClients creates PostgreSQL-backed batch and file database clients.
-// It reads the URL from the mounted secrets when not set in the config.
-func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, error) {
+// NewPostgreSQLDBClients creates PostgreSQL-backed batch, file, and result
+// database clients. It reads the URL from the mounted secrets when not set in
+// the config.
+func NewPostgreSQLDBClients(ctx context.Context, cfg *postgresql.PostgreSQLConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, dbapi.ResultDBClient, error) {
 	if cfg == nil {
-		return nil, nil, fmt.Errorf("postgresql config cannot be nil")
+		return nil, nil, nil, fmt.Errorf("postgresql config cannot be nil")
 	}
 	if cfg.Url == "" {
 		postgreSQLURL, err := ucom.ReadSecretFile(ucom.SecretKeyPostgreSQLURL)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		cfg.Url = postgreSQLURL
 	}
 	batchDB, err := postgresql.NewPostgresBatchDBClient(ctx, cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create postgresql batch-db client: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create postgresql batch-db client: %w", err)
 	}
 	fileDB, err := postgresql.NewPostgresFileDBClient(ctx, cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create postgresql file-db client: %w", err)
+	}
+	resultDB, err := postgresql.NewPostgresResultDBClient(ctx, cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create postgresql result-db client: %w", err)
 	}
 	logr.FromContextOrDiscard(ctx).Info("PostgreSQL-based database client created")
-	return batchDB, fileDB, nil
+	return batchDB, fileDB, resultDB, nil
 }
 
 // Option configures which clients NewClientset creates.
@@ -263,12 +269,13 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 			cs.BatchDB = batchDB
 			cs.FileDB = fileDB
 		case sharedcfg.DBTypePostgreSQL:
-			batchDB, fileDB, err := NewPostgreSQLDBClients(ctx, &cfg.dbCfg.PostgreSQLCfg)
+			batchDB, fileDB, resultDB, err := NewPostgreSQLDBClients(ctx, &cfg.dbCfg.PostgreSQLCfg)
 			if err != nil {
 				return nil, err
 			}
 			cs.BatchDB = batchDB
 			cs.FileDB = fileDB
+			cs.ResultDB = resultDB
 		default:
 			return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, valkey, postgresql)", cfg.dbCfg.Type)
 		}
