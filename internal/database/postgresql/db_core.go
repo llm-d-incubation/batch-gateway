@@ -465,6 +465,9 @@ func (c *pgCore) ensureSchema(ctx context.Context) error {
 			return nil
 		}
 		var pgErr *pgconn.PgError
+		// in some environments, especially on fresh boot, different
+		// processes can contend with each other and produce a
+		// duplicate constraint error (23505)
 		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 			return err
 		}
