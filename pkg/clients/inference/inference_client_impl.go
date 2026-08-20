@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/go-logr/logr"
@@ -30,6 +31,10 @@ import (
 
 // Compile-time check: InferenceHTTPClient implements InferenceClient.
 var _ InferenceClient = (*InferenceHTTPClient)(nil)
+
+// Compile-time check: InferenceHTTPClient is closeable. Used by
+// GatewayResolver.Close (e.g. when config reload replaces a resolver).
+var _ io.Closer = (*InferenceHTTPClient)(nil)
 
 // InferenceHTTPClient wraps the generic HTTP client and implements InferenceClient interface
 type InferenceHTTPClient struct {
@@ -43,6 +48,12 @@ func NewInferenceClient(config *HTTPClientConfig, logger logr.Logger) (*Inferenc
 		return nil, err
 	}
 	return &InferenceHTTPClient{client: client}, nil
+}
+
+// Close releases idle connections held by the client. In-flight requests
+// are not interrupted (see httpclient.HTTPClient.Close).
+func (c *InferenceHTTPClient) Close() error {
+	return c.client.Close()
 }
 
 // Generate makes an inference request with automatic retry logic

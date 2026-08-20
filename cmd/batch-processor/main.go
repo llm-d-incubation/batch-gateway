@@ -59,6 +59,9 @@ func run() error {
 	fs := flag.NewFlagSet("batch-gateway-processor", flag.ExitOnError)
 
 	cfgFilePath := fs.String("config", "cmd/batch-processor/config.yaml", "Path to configuration file")
+	reloadInterval := fs.Duration("model-gateway-reload-interval", 0,
+		"Hot-reload model_gateways / global_inference_gateway from the config file at this interval (0 = disabled). "+
+			"Only sync-dispatch routing is reloaded; other settings require a restart.")
 	klog.InitFlags(fs)
 	_ = fs.Parse(os.Args[1:]) // ExitOnError mode will exit on error
 
@@ -117,7 +120,8 @@ func run() error {
 
 	// init processor
 	logger.V(logging.INFO).Info("Initializing worker processor", "maxWorkers", cfg.NumWorkers)
-	proc, err := worker.NewProcessor(cfg, procClients, hostname, logger)
+	proc, err := worker.NewProcessor(cfg, procClients, hostname, logger,
+		worker.WithModelGatewayConfigReload(*cfgFilePath, *reloadInterval))
 	if err != nil {
 		logger.Error(err, "Failed to create processor")
 		return err

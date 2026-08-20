@@ -73,8 +73,10 @@ const ErrCodeModelNotFound = "model_not_found"
 //  3. Return nil — the caller should treat this as a request-level error.
 //
 // GatewayResolver is immutable after construction — safe for concurrent reads.
-// TODO: When dynamic config reload is added, wrap with atomic.Pointer[GatewayResolver]
-// and swap the entire resolver on reload.
+// Dynamic config reload builds a fresh GatewayResolver and swaps it
+// atomically into the processor's routing state (see
+// internal/processor/worker/config_reload.go); old resolvers are closed
+// after a grace period once they fall out of the routing path.
 type GatewayResolver struct {
 	globalClient InferenceClient
 	modelClients map[string]InferenceClient
@@ -93,6 +95,7 @@ func NewGlobalResolver(config GatewayClientConfig, logger logr.Logger) (*Gateway
 	return &GatewayResolver{
 		globalClient: client,
 		clientURLs:   map[InferenceClient]string{client: config.URL},
+		closers:      asClosers([]InferenceClient{client}),
 	}, nil
 }
 
@@ -118,7 +121,24 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 		modelClients[model] = client
 	}
 
-	return &GatewayResolver{modelClients: modelClients, clientURLs: urls}, nil
+	closers := make([]InferenceClient, 0, len(pool))
+	for _, client := range pool {
+		closers = append(closers, client)
+	}
+
+	return &GatewayResolver{modelClients: modelClients, clientURLs: urls, closers: asClosers(closers)}, nil
+}
+
+// asClosers returns the io.Closer views of clients that support closing.
+// Mock clients used in tests do not implement io.Closer and are skipped.
+func asClosers(clients []InferenceClient) []io.Closer {
+	closers := make([]io.Closer, 0, len(clients))
+	for _, c := range clients {
+		if closer, ok := c.(io.Closer); ok {
+			closers = append(closers, closer)
+		}
+	}
+	return closers
 }
 
 // IsGlobal returns true if the resolver routes all models to a single global

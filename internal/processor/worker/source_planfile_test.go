@@ -310,7 +310,6 @@ func TestPlanFileSource_Produce(t *testing.T) {
 		InputFile: inputFile,
 		PlansDir:  plansDir,
 		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
-		Resolver:  resolver,
 		Cfg:       config.NewConfig(),
 		Logger:    logr.Discard(),
 	})
@@ -395,7 +394,6 @@ func TestPlanFileSource_Produce_TenantScopedLookup(t *testing.T) {
 		InputFile: inputFile,
 		PlansDir:  plansDir,
 		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
-		Resolver:  resolver,
 		Cfg:       cfg,
 		TenantID:  "inferset-a",
 		Logger:    logr.Discard(),
@@ -437,7 +435,6 @@ func TestPlanFileSource_Produce_TenantScopedLookup(t *testing.T) {
 		InputFile: inputFile2,
 		PlansDir:  plansDir,
 		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
-		Resolver:  resolver,
 		Cfg:       cfgOff,
 		TenantID:  "inferset-a",
 		Logger:    logr.Discard(),
@@ -518,9 +515,8 @@ func TestPlanFileSource_Produce_MultipleModels(t *testing.T) {
 			SafeToModel: map[string]string{"m1": "m1", "m2": "m2"},
 			LineCount:   3,
 		},
-		Resolver: resolver,
-		Cfg:      config.NewConfig(),
-		Logger:   logr.Discard(),
+		Cfg:    config.NewConfig(),
+		Logger: logr.Discard(),
 	})
 
 	out := make(chan pipeline.RequestItem, 10)
@@ -594,7 +590,6 @@ func TestPlanFileSource_Produce_MalformedLine(t *testing.T) {
 		InputFile: inputFile,
 		PlansDir:  plansDir,
 		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
-		Resolver:  resolver,
 		Cfg:       config.NewConfig(),
 		Logger:    logr.Discard(),
 	})
@@ -662,7 +657,6 @@ func TestPlanFileSource_Produce_BadPlanFile(t *testing.T) {
 		InputFile: inputFile,
 		PlansDir:  plansDir,
 		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
-		Resolver:  resolver,
 		Cfg:       config.NewConfig(),
 		Logger:    logr.Discard(),
 	})
@@ -732,7 +726,6 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 		InputFile: inputFile,
 		PlansDir:  plansDir,
 		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: int64(totalRequests)},
-		Resolver:  resolver,
 		Cfg:       config.NewConfig(),
 		Logger:    logr.Discard(),
 	})

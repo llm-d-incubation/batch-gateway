@@ -61,11 +61,16 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 	)
 	tracker.AddFailed(modelMap.RejectedCount)
 
+	// The routing snapshot is fixed for the lifetime of the job: a config
+	// reload mid-flight never changes which gateway this job's requests
+	// resolve to.
+	rs := p.routingState()
+
 	source := NewPlanFileSource(PlanFileSourceConfig{
 		InputFile:          files.input,
 		PlansDir:           plansDir,
 		ModelMap:           modelMap,
-		Resolver:           p.inference,
+		Routing:            rs,
 		Cfg:                p.cfg,
 		PassThroughHeaders: params.jobInfo.PassThroughHeaders,
 		SLODeadline:        sloDeadline,
@@ -75,7 +80,7 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 
 	// The dispatcher forwards requests for processing.
 	pending := pipeline.NewPendingRequests(modelMap.LineCount)
-	dispatcher, err := p.buildRequestDispatcher(modelMap, pending, params.jobInfo.TenantID, logger)
+	dispatcher, err := p.buildRequestDispatcher(modelMap, pending, rs, params.jobInfo.TenantID, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build dispatcher: %w", err)
 	}
@@ -124,15 +129,15 @@ func classifyOutcome(cause error, counts *openai.BatchRequestCounts, execErr err
 	return execErr
 }
 
-func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, tenantID string, logger logr.Logger) (pipeline.RequestDispatcher, error) {
+func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipeline.PendingRequests, rs *routingSnapshot, tenantID string, logger logr.Logger) (pipeline.RequestDispatcher, error) {
 	switch {
 	case p.asyncInference != nil:
 		broadcasters := p.broadcasters.forModels(modelMap)
 		async := pipeline.NewAsyncDispatcher(p.asyncInference, broadcasters, pending, logger)
 		return pipeline.NewPreDispatcher(async), nil
 	case p.cfg.Concurrency.AIMD.Enabled:
-		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits, p.cfg.RouteKeyMethod, tenantID)
-		direct := pipeline.NewDirectDispatcher(p.inference, logger)
+		models := buildAIMDModels(modelMap, rs.resolver, rs.endpointLimits, p.cfg.RouteKeyMethod, tenantID)
+		direct := pipeline.NewDirectDispatcher(rs.resolver, logger)
 		aimd, err := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
 		if err != nil {
 			return nil, err
@@ -143,8 +148,8 @@ func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipe
 		// EndpointAIMD.AIMD is nil so recordAIMDSignal is a no-op, but the semaphores
 		// still enforce fixed concurrency limits (global + per-endpoint). Without this,
 		// DirectDispatcher would dispatch all requests as unbounded goroutines.
-		models := buildAIMDModels(modelMap, p.inference, p.endpointLimits, p.cfg.RouteKeyMethod, tenantID)
-		direct := pipeline.NewDirectDispatcher(p.inference, logger)
+		models := buildAIMDModels(modelMap, rs.resolver, rs.endpointLimits, p.cfg.RouteKeyMethod, tenantID)
+		direct := pipeline.NewDirectDispatcher(rs.resolver, logger)
 		aimd, err := pipeline.NewAIMDDispatcher(direct, models, p.cfg.Concurrency.Global, logger)
 		if err != nil {
 			return nil, err

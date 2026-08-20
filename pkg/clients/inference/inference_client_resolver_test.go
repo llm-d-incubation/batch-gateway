@@ -297,3 +297,52 @@ func TestGatewayResolver_ClientLabel(t *testing.T) {
 		}
 	})
 }
+
+func TestResolverClosersWiring(t *testing.T) {
+	perModelCfg := map[string]GatewayClientConfig{
+		// m1 and m2 share identical settings → pooled into one client.
+		"m1": {URL: "http://shared:8000"},
+		"m2": {URL: "http://shared:8000"},
+		"m3": {URL: "http://other:8000"},
+	}
+	perModel, err := NewPerModelResolver(perModelCfg, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewPerModelResolver: %v", err)
+	}
+	// One closeable resource per unique gateway endpoint (per-model clients
+	// are HTTP clients, which implement io.Closer).
+	if got := len(perModel.closers); got != 2 {
+		t.Fatalf("per-model closers = %d, want 2 (one per unique endpoint)", got)
+	}
+	if err := perModel.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	global, err := NewGlobalResolver(GatewayClientConfig{URL: "http://shared:8000"}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewGlobalResolver: %v", err)
+	}
+	if got := len(global.closers); got != 1 {
+		t.Fatalf("global closers = %d, want 1", got)
+	}
+	if err := global.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Mock-injected resolvers hold no closeables: Close must stay a no-op.
+	mocks := NewPerModelClientResolver(map[string]InferenceClient{
+		"m1": &mockGenerateClient{},
+	})
+	if got := len(mocks.closers); got != 0 {
+		t.Fatalf("mock-client closers = %d, want 0", got)
+	}
+	if err := mocks.Close(); err != nil {
+		t.Fatalf("Close (mocks): %v", err)
+	}
+}
+
+type mockGenerateClient struct{}
+
+func (m *mockGenerateClient) Generate(_ context.Context, _ *GenerateRequest) (*GenerateResponse, *ClientError) {
+	return &GenerateResponse{StatusCode: 200}, nil
+}

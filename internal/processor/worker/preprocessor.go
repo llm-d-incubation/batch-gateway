@@ -112,11 +112,16 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	// In per-model mode, check each model against the resolver and reject
 	// unregistered models early. In global mode, all models are routed to
 	// the same endpoint so no check is needed.
-	// p.inference != nil: NewProcessor does not validate clients; unit tests often
-	// call preProcessJob without Run() and omit Inference (treat as non-per-model).
-	// Production paths hit Processor.validate() in prepare() before work runs.
-	// The guard also avoids panicking if a future caller wires a nil resolver.
-	isPerModelGateway := p.inference != nil && !p.inference.IsGlobal()
+	// The routing snapshot is taken once per job — a mid-job config reload
+	// never changes this job's routing; queued jobs for a removed model hit
+	// the model_not_found path below when they are picked up next.
+	// rs != nil && rs.resolver != nil: NewProcessor does not validate clients;
+	// unit tests often call preProcessJob without Run() and omit Inference
+	// (treat as non-per-model). Production paths hit Processor.validate() in
+	// prepare() before work runs. The guard also avoids panicking if a future
+	// caller wires a nil resolver.
+	rs := p.routingState()
+	isPerModelGateway := rs != nil && rs.resolver != nil && !rs.resolver.IsGlobal()
 	registeredModels := make(map[string]bool) // route key -> registered (per-model only)
 
 	// Always truncate error.jsonl at the start of ingestion so that re-enqueued
@@ -183,7 +188,7 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 			lookupID := routeKey(p.cfg.RouteKeyMethod, jobInfo.TenantID, requestMeta.ModelID)
 			registered, checked := registeredModels[lookupID]
 			if !checked {
-				registered = p.inference.ClientFor(lookupID) != nil
+				registered = rs.resolver.ClientFor(lookupID) != nil
 				registeredModels[lookupID] = registered
 			}
 			if !registered {

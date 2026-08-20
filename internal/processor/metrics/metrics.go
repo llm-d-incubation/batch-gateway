@@ -101,6 +101,8 @@ var (
 	aimdConcurrencyLimit          *prometheus.GaugeVec
 	aimdDecreasesTotal            *prometheus.CounterVec
 	aimdIncreasesTotal            *prometheus.CounterVec
+	modelGatewayReloadTotal       *prometheus.CounterVec
+	modelGatewayReloadLastSuccess prometheus.Gauge
 )
 
 // FileType labels for file upload metrics.
@@ -308,6 +310,24 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"endpoint"},
 	)
 
+	// Model gateway config hot-reload outcomes. A sustained non-zero
+	// failure rate means the on-disk config is being edited but the running
+	// routing plane does not reflect it.
+	modelGatewayReloadTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "batch_processor_model_gateway_reload_total",
+			Help: "Total number of model gateway config reload attempts by result (success/failure)",
+		},
+		[]string{"result"},
+	)
+
+	modelGatewayReloadLastSuccess = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "batch_processor_model_gateway_reload_last_success_timestamp_seconds",
+			Help: "Unix timestamp of the last successful model gateway config reload",
+		},
+	)
+
 	// metrics to register
 	metricsToRegister := []prometheus.Collector{
 		jobProcessingDuration,
@@ -329,6 +349,8 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		aimdConcurrencyLimit,
 		aimdDecreasesTotal,
 		aimdIncreasesTotal,
+		modelGatewayReloadTotal,
+		modelGatewayReloadLastSuccess,
 	}
 
 	for _, metric := range metricsToRegister {
@@ -458,6 +480,18 @@ const (
 	AIMDSignal5xx           = "5xx"
 	AIMDSignalCapacityRetry = "capacity_retry"
 )
+
+// RecordModelGatewayReload increments the model gateway reload counter.
+// result is ResultSuccess or ResultFailed.
+func RecordModelGatewayReload(result string) {
+	modelGatewayReloadTotal.WithLabelValues(result).Inc()
+}
+
+// SetModelGatewayReloadLastSuccess records the timestamp of the last
+// successful model gateway config reload.
+func SetModelGatewayReloadLastSuccess(t time.Time) {
+	modelGatewayReloadLastSuccess.Set(float64(t.Unix()))
+}
 
 // E2E latency status labels. Must match the terminal states used in
 // job_runner.go, worker.go, and recovery.go.
