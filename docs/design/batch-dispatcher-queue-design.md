@@ -91,7 +91,7 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 
 ```json
 {
-  "result_queue_name": "llm-d-async:results:optimized-baseline:$batch",
+  "result_queue_name": "llm-d-async:results:optimized-baseline",
   "queues": [
     {
       "queue_name": "llm-d-async:requests:optimized-baseline",
