@@ -69,6 +69,7 @@ ENABLE_GIE="${ENABLE_GIE:-false}"
 ENABLE_DISPATCHER="${ENABLE_DISPATCHER:-false}"
 GIE_REPO="${GIE_REPO:-}"
 GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
+# Last GIE tag with standalone EPP + flow-control plugins. EPP then moved to llm-d-router.
 GIE_VERSION="${GIE_VERSION:-v1.5.0}"
 GIE_EPP_RELEASE="${GIE_EPP_RELEASE:-epp}"
 GIE_OBJECTIVE_PREFIX="${GIE_OBJECTIVE_PREFIX:-batch-sheddable}"

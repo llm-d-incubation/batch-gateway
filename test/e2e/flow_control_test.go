@@ -63,21 +63,16 @@ func testFlowControl(t *testing.T) {
 		t.Run("BatchCompletionThroughEPP", doTestBatchCompletionThroughEPP)
 		t.Run("SheddingUnderSaturation", doTestSheddingUnderSaturation)
 		t.Run("PriorityBandInteraction", doTestPriorityBandInteraction)
-		t.Run("SLODeadlineOrdering", doTestSLODeadlineOrdering)
 		t.Run("MixedLoadWithMetrics", doTestMixedLoadWithMetrics)
 	})
 }
 
 // ── Header propagation and 429 retry (no GIE required) ─────────────────
 
-// doTestInferenceObjectiveHeader verifies that the processor is configured with
-// the expected inferenceObjective for testModel, and that a batch targeting this
-// model completes successfully. The header itself (x-gateway-inference-objective)
-// is set by mergeInferenceHeaders, which is unit-tested in executor_test.go.
-//
-// TODO: when llm-d-inference-sim releases --log-http support (post-v0.8.3),
-// add --log-http to the simulator args in dev-deploy.sh, then assert the header
-// value directly from simulator logs via getSimulatorLogsSince.
+// doTestInferenceObjectiveHeader verifies that the processor ConfigMap has the
+// expected inferenceObjective for testModel, and that a batch targeting this
+// model completes successfully. It does not inspect the request header on the
+// wire.
 func doTestInferenceObjectiveHeader(t *testing.T) {
 	t.Helper()
 
@@ -96,16 +91,13 @@ func doTestInferenceObjectiveHeader(t *testing.T) {
 		t.Fatalf("expected 2 completed, got %d", batch.RequestCounts.Completed)
 	}
 
-	t.Logf("inferenceObjective=%q configured and batch completed (header propagation unit-tested)", expectedObjective)
+	t.Logf("inferenceObjective=%q configured and batch completed", expectedObjective)
 }
 
 // doTestSLOHeader submits a batch with a short completion_window and verifies
-// the batch completes before the SLO deadline. The x-slo-ttft-ms header is set
-// by mergeInferenceHeaders based on the remaining SLO budget, which is
-// unit-tested in executor_test.go.
-//
-// TODO: when llm-d-inference-sim releases --log-http support (post-v0.8.3),
-// assert x-slo-ttft-ms header value directly from simulator logs.
+// the batch completes before that window expires. It does not read
+// x-slo-ttft-ms on the live request. Remaining-ms formatting from a stored
+// deadline is covered by TestMergeHeaders in source_planfile_test.go.
 func doTestSLOHeader(t *testing.T) {
 	t.Helper()
 
@@ -129,7 +121,7 @@ func doTestSLOHeader(t *testing.T) {
 		t.Fatalf("expected 2 completed, got %d", finalBatch.RequestCounts.Completed)
 	}
 
-	t.Logf("batch completed within 10m SLO window (x-slo-ttft-ms header propagation unit-tested)")
+	t.Logf("batch completed within 10m SLO window")
 }
 
 // doTestRetryOn429 verifies the full retry-to-success path:
@@ -305,8 +297,15 @@ func doTestRetryExhaustion(t *testing.T) {
 //   - EPP routing smoke tests (header propagation, multi-model completion)
 //   - Shedding under saturation (DroppedOnSaturation via fake-metrics saturation)
 //   - Priority band interaction (interactive dispatched, batch shed under saturation)
-//   - SLO-deadline ordering (shorter completion_window dispatched first)
 //   - Mixed load with metrics (saturation/recovery cycle with EPP + processor metrics)
+//
+// Not covered: while two sheddable requests are queued, EPP does not dispatch
+// the earlier x-slo-ttft-ms deadline first. Observed on GIE EPP v1.5.0 (FCFS
+// even with slo-deadline-ordering-policy). Unblock by deploying llm-d-router
+// for Kind e2e, not by bumping GIE_VERSION (v1.6.0 dropped standalone EPP).
+// When adding the test: saturate, curl long then short SLO on the same
+// objective, unsaturate only after both "Item enqueued", assert short
+// "Item dispatched" first. Do not use batch CompletedAt.
 
 // detectGIEDeployed checks whether at least one EPP deployment exists.
 // It searches testEPPNamespace (TEST_EPP_NAMESPACE) if set, otherwise
@@ -596,107 +595,6 @@ func doTestPriorityBandInteraction(t *testing.T) {
 	t.Log("priority bands verified: both blocked under saturation, both recover after")
 }
 
-// doTestSLODeadlineOrdering verifies that the slo-deadline-ordering-policy
-// dispatches requests with shorter deadlines before longer deadlines.
-// A slow backend creates queueing in EPP so ordering becomes observable.
-//
-// NOTE: CompletedAt has second granularity; the assertion uses <= (not <).
-// This relies on sequential processing in the current dev setup (single EPP
-// replica, slow backend). If EPP or backend concurrency changes, a same-second
-// tie could mask an ordering violation — revisit if the environment evolves.
-func doTestSLODeadlineOrdering(t *testing.T) {
-	t.Helper()
-
-	t.Cleanup(func() {
-		deleteE2ECurlPod(t)
-	})
-
-	// Slow down the simulator to create queueing in EPP.
-	t.Log("slowing sim to create EPP queueing for SLO ordering test")
-	setSimAdminConfig(t, testSimService, `{"inter-token-latency": "3s"}`)
-	t.Cleanup(func() {
-		// Best-effort restore; test does not inline-reset latency.
-		_ = trySetSimAdminConfig(t, testSimService, `{"inter-token-latency":"100ms"}`)
-	})
-
-	// Submit batch B first with a long completion_window (30m).
-	longJSONL := fmt.Sprintf(
-		`{"custom_id":"slo-long-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":3,"messages":[{"role":"user","content":"long deadline"}]}}`,
-		testModel)
-	fileIDLong := mustCreateFile(t, fmt.Sprintf("fc-slo-long-%s.jsonl", testRunID), longJSONL)
-	client := newClient()
-	batchLong, err := client.Batches.New(t.Context(), openai.BatchNewParams{
-		InputFileID:      fileIDLong,
-		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
-		CompletionWindow: openai.BatchNewParamsCompletionWindow("30m"),
-	})
-	if err != nil {
-		t.Fatalf("create long-deadline batch failed: %v", err)
-	}
-	t.Logf("submitted long-deadline batch %s (completion_window=30m)", batchLong.ID)
-
-	// Submit batch A with a short completion_window (2m).
-	shortJSONL := fmt.Sprintf(
-		`{"custom_id":"slo-short-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":3,"messages":[{"role":"user","content":"short deadline"}]}}`,
-		testModel)
-	fileIDShort := mustCreateFile(t, fmt.Sprintf("fc-slo-short-%s.jsonl", testRunID), shortJSONL)
-	batchShort, err := client.Batches.New(t.Context(), openai.BatchNewParams{
-		InputFileID:      fileIDShort,
-		Endpoint:         openai.BatchNewParamsEndpointV1ChatCompletions,
-		CompletionWindow: openai.BatchNewParamsCompletionWindow("2m"),
-	})
-	if err != nil {
-		t.Fatalf("create short-deadline batch failed: %v", err)
-	}
-	t.Logf("submitted short-deadline batch %s (completion_window=2m)", batchShort.ID)
-
-	// Wait for both to complete. With 3s inter-token-latency and max_tokens=3,
-	// each request takes ~9s. The ordering policy should dispatch the shorter
-	// deadline first.
-	var shortCompletedAt, longCompletedAt int64
-	deadline := time.Now().Add(3 * time.Minute)
-
-	for time.Now().Before(deadline) {
-		// Check long first to avoid biasing observation order toward short.
-		if longCompletedAt == 0 {
-			b, err := client.Batches.Get(t.Context(), batchLong.ID)
-			if err == nil && terminalBatchStatuses[b.Status] {
-				longCompletedAt = b.CompletedAt
-				t.Logf("long-deadline batch completed (status=%s, completed_at=%d)", b.Status, b.CompletedAt)
-			}
-		}
-		if shortCompletedAt == 0 {
-			b, err := client.Batches.Get(t.Context(), batchShort.ID)
-			if err == nil && terminalBatchStatuses[b.Status] {
-				shortCompletedAt = b.CompletedAt
-				t.Logf("short-deadline batch completed (status=%s, completed_at=%d)", b.Status, b.CompletedAt)
-			}
-		}
-		if shortCompletedAt != 0 && longCompletedAt != 0 {
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
-
-	if shortCompletedAt == 0 {
-		t.Fatal("short-deadline batch did not complete within timeout")
-	}
-	if longCompletedAt == 0 {
-		t.Fatal("long-deadline batch did not complete within timeout")
-	}
-
-	if shortCompletedAt > longCompletedAt {
-		t.Errorf("SLO ordering violated: short-deadline completed_at=%d, long-deadline completed_at=%d (short finished later)",
-			shortCompletedAt, longCompletedAt)
-	} else {
-		t.Logf("SLO ordering verified: short completed_at=%d <= long completed_at=%d",
-			shortCompletedAt, longCompletedAt)
-	}
-
-	// Inline restore — don't leave sim at 3s latency for subsequent tests.
-	setSimAdminConfig(t, testSimService, `{"inter-token-latency":"100ms"}`)
-}
-
 // doTestMixedLoadWithMetrics exercises a full saturation/recovery cycle and
 // asserts both EPP-side and processor-side metrics are consistent.
 // Phase 1: saturate pool, submit batch, observe shedding metrics.
@@ -771,6 +669,8 @@ func doTestMixedLoadWithMetrics(t *testing.T) {
 
 // curlEPP sends a chat completion request to EPP with the given objective header
 // and returns the HTTP status code string. Does not fail the test on non-200.
+// Timeout is 65s (EPP defaultRequestTTL 30s plus buffer) so saturation-path
+// EvictedTTL responses are not cut off as transport errors.
 func curlEPP(t *testing.T, url, objective, body string) string {
 	t.Helper()
 
@@ -784,7 +684,7 @@ func curlEPP(t *testing.T, url, objective, body string) string {
 		"-H", fmt.Sprintf("x-gateway-inference-objective: %s", objective),
 		"-d", body,
 		"-w", "\n%{http_code}",
-		"--max-time", "35",
+		"--max-time", "65",
 		url,
 	).CombinedOutput()
 	if err != nil {
