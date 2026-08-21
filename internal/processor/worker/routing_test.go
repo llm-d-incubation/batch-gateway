@@ -18,6 +18,7 @@ package worker
 
 import (
 	"testing"
+	"time"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
@@ -251,4 +252,42 @@ func TestRoutingStateBootstrapFallback(t *testing.T) {
 	if got := rs.objectiveFor("m1"); got != "obj-a" {
 		t.Fatalf("objectiveFor(m1) = %q, want %q", got, "obj-a")
 	}
+}
+
+// TestSwapRoutingCloseOwnership: the startup resolver is owned by the
+// Clientset (closed by procClients.Close() on shutdown), so swapping it out
+// must not schedule a grace close. Resolvers installed by config reloads
+// are Processor-owned: the replaced one is closed after the grace period.
+func TestSwapRoutingCloseOwnership(t *testing.T) {
+	p, err := NewProcessor(config.NewConfig(), validProcessorClients(t), "test-processor", testLogger(t))
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
+
+	startupClient := &closableFakeClient{}
+	startup := inference.NewSingleClientResolver(startupClient)
+	p.inference = startup
+	p.routing.Store(&routingSnapshot{resolver: startup})
+
+	// First reload swaps the startup resolver out: no close may be
+	// scheduled — the Clientset still owns it.
+	reloadedClient := &closableFakeClient{}
+	p.swapRouting(&routingSnapshot{resolver: inference.NewSingleClientResolver(reloadedClient)}, 20*time.Millisecond, testLogger(t))
+	time.Sleep(100 * time.Millisecond) // several grace periods past
+	if startupClient.closed.Load() {
+		t.Fatal("startup resolver must not be closed by a swap; the Clientset owns it")
+	}
+
+	// A second reload replaces a Processor-owned resolver: its close is
+	// scheduled after the grace period.
+	secondClient := &closableFakeClient{}
+	p.swapRouting(&routingSnapshot{resolver: inference.NewSingleClientResolver(secondClient)}, 20*time.Millisecond, testLogger(t))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if reloadedClient.closed.Load() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("replaced reload-created resolver must be closed after the grace period")
 }

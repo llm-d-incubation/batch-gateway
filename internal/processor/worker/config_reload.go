@@ -166,15 +166,34 @@ func (p *Processor) reloadFingerprint(logger logr.Logger) ([sha256.Size]byte, *c
 
 // gatewayFingerprint hashes the config file content together with the
 // contents of every external file the gateway section references, so key or
-// certificate rotations alone trigger a reload. Referenced files are
-// re-read from disk here (they are read again during resolve; worst case a
-// rotation racing this read just causes one extra reload next poll).
-// A referenced file that does not exist hashes as absent rather than
-// failing — resolveGatewayAPIKey treats a missing named secret the same way.
+// certificate rotations alone trigger a reload.
 func gatewayFingerprint(configData []byte, cfg *config.ProcessorConfig) ([sha256.Size]byte, error) {
 	var zero [sha256.Size]byte
+	filesHash, err := referencedFilesHash(cfg)
+	if err != nil {
+		return zero, err
+	}
 	h := sha256.New()
 	h.Write(configData)
+	h.Write(filesHash[:])
+	var fp [sha256.Size]byte
+	copy(fp[:], h.Sum(nil))
+	return fp, nil
+}
+
+// referencedFilesHash hashes the path set and contents of every external
+// file the gateway section references. It backs both the change-detection
+// fingerprint and the no-op decision in applyModelGatewayConfig, so a
+// rotation that triggers a reload necessarily also forces a resolver
+// rebuild (there is exactly one definition of "referenced content
+// changed"). Referenced files are re-read from disk here (they are read
+// again during resolve / client construction; worst case a rotation racing
+// this read just causes one extra reload next poll). A referenced file that
+// does not exist hashes as absent rather than failing — resolveGatewayAPIKey
+// treats a missing named secret the same way.
+func referencedFilesHash(cfg *config.ProcessorConfig) ([sha256.Size]byte, error) {
+	var zero [sha256.Size]byte
+	h := sha256.New()
 	for _, f := range referencedGatewayFiles(cfg) {
 		h.Write([]byte{0})
 		h.Write([]byte(f))
@@ -274,12 +293,25 @@ func (p *Processor) applyModelGatewayConfig(newCfg *config.ProcessorConfig, logg
 		return fmt.Errorf("switching to dispatch_mode %q at runtime is not supported", config.DispatchModeAsync)
 	}
 
+	// The resolved gateway set alone cannot see referenced-file content
+	// changes (GatewayClientConfig holds TLS paths, not contents), so the
+	// no-op check below also compares the content digest stored with the
+	// current snapshot. A changed digest (TLS/key rotation in place, or a
+	// newly introduced referenced file) forces a resolver rebuild even when
+	// the resolved gateway set is byte-identical.
+	newFilesHash, err := referencedFilesHash(newCfg)
+	if err != nil {
+		return fmt.Errorf("read referenced gateway files: %w", err)
+	}
+
 	oldSnapshot := p.routing.Load()
 	globalObjective, modelObjectives := objectivesFromConfig(newCfg)
 	if oldSnapshot != nil {
+		sameFiles := oldSnapshot.referencedFilesHash == nil || *oldSnapshot.referencedFilesHash == newFilesHash
 		if resolvedGatewaysEqual(oldSnapshot.gateways, resolved) &&
 			oldSnapshot.globalObjective == globalObjective &&
-			maps.Equal(oldSnapshot.modelObjectives, modelObjectives) {
+			maps.Equal(oldSnapshot.modelObjectives, modelObjectives) &&
+			sameFiles {
 			logger.V(logging.INFO).Info("Gateway routing unchanged after reload; keeping current routing")
 			return nil
 		}
@@ -315,11 +347,12 @@ func (p *Processor) applyModelGatewayConfig(newCfg *config.ProcessorConfig, logg
 	)
 
 	p.swapRouting(&routingSnapshot{
-		resolver:        resolver,
-		endpointLimits:  limits,
-		globalObjective: globalObjective,
-		modelObjectives: modelObjectives,
-		gateways:        resolved,
+		resolver:            resolver,
+		endpointLimits:      limits,
+		globalObjective:     globalObjective,
+		modelObjectives:     modelObjectives,
+		gateways:            resolved,
+		referencedFilesHash: &newFilesHash,
 	}, defaultModelGatewayCloseGracePeriod, logger)
 	return nil
 }

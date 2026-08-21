@@ -18,7 +18,13 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -79,13 +85,17 @@ func newReloadTestProcessor(t *testing.T, cfgPath string, interval time.Duration
 		t.Fatalf("buildEndpointLimits: %v", err)
 	}
 	globalObjective, modelObjectives := objectivesFromConfig(cfg)
-	p.routing.Store(&routingSnapshot{
+	snapshot := &routingSnapshot{
 		resolver:        resolver,
 		endpointLimits:  limits,
 		globalObjective: globalObjective,
 		modelObjectives: modelObjectives,
 		gateways:        resolved,
-	})
+	}
+	if filesHash, err := referencedFilesHash(cfg); err == nil {
+		snapshot.referencedFilesHash = &filesHash
+	}
+	p.routing.Store(snapshot)
 	return p
 }
 
@@ -531,6 +541,162 @@ func TestModelGatewayWatchLoopAPIKeyRotationAndRetry(t *testing.T) {
 
 	cancel()
 	p.watcherWG.Wait()
+}
+
+// writeTestCACert writes a fresh self-signed CA certificate (valid PEM,
+// loadable by the resolver's TLS setup) to path. serial and commonName vary
+// the file content between calls, simulating a certificate rotation.
+func writeTestCACert(t *testing.T, path string, serial int64, commonName string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(serial),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create CA certificate: %v", err)
+	}
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("write CA cert: %v", err)
+	}
+}
+
+// writeGatewayConfigWithTLS writes a valid per-model config whose single
+// gateway trusts the given CA certificate file and (optionally) reads its
+// API key from keyFile.
+func writeGatewayConfigWithTLS(t *testing.T, path, caCertFile, keyFile string) {
+	t.Helper()
+	keyLine := ""
+	if keyFile != "" {
+		keyLine = fmt.Sprintf("    api_key_file: %q\n", keyFile)
+	}
+	content := fmt.Sprintf(`model_gateways:
+  m1:
+    url: "https://a:8000"
+    tls_ca_cert_file: %q
+%s    request_timeout: 30s
+    max_retries: 1
+    initial_backoff: 1s
+    max_backoff: 5s
+`, caCertFile, keyLine)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+}
+
+// TestApplyModelGatewayConfigTLSRotation: TLS files are referenced by path
+// in GatewayClientConfig, so rotating the certificate content in place
+// leaves the resolved gateway set byte-identical. The snapshot's referenced
+// files digest must still force a resolver rebuild — a genuine no-op must
+// not.
+func TestApplyModelGatewayConfigTLSRotation(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	writeTestCACert(t, caPath, 1, "ca-one")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	writeGatewayConfigWithTLS(t, cfgPath, caPath, "")
+	p := newReloadTestProcessor(t, cfgPath, 0)
+
+	apply := func(t *testing.T) {
+		t.Helper()
+		newCfg, err := loadProcessorConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("loadProcessorConfig: %v", err)
+		}
+		if err := p.applyModelGatewayConfig(newCfg, testLogger(t)); err != nil {
+			t.Fatalf("applyModelGatewayConfig: %v", err)
+		}
+	}
+
+	// Pure no-op: nothing changed — the snapshot must be kept.
+	before := p.routing.Load()
+	apply(t)
+	if got := p.routing.Load(); got != before {
+		t.Fatal("unchanged config must not replace the routing snapshot")
+	}
+
+	// Content-only rotation at the same path: config equality can't see it,
+	// the referenced-files digest must.
+	writeTestCACert(t, caPath, 2, "ca-two")
+	apply(t)
+	rotated := p.routing.Load()
+	if rotated == before {
+		t.Fatal("TLS cert rotation in place must rebuild the routing snapshot")
+	}
+	if rotated.resolver == before.resolver {
+		t.Fatal("TLS cert rotation in place must rebuild the resolver")
+	}
+
+	// Path + content change: also rebuilds (the resolved config differs).
+	caPath2 := filepath.Join(dir, "ca2.pem")
+	writeTestCACert(t, caPath2, 3, "ca-three")
+	writeGatewayConfigWithTLS(t, cfgPath, caPath2, "")
+	apply(t)
+	if got := p.routing.Load(); got == rotated {
+		t.Fatal("TLS cert path change must rebuild the routing snapshot")
+	}
+}
+
+// TestApplyModelGatewayConfigAddsReferencedFile: introducing a new
+// referenced file can leave the resolved gateway set byte-identical (here:
+// an api key file whose trimmed content is the empty key that was used
+// before). The enlarged referenced-file set must still trigger a rebuild —
+// the new file's content now governs future change detection.
+func TestApplyModelGatewayConfigAddsReferencedFile(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	writeTestCACert(t, caPath, 1, "ca-one")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	writeGatewayConfigWithTLS(t, cfgPath, caPath, "")
+	p := newReloadTestProcessor(t, cfgPath, 0)
+	before := p.routing.Load()
+
+	keyPath := filepath.Join(dir, "api.key")
+	if err := os.WriteFile(keyPath, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeGatewayConfigWithTLS(t, cfgPath, caPath, keyPath)
+
+	newCfg, err := loadProcessorConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("loadProcessorConfig: %v", err)
+	}
+	resolved, err := config.ResolveModelGateways(newCfg)
+	if err != nil {
+		t.Fatalf("ResolveModelGateways: %v", err)
+	}
+	if !resolvedGatewaysEqual(before.gateways, resolved) {
+		t.Fatal("test premise broken: adding an empty api key file must leave the resolved gateway set unchanged")
+	}
+
+	if err := p.applyModelGatewayConfig(newCfg, testLogger(t)); err != nil {
+		t.Fatalf("applyModelGatewayConfig: %v", err)
+	}
+	if got := p.routing.Load(); got == before {
+		t.Fatal("introducing a new referenced file must rebuild the routing snapshot")
+	}
+
+	// Subsequent identical reload stays a no-op.
+	after := p.routing.Load()
+	newCfg, err = loadProcessorConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("loadProcessorConfig: %v", err)
+	}
+	if err := p.applyModelGatewayConfig(newCfg, testLogger(t)); err != nil {
+		t.Fatalf("applyModelGatewayConfig: %v", err)
+	}
+	if got := p.routing.Load(); got != after {
+		t.Fatal("unchanged config after the rebuild must not replace the routing snapshot")
+	}
 }
 
 type closableFakeClient struct {

@@ -27,6 +27,7 @@ limitations under the License.
 package worker
 
 import (
+	"crypto/sha256"
 	"maps"
 	"slices"
 	"time"
@@ -55,6 +56,17 @@ type routingSnapshot struct {
 	// Nil for bootstrap snapshots synthesized before Run() initializes
 	// routing (e.g. unit tests that call job steps without Run).
 	gateways *config.ResolvedGateways
+
+	// referencedFilesHash digests the path set and contents of every
+	// external file the gateway config references (api key and TLS
+	// material). GatewayClientConfig carries TLS cert/key paths only, not
+	// contents, so gateway-set equality cannot see a certificate rotated in
+	// place — without this digest a content-only rotation would be
+	// misjudged as a no-op and the applied fingerprint would pin the stale
+	// TLS material forever. Nil when it could not be computed (the startup
+	// baseline is best-effort); a nil stored digest falls back to
+	// gateway-set equality only and never vetoes a reload.
+	referencedFilesHash *[sha256.Size]byte
 }
 
 // objectiveFor returns the inference objective for the given lookup key
@@ -150,9 +162,17 @@ func (p *Processor) buildEndpointLimits(
 // resolver's clients for closure after a grace period, letting in-flight
 // jobs drain. (HTTPClient.Close closes idle connections only; it never
 // interrupts in-flight requests.)
+//
+// Ownership boundary: the startup resolver (p.inference, installed by
+// initConcurrencyControls) belongs to the Clientset, which closes it in
+// procClients.Close() on shutdown — a swap must never schedule its closure,
+// or the first reload would close it twice and out of Clientset ownership.
+// Resolvers created by config reloads belong to the Processor: the replaced
+// one is closed here after the grace period, and the still-installed one is
+// closed by Stop (closeReloadedRouting).
 func (p *Processor) swapRouting(newSnapshot *routingSnapshot, gracePeriod time.Duration, logger logr.Logger) {
 	old := p.routing.Swap(newSnapshot)
-	if old == nil || old.resolver == nil {
+	if old == nil || old.resolver == nil || old.resolver == p.inference {
 		return
 	}
 	time.AfterFunc(gracePeriod, func() {

@@ -247,6 +247,11 @@ func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting co
 	} else {
 		routing.gateways = resolved
 	}
+	if filesHash, hashErr := referencedFilesHash(p.cfg); hashErr != nil {
+		logger.Error(hashErr, "Failed to hash referenced gateway files for reload baseline; a content-only key/cert rotation applied before the first reload may wait for a further config change")
+	} else {
+		routing.referencedFilesHash = &filesHash
+	}
 	p.routing.Store(routing)
 
 	const highCardinalityThreshold = 50
