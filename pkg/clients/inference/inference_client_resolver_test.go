@@ -19,8 +19,10 @@ package inference
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -357,6 +359,57 @@ type closableStubClient struct {
 func (c *closableStubClient) Close() error {
 	c.closed.Store(true)
 	return nil
+}
+
+// countingCloser records how many times Close ran and returns a fixed error.
+type countingCloser struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (c *countingCloser) Close() error {
+	c.calls.Add(1)
+	return c.err
+}
+
+// TestGatewayResolverCloseIdempotent: a resolver can be closed from several
+// places (the swap grace-period timer, processor Stop, tests) and wraps
+// arbitrary io.Closer implementations that need not tolerate double-close.
+// Repeated and concurrent Close calls must run the underlying closers
+// exactly once and return the same error to every caller.
+func TestGatewayResolverCloseIdempotent(t *testing.T) {
+	wantErr := errors.New("close failed")
+	closer := &countingCloser{err: wantErr}
+	r := &GatewayResolver{closers: []io.Closer{closer}}
+
+	const callers = 8
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = r.Close()
+		}()
+	}
+	wg.Wait()
+
+	if got := closer.calls.Load(); got != 1 {
+		t.Fatalf("underlying Close ran %d times, want exactly 1", got)
+	}
+	for i, err := range errs {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Close (caller %d) = %v, want %v", i, err, wantErr)
+		}
+	}
+
+	// A further sequential Close reuses the cached result.
+	if err := r.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("subsequent Close = %v, want %v", err, wantErr)
+	}
+	if got := closer.calls.Load(); got != 1 {
+		t.Fatalf("underlying Close ran %d times after a repeat call, want 1", got)
+	}
 }
 
 // TestNewPerModelResolverFailureClosesCreatedClients: when client

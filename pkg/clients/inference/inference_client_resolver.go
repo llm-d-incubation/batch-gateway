@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -82,6 +83,9 @@ type GatewayResolver struct {
 	modelClients map[string]InferenceClient
 	clientURLs   map[InferenceClient]string
 	closers      []io.Closer
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewGlobalResolver creates a GatewayResolver where all models resolve to a
@@ -209,16 +213,25 @@ func (r *GatewayResolver) ClientLabel(c InferenceClient) string {
 	return "unknown"
 }
 
-// Close releases resources held by the resolver (e.g. Redis connections for
-// async dispatch). Safe to call on resolvers that hold no closeable resources.
+// Close releases resources held by the resolver (e.g. HTTP transports).
+// Safe to call on resolvers that hold no closeable resources.
+//
+// Close is idempotent and safe for concurrent use: a resolver can be closed
+// from several places (the swap grace-period timer, processor Stop, tests),
+// and the resolver contract allows arbitrary io.Closer implementations that
+// do not necessarily tolerate double-close. Only the first call closes the
+// underlying resources; every call returns the same error.
 func (r *GatewayResolver) Close() error {
-	var errs []error
-	for _, c := range r.closers {
-		if err := c.Close(); err != nil {
-			errs = append(errs, err)
+	r.closeOnce.Do(func() {
+		var errs []error
+		for _, c := range r.closers {
+			if err := c.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
-	}
-	return errors.Join(errs...)
+		r.closeErr = errors.Join(errs...)
+	})
+	return r.closeErr
 }
 
 // NewSingleClientResolver wraps a single InferenceClient in a GatewayResolver

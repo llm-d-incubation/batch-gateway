@@ -27,6 +27,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -432,6 +433,93 @@ func TestGatewayFingerprintCoversReferencedFiles(t *testing.T) {
 	writeGatewayConfigWithKeyFile(t, cfgPath, keyB)
 	if fp := fingerprint(t); fp == base {
 		t.Fatal("fingerprint must change when the referenced key file path changes")
+	}
+}
+
+// writeGlobalGatewayConfigWithKeyFile writes a valid global-gateway config
+// whose single gateway reads its API key from the given file.
+func writeGlobalGatewayConfigWithKeyFile(t *testing.T, path, keyFile string) {
+	t.Helper()
+	content := fmt.Sprintf(`global_inference_gateway:
+  url: "http://global:8000"
+  api_key_file: %q
+  request_timeout: 30s
+  max_retries: 1
+  initial_backoff: 1s
+  max_backoff: 5s
+`, keyFile)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+}
+
+// TestGatewayFingerprintCoversGlobalFallbackSecret: ResolveModelGateways
+// falls back to the mounted inference-api-key for the global gateway
+// whenever the explicit key source resolves to an empty string (e.g. an
+// api_key_file whose content is empty). The config layer hashes paths, not
+// contents, so it cannot tell whether the fallback will actually be used —
+// the fallback secret is therefore always part of the referenced file set
+// for a global gateway, and rotating it must move the fingerprint even when
+// a non-empty api_key_file makes the fallback unused at resolve time (one
+// extra hashed file is acceptable conservative behavior). Per-model
+// gateways have no such fallback and must not pull the secret into their
+// file set.
+func TestGatewayFingerprintCoversGlobalFallbackSecret(t *testing.T) {
+	dir := t.TempDir()
+	fallback := filepath.Join(dir, "inference-api-key")
+	if err := os.WriteFile(fallback, []byte("fallback-one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := fallbackSecretPath
+	fallbackSecretPath = fallback
+	defer func() { fallbackSecretPath = orig }()
+
+	keyFile := filepath.Join(dir, "api.key")
+	if err := os.WriteFile(keyFile, []byte("explicit-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	writeGlobalGatewayConfigWithKeyFile(t, cfgPath, keyFile)
+
+	fingerprint := func(t *testing.T) [32]byte {
+		t.Helper()
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadProcessorConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("loadProcessorConfig: %v", err)
+		}
+		fp, err := gatewayFingerprint(data, cfg)
+		if err != nil {
+			t.Fatalf("gatewayFingerprint: %v", err)
+		}
+		return fp
+	}
+
+	base := fingerprint(t)
+
+	// Rotate only the fallback secret: the config text and the explicit key
+	// are identical, but the fingerprint must still change — in the real
+	// fallback scenario this is what reloads routing on secret rotation.
+	if err := os.WriteFile(fallback, []byte("fallback-two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fp := fingerprint(t); fp == base {
+		t.Fatal("fingerprint must change when the global fallback secret rotates")
+	}
+
+	// Per-model gateways never use the fallback: their referenced file set
+	// must exclude the fallback secret path.
+	writeGatewayConfigWithKeyFile(t, cfgPath, keyFile)
+	perModelCfg, err := loadProcessorConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("loadProcessorConfig: %v", err)
+	}
+	files := referencedGatewayFiles(perModelCfg)
+	if slices.Contains(files, fallback) {
+		t.Fatalf("per-model gateway must not reference the global fallback secret, got %v", files)
 	}
 }
 

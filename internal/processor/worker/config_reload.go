@@ -214,8 +214,8 @@ func referencedFilesHash(cfg *config.ProcessorConfig) ([sha256.Size]byte, error)
 
 // referencedGatewayFiles lists the external files whose contents feed into
 // gateway client construction: explicit api_key_file paths, the mounted
-// secret behind api_key_name (and the global gateway's fallback
-// inference-api-key when neither key field is set), and TLS cert/key files.
+// secret behind api_key_name, the global gateway's fallback
+// inference-api-key, and TLS cert/key files.
 func referencedGatewayFiles(cfg *config.ProcessorConfig) []string {
 	var files []string
 	add := func(gw *config.ModelGatewayConfig) {
@@ -235,10 +235,17 @@ func referencedGatewayFiles(cfg *config.ProcessorConfig) []string {
 		}
 	}
 	add(cfg.GlobalInferenceGateway)
-	if g := cfg.GlobalInferenceGateway; g != nil && g.APIKeyFile == "" && g.APIKeyName == "" {
+	if cfg.GlobalInferenceGateway != nil {
 		// ResolveModelGateways falls back to the mounted inference-api-key
-		// for the global gateway; its rotation must reload routing too.
-		files = append(files, ucom.SecretFilePath(ucom.SecretKeyInferenceAPI))
+		// for the global gateway whenever the explicitly configured key
+		// resolves to an empty string (including an api_key_file or
+		// api_key_name whose content is empty). The config layer only sees
+		// paths, not key contents, so it cannot tell whether the fallback
+		// will actually be used — fingerprint the fallback secret
+		// unconditionally. With a non-empty explicit key the fallback is
+		// unused; hashing one extra file is acceptable conservative
+		// behavior. Per-model gateways have no such fallback.
+		files = append(files, fallbackSecretPath)
 	}
 	for _, model := range slices.Sorted(maps.Keys(cfg.ModelGateways)) {
 		gw := cfg.ModelGateways[model]
@@ -247,6 +254,11 @@ func referencedGatewayFiles(cfg *config.ProcessorConfig) []string {
 	slices.Sort(files)
 	return slices.Compact(files)
 }
+
+// fallbackSecretPath is the mounted inference-api-key path that
+// ResolveModelGateways falls back to for the global gateway. Declared as a
+// var so tests can point it at a temp file.
+var fallbackSecretPath = ucom.SecretFilePath(ucom.SecretKeyInferenceAPI)
 
 // newSyncResolver builds the sync routing resolver for a freshly resolved
 // gateway set — the same construction as startup. Declared as a var so
