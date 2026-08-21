@@ -1,8 +1,11 @@
 <!--
-  Optional template for release descriptions.
-  The Release workflow uses auto-generated notes from .github/release.yml.
-  You can paste the sections below when drafting or editing a release, or
-  use them as a checklist for release communication.
+  NOT used by any workflow. The Release workflow (create-release.yml) generates
+  release notes automatically from merged PR labels via .github/release.yml.
+
+  This file is a manual reference only. If you want the boilerplate below
+  (Docker image names, Helm install command, binary instructions) to appear
+  in the release description, paste it manually when editing the release on
+  GitHub, above the auto-generated changelog.
 -->
 
 ## Docker images

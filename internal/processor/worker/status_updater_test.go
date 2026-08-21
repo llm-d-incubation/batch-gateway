@@ -194,3 +194,93 @@ func TestUpdatePersistentStatus_Success(t *testing.T) {
 		t.Fatalf("expected status failed, got %s", got.Status)
 	}
 }
+
+func TestUpdatePersistentStatus_PreservesPriorTimestamps(t *testing.T) {
+	stamps := map[string]func(*openai.BatchStatusInfo) *int64{
+		"cancelled_at":   func(s *openai.BatchStatusInfo) *int64 { return s.CancelledAt },
+		"cancelling_at":  func(s *openai.BatchStatusInfo) *int64 { return s.CancellingAt },
+		"completed_at":   func(s *openai.BatchStatusInfo) *int64 { return s.CompletedAt },
+		"expired_at":     func(s *openai.BatchStatusInfo) *int64 { return s.ExpiredAt },
+		"failed_at":      func(s *openai.BatchStatusInfo) *int64 { return s.FailedAt },
+		"finalizing_at":  func(s *openai.BatchStatusInfo) *int64 { return s.FinalizingAt },
+		"in_progress_at": func(s *openai.BatchStatusInfo) *int64 { return s.InProgressAt },
+	}
+
+	tests := []struct {
+		name        string
+		transitions []openai.BatchStatus
+		wantSet     []string
+	}{
+		{
+			name:        "completed run keeps in_progress and finalizing",
+			transitions: []openai.BatchStatus{openai.BatchStatusInProgress, openai.BatchStatusFinalizing, openai.BatchStatusCompleted},
+			wantSet:     []string{"in_progress_at", "finalizing_at", "completed_at"},
+		},
+		{
+			name:        "failed run keeps in_progress",
+			transitions: []openai.BatchStatus{openai.BatchStatusInProgress, openai.BatchStatusFailed},
+			wantSet:     []string{"in_progress_at", "failed_at"},
+		},
+		{
+			// The worker never writes cancelling itself: the API server records that
+			// before sending the cancel event, so the worker only writes cancelled.
+			name:        "cancelled run keeps in_progress",
+			transitions: []openai.BatchStatus{openai.BatchStatusInProgress, openai.BatchStatusCancelled},
+			wantSet:     []string{"in_progress_at", "cancelled_at"},
+		},
+		{
+			name:        "expired run keeps in_progress",
+			transitions: []openai.BatchStatus{openai.BatchStatusInProgress, openai.BatchStatusExpired},
+			wantSet:     []string{"in_progress_at", "expired_at"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			dbClient := newMockBatchDBClient()
+			updater := NewStatusUpdater(dbClient, mockdb.NewMockBatchStatusClient(), 86400)
+			jobID := "job-preserve-timestamps"
+
+			// Seed what CreateBatch writes: validating, every timestamp unset.
+			jobItem := &db.BatchItem{
+				BaseIndexes: db.BaseIndexes{ID: jobID},
+				BaseContents: db.BaseContents{
+					Status: mustJSON(t, openai.BatchStatusInfo{Status: openai.BatchStatusValidating}),
+				},
+			}
+			if err := dbClient.DBStore(ctx, jobItem); err != nil {
+				t.Fatalf("DBStore seed: %v", err)
+			}
+
+			// Every transition reuses jobItem, as the real call sites do.
+			for _, status := range tt.transitions {
+				if err := updater.UpdatePersistentStatus(ctx, jobItem, status, nil, nil); err != nil {
+					t.Fatalf("UpdatePersistentStatus(%s): %v", status, err)
+				}
+			}
+
+			items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
+			if err != nil || len(items) != 1 {
+				t.Fatalf("DBGet updated item: err=%v len=%d", err, len(items))
+			}
+			var got openai.BatchStatusInfo
+			if err := json.Unmarshal(items[0].Status, &got); err != nil {
+				t.Fatalf("unmarshal status: %v", err)
+			}
+
+			want := make(map[string]bool, len(tt.wantSet))
+			for _, name := range tt.wantSet {
+				want[name] = true
+			}
+			for name, get := range stamps {
+				switch value := get(&got); {
+				case want[name] && value == nil:
+					t.Errorf("%s: want a timestamp, got null", name)
+				case !want[name] && value != nil:
+					t.Errorf("%s: want null, got %d", name, *value)
+				}
+			}
+		})
+	}
+}

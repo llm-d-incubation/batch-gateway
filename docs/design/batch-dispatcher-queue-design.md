@@ -1,7 +1,7 @@
 # Batch Dispatcher Queue Design
 
--   **Revision**: 2
--   **Last Updated**: 2026-05-12
+-   **Revision**: 3
+-   **Last Updated**: 2026-07-29
 -   **Related Jira**: [INFERENG-5607](https://redhat.atlassian.net/browse/INFERENG-5607)
 
 Related:
@@ -43,6 +43,8 @@ The dispatcher solves these by acting as a system-load-aware gatekeeper that met
 
 <img src="diagrams/dispatcher-queues.png" width="50%" alt="dispatch queue diagram" />
 
+Inside the batch-processor, async dispatch is not a separate execution path: it is the **`AsyncDispatcher` leaf** of the same channel-based execution pipeline used for sync dispatch (see [Batch Processor Design — Execution](batch_processor_architecture.md#execution)). In this mode the pipeline runs *without* the `AIMDDispatcher` stage, so the batch-processor holds no per-request semaphores — flow control is delegated entirely to the dispatcher's dispatch budget. (In sync mode, semaphore-based concurrency control lives solely in the `AIMDDispatcher` stage.)
+
 ---
 
 ## Queue Naming Convention
@@ -52,11 +54,13 @@ Queue names follow a fixed convention keyed by the inference pool name:
 | Queue | Redis Type | Name Pattern | Example |
 |-------|-----------|--------------|---------|
 | Request queue | Sorted Set | `llm-d-async:requests:{pool_name}` | `llm-d-async:requests:optimized-baseline` |
-| Result queue | List | `llm-d-async:results:{pool_name}:{tenant_id}` | `llm-d-async:results:optimized-baseline:$batch` |
+| Result queue | List | `llm-d-async:results:{pool_name}` | `llm-d-async:results:optimized-baseline` |
 
-The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. Queue names are computed by the batch-processor's [`RequestQueueName` and `ResultQueueName` functions](https://github.com/llm-d/llm-d-batch-gateway/blob/main/internal/processor/config/config.go).
+The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. Queue names are computed by the batch-processor's async resolver in [`async_inference_client_resolver.go`](https://github.com/llm-d/llm-d-batch-gateway/blob/main/pkg/clients/inference/async_inference_client_resolver.go), as `asyncQueuePrefix + "requests:" + poolName` and `asyncQueuePrefix + "results:" + poolName`.
 
-The prefix `llm-d-async` is currently hardcoded but can be made configurable, so that multiple installations can share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier). The `tenant_id` suffix on the result queue uses the reserved value `$batch`. Per-tenant isolation (e.g., routing results to different queues per user or API key) is reserved for future use.
+The prefix `llm-d-async` (`asyncQueuePrefix`) is currently hardcoded but can be made configurable, so that multiple installations can share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier).
+
+> **Note — the `$batch` / tenant suffix:** the batch-processor derives suffix-less result queue names (`llm-d-async:results:{pool_name}`). The llm-d-async producer treats `ResultQueueName` as the *full* Redis list key and does **not** append anything — so a `{tenant_id}` suffix such as `$batch` (seen in some llm-d-async examples) is purely a naming convention, not something either side adds automatically. Per-tenant isolation (routing results to different queues per user or API key) would require the batch-processor to build the suffix explicitly; it is reserved for future use. Because the names must match on both sides, the dispatcher's `--redis.ss.result-queue-name` must be set to the exact suffix-less name the processor consumes.
 
 When the dispatcher is used, the inference gateway endpoint configuration lives entirely on the dispatcher side: the batch-processor does not need to know about gateway URLs, TLS settings, or routing modes. The batch-processor only needs the pool name, the connector type, and the connector endpoint.
 
@@ -79,7 +83,7 @@ model_gateways:
     inference_pool_name: "pool-b"
 ```
 
-The Redis URL is read from a mounted secret at runtime (not stored in the config file). Queue names are derived from `inference_pool_name` via `RequestQueueName()` and `ResultQueueName()` — they are not configured directly.
+The Redis URL is read from a mounted secret at runtime (not stored in the config file). Queue names are derived from `inference_pool_name` by the async resolver — they are not configured directly.
 
 ### Dispatcher Configuration
 
@@ -102,10 +106,10 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 ```
 
 ```
---redis.ss.result-queue-name llm-d-async:results:optimized-baseline:$batch
+--redis.ss.result-queue-name llm-d-async:results:optimized-baseline
 ```
 
-The queue names must match those derived by the batch-processor's `RequestQueueName()` and `ResultQueueName()` functions.
+The queue names must match those derived by the batch-processor's async resolver (`llm-d-async:requests:{pool_name}` / `llm-d-async:results:{pool_name}`).
 
 The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. See the [llm-d-async README](https://github.com/llm-d/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
@@ -165,13 +169,13 @@ The sorted-set score is the request's SLO deadline (Unix timestamp), so earliest
 
 ### Producer (Batch-Processor)
 
-The executor currently dispatches requests by acquiring semaphores and then forwarding the request directly. With the dispatcher integration, the executor instead:
+Enqueuing is the job of the **`AsyncDispatcher`**, the leaf stage of the execution pipeline in async mode (see [Batch Processor Design — Execution](batch_processor_architecture.md#execution)). The `RequestSource` reads each plan entry and its input line and emits a `RequestItem` (with request payload, SLO deadline header, and any pass-through fairness/SLO headers); the `AsyncDispatcher` consumes each item and, for each:
 
-1. Reads the plan entry and the corresponding input line.
-2. Constructs a request message with the SLO deadline, request payload, correlation `metadata` (`job_id`, `request_index`), and any pass-through `headers` (e.g., fairness/SLO headers).
-3. Enqueues the request into the request queue (e.g., `llm-d-async:requests:{pool_name}`) with the SLO deadline.
+1. Resolves the shared async client for the request's model → pool.
+2. Records the request in a per-job `PendingRequests` map, keyed by request ID, so the collector can match the result later.
+3. Submits it to the request queue (e.g., `llm-d-async:requests:{pool_name}`) via the llm-d-async producer — **fire-and-forget**: the submit returns immediately and the result arrives asynchronously.
 
-As described above, the producer does not need to throttle enqueue operations. In async mode, the per-endpoint and global semaphores are not used — the dispatcher's dispatch budget handles flow control downstream. In sync mode, the existing AIMD + semaphore flow is retained unchanged.
+As described above, the producer does not need to throttle enqueue operations. In async mode there are **no per-endpoint or global semaphores** in the batch-processor (the pipeline runs without the `AIMDDispatcher` stage) — the dispatcher's dispatch budget handles flow control downstream. In sync mode, the AIMD + semaphore flow is retained, confined to the `AIMDDispatcher` stage.
 
 ### Dispatcher (reads from request queue)
 
@@ -206,22 +210,35 @@ Result messages follow the format defined in the [llm-d-async README — Results
 
 ### Dispatcher (writes to result queue)
 
-After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to the result queue (e.g., `llm-d-async:results:{pool_name}:$batch`). The `metadata` from the original request is carried through so the consumer can route the result.
+After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to the result queue (e.g., `llm-d-async:results:{pool_name}`). The `metadata` from the original request is carried through so the consumer can route the result.
 
 ### Consumer (Batch-Processor)
 
-A new component in the batch-processor consumes results from the result queue (e.g., `llm-d-async:results:{pool_name}:$batch`):
+Result consumption is split between a **long-lived broadcaster** (one per model/pool, shared across all jobs) and the **per-job `ResultCollector`** (part of each job's execution pipeline).
 
-1. Polls the result list.
-2. For each result message, looks up the job by `job_id` to find the active job's output writer.
-3. Writes the response to `output.jsonl` (on success) or `error.jsonl` (on failure), following the same logic as the current executor.
-4. Updates progress counters and metrics.
+#### ResultBroadcaster (watches the result queue)
 
-The consumer runs as a separate goroutine (or pool of goroutines) alongside the executor. It must handle:
+Because a job's pipeline is short-lived but the result queue is long-lived and shared by every job targeting the same pool, the batch-processor does **not** poll the result queue directly from the collector. Instead, when async inference is enabled, the `Processor` starts a `broadcasterRegistry` at startup with one `ResultBroadcaster` per model/pool. Each broadcaster:
 
-- **Job not found**: The job may have been cancelled or expired between dispatch and result arrival. Log and discard the result.
-- **Duplicate results**: Idempotency — if a result for the same `(job_id, request_index)` has already been written, skip it.
-- **Ordering**: Results arrive out of order (the dispatcher processes requests concurrently). This is fine — the current executor already writes results out of order via concurrent goroutines.
+1. Runs the shared async client's `GetResult()` loop against its pool's result queue (with retry/backoff on transient errors).
+2. Converts each raw result into a `ResultItem` (preserving the HTTP status, or mapping non-HTTP failures to an error result).
+3. Fans that `ResultItem` out to **every currently-subscribed result channel** — it does not itself filter by job or model.
+
+Broadcasters outlive individual jobs, so a single `GetResult()` consumer per pool keeps draining the queue even as jobs start and finish.
+
+#### ResultCollector (per-job)
+
+When a job starts, its `AsyncDispatcher` **subscribes** the pipeline's `resultCh` to the broadcasters for the job's models; when the job ends it **unsubscribes**. The `ResultCollector` drains `resultCh` and, for each result, calls `PendingRequests.Resolve()` to match it back to a request this job submitted (keyed by request ID). Matched results are enriched with the original `custom_id`, model, and submit timestamp, then written to `output.jsonl` (success) or `error.jsonl` (failure), and progress/metrics are recorded.
+
+Because broadcasters fan *all* of a pool's results to *all* subscribed jobs, the collector must filter:
+
+- **Result for another job**: multiple jobs may share a pool; a result whose request ID is not in this job's `PendingRequests` map is silently dropped (`Resolve()` returns `false`).
+- **Duplicate results**: `Resolve()` uses `LoadAndDelete`, so once a request ID is matched and removed, a repeat delivery no longer matches and is dropped.
+- **Ordering**: results arrive out of order (the dispatcher processes requests concurrently). This is fine — the collector writes results in arrival order.
+
+#### Cancellation / SLO expiry
+
+After the submit phase, the `AsyncDispatcher` waits for all pending requests to be resolved (or for the context to be cancelled). On cancellation or SLO expiry it best-effort **cancels** the still-pending request IDs on the queue (so the dispatcher skips them) and **drains** any submitted-but-uncollected requests as `batch_expired` error results, so that `output_lines + error_lines == total_requests`.
 
 ---
 
@@ -243,7 +260,7 @@ With the dispatcher handling flow control, the batch-processor's concurrency mod
 | Global concurrency | Fixed semaphore | Not needed — queue is a passive buffer |
 | Cross-processor coordination | None | Shared queue + single dispatcher |
 
-In async mode, the AIMD controller and semaphores are not used — the dispatcher gates requests before they reach the inference gateway, and the batch-processor's role is "enqueuer + result collector." In sync mode, the existing concurrency model (AIMD + semaphores + direct HTTP dispatch) is retained unchanged. The two modes are mutually exclusive at config level (`dispatch_mode: sync | async`).
+In async mode, the AIMD controller and semaphores are not used — the dispatcher gates requests before they reach the inference gateway, and the batch-processor's role is "enqueuer + result collector." In sync mode, the existing concurrency model (AIMD + semaphores + direct HTTP dispatch) is retained; these semaphores live **solely in the `AIMDDispatcher` stage** of the execution pipeline (no other pipeline stage holds semaphores). The two modes select different leaf dispatchers in the same pipeline and are mutually exclusive at config level (`dispatch_mode: sync | async`).
 
 ---
 

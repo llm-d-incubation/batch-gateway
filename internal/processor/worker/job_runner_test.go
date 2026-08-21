@@ -12,6 +12,7 @@ import (
 	db "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	mockdb "github.com/llm-d/llm-d-batch-gateway/internal/database/mock"
 	mockfiles "github.com/llm-d/llm-d-batch-gateway/internal/files_store/mock"
+	"github.com/llm-d/llm-d-batch-gateway/internal/processor/batchctx"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/converter"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
@@ -732,7 +733,7 @@ func TestRunJob_FinalizeFailedOver_PreservesFileIDsAndDoesNotCallHandleFailed(t 
 	}
 }
 
-// TestHandleJobError_Shutdown_LeavesJobInProgress verifies that errShutdown
+// TestHandleJobError_Shutdown_LeavesJobInProgress verifies that batchctx.ErrShutdown
 // does NOT re-enqueue or call handleFailed. The job stays in_progress for
 // the orphan reconciler to detect and transition to a terminal state.
 func TestHandleJobError_Shutdown_LeavesJobInProgress(t *testing.T) {
@@ -782,7 +783,7 @@ func TestHandleJobError_Shutdown_LeavesJobInProgress(t *testing.T) {
 		task:          &db.BatchJobPriority{ID: jobID},
 	}
 
-	p.handleJobError(ctx, params, errShutdown)
+	p.handleJobError(ctx, params, batchctx.ErrShutdown)
 
 	items, _, _, err := dbClient.DBGet(ctx, &db.BatchQuery{BaseQuery: db.BaseQuery{IDs: []string{jobID}}}, true, 0, 1)
 	if err != nil || len(items) != 1 {

@@ -1,11 +1,12 @@
-name: CI Release
+# CI Build: builds and pushes container images to GHCR on every merge to main.
+# Release images (version-tagged) are built by create-release.yml.
+
+name: CI Build
 
 on:
   push:
     branches:
       - main
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
 
 env:
@@ -41,25 +42,16 @@ jobs:
       - name: Extract metadata
         id: meta
         run: |
-          # Get the commit SHA (short version)
           COMMIT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
 
-          # Get the current timestamp
           BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
 
-          # Determine the version and tag based on the event
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            # For tag pushes, use the tag name as version
-            VERSION="${{ github.ref_name }}"
-            TAG="${{ github.ref_name }}"
-          elif [[ "${{ github.ref_name }}" == "main" ]]; then
-            # For main branch, use 'latest'
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
             VERSION="main-${COMMIT_SHA}"
             TAG="latest"
           else
-            # For PRs and other branches, use 'dev'
             VERSION="dev-${COMMIT_SHA}"
             TAG="dev"
           fi

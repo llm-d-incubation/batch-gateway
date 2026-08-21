@@ -89,6 +89,9 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if c.SendFairnessHeader {
 		t.Fatalf("SendFairnessHeader = true, want false by default")
 	}
+	if c.RouteKeyMethod != RouteKeyMethodBare {
+		t.Fatalf("RouteKeyMethod = %q, want empty (bare) by default", c.RouteKeyMethod)
+	}
 
 	want90Days := int64(90 * 24 * 60 * 60)
 	if c.DefaultOutputExpirationSeconds != want90Days {
@@ -562,6 +565,7 @@ model_gateways:
 default_output_expiration_seconds: 86400
 progress_ttl_seconds: 3600
 send_fairness_header: true
+route_key_method: tenant
 `)
 
 	if err := os.WriteFile(path, yamlData, 0o600); err != nil {
@@ -639,24 +643,45 @@ send_fairness_header: true
 	if !c.SendFairnessHeader {
 		t.Fatalf("SendFairnessHeader = false, want true")
 	}
+	if c.RouteKeyMethod != RouteKeyMethodTenant {
+		t.Fatalf("RouteKeyMethod = %q, want %q", c.RouteKeyMethod, RouteKeyMethodTenant)
+	}
+}
+
+func TestValidate_RouteKeyMethod(t *testing.T) {
+	base := func() *ProcessorConfig {
+		c := NewConfig()
+		c.ModelGateways = validPerModelConfig()
+		return c
+	}
+
+	c := base()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error for default route_key_method: %v", err)
+	}
+
+	c = base()
+	c.RouteKeyMethod = RouteKeyMethodTenant
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() unexpected error for tenant route_key_method: %v", err)
+	}
+
+	c = base()
+	c.RouteKeyMethod = RouteKeyMethod("geography")
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() expected error for unknown route_key_method, got nil")
+	}
 }
 
 func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 	validAsyncConfig := func() *ProcessorConfig {
 		c := NewConfig()
-		c.ModelGateways = map[string]ModelGatewayConfig{
-			"llama-3": {
-				URL:               "http://llama-gw:8000",
-				RequestTimeout:    ptr.To(5 * time.Minute),
-				MaxRetries:        ptr.To(3),
-				InitialBackoff:    ptr.To(1 * time.Second),
-				MaxBackoff:        ptr.To(60 * time.Second),
-				InferencePoolName: "pool-a",
-			},
-		}
 		c.DispatchMode = DispatchModeAsync
 		c.AsyncDispatchConfig = AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
+			Models: map[string]AsyncModelConfig{
+				"llama-3": {InferencePoolName: "pool-a"},
+			},
 		}
 		return c
 	}
@@ -675,6 +700,7 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			name: "sync mode ignores async fields",
 			mutate: func(c *ProcessorConfig) {
 				c.DispatchMode = DispatchModeSync
+				c.ModelGateways = validPerModelConfig()
 				c.AsyncDispatchConfig = AsyncDispatchConfig{}
 			},
 			wantErr: false,
@@ -683,6 +709,7 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			name: "empty dispatch_mode treated as sync",
 			mutate: func(c *ProcessorConfig) {
 				c.DispatchMode = DispatchMode("")
+				c.ModelGateways = validPerModelConfig()
 				c.AsyncDispatchConfig = AsyncDispatchConfig{}
 			},
 			wantErr: false,
@@ -698,50 +725,34 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "async missing inference_pool_name on model gateway",
+			name: "async missing inference_pool_name",
 			mutate: func(c *ProcessorConfig) {
-				c.ModelGateways = map[string]ModelGatewayConfig{
-					"llama-3": {URL: "http://llama-gw:8000"},
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {InferencePoolName: ""},
 				}
-			},
-			wantErr: true,
-		},
-		{
-			name: "async missing inference_pool_name on global gateway",
-			mutate: func(c *ProcessorConfig) {
-				c.ModelGateways = nil
-				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000"}
 			},
 			wantErr: true,
 		},
 		{
 			name: "async global gateway rejected",
 			mutate: func(c *ProcessorConfig) {
-				c.ModelGateways = nil
-				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", InferencePoolName: "default-pool"}
+				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000"}
 			},
 			wantErr: true,
 		},
 		{
-			name: "async no gateways configured",
+			name: "async no models configured",
 			mutate: func(c *ProcessorConfig) {
-				c.ModelGateways = nil
-				c.GlobalInferenceGateway = nil
+				c.AsyncDispatchConfig.Models = nil
 			},
 			wantErr: true,
 		},
 		{
-			name: "async global and per-model mutually exclusive",
-			mutate: func(c *ProcessorConfig) {
-				c.GlobalInferenceGateway = &ModelGatewayConfig{URL: "http://gw:8000", InferencePoolName: "default-pool"}
-			},
-			wantErr: true,
-		},
-		{
-			name: "inference_pool_name ignored in sync mode",
+			name: "sync mode does not require async_dispatch.models",
 			mutate: func(c *ProcessorConfig) {
 				c.DispatchMode = DispatchModeSync
 				c.ModelGateways = validPerModelConfig()
+				c.AsyncDispatchConfig.Models = nil
 			},
 			wantErr: false,
 		},
@@ -753,9 +764,9 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		{
 			name: "async multiple models all valid",
 			mutate: func(c *ProcessorConfig) {
-				c.ModelGateways = map[string]ModelGatewayConfig{
-					"llama-3": {URL: "http://gw-a:8000", InferencePoolName: "pool-a"},
-					"mistral": {URL: "http://gw-b:8000", InferencePoolName: "pool-b"},
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {InferencePoolName: "pool-a"},
+					"mistral": {InferencePoolName: "pool-b"},
 				}
 			},
 			wantErr: false,
@@ -763,9 +774,34 @@ func TestProcessorConfig_Validate_AsyncDispatch(t *testing.T) {
 		{
 			name: "async one model missing inference_pool_name among multiple",
 			mutate: func(c *ProcessorConfig) {
-				c.ModelGateways = map[string]ModelGatewayConfig{
-					"llama-3": {URL: "http://gw-a:8000", InferencePoolName: "pool-a"},
-					"mistral": {URL: "http://gw-b:8000"},
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {InferencePoolName: "pool-a"},
+					"mistral": {InferencePoolName: ""},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "async explicit queue names accepted",
+			mutate: func(c *ProcessorConfig) {
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {
+						InferencePoolName: "pool-a",
+						RequestQueueName:  "custom:req:a",
+						ResultQueueName:   "custom:res:a",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "async partial queue names rejected",
+			mutate: func(c *ProcessorConfig) {
+				c.AsyncDispatchConfig.Models = map[string]AsyncModelConfig{
+					"llama-3": {
+						InferencePoolName: "pool-a",
+						RequestQueueName:  "custom:req:a",
+					},
 				}
 			},
 			wantErr: true,
@@ -899,6 +935,61 @@ func TestProcessorConfig_InferenceObjectiveFor(t *testing.T) {
 			modelID: "any-model",
 			want:    "",
 		},
+		{
+			name: "async model objective set",
+			cfg: ProcessorConfig{
+				DispatchMode: DispatchModeAsync,
+				AsyncDispatchConfig: AsyncDispatchConfig{
+					Models: map[string]AsyncModelConfig{
+						"llama-3": {
+							InferencePoolName:  "pool-a",
+							InferenceObjective: "batch-sheddable-a",
+						},
+					},
+				},
+			},
+			modelID: "llama-3",
+			want:    "batch-sheddable-a",
+		},
+		{
+			name: "async model without objective returns empty",
+			cfg: ProcessorConfig{
+				DispatchMode: DispatchModeAsync,
+				AsyncDispatchConfig: AsyncDispatchConfig{
+					Models: map[string]AsyncModelConfig{
+						"llama-3": {InferencePoolName: "pool-a"},
+					},
+				},
+			},
+			modelID: "llama-3",
+			want:    "",
+		},
+		{
+			name: "sync mode ignores leftover async config",
+			cfg: ProcessorConfig{
+				DispatchMode: DispatchModeSync,
+				ModelGateways: map[string]ModelGatewayConfig{
+					"llama-3": {
+						URL:                "http://gw:8000",
+						InferenceObjective: "sync-objective",
+						RequestTimeout:     ptr.To(5 * time.Minute),
+						MaxRetries:         ptr.To(3),
+						InitialBackoff:     ptr.To(1 * time.Second),
+						MaxBackoff:         ptr.To(60 * time.Second),
+					},
+				},
+				AsyncDispatchConfig: AsyncDispatchConfig{
+					Models: map[string]AsyncModelConfig{
+						"llama-3": {
+							InferencePoolName:  "pool-a",
+							InferenceObjective: "stale-async-objective",
+						},
+					},
+				},
+			},
+			modelID: "llama-3",
+			want:    "sync-objective",
+		},
 	}
 
 	for _, tt := range tests {
@@ -917,10 +1008,10 @@ func TestResolveModelGateways_Async(t *testing.T) {
 		cfg.DispatchMode = DispatchModeAsync
 		cfg.AsyncDispatchConfig = AsyncDispatchConfig{
 			ResultPollTimeout: 10 * time.Second,
-		}
-		cfg.ModelGateways = map[string]ModelGatewayConfig{
-			"model-a": {InferencePoolName: "pool-a"},
-			"model-b": {InferencePoolName: "pool-b"},
+			Models: map[string]AsyncModelConfig{
+				"model-a": {InferencePoolName: "pool-a"},
+				"model-b": {InferencePoolName: "pool-b"},
+			},
 		}
 
 		resolved, err := ResolveModelGateways(cfg)
@@ -940,14 +1031,42 @@ func TestResolveModelGateways_Async(t *testing.T) {
 		if len(resolved.Async.Models) != 2 {
 			t.Fatalf("Models count = %d, want 2", len(resolved.Async.Models))
 		}
-		if resolved.Async.Models["model-a"] != "pool-a" {
-			t.Errorf("Models[model-a] = %q, want %q", resolved.Async.Models["model-a"], "pool-a")
+		if resolved.Async.Models["model-a"].PoolName != "pool-a" {
+			t.Errorf("Models[model-a].PoolName = %q, want %q", resolved.Async.Models["model-a"].PoolName, "pool-a")
 		}
-		if resolved.Async.Models["model-b"] != "pool-b" {
-			t.Errorf("Models[model-b] = %q, want %q", resolved.Async.Models["model-b"], "pool-b")
+		if resolved.Async.Models["model-b"].PoolName != "pool-b" {
+			t.Errorf("Models[model-b].PoolName = %q, want %q", resolved.Async.Models["model-b"].PoolName, "pool-b")
 		}
 		if resolved.Async.ResultPollTimeout != 10*time.Second {
 			t.Errorf("ResultPollTimeout = %v, want %v", resolved.Async.ResultPollTimeout, 10*time.Second)
+		}
+	})
+
+	t.Run("passes explicit queue names through", func(t *testing.T) {
+		cfg := NewConfig()
+		cfg.DispatchMode = DispatchModeAsync
+		cfg.AsyncDispatchConfig = AsyncDispatchConfig{
+			ResultPollTimeout: 10 * time.Second,
+			Models: map[string]AsyncModelConfig{
+				"model-a": {
+					InferencePoolName: "pool-a",
+					RequestQueueName:  "custom:req:a",
+					ResultQueueName:   "custom:res:a",
+				},
+			},
+		}
+
+		resolved, err := ResolveModelGateways(cfg)
+		if err != nil {
+			t.Fatalf("ResolveModelGateways() error: %v", err)
+		}
+
+		m := resolved.Async.Models["model-a"]
+		if m.RequestQueueName != "custom:req:a" {
+			t.Errorf("RequestQueueName = %q, want %q", m.RequestQueueName, "custom:req:a")
+		}
+		if m.ResultQueueName != "custom:res:a" {
+			t.Errorf("ResultQueueName = %q, want %q", m.ResultQueueName, "custom:res:a")
 		}
 	})
 
