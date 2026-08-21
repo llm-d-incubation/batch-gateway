@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
@@ -261,8 +263,308 @@ func TestStartModelGatewayWatcherDisabledByDefault(t *testing.T) {
 	writeGatewayConfig(t, cfgPath, map[string]string{"m1": "http://a:8000"})
 	p := newReloadTestProcessor(t, cfgPath, 0) // zero interval = disabled
 
-	p.startModelGatewayWatcher(context.Background())
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
+	p.startModelGatewayWatcher(ctx)
 	// No goroutine, no panic, nothing to assert further: a zero-interval
 	// ticker would panic if the watcher had started.
 	time.Sleep(50 * time.Millisecond)
+	cancel()
+	p.watcherWG.Wait()
+}
+
+// writeGatewayConfigWithKeyFile writes a valid per-model config whose single
+// gateway reads its API key from the given file.
+func writeGatewayConfigWithKeyFile(t *testing.T, path, keyFile string) {
+	t.Helper()
+	content := fmt.Sprintf(`model_gateways:
+  m1:
+    url: "http://a:8000"
+    api_key_file: %q
+    request_timeout: 30s
+    max_retries: 1
+    initial_backoff: 1s
+    max_backoff: 5s
+`, keyFile)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+}
+
+// TestApplyModelGatewayConfigRejectsRouteKeyMethodChange: route_key_method is
+// static (the resolver key and request-side route key must come from the same
+// method); a reload attempting to change it must fail loudly, not silently
+// split the two sides of the lookup.
+func TestApplyModelGatewayConfigRejectsRouteKeyMethodChange(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	writeGatewayConfig(t, cfgPath, map[string]string{"m1": "http://a:8000"})
+	p := newReloadTestProcessor(t, cfgPath, 0)
+	before := p.routing.Load()
+
+	cfgText, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(newPath, append([]byte("route_key_method: tenant\n"), cfgText...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newCfg, err := loadProcessorConfig(newPath)
+	if err != nil {
+		t.Fatalf("loadProcessorConfig: %v", err)
+	}
+	if err := p.applyModelGatewayConfig(newCfg, testLogger(t)); err == nil {
+		t.Fatal("route_key_method change must be rejected")
+	}
+	if got := p.routing.Load(); got != before {
+		t.Fatal("rejected route_key_method change must not swap routing")
+	}
+}
+
+// TestModelGatewayWatchLoopRouteKeyMethodChangeRejected: a route_key_method
+// edit is not hot-reloadable. The watcher must keep the current routing and
+// record a failure on every tick (the applied fingerprint is only updated
+// after a successful reload, so the same rejected content is retried).
+func TestModelGatewayWatchLoopRouteKeyMethodChangeRejected(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	writeGatewayConfig(t, cfgPath, map[string]string{"m1": "http://a:8000"})
+	p := newReloadTestProcessor(t, cfgPath, 10*time.Millisecond)
+	initial := p.routing.Load()
+
+	failuresBefore := reloadFailureCount(t)
+
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
+	p.watcherWG.Add(1)
+	go func() {
+		defer p.watcherWG.Done()
+		p.modelGatewayWatchLoop(ctx)
+	}()
+	time.Sleep(100 * time.Millisecond) // anchor initial fingerprint
+
+	// Flip only route_key_method; the gateway set itself is unchanged.
+	text, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, append([]byte("route_key_method: tenant\n"), text...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two failures prove the same rejected content is retried, not skipped.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if reloadFailureCount(t) >= failuresBefore+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := reloadFailureCount(t); got < failuresBefore+2 {
+		t.Fatalf("reload failure count = %v, want at least %v (rejected reloads must retry the same content)", got, failuresBefore+2)
+	}
+	if got := p.routing.Load(); got != initial {
+		t.Fatal("rejected route_key_method change must keep current routing")
+	}
+
+	cancel()
+	p.watcherWG.Wait()
+}
+
+// TestGatewayFingerprintCoversReferencedFiles: the reload fingerprint must
+// change when an api key file's content rotates (identical config text), and
+// when the config points at a different key file path — the referenced path
+// set itself is hashed too.
+func TestGatewayFingerprintCoversReferencedFiles(t *testing.T) {
+	dir := t.TempDir()
+	keyA := filepath.Join(dir, "a.key")
+	keyB := filepath.Join(dir, "b.key")
+	for _, f := range []string{keyA, keyB} {
+		if err := os.WriteFile(f, []byte("key-one\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	fingerprint := func(t *testing.T) [32]byte {
+		t.Helper()
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadProcessorConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("loadProcessorConfig: %v", err)
+		}
+		fp, err := gatewayFingerprint(data, cfg)
+		if err != nil {
+			t.Fatalf("gatewayFingerprint: %v", err)
+		}
+		return fp
+	}
+
+	writeGatewayConfigWithKeyFile(t, cfgPath, keyA)
+	base := fingerprint(t)
+
+	// Same config text, rotated key content: must be detected.
+	if err := os.WriteFile(keyA, []byte("key-two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fp := fingerprint(t); fp == base {
+		t.Fatal("fingerprint must change when the api key file content rotates")
+	}
+	if err := os.WriteFile(keyA, []byte("key-one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fp := fingerprint(t); fp != base {
+		t.Fatal("fingerprint must return to its base value when the key content is restored")
+	}
+
+	// Different key file path with identical content: the path set is hashed.
+	writeGatewayConfigWithKeyFile(t, cfgPath, keyB)
+	if fp := fingerprint(t); fp == base {
+		t.Fatal("fingerprint must change when the referenced key file path changes")
+	}
+}
+
+// TestApplyModelGatewayConfigClosesResolverOnFailure: when a reload fails
+// after the new resolver was created (here: endpoint limiter construction),
+// the resolver must be closed, otherwise every failed reload leaks HTTP
+// transports for the rest of the process lifetime.
+func TestApplyModelGatewayConfigClosesResolverOnFailure(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	writeGatewayConfig(t, cfgPath, map[string]string{"m1": "http://a:8000"})
+	p := newReloadTestProcessor(t, cfgPath, 0)
+	before := p.routing.Load()
+
+	fake := &closableFakeClient{}
+	orig := newSyncResolver
+	newSyncResolver = func(*config.ResolvedGateways, logr.Logger) (*inference.GatewayResolver, error) {
+		return inference.NewSingleClientResolver(fake), nil
+	}
+	defer func() { newSyncResolver = orig }()
+
+	// PerEndpoint=0 makes the new (changed) endpoint's limiter construction
+	// fail after the resolver was built.
+	p.cfg.Concurrency.PerEndpoint = 0
+
+	newPath := filepath.Join(t.TempDir(), "config.yaml")
+	writeGatewayConfig(t, newPath, map[string]string{"m1": "http://b:9000"})
+	newCfg, err := loadProcessorConfig(newPath)
+	if err != nil {
+		t.Fatalf("loadProcessorConfig: %v", err)
+	}
+	if err := p.applyModelGatewayConfig(newCfg, testLogger(t)); err == nil {
+		t.Fatal("apply with unbuildable endpoint limits must fail")
+	}
+	if !fake.closed.Load() {
+		t.Fatal("failed reload must close the resolver it created")
+	}
+	if got := p.routing.Load(); got != before {
+		t.Fatal("failed reload must keep the current routing")
+	}
+}
+
+// TestModelGatewayWatchLoopAPIKeyRotationAndRetry: the watcher fingerprint
+// covers referenced external files, and failed reloads retry the same
+// content instead of waiting for the config text to change again.
+//  1. Rotating the API key file alone (identical config text) reloads routing.
+//  2. Deleting the key file fails reloads while content stays the same;
+//     restoring it makes the very next polls succeed without any config edit.
+func TestModelGatewayWatchLoopAPIKeyRotationAndRetry(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	keyPath := filepath.Join(dir, "api.key")
+	if err := os.WriteFile(keyPath, []byte("key-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeGatewayConfigWithKeyFile(t, cfgPath, keyPath)
+	p := newReloadTestProcessor(t, cfgPath, 10*time.Millisecond)
+	initial := p.routing.Load()
+
+	ctx, cancel := context.WithCancel(testLoggerCtx(t))
+	p.watcherWG.Add(1)
+	go func() {
+		defer p.watcherWG.Done()
+		p.modelGatewayWatchLoop(ctx)
+	}()
+	time.Sleep(100 * time.Millisecond) // anchor initial fingerprint
+
+	waitFor := func(t *testing.T, desc string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for: %s", desc)
+	}
+
+	// Rotate only the key file: config text is identical, but the resolved
+	// client config changed, so routing must swap.
+	if err := os.WriteFile(keyPath, []byte("key-b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "routing swap after api key rotation", func() bool {
+		return p.routing.Load() != initial
+	})
+	rotated := p.routing.Load()
+
+	// Break the referenced file: validation fails. Polls must keep failing
+	// against the same content without ever swapping.
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := p.routing.Load(); got != rotated {
+		t.Fatal("failed reloads must keep the current routing")
+	}
+
+	// Restore the key file with yet another value: the retry must pick it up
+	// without the config text ever changing.
+	if err := os.WriteFile(keyPath, []byte("key-c\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "retry after referenced-file restore", func() bool {
+		return p.routing.Load() != rotated
+	})
+
+	cancel()
+	p.watcherWG.Wait()
+}
+
+type closableFakeClient struct {
+	fakeInferenceClient
+	closed atomic.Bool
+}
+
+func (c *closableFakeClient) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+// TestStopClosesReloadedResolver: the startup resolver is owned and closed by
+// the Clientset; a resolver installed by a config reload must be closed by
+// the processor itself on shutdown, or its HTTP transports leak.
+func TestStopClosesReloadedResolver(t *testing.T) {
+	clients := validProcessorClients(t)
+	p, err := NewProcessor(config.NewConfig(), clients, "test-processor", testLogger(t))
+	if err != nil {
+		t.Fatalf("NewProcessor: %v", err)
+	}
+
+	// No reload ever happened: snapshot resolver == startup resolver, which
+	// the Clientset owns — Stop must not close it here.
+	startup := inference.NewSingleClientResolver(&fakeInferenceClient{})
+	p.inference = startup
+	p.routing.Store(&routingSnapshot{resolver: startup})
+	p.Stop(t.Context())
+
+	// After a reload, the swap target is processor-owned: Stop closes it.
+	reloaded := &closableFakeClient{}
+	p.routing.Store(&routingSnapshot{resolver: inference.NewSingleClientResolver(reloaded)})
+	p.Stop(t.Context())
+	if !reloaded.closed.Load() {
+		t.Fatal("Stop must close the reloaded routing resolver")
+	}
 }

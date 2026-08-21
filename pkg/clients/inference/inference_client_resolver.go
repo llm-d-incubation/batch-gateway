@@ -214,6 +214,7 @@ func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
 	return &GatewayResolver{
 		globalClient: c,
 		clientURLs:   map[InferenceClient]string{c: "test"},
+		closers:      asClosers([]InferenceClient{c}),
 	}
 }
 

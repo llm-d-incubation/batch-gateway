@@ -103,7 +103,7 @@ func TestPreProcess_BuildsPlansAndModelMap_OffsetsCorrect(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestPreProcess_SystemPrompts_PrefixHashAndSortOrder(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -476,7 +476,7 @@ func TestPreProcess_CancelFlag_ReturnsErrCancelled(t *testing.T) {
 
 	cancelCtx, cancel := context.WithCancelCause(ctx)
 	cancel(batchctx.ErrCancelled)
-	err = p.preProcessJob(cancelCtx, jobInfo)
+	err = p.preProcessJob(cancelCtx, jobInfo, nil)
 	if !errors.Is(err, batchctx.ErrCancelled) {
 		t.Fatalf("expected batchctx.ErrCancelled, got: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestPreProcess_GenuineErrorNotMaskedByCancel(t *testing.T) {
 		BatchJob: &openai.Batch{BatchSpec: openai.BatchSpec{InputFileID: ""}},
 	}
 
-	err := p.preProcessJob(ctx, jobInfo)
+	err := p.preProcessJob(ctx, jobInfo, nil)
 	if err == nil {
 		t.Fatal("expected an error for empty input file ID")
 	}
@@ -583,7 +583,7 @@ func TestPreProcess_CancelBeforeSIGTERM_ReturnsErrCancelled(t *testing.T) {
 	cancelUser(batchctx.ErrCancelled)  // user cancel first
 	tripShutdown(batchctx.ErrShutdown) // SIGTERM second — no-op on the already-cancelled inner layer
 
-	err = p.preProcessJob(cancelCtx, jobInfo)
+	err = p.preProcessJob(cancelCtx, jobInfo, nil)
 	if !errors.Is(err, batchctx.ErrCancelled) {
 		t.Fatalf("expected batchctx.ErrCancelled when user cancel is recorded before SIGTERM, got: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestPreProcess_SLOExpiredDuringIngestion_ReturnsErrExpired(t *testing.T) {
 	sloCtx, sloCancel := context.WithDeadline(ctx, time.Now().Add(-1*time.Second))
 	defer sloCancel()
 
-	err = p.preProcessJob(sloCtx, jobInfo)
+	err = p.preProcessJob(sloCtx, jobInfo, nil)
 	if !errors.Is(err, batchctx.ErrExpired) {
 		t.Fatalf("expected batchctx.ErrExpired, got: %v", err)
 	}
@@ -1401,7 +1401,7 @@ func TestPreProcess_StreamTrue_FailsJob(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	err = p.preProcessJob(ctx, jobInfo)
+	err = p.preProcessJob(ctx, jobInfo, nil)
 	if err == nil {
 		t.Fatal("expected preProcessJob to fail for input with stream: true")
 	}
@@ -1468,7 +1468,7 @@ func TestPreProcess_DuplicateCustomID_FailsJob(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	err = p.preProcessJob(ctx, jobInfo)
+	err = p.preProcessJob(ctx, jobInfo, nil)
 	if err == nil {
 		t.Fatal("expected preProcessJob to fail for duplicate custom_id")
 	}
@@ -1538,7 +1538,7 @@ func TestPreProcess_UniqueCustomIDs_Succeeds(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("expected preProcessJob to succeed with unique custom_ids, got: %v", err)
 	}
 }
@@ -1616,7 +1616,7 @@ func TestPreProcess_UnregisteredModel_RejectedToErrorFile(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1735,7 +1735,7 @@ func TestPreProcess_AllRequestsUnregistered_ExecuteJobCounts(t *testing.T) {
 		TenantID: tenantID,
 	}
 
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1870,7 +1870,7 @@ func TestPreProcess_ReEnqueue_TruncatesStaleErrorFile(t *testing.T) {
 		t.Fatalf("WriteFile stale error: %v", err)
 	}
 
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1955,7 +1955,7 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	}
 
 	// Run ingestion — should reject model-b and write to error.jsonl.
-	if err := p.preProcessJob(ctx, jobInfo); err != nil {
+	if err := p.preProcessJob(ctx, jobInfo, nil); err != nil {
 		t.Fatalf("preProcessJob: %v", err)
 	}
 
@@ -1996,5 +1996,101 @@ func TestPreProcess_ModelNotFound_ThenEarlySLO_PreservesErrorFile(t *testing.T) 
 	}
 	if !bytes.Contains(errorBytesAfter, []byte(`"batch_expired"`)) {
 		t.Fatalf("error file missing batch_expired entry for undispatched request:\n%s", errorBytesAfter)
+	}
+}
+
+// TestPreProcessJob_UsesPinnedRoutingSnapshot: ingestion must resolve models
+// against the snapshot pinned for the job, not the processor's live routing
+// state. A mid-flight reload that adds/removes models must not change which
+// requests this job accepts (they are rejected/written to error.jsonl per
+// the pinned view), otherwise preprocessing and execution could split the
+// job across two routing planes.
+func TestPreProcessJob_UsesPinnedRoutingSnapshot(t *testing.T) {
+	ctx := testLoggerCtx(t)
+
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
+	fileDBClient := newMockFileDBClient()
+
+	tenantID := uniqueTestFolder(t, "tenantA/job-inputs")
+	folder, err := ucom.GetFolderNameByTenantID(tenantID)
+	if err != nil {
+		t.Fatalf("GetFolderNameByTenantID: %v", err)
+	}
+	lines := makeInputLines([]string{"m1", "m2"})
+	var remoteBuf bytes.Buffer
+	for _, ln := range lines {
+		remoteBuf.Write(ln)
+	}
+	inputFileID := "file-pinned"
+	if _, err := filesClient.Store(ctx, ucom.FileStorageName(inputFileID, "input.jsonl"), folder, 0, 0, bytes.NewReader(remoteBuf.Bytes())); err != nil {
+		t.Fatalf("files.Store: %v", err)
+	}
+	fileItem := &db.FileItem{
+		BaseIndexes:  db.BaseIndexes{ID: inputFileID, TenantID: tenantID},
+		BaseContents: db.BaseContents{Spec: mustJSON(t, &openai.FileObject{Filename: "input.jsonl"})},
+	}
+	if err := fileDBClient.DBStore(ctx, fileItem); err != nil {
+		t.Fatalf("DBStore: %v", err)
+	}
+
+	// Live routing knows only m1; the job was pinned to an older snapshot
+	// that only knows m2.
+	liveResolver := inference.NewPerModelClientResolver(map[string]inference.InferenceClient{
+		"m1": &fakeInferenceClient{},
+	})
+	p := mustNewProcessor(t, cfg, &clientset.Clientset{
+		BatchDB:   newMockBatchDBClient(),
+		FileDB:    fileDBClient,
+		File:      filesClient,
+		Inference: liveResolver,
+	})
+
+	pinnedResolver := inference.NewPerModelClientResolver(map[string]inference.InferenceClient{
+		"m2": &fakeInferenceClient{},
+	})
+	pinned := &routingSnapshot{resolver: pinnedResolver}
+
+	jobID := "job-pinned"
+	jobInfo := &batch_types.JobInfo{
+		JobID:    jobID,
+		TenantID: tenantID,
+		BatchJob: &openai.Batch{
+			ID:        jobID,
+			BatchSpec: openai.BatchSpec{InputFileID: inputFileID},
+		},
+	}
+	if err := p.preProcessJob(ctx, jobInfo, pinned); err != nil {
+		t.Fatalf("preProcessJob: %v", err)
+	}
+
+	rootDir, err := p.jobRootDir(jobID, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelMap, err := readModelMap(rootDir)
+	if err != nil {
+		t.Fatalf("readModelMap: %v", err)
+	}
+	if modelMap.RejectedCount != 1 {
+		t.Fatalf("RejectedCount = %d, want 1 (m1 absent from pinned snapshot)", modelMap.RejectedCount)
+	}
+	for _, modelID := range modelMap.SafeToModel {
+		if modelID != "m2" {
+			t.Fatalf("plan contains %q, want only m2 from the pinned snapshot", modelID)
+		}
+	}
+
+	errorPath, err := p.jobErrorFilePath(jobID, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errorBytes, err := os.ReadFile(errorPath)
+	if err != nil {
+		t.Fatalf("read error file: %v", err)
+	}
+	if !bytes.Contains(errorBytes, []byte(`"model_not_found"`)) {
+		t.Fatalf("error file must carry model_not_found for m1:\n%s", errorBytes)
 	}
 }

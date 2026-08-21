@@ -79,6 +79,10 @@ type Processor struct {
 	// config reload). Nil before Run().
 	makeGuard func(name string) func()
 
+	// watcherWG tracks the config-reload watcher goroutine, whose lifecycle
+	// is bound to the polling loop (see Run).
+	watcherWG sync.WaitGroup
+
 	// gwReloadPath / gwReloadInterval configure hot reload of
 	// model_gateways / global_inference_gateway. Zero interval disables it.
 	gwReloadPath     string
@@ -170,7 +174,15 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	// Start the model gateway config watcher (no-op unless reload is enabled).
 	// Must run after initConcurrencyControls so the routing snapshot exists
 	// and makeGuard is available for reload-created endpoint limiters.
-	p.startModelGatewayWatcher(ctx)
+	// The watcher is bound to pollingCtx (not the job-base ctx): once the
+	// processor stops accepting work — guard shutdown or SIGTERM — the route
+	// plane must stop mutating too. Cancel first, then wait for the watcher
+	// to exit so Run returning guarantees no config swap is still in flight.
+	p.startModelGatewayWatcher(pollingCtx)
+	defer func() {
+		stopAccepting()
+		p.watcherWG.Wait()
+	}()
 
 	// If async inference is used (llm-d-async), set up a registry of ResultBroadcasters.
 	// These will propagate results from the async queues to the JobExecutor's individual result collectors.
@@ -259,6 +271,12 @@ func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting co
 }
 
 // Stop gracefully stops the processor, waiting for all workers to finish.
+// Once workers drain it also closes the currently installed routing
+// snapshot's resolver when that resolver was created by a config reload:
+// Clientset.Close releases only the startup resolver, so without this the
+// last swapped-in resolver's HTTP transports would leak for the rest of the
+// process lifetime. Safe to call when reload never ran (snapshot resolver
+// equals the startup resolver) or when Run was never called.
 func (p *Processor) Stop(ctx context.Context) {
 	logger := logr.FromContextOrDiscard(ctx)
 	done := make(chan struct{})
@@ -273,6 +291,24 @@ func (p *Processor) Stop(ctx context.Context) {
 
 	case <-done: // all workers have finished
 		logger.V(logging.INFO).Info("All workers have finished")
+	}
+
+	p.closeReloadedRouting(logger)
+}
+
+// closeReloadedRouting closes the live routing snapshot's resolver when it
+// is a reload-created resolver (not the startup one owned by the Clientset).
+// Expected callers have already exited the watcher (Run waits for it), so no
+// swap can race this read.
+func (p *Processor) closeReloadedRouting(logger logr.Logger) {
+	s := p.routing.Load()
+	if s == nil || s.resolver == nil || s.resolver == p.inference {
+		return
+	}
+	if err := s.resolver.Close(); err != nil {
+		logger.Error(err, "Failed to close reloaded model gateway clients on shutdown")
+	} else {
+		logger.V(logging.INFO).Info("Closed reloaded model gateway clients on shutdown")
 	}
 }
 

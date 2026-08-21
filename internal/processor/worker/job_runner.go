@@ -172,9 +172,16 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	defer heartbeatCancel()
 	go p.heartbeat(heartbeatCtx, params.jobItem.ID, func() { abortCause(context.Canceled) })
 
+	// Pin the routing snapshot for the whole job: ingestion validates models
+	// against it and execution resolves clients/objectives from the same
+	// snapshot, so a mid-flight config reload cannot split a job across two
+	// routing planes (model accepted at ingest but gone at dispatch, or
+	// objective A at ingest and objective B on the wire).
+	params.routing = p.routingState()
+
 	// ingestion: pre-process job (rejects unregistered-model requests early)
 	ingestCtx, ingestSpan := uotel.StartSpan(abortCtx, "ingest-and-plan")
-	err = p.preProcessJob(ingestCtx, params.jobInfo)
+	err = p.preProcessJob(ingestCtx, params.jobInfo, params.routing)
 	if err != nil && !batchctx.IsTerminal(err) {
 		ingestSpan.RecordError(err)
 		ingestSpan.SetStatus(codes.Error, "pre-process failed")

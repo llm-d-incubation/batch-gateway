@@ -61,10 +61,15 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 	)
 	tracker.AddFailed(modelMap.RejectedCount)
 
-	// The routing snapshot is fixed for the lifetime of the job: a config
-	// reload mid-flight never changes which gateway this job's requests
-	// resolve to.
-	rs := p.routingState()
+	// The routing snapshot is fixed for the lifetime of the job: captured by
+	// runJob before ingestion, so preprocessing and execution always share
+	// one routing plane even when a config reload swaps the live state
+	// mid-flight. Tests that invoke execution directly leave it nil, in
+	// which case the live routing state is used.
+	rs := params.routing
+	if rs == nil {
+		rs = p.routingState()
+	}
 
 	source := NewPlanFileSource(PlanFileSourceConfig{
 		InputFile:          files.input,

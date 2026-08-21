@@ -48,7 +48,11 @@ import (
 // error entries for requests targeting unregistered models.
 // The rejected count is persisted in model_map.json so executeJob can
 // seed BatchRequestCounts.Failed without an extra parameter.
-func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo) (err error) {
+//
+// rs is the routing snapshot pinned for this job; nil means "read the
+// processor's current routing" which is only how unit tests drive this
+// phase without a full runJob lifecycle.
+func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobInfo, rs *routingSnapshot) (err error) {
 	logger := logr.FromContextOrDiscard(ctx)
 	logger.V(logging.INFO).Info("Pre-processing job") // job id is in the logger already
 
@@ -120,7 +124,9 @@ func (p *Processor) preProcessJob(ctx context.Context, jobInfo *batch_types.JobI
 	// (treat as non-per-model). Production paths hit Processor.validate() in
 	// prepare() before work runs. The guard also avoids panicking if a future
 	// caller wires a nil resolver.
-	rs := p.routingState()
+	if rs == nil {
+		rs = p.routingState()
+	}
 	isPerModelGateway := rs != nil && rs.resolver != nil && !rs.resolver.IsGlobal()
 	registeredModels := make(map[string]bool) // route key -> registered (per-model only)
 
