@@ -355,7 +355,25 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 
 	for _, metric := range metricsToRegister {
 		if err := prometheus.Register(metric); err != nil {
-			if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if already, ok := err.(prometheus.AlreadyRegisteredError); ok {
+				// A repeated InitMetrics (tests, in-process restart)
+				// re-created every collector, leaving the package vars
+				// pointing at fresh, unregistered instances. Adopt the
+				// already-registered collector for the reload metrics so
+				// RecordModelGatewayReload / SetModelGatewayReloadLastSuccess
+				// keep writing to what the Prometheus endpoint serves.
+				// (The older metrics keep their pre-existing
+				// first-registration-wins behavior.)
+				switch metric {
+				case modelGatewayReloadTotal:
+					if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
+						modelGatewayReloadTotal = existing
+					}
+				case modelGatewayReloadLastSuccess:
+					if existing, ok := already.ExistingCollector.(prometheus.Gauge); ok {
+						modelGatewayReloadLastSuccess = existing
+					}
+				}
 				continue
 			}
 			return err

@@ -18,8 +18,10 @@ package inference
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -345,4 +347,52 @@ type mockGenerateClient struct{}
 
 func (m *mockGenerateClient) Generate(_ context.Context, _ *GenerateRequest) (*GenerateResponse, *ClientError) {
 	return &GenerateResponse{StatusCode: 200}, nil
+}
+
+type closableStubClient struct {
+	stubClient
+	closed atomic.Bool
+}
+
+func (c *closableStubClient) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+// TestNewPerModelResolverFailureClosesCreatedClients: when client
+// construction fails partway through the per-model loop, the clients
+// already built for earlier gateways must be closed — a failed reload is
+// retried every poll, so leaked HTTP transports would accumulate. The pool
+// must close each unique client exactly once (models sharing a config hold
+// the same client).
+func TestNewPerModelResolverFailureClosesCreatedClients(t *testing.T) {
+	first := &closableStubClient{stubClient: stubClient{id: "first"}}
+
+	orig := newInferenceClient
+	var calls atomic.Int32
+	newInferenceClient = func(*HTTPClientConfig, logr.Logger) (InferenceClient, error) {
+		if calls.Add(1) == 1 {
+			return first, nil
+		}
+		return nil, errors.New("invalid TLS material")
+	}
+	defer func() { newInferenceClient = orig }()
+
+	// m1 and m2 share identical settings (one pooled client); the other
+	// endpoint triggers the second, failing construction. Map iteration
+	// order is irrelevant: exactly one client is created before the failure.
+	r, err := NewPerModelResolver(map[string]GatewayClientConfig{
+		"m1": {URL: "http://shared:8000"},
+		"m2": {URL: "http://shared:8000"},
+		"m3": {URL: "http://other:8000", APIKey: "k"},
+	}, testLogger(t))
+	if err == nil {
+		t.Fatal("expected NewPerModelResolver to fail when a gateway client cannot be constructed")
+	}
+	if r != nil {
+		t.Fatal("failed construction must not return a resolver")
+	}
+	if !first.closed.Load() {
+		t.Fatal("client created before the failing gateway must be closed")
+	}
 }

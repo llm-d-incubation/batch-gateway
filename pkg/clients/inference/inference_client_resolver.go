@@ -99,6 +99,13 @@ func NewGlobalResolver(config GatewayClientConfig, logger logr.Logger) (*Gateway
 	}, nil
 }
 
+// newInferenceClient is the client constructor used by NewPerModelResolver.
+// Declared as a var so tests can substitute a failing constructor over
+// closeable fakes when asserting failure-path cleanup.
+var newInferenceClient = func(config *HTTPClientConfig, logger logr.Logger) (InferenceClient, error) {
+	return NewInferenceClient(config, logger)
+}
+
 // NewPerModelResolver creates a GatewayResolver that routes each model to its
 // own inference gateway. Clients with identical settings share a single
 // HTTPClient instance to reuse connection pools.
@@ -112,8 +119,17 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 			modelClients[model] = client
 			continue
 		}
-		client, err := NewInferenceClient(gw.toHTTPClientConfig(), logger)
+		client, err := newInferenceClient(gw.toHTTPClientConfig(), logger)
 		if err != nil {
+			// Close the clients already built for earlier gateways: the
+			// caller (config reload) retries failed construction every
+			// poll, so leaked HTTP transports would accumulate. Iterating
+			// the pool closes each unique client exactly once.
+			for _, pooled := range pool {
+				if closer, ok := pooled.(io.Closer); ok {
+					_ = closer.Close()
+				}
+			}
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}
 		pool[gw] = client

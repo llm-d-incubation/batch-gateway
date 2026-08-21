@@ -248,7 +248,7 @@ func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting co
 		routing.gateways = resolved
 	}
 	if filesHash, hashErr := referencedFilesHash(p.cfg); hashErr != nil {
-		logger.Error(hashErr, "Failed to hash referenced gateway files for reload baseline; a content-only key/cert rotation applied before the first reload may wait for a further config change")
+		logger.Error(hashErr, "Failed to hash referenced gateway files for reload baseline; the first successful reload will rebuild routing once to anchor the digest")
 	} else {
 		routing.referencedFilesHash = &filesHash
 	}

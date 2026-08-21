@@ -307,7 +307,14 @@ func (p *Processor) applyModelGatewayConfig(newCfg *config.ProcessorConfig, logg
 	oldSnapshot := p.routing.Load()
 	globalObjective, modelObjectives := objectivesFromConfig(newCfg)
 	if oldSnapshot != nil {
-		sameFiles := oldSnapshot.referencedFilesHash == nil || *oldSnapshot.referencedFilesHash == newFilesHash
+		// A nil stored digest means the baseline hash could not be computed
+		// (e.g. a referenced file was unreadable at startup). It is
+		// "unknown", not "same content": an otherwise-identical reload
+		// skipped here would never anchor the digest, and every later
+		// content rotation would be misjudged as unchanged forever. Unknown
+		// forces one rebuild, after which the new snapshot carries the
+		// computed digest and change detection is re-anchored.
+		sameFiles := oldSnapshot.referencedFilesHash != nil && *oldSnapshot.referencedFilesHash == newFilesHash
 		if resolvedGatewaysEqual(oldSnapshot.gateways, resolved) &&
 			oldSnapshot.globalObjective == globalObjective &&
 			maps.Equal(oldSnapshot.modelObjectives, modelObjectives) &&

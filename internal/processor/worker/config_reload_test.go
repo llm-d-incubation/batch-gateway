@@ -646,6 +646,61 @@ func TestApplyModelGatewayConfigTLSRotation(t *testing.T) {
 	}
 }
 
+// TestApplyModelGatewayConfigNilBaselineHashForcesRebuild: when the startup
+// baseline could not hash the referenced files (a file was unreadable at
+// startup), the snapshot stores a nil digest — "unknown", not "unchanged".
+// An otherwise-identical reload must then rebuild the resolver once to
+// anchor the digest; treating nil as "same content" would skip the swap
+// without anchoring and permanently hide subsequent TLS/key rotations.
+func TestApplyModelGatewayConfigNilBaselineHashForcesRebuild(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	writeTestCACert(t, caPath, 1, "ca-one")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	writeGatewayConfigWithTLS(t, cfgPath, caPath, "")
+	p := newReloadTestProcessor(t, cfgPath, 0)
+
+	// Simulate a startup baseline whose referenced files were unreadable.
+	baseline := p.routing.Load()
+	baseline.referencedFilesHash = nil
+
+	apply := func(t *testing.T) {
+		t.Helper()
+		newCfg, err := loadProcessorConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("loadProcessorConfig: %v", err)
+		}
+		if err := p.applyModelGatewayConfig(newCfg, testLogger(t)); err != nil {
+			t.Fatalf("applyModelGatewayConfig: %v", err)
+		}
+	}
+
+	// Same gateways, same referenced content, unknown baseline digest:
+	// rebuild once and anchor the digest instead of no-op'ing forever.
+	apply(t)
+	anchored := p.routing.Load()
+	if anchored == baseline {
+		t.Fatal("nil baseline digest must force a rebuild, not a permanent no-op")
+	}
+	if anchored.referencedFilesHash == nil {
+		t.Fatal("the rebuilt snapshot must anchor the referenced files digest")
+	}
+
+	// Anchored now: an unchanged reload is a true no-op again.
+	apply(t)
+	if got := p.routing.Load(); got != anchored {
+		t.Fatal("unchanged config after anchoring must not replace the routing snapshot")
+	}
+
+	// And a later content-only rotation must still rebuild the resolver.
+	writeTestCACert(t, caPath, 2, "ca-two")
+	apply(t)
+	rotated := p.routing.Load()
+	if rotated == anchored || rotated.resolver == anchored.resolver {
+		t.Fatal("TLS cert rotation after anchoring must rebuild the resolver")
+	}
+}
+
 // TestApplyModelGatewayConfigAddsReferencedFile: introducing a new
 // referenced file can leave the resolved gateway set byte-identical (here:
 // an api key file whose trimmed content is the empty key that was used

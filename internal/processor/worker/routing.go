@@ -64,8 +64,10 @@ type routingSnapshot struct {
 	// place — without this digest a content-only rotation would be
 	// misjudged as a no-op and the applied fingerprint would pin the stale
 	// TLS material forever. Nil when it could not be computed (the startup
-	// baseline is best-effort); a nil stored digest falls back to
-	// gateway-set equality only and never vetoes a reload.
+	// baseline is best-effort); nil is "unknown", never "unchanged" — the
+	// next reload forces one resolver rebuild and anchors the computed
+	// digest, so an unreadable-at-startup file cannot permanently stick
+	// change detection in the no-op state.
 	referencedFilesHash *[sha256.Size]byte
 }
 
