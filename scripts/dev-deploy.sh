@@ -1457,17 +1457,14 @@ main() {
     install_jaeger
     install_prometheus
     install_grafana
+    fake_metrics_args=()
     if [ "${ENABLE_GIE}" = "true" ]; then
         # GIE flow control tests need --fake-metrics to dynamically control
         # EPP utilization-detector saturation at runtime via /fake_metrics POST.
-        install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms" \
-            "--fake-metrics" '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}'
-        install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms" \
-            "--fake-metrics" '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}'
-    else
-        install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
-        install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
+        fake_metrics_args=("--fake-metrics" '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}')
     fi
+    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms" "${fake_metrics_args[@]}"
+    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms" "${fake_metrics_args[@]}"
     install_vllm_sim "${VLLM_SIM_429_NAME}" "${VLLM_SIM_429_MODEL}" "10ms" "10ms" \
         "--failure-injection-rate=50" "--failure-types=rate_limit"
     install_vllm_sim "${VLLM_SIM_ALWAYS_FAIL_NAME}" "${VLLM_SIM_ALWAYS_FAIL_MODEL}" "10ms" "10ms" \
