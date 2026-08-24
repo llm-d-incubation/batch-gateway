@@ -69,6 +69,7 @@ ENABLE_GIE="${ENABLE_GIE:-false}"
 ENABLE_DISPATCHER="${ENABLE_DISPATCHER:-false}"
 GIE_REPO="${GIE_REPO:-}"
 GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-extension.git"
+# Last GIE tag with standalone EPP + flow-control plugins. EPP then moved to llm-d-router.
 GIE_VERSION="${GIE_VERSION:-v1.5.0}"
 GIE_EPP_RELEASE="${GIE_EPP_RELEASE:-epp}"
 GIE_OBJECTIVE_PREFIX="${GIE_OBJECTIVE_PREFIX:-batch-sheddable}"
@@ -817,7 +818,7 @@ install_vllm_sim() {
     if [ ${#extra_args[@]} -gt 0 ]; then
         for arg in "${extra_args[@]}"; do
             extra_args_yaml="${extra_args_yaml}
-        - ${arg}"
+        - '${arg}'"
         done
     fi
 
@@ -1456,8 +1457,14 @@ main() {
     install_jaeger
     install_prometheus
     install_grafana
-    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms"
-    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms"
+    fake_metrics_args=()
+    if [ "${ENABLE_GIE}" = "true" ]; then
+        # GIE flow control tests need --fake-metrics to dynamically control
+        # EPP utilization-detector saturation at runtime via /fake_metrics POST.
+        fake_metrics_args=("--fake-metrics" '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}')
+    fi
+    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms" "${fake_metrics_args[@]}"
+    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms" "${fake_metrics_args[@]}"
     install_vllm_sim "${VLLM_SIM_429_NAME}" "${VLLM_SIM_429_MODEL}" "10ms" "10ms" \
         "--failure-injection-rate=50" "--failure-types=rate_limit"
     install_vllm_sim "${VLLM_SIM_ALWAYS_FAIL_NAME}" "${VLLM_SIM_ALWAYS_FAIL_MODEL}" "10ms" "10ms" \
