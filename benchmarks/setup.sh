@@ -171,8 +171,8 @@ GIE_UPSTREAM_REPO="https://github.com/kubernetes-sigs/gateway-api-inference-exte
 
 # Async-processor settings for scenario 5
 DISPATCHER_VERSION="${DISPATCHER_VERSION:-v0.7.3}"
-DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d-incubation/llm-d-async:${DISPATCHER_VERSION}}"
-DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d-incubation/charts/async-processor}"
+DISPATCHER_IMAGE="${DISPATCHER_IMAGE:-ghcr.io/llm-d/llm-d-async:${DISPATCHER_VERSION}}"
+DISPATCHER_CHART="${DISPATCHER_CHART:-oci://ghcr.io/llm-d/charts/llm-d-async}"
 DISPATCHER_CHART_VERSION="${DISPATCHER_CHART_VERSION:-0.7.3}"
 
 # --- Inference backend ---
@@ -618,13 +618,9 @@ EOVLLMSVC
         -n "${NAMESPACE}" \
         --set "ap.image.repository=${DISPATCHER_IMAGE_REPO}" \
         --set "ap.image.tag=${DISPATCHER_IMAGE_TAG}" \
-        --set ap.messageQueueImpl=redis-sortedset \
+        --set ap.transport=redis-sortedset \
         --set ap.concurrency=1 \
-        --set ap.redis.enabled=true \
-        --set "ap.redis.url=redis://redis-master.${NAMESPACE}.svc.cluster.local:6379" \
-        --set ap.redis.pollIntervalMs=500 \
-        --set ap.redis.batchSize=10 \
-        --set-json "ap.redis.queuesConfig=[{\"queue_name\":\"llm-d-async:requests:${ASYNC_POOL_NAME}\",\"result_queue_name\":\"llm-d-async:results:${ASYNC_POOL_NAME}\",\"request_path_url\":\"/v1/chat/completions\",\"igw_base_url\":\"${ASYNC_IGW_URL}\",\"gate_type\":\"endpoint-scrape\",\"gate_params\":{\"url\":\"${ASYNC_METRICS_URL}\",\"metric\":\"vllm:num_requests_waiting\",\"max_count_per_pod\":\"5\",\"fallback\":\"1.0\"}}]" \
+        --set-json "ap.transportConfig={\"urlSecret\":{\"url\":\"redis://redis-master.${NAMESPACE}.svc.cluster.local:6379\"},\"result_queue_name\":\"result-list\",\"poll_interval_ms\":500,\"batch_size\":10,\"queues\":[{\"queue_name\":\"llm-d-async:requests:${ASYNC_POOL_NAME}\",\"result_queue_name\":\"llm-d-async:results:${ASYNC_POOL_NAME}\",\"request_path_url\":\"/v1/chat/completions\",\"igw_base_url\":\"${ASYNC_IGW_URL}\",\"gate_type\":\"endpoint-scrape\",\"gate_params\":{\"url\":\"${ASYNC_METRICS_URL}\",\"metric\":\"vllm:num_requests_waiting\",\"max_count_per_pod\":\"5\",\"fallback\":\"1.0\"}}]}" \
         --set ap.modelServerMonitor.enabled=false \
         --set ap.metrics.enabled=true \
         --set ap.metrics.port=9091 \
@@ -632,7 +628,7 @@ EOVLLMSVC
         --wait --timeout=120s >/dev/null
 
     log "  Waiting for async-processor to be ready..."
-    ${K} -n "${NAMESPACE}" wait --for=condition=available deployment/async-processor --timeout=120s >/dev/null
+    ${K} -n "${NAMESPACE}" wait --for=condition=available deployment/async-processor-llm-d-async --timeout=120s >/dev/null
     log "  Async-processor deployed (pool: ${ASYNC_POOL_NAME}, gate: endpoint-scrape)"
 fi
 
