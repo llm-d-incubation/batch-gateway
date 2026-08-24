@@ -103,7 +103,7 @@ func doTestPodDeleteMidJob(t *testing.T) {
 //
 // Rolling restart delivers SIGTERM only after the new pod is Ready (~12s).
 // To guarantee requests are still in-flight when SIGTERM arrives, we set the
-// simulator's inter-token latency to 30s via /admin/config. This makes even a
+// simulator's inter-token latency to 30s via the control API. This makes even a
 // single generated token take longer than the new-pod startup delay, eliminating
 // the race between request completion and SIGTERM delivery.
 func doTestRollingRestartReEnqueue(t *testing.T) {
@@ -114,9 +114,9 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	}
 
 	// Slow down the simulator so requests cannot complete before SIGTERM arrives.
-	setSimAdminConfig(t, testSimService, `{"inter-token-latency":"30s"}`)
+	patchEngineConfig(t, testSimService, `{"inter_token_latency": 30000}`)
 	t.Cleanup(func() {
-		if err := trySetSimAdminConfig(t, testSimService, `{"inter-token-latency":"100ms"}`); err != nil {
+		if err := tryPatchEngineConfig(t, testSimService, `{"inter_token_latency": 100}`); err != nil {
 			t.Errorf("cleanup: failed to restore %s inter-token-latency: %v", testSimService, err)
 		}
 	})

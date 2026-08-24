@@ -24,10 +24,12 @@ MINIO_REGION="${MINIO_REGION:-us-east-1}"
 MINIO_BUCKET="${MINIO_BUCKET:-llm-d-batch-gateway}"
 VLLM_SIM_MODEL="${VLLM_SIM_MODEL:-sim-model}"
 VLLM_SIM_B_MODEL="${VLLM_SIM_B_MODEL:-sim-model-b}"
-VLLM_SIM_429_MODEL="${VLLM_SIM_429_MODEL:-sim-model-429}"
-VLLM_SIM_ALWAYS_FAIL_MODEL="${VLLM_SIM_ALWAYS_FAIL_MODEL:-sim-model-always-fail}"
-VLLM_SIM_AIMD_MODEL="${VLLM_SIM_AIMD_MODEL:-sim-model-aimd}"
-VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/llm-d/llm-d-inference-sim:latest}"
+# Inference backend: vllm-vcr (the real vLLM Rust frontend over a simulated
+# engine-core). VLLM_SIM_HF_MODEL is the Hugging Face id the frontend loads the
+# tokenizer from; the model names above are what clients use.
+VLLM_SIM_IMAGE="${VLLM_SIM_IMAGE:-ghcr.io/neuralmagic/vllm-vcr:0.2.2-vllm0.27}"
+VLLM_SIM_HF_MODEL="${VLLM_SIM_HF_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
+VLLM_SIM_CONTROL_PORT="${VLLM_SIM_CONTROL_PORT:-8001}"
 JAEGER_IMAGE="${JAEGER_IMAGE:-${IMAGE_REGISTRY}/jaegertracing/all-in-one:latest}"
 PROMETHEUS_IMAGE="${PROMETHEUS_IMAGE:-${IMAGE_REGISTRY}/prom/prometheus:latest}"
 GRAFANA_IMAGE="${GRAFANA_IMAGE:-${IMAGE_REGISTRY}/grafana/grafana:latest}"
@@ -312,15 +314,20 @@ load_images() {
     if [ "${USE_KIND}" = true ]; then
         step "Loading images into kind cluster '${KIND_CLUSTER}'..."
 
-        if [ "${CONTAINER_TOOL}" = "docker" ]; then
-            kind load docker-image "${APISERVER_IMG}" --name "${KIND_CLUSTER}"
-            kind load docker-image "${PROCESSOR_IMG}" --name "${KIND_CLUSTER}"
-            kind load docker-image "${GC_IMG}" --name "${KIND_CLUSTER}"
+        local images=("${APISERVER_IMG}" "${PROCESSOR_IMG}" "${GC_IMG}")
+        # A locally built vllm-vcr image (not on a registry) has to be loaded too.
+        if "${CONTAINER_TOOL}" image inspect "${VLLM_SIM_IMAGE}" &>/dev/null; then
+            images+=("${VLLM_SIM_IMAGE}")
         else
-            podman save "${APISERVER_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
-            podman save "${PROCESSOR_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
-            podman save "${GC_IMG}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
+            log "vllm-vcr image '${VLLM_SIM_IMAGE}' not present locally; the cluster will pull it."
         fi
+        for image in "${images[@]}"; do
+            if [ "${CONTAINER_TOOL}" = "docker" ]; then
+                kind load docker-image "${image}" --name "${KIND_CLUSTER}"
+            else
+                podman save "${image}" | kind load image-archive /dev/stdin --name "${KIND_CLUSTER}"
+            fi
+        done
         log "Images loaded into kind."
     else
         warn "Not a kind cluster — skipping image load."
@@ -802,25 +809,15 @@ EOF
     fi
 }
 
-# ── vLLM Simulator ────────────────────────────────────────────────────────────
+# ── vLLM simulator (vllm-vcr) ─────────────────────────────────────────────────
 
 install_vllm_sim() {
     local sim_name="$1"
     local sim_model="$2"
-    local time_to_first_token="$3"
-    local inter_token_latency="$4"
-    shift 4
-    local extra_args=("$@")
+    local time_to_first_token_ms="$3"
+    local inter_token_latency_ms="$4"
 
-    step "Installing vLLM simulator '${sim_name}' (model: ${sim_model})..."
-
-    local extra_args_yaml=""
-    if [ ${#extra_args[@]} -gt 0 ]; then
-        for arg in "${extra_args[@]}"; do
-            extra_args_yaml="${extra_args_yaml}
-        - '${arg}'"
-        done
-    fi
+    step "Installing vllm-vcr '${sim_name}' (model: ${sim_model}, ttft=${time_to_first_token_ms}ms, itl=${inter_token_latency_ms}ms)..."
 
     kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -839,33 +836,53 @@ spec:
         app: ${sim_name}
     spec:
       containers:
-      - name: vllm-sim
+      - name: vllm-vcr
         image: ${VLLM_SIM_IMAGE}
         imagePullPolicy: IfNotPresent
-        args:
-        - --model
-        - ${sim_model}
-        - --port
-        - "8000"
-        - --time-to-first-token=${time_to_first_token}
-        - --inter-token-latency=${inter_token_latency}
-        - --v=5${extra_args_yaml}
         env:
+        - name: MODEL
+          value: ${VLLM_SIM_HF_MODEL}
+        - name: SERVED_MODEL_NAME
+          value: ${sim_model}
+        - name: VLLM_EXTRA_ARGS
+          value: "--reasoning-parser none --tool-call-parser none"
+        - name: MOCK_TTFT_MS
+          value: "${time_to_first_token_ms}"
+        - name: MOCK_ITL_MS
+          value: "${inter_token_latency_ms}"
+        - name: MOCK_CONTROL_PORT
+          value: "${VLLM_SIM_CONTROL_PORT}"
         - name: POD_NAME
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        - name: NAMESPACE
+        - name: POD_IP
           valueFrom:
             fieldRef:
-              fieldPath: metadata.namespace
+              fieldPath: status.podIP
         ports:
         - containerPort: 8000
           name: http
           protocol: TCP
+        - containerPort: ${VLLM_SIM_CONTROL_PORT}
+          name: control
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 2
+          failureThreshold: 90
         resources:
           requests:
-            cpu: 10m
+            cpu: 50m
+            memory: 256Mi
+        volumeMounts:
+        - name: hf-cache
+          mountPath: /tmp/hf
+      volumes:
+      - name: hf-cache
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -882,11 +899,16 @@ spec:
     protocol: TCP
     port: 8000
     targetPort: 8000
+  - name: control
+    protocol: TCP
+    port: ${VLLM_SIM_CONTROL_PORT}
+    targetPort: ${VLLM_SIM_CONTROL_PORT}
   type: ClusterIP
 EOF
 
-    wait_for_deployment "${sim_name}" "${NAMESPACE}" 120s
-    log "vLLM simulator installed. Service: ${sim_name}:8000"
+    # First start downloads the tokenizer from Hugging Face into the pod's cache.
+    wait_for_deployment "${sim_name}" "${NAMESPACE}" 300s
+    log "vllm-vcr installed. Service: ${sim_name}:8000 (control API :${VLLM_SIM_CONTROL_PORT})"
 }
 
 # ── GIE (Gateway API Inference Extension) ────────────────────────────────────
@@ -940,7 +962,7 @@ inferenceExtension:
         - type: slo-deadline-ordering-policy
         - type: utilization-detector
           parameters:
-            queueDepthThreshold: 5
+            queueDepthThreshold: 1
             kvCacheUtilThreshold: 0.8
       flowControl:
         maxBytes: 4294967296
@@ -1067,28 +1089,8 @@ install_batch_gateway() {
         --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxRetries=3"
         --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.initialBackoff=1s"
         --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.maxBackoff=60s"
-        # 429 model always connects directly to the simulator (no EPP), even in GIE mode.
-        # This isolates the processor's HTTP-level retry behavior from EPP routing.
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.url=http://${VLLM_SIM_429_NAME}.${NAMESPACE}.svc.cluster.local:8000"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.requestTimeout=2m"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxRetries=20"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.initialBackoff=500ms"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.maxBackoff=5s"
-        # Always-fail model: 100% rate_limit injection, minimal retries for fast exhaustion.
-        --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.url=http://${VLLM_SIM_ALWAYS_FAIL_NAME}.${NAMESPACE}.svc.cluster.local:8000"
-        --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.requestTimeout=30s"
-        --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.maxRetries=1"
-        --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.initialBackoff=500ms"
-        --set "processor.config.modelGateways.${VLLM_SIM_ALWAYS_FAIL_MODEL}.maxBackoff=1s"
-        # AIMD recovery test model: starts at 100% rate_limit, patched to 0% mid-test.
-        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.url=http://${VLLM_SIM_AIMD_NAME}.${NAMESPACE}.svc.cluster.local:8000"
-        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.requestTimeout=2m"
-        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.maxRetries=10"
-        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.initialBackoff=500ms"
-        --set "processor.config.modelGateways.${VLLM_SIM_AIMD_MODEL}.maxBackoff=5s"
         --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}"
         --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}"
-        --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}"
         --set "processor.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.logging.verbosity=${LOG_VERBOSITY}"
         --set "apiserver.config.batchAPI.passThroughHeaders={X-E2E-Pass-Through-1,X-E2E-Pass-Through-2}"
@@ -1133,7 +1135,6 @@ install_batch_gateway() {
         helm_args+=(
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}-${VLLM_SIM_MODEL}"
             --set "processor.config.modelGateways.${VLLM_SIM_B_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}-${VLLM_SIM_B_MODEL}"
-            --set "processor.config.modelGateways.${VLLM_SIM_429_MODEL}.inferenceObjective=${GIE_OBJECTIVE_PREFIX}-${VLLM_SIM_429_MODEL}"
             --set "processor.config.concurrency.perEndpoint=20"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.initialBackoff=2s"
             --set "processor.config.modelGateways.${VLLM_SIM_MODEL}.maxBackoff=30s"
@@ -1354,11 +1355,8 @@ print_usage() {
     echo '       {"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"sim-model","messages":[{"role":"user","content":"Hello"}]}}'
     echo ""
     echo "     Available models in dev environment:"
-    echo "       - sim-model     (vLLM simulator at ${VLLM_SIM_NAME})"
-    echo "       - sim-model-b   (vLLM simulator at ${VLLM_SIM_B_NAME})"
-    echo "       - sim-model-429 (vLLM simulator at ${VLLM_SIM_429_NAME}, 50% rate_limit failure injection)"
-    echo "       - sim-model-always-fail (vLLM simulator at ${VLLM_SIM_ALWAYS_FAIL_NAME}, 100% rate_limit failure injection)"
-    echo "       - sim-model-aimd (vLLM simulator at ${VLLM_SIM_AIMD_NAME}, AIMD recovery test — starts 100% rate_limit, patched to 0% mid-test)"
+    echo "       - sim-model     (vllm-vcr at ${VLLM_SIM_NAME}, control API :${VLLM_SIM_CONTROL_PORT})"
+    echo "       - sim-model-b   (vllm-vcr at ${VLLM_SIM_B_NAME}, control API :${VLLM_SIM_CONTROL_PORT})"
     if [ "${ENABLE_GIE}" = "true" ]; then
     echo ""
     echo "     GIE (flow control) is enabled:"
@@ -1457,20 +1455,8 @@ main() {
     install_jaeger
     install_prometheus
     install_grafana
-    fake_metrics_args=()
-    if [ "${ENABLE_GIE}" = "true" ]; then
-        # GIE flow control tests need --fake-metrics to dynamically control
-        # EPP utilization-detector saturation at runtime via /fake_metrics POST.
-        fake_metrics_args=("--fake-metrics" '{"kv-cache-usage": 0, "waiting-requests": 0, "running-requests": 0}')
-    fi
-    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" "50ms" "100ms" "${fake_metrics_args[@]}"
-    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" "200ms" "500ms" "${fake_metrics_args[@]}"
-    install_vllm_sim "${VLLM_SIM_429_NAME}" "${VLLM_SIM_429_MODEL}" "10ms" "10ms" \
-        "--failure-injection-rate=50" "--failure-types=rate_limit"
-    install_vllm_sim "${VLLM_SIM_ALWAYS_FAIL_NAME}" "${VLLM_SIM_ALWAYS_FAIL_MODEL}" "10ms" "10ms" \
-        "--failure-injection-rate=100" "--failure-types=rate_limit"
-    install_vllm_sim "${VLLM_SIM_AIMD_NAME}" "${VLLM_SIM_AIMD_MODEL}" "10ms" "10ms" \
-        "--failure-injection-rate=100" "--failure-types=rate_limit"
+    install_vllm_sim "${VLLM_SIM_NAME}" "${VLLM_SIM_MODEL}" 50 100
+    install_vllm_sim "${VLLM_SIM_B_NAME}" "${VLLM_SIM_B_MODEL}" 200 500
     if [ "${ENABLE_GIE}" = "true" ]; then
         ensure_gie_repo
         install_gie_crds
