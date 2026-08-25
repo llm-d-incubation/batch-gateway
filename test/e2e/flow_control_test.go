@@ -68,6 +68,7 @@ func testFlowControl(t *testing.T) {
 		t.Run("BatchCompletionThroughEPP", doTestBatchCompletionThroughEPP)
 		t.Run("RetryOnShed", doTestRetryOnShed)
 		t.Run("RetryExhaustion", doTestRetryExhaustion)
+		t.Run("PriorityBandInteraction", doTestPriorityBandInteraction)
 	})
 }
 
@@ -247,6 +248,69 @@ func doTestRetryExhaustion(t *testing.T) {
 	assertRequestErrors(t, testModelB)
 }
 
+// doTestPriorityBandInteraction verifies that the EPP serves the interactive
+// band while it sheds the batch band from the same saturated pool:
+//
+//  1. Saturate model B behind interactive load and submit a batch
+//     (submitSaturatingBatch), which returns once a batch request was shed.
+//  2. While still saturated, the interactive band's Dispatched counter must
+//     keep advancing: the EPP is dispatching priority-100 traffic to the
+//     choked engine while it evicts priority -1.
+//  3. Stop the load and release the engine: a single interactive request
+//     returns 200 and the batch completes with no shed line left in its output.
+func doTestPriorityBandInteraction(t *testing.T) {
+	t.Helper()
+
+	eppDeployment := eppDeploymentFor(testModelB)
+	batchOutcomesBefore := getEPPBatchOutcomes(t, eppDeployment)
+	batchID, stopLoad := submitSaturatingBatch(t, "priority-band")
+
+	interactiveBefore := getEPPOutcomes(t, eppDeployment, eppInteractivePriority)[eppOutcomeDispatched]
+	batchOutcomesShed := getEPPBatchOutcomes(t, eppDeployment)
+	waitForEPPInteractiveDispatch(t, eppDeployment, interactiveBefore, 90*time.Second)
+	interactiveAfter := getEPPOutcomes(t, eppDeployment, eppInteractivePriority)[eppOutcomeDispatched]
+	t.Logf("under saturation: interactive Dispatched %.0f -> %.0f, batch shed %.0f -> %.0f",
+		interactiveBefore, interactiveAfter, shedCount(batchOutcomesBefore), shedCount(batchOutcomesShed))
+
+	t.Log("stopping interactive load and releasing the engine")
+	stopLoad()
+	if err := releaseEngine(t, testSimServiceB); err != nil {
+		t.Fatal(err)
+	}
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8081/v1/chat/completions", eppDeployment, testNamespace)
+	body := fmt.Sprintf(`{"model":%q,"max_tokens":%d,"messages":[{"role":"user","content":"interactive"}]}`, testModelB, saturationMaxTokens)
+	if code := curlEPP(t, url, fmt.Sprintf("interactive-default-%s", testModelB), body); code != "200" {
+		t.Errorf("interactive request after release returned HTTP %s, want 200", code)
+	}
+
+	batch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+	if batch.RequestCounts.Completed != int64(saturationRequests) {
+		t.Fatalf("expected %d completed, got %d (failed=%d)",
+			saturationRequests, batch.RequestCounts.Completed, batch.RequestCounts.Failed)
+	}
+	if shed := assertOutputMatchesEPPOutcomes(t, batch, batchOutcomesBefore, getEPPBatchOutcomes(t, eppDeployment)); shed != 0 {
+		t.Errorf("expected no shed status in the output after retries, got %d", shed)
+	}
+}
+
+// waitForEPPInteractiveDispatch polls until the EPP's interactive-band
+// Dispatched counter exceeds before.
+func waitForEPPInteractiveDispatch(t *testing.T, deployment string, before float64, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var last float64
+	for time.Now().Before(deadline) {
+		last = getEPPOutcomes(t, deployment, eppInteractivePriority)[eppOutcomeDispatched]
+		if last > before {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("EPP %s dispatched no interactive request within %v (before=%.0f, last=%.0f)", deployment, timeout, before, last)
+}
+
 // startInteractiveLoad keeps `concurrency` interactive chat completions in
 // flight against the model's EPP from the in-cluster curl pod, each worker
 // sending its next request as soon as the previous one returns, until the
@@ -316,8 +380,11 @@ func waitForBatchFailures(t *testing.T, batchID string, timeout time.Duration) {
 // ──  GIE integration tests (require ENABLE_GIE=true) ───────────────────
 //
 // Current coverage: EPP routing smoke tests (header propagation, multi-model
-// completion) and shedding under saturation (RetryOnShed, RetryExhaustion, and
-// the AIMD tests), with the model server choked through the vllm-vcr control API.
+// completion) and shedding under saturation, with the model server choked
+// through the vllm-vcr control API and the pool kept saturated by interactive
+// load. Against the flow-control scenarios of #402: shedding under saturation
+// is RetryExhaustion, mixed load with metrics is RetryOnShed (plus the AIMD
+// tests), priority band interaction is PriorityBandInteraction.
 //
 // Not covered: while two sheddable requests are queued, EPP does not dispatch
 // the earlier x-slo-ttft-ms deadline first. Observed on GIE EPP v1.5.0 (FCFS
@@ -546,6 +613,7 @@ const (
 	eppOutcomeEvictedTTL       = "EvictedTTL"       // 503 "request timed out in queue"
 	eppOutcomeRejectedCapacity = "RejectedCapacity" // 429, priority band byte budget full
 	eppBatchPriority           = "-1"               // the batch-sheddable InferenceObjective
+	eppInteractivePriority     = "100"              // the interactive-default InferenceObjective
 )
 
 var eppOutcomeLabelPattern = regexp.MustCompile(`outcome="([^"]+)"`)
@@ -557,11 +625,19 @@ var eppOutcomeLabelPattern = regexp.MustCompile(`outcome="([^"]+)"`)
 func getEPPBatchOutcomes(t *testing.T, deployment string) map[string]float64 {
 	t.Helper()
 
+	return getEPPOutcomes(t, deployment, eppBatchPriority)
+}
+
+// getEPPOutcomes returns the EPP's flow-control request counter for one
+// priority band, keyed by outcome.
+func getEPPOutcomes(t *testing.T, deployment, priority string) map[string]float64 {
+	t.Helper()
+
 	metrics := scrapeEPPMetrics(t, deployment)
 	outcomes := make(map[string]float64)
 	for _, match := range eppDispatchedCountPattern.FindAllStringSubmatch(metrics, -1) {
 		labels := match[1]
-		if !strings.Contains(labels, fmt.Sprintf(`priority=%q`, eppBatchPriority)) {
+		if !strings.Contains(labels, fmt.Sprintf(`priority=%q`, priority)) {
 			continue
 		}
 		outcome := eppOutcomeLabelPattern.FindStringSubmatch(labels)
