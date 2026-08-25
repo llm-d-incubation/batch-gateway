@@ -131,15 +131,21 @@ func waitForBatchSpan(t *testing.T, operation, batchID string, timeout time.Dura
 		if err != nil {
 			t.Fatalf("failed to query Jaeger API: %v", err)
 		}
+		raw, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("failed to read Jaeger response: %v", readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Jaeger API returned %d: %s", resp.StatusCode, truncateLog(string(raw), 500))
+		}
 		var result struct {
 			Data []struct {
 				Spans []jaegerSpan `json:"spans"`
 			} `json:"data"`
 		}
-		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
-		if decodeErr != nil {
-			t.Fatalf("failed to decode Jaeger response: %v", decodeErr)
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("failed to decode Jaeger response: %v\n%s", err, truncateLog(string(raw), 500))
 		}
 		for _, trace := range result.Data {
 			for _, span := range trace.Spans {

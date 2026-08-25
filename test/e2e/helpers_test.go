@@ -734,7 +734,7 @@ func tryPatchEngineConfig(t *testing.T, simService string, body string) error {
 		"curl", "-sS", "-X", "PATCH",
 		"-H", "Content-Type: application/json",
 		"-d", body,
-		"--fail",
+		"--fail", "--max-time", "10",
 		url,
 	).CombinedOutput()
 	if err != nil {
