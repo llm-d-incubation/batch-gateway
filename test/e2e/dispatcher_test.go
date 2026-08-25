@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -88,25 +89,21 @@ func newDispatcherProducer(t *testing.T, rdb *redis.Client, poolName string) *pr
 	return p
 }
 
-// detectDispatcherDeployed checks whether at least one async-processor
-// deployment exists in the test namespace.
+// detectDispatcherDeployed checks whether at least one llm-d Async deployment
+// exists in the test namespace.
 func detectDispatcherDeployed(t *testing.T) bool {
 	t.Helper()
 
 	out, err := exec.Command("kubectl", "get", "deployments",
 		"-n", testNamespace,
+		"-l", "app.kubernetes.io/name in (async-processor,llm-d-async)",
 		"-o", "name",
 	).CombinedOutput()
 	if err != nil {
 		t.Logf("kubectl get deployments failed: %v", err)
 		return false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "async-processor") {
-			return true
-		}
-	}
-	return false
+	return strings.TrimSpace(string(out)) != ""
 }
 
 func TestDispatcher(t *testing.T) {
@@ -138,6 +135,9 @@ func TestDispatcher(t *testing.T) {
 	})
 	t.Run("MultiRequestBatch", func(t *testing.T) {
 		testDispatcherMultiRequestBatch(t, rdb)
+	})
+	t.Run("MultiReplicaBatch", func(t *testing.T) {
+		testDispatcherMultiReplicaBatch(t)
 	})
 	t.Run("HTTPErrorStatusPreserved", func(t *testing.T) {
 		testDispatcherHTTPErrorStatusPreserved(t, rdb)
@@ -176,7 +176,8 @@ func testDispatcherHTTPErrorStatusPreserved(t *testing.T, rdb *redis.Client) {
 	batchID := mustCreateBatch(t, fileID)
 	t.Logf("Created batch %s; waiting for request in %s", batchID, injectReqQueue)
 
-	reqID := waitAndStealQueuedRequestID(t, rdb, injectReqQueue, 30*time.Second)
+	reqID, resultQueue := waitAndStealQueuedRequest(t, rdb, injectReqQueue, 30*time.Second)
+	defer rdb.Del(ctx, resultQueue)
 	t.Logf("Got request %s; injecting StatusCode=403 result", reqID)
 
 	resultBytes, err := json.Marshal(asyncapi.ResultMessage{
@@ -187,7 +188,7 @@ func testDispatcherHTTPErrorStatusPreserved(t *testing.T, rdb *redis.Client) {
 	if err != nil {
 		t.Fatalf("marshal ResultMessage: %v", err)
 	}
-	if err := rdb.LPush(ctx, injectResultQueue, string(resultBytes)).Err(); err != nil {
+	if err := rdb.LPush(ctx, resultQueue, string(resultBytes)).Err(); err != nil {
 		t.Fatalf("LPUSH result: %v", err)
 	}
 
@@ -239,9 +240,10 @@ func testDispatcherHTTPErrorStatusPreserved(t *testing.T, rdb *redis.Client) {
 	t.Logf("Batch %s preserved HTTP 403 in output (no parse_error)", batchID)
 }
 
-// waitAndStealQueuedRequestID waits until a request appears in the Redis sorted
-// set queue, removes it, and returns the request ID from the InternalRequest envelope.
-func waitAndStealQueuedRequestID(t *testing.T, rdb *redis.Client, queue string, timeout time.Duration) string {
+// waitAndStealQueuedRequest waits until a request appears in the Redis sorted
+// set queue, removes it, and returns its request ID and result queue from the
+// InternalRequest envelope.
+func waitAndStealQueuedRequest(t *testing.T, rdb *redis.Client, queue string, timeout time.Duration) (string, string) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -277,10 +279,13 @@ func waitAndStealQueuedRequestID(t *testing.T, rdb *redis.Client, queue string, 
 		if reqID == "" {
 			t.Fatalf("empty request ID in queued message: %s", member)
 		}
-		return reqID
+		if ir.ResultQueueName == "" {
+			t.Fatalf("empty result queue in queued message: %s", member)
+		}
+		return reqID, ir.ResultQueueName
 	}
 	t.Fatalf("no request appeared in %s within %v", queue, timeout)
-	return ""
+	return "", ""
 }
 
 func testDispatcherBatchRoundTrip(t *testing.T, rdb *redis.Client) {
@@ -337,6 +342,106 @@ func testDispatcherMultiRequestBatch(t *testing.T, rdb *redis.Client) {
 	}
 
 	t.Logf("All 3 requests completed via dispatcher")
+}
+
+// testDispatcherMultiReplicaBatch verifies that two healthy Batch Processor
+// replicas do not consume and discard one another's async results.
+func testDispatcherMultiReplicaBatch(t *testing.T) {
+	selector := fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease)
+	var workloads []string
+	var discoveryErrors []string
+	for _, kind := range []string{"deployment", "statefulset"} {
+		out, err := exec.Command("kubectl", "get", kind,
+			"-n", testNamespace,
+			"-l", selector,
+			"-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`,
+		).CombinedOutput()
+		if err != nil {
+			discoveryErrors = append(discoveryErrors, fmt.Sprintf("%s: %v: %s", kind, err, strings.TrimSpace(string(out))))
+			continue
+		}
+		for _, name := range strings.Fields(string(out)) {
+			workloads = append(workloads, kind+"/"+name)
+		}
+	}
+	if len(workloads) != 1 {
+		t.Fatalf("find one Processor workload with selector %q: found %v; discovery errors: %v", selector, workloads, discoveryErrors)
+	}
+	workload := workloads[0]
+	replicasOut, err := exec.Command("kubectl", "get", workload,
+		"-n", testNamespace, "-o", "jsonpath={.spec.replicas}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("get Processor replica count for %s: %v\n%s", workload, err, replicasOut)
+	}
+	originalReplicas, err := strconv.Atoi(strings.TrimSpace(string(replicasOut)))
+	if err != nil {
+		t.Fatalf("parse Processor replica count %q: %v", replicasOut, err)
+	}
+
+	scaleProcessor := func(replicas int) error {
+		out, scaleErr := exec.Command("kubectl", "scale", workload,
+			"-n", testNamespace, fmt.Sprintf("--replicas=%d", replicas)).CombinedOutput()
+		if scaleErr != nil {
+			return fmt.Errorf("scale Processor to %d replicas: %w\n%s", replicas, scaleErr, out)
+		}
+		out, scaleErr = exec.Command("kubectl", "rollout", "status", workload,
+			"-n", testNamespace, "--timeout=180s").CombinedOutput()
+		if scaleErr != nil {
+			return fmt.Errorf("wait for %d Processor replicas: %w\n%s", replicas, scaleErr, out)
+		}
+		return nil
+	}
+
+	if originalReplicas != 2 {
+		t.Cleanup(func() {
+			if err := scaleProcessor(originalReplicas); err != nil {
+				t.Errorf("cleanup: %v", err)
+			}
+		})
+		if err := scaleProcessor(2); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const (
+		batchCount       = 2
+		requestsPerBatch = 32
+	)
+	batchIDs := make([]string, 0, batchCount)
+	for batchIndex := 0; batchIndex < batchCount; batchIndex++ {
+		lines := make([]string, 0, requestsPerBatch)
+		for requestIndex := 0; requestIndex < requestsPerBatch; requestIndex++ {
+			lines = append(lines, fmt.Sprintf(
+				`{"custom_id":"multi-replica-%d-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"batch %d request %d"}]}}`,
+				batchIndex, requestIndex, testModel, batchIndex, requestIndex))
+		}
+
+		fileID := mustCreateFile(t,
+			fmt.Sprintf("dispatcher-multi-replica-%d-%s.jsonl", batchIndex, testRunID),
+			strings.Join(lines, "\n"))
+		batchIDs = append(batchIDs, mustCreateBatch(t, fileID))
+	}
+
+	for _, batchID := range batchIDs {
+		batch, results := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCompleted)
+
+		if batch.RequestCounts.Total != requestsPerBatch {
+			t.Errorf("batch %s: total requests = %d, want %d", batchID, batch.RequestCounts.Total, requestsPerBatch)
+		}
+		if batch.RequestCounts.Completed != requestsPerBatch {
+			t.Errorf("batch %s: completed requests = %d, want %d", batchID, batch.RequestCounts.Completed, requestsPerBatch)
+		}
+		if batch.RequestCounts.Failed != 0 {
+			t.Errorf("batch %s: failed requests = %d, want 0", batchID, batch.RequestCounts.Failed)
+		}
+		if results == nil {
+			t.Fatalf("batch %s: expected non-nil results", batchID)
+		}
+		if results.OutputLines != requestsPerBatch {
+			t.Errorf("batch %s: output lines = %d, want %d", batchID, results.OutputLines, requestsPerBatch)
+		}
+		validateBatchResults(t, batch, *results)
+	}
 }
 
 func testDispatcherRedisGate(t *testing.T, rdb *redis.Client) {

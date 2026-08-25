@@ -109,11 +109,11 @@ type AsyncModelConfig struct {
 	// a future release. Set explicit queue names for new deployments.
 	RequestQueueName string `yaml:"request_queue_name"`
 
-	// ResultQueueName overrides the Redis sorted-set queue name used to
-	// read inference results. When empty, the name is derived from
-	// InferencePoolName as "llm-d-async:results:<pool>".
+	// ResultQueueName overrides the Redis list base name used to read inference
+	// results. The Processor appends its replica identity. When empty, the base
+	// name is derived from InferencePoolName as "llm-d-async:results:<pool>".
 	// Deprecated fallback: the derived naming convention will be removed in
-	// a future release. Set explicit queue names for new deployments.
+	// a future release. Set an explicit queue base name for new deployments.
 	ResultQueueName string `yaml:"result_queue_name"`
 }
 

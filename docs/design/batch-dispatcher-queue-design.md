@@ -54,13 +54,17 @@ Queue names follow a fixed convention keyed by the inference pool name:
 | Queue | Redis Type | Name Pattern | Example |
 |-------|-----------|--------------|---------|
 | Request queue | Sorted Set | `llm-d-async:requests:{pool_name}` | `llm-d-async:requests:optimized-baseline` |
-| Result queue | List | `llm-d-async:results:{pool_name}` | `llm-d-async:results:optimized-baseline` |
+| Result queue | List | `llm-d-async:results:{pool_name}:{processor_id}` | `llm-d-async:results:optimized-baseline:batch-gateway-processor-7d9f6c8b5f-k2m4n` |
 
-The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). Both queue names are derived from a single `pool_name` — they are always configured as a pair, never independently. Queue names are computed by the batch-processor's async resolver in [`async_inference_client_resolver.go`](https://github.com/llm-d/llm-d-batch-gateway/blob/main/pkg/clients/inference/async_inference_client_resolver.go), as `asyncQueuePrefix + "requests:" + poolName` and `asyncQueuePrefix + "results:" + poolName`.
+The `pool_name` corresponds to the target [InferencePool](https://gateway-api-inference-extension.sigs.k8s.io/api-types/inferencepool/). The request queue and result queue base name are derived from the pool name. The batch-processor's async resolver appends the Processor hostname to the result queue base name, so replicas share requests but cannot consume one another's results. The resolved names are `asyncQueuePrefix + "requests:" + poolName` and `asyncQueuePrefix + "results:" + poolName + ":" + processorID`.
 
 The prefix `llm-d-async` (`asyncQueuePrefix`) is currently hardcoded but can be made configurable, so that multiple installations can share the same Redis instance without key collisions (e.g., `staging`, `prod`, or an application-specific identifier).
 
-> **Note — the `$batch` / tenant suffix:** the batch-processor derives suffix-less result queue names (`llm-d-async:results:{pool_name}`). The llm-d-async producer treats `ResultQueueName` as the *full* Redis list key and does **not** append anything — so a `{tenant_id}` suffix such as `$batch` (seen in some llm-d-async examples) is purely a naming convention, not something either side adds automatically. Per-tenant isolation (routing results to different queues per user or API key) would require the batch-processor to build the suffix explicitly; it is reserved for future use. Because the names must match on both sides, the dispatcher's `--redis.ss.result-queue-name` must be set to the exact suffix-less name the processor consumes.
+The llm-d-async producer treats `ResultQueueName` as the full Redis list key and carries it on each request. The Async Processor must preserve that per-request destination. When using a `queuesConfig`, leave its per-queue `result_queue_name` unset; llm-d Async versions through v0.9.0 give that static value precedence over the request-provided result queue. A top-level default result queue may still be configured as a fallback.
+
+For an existing deployment, first remove the per-queue `result_queue_name` override and wait for the Async Processor rollout to complete. Only then upgrade the Batch Processors. Upgrading a Batch Processor first strands its results even with a single replica: the Processor listens on its replica-specific queue while the old Async configuration continues writing to the static queue.
+
+Replica-specific queues prevent healthy Processors from stealing results from one another. They do not recover results after the owning Processor is lost; pod-loss recovery and cleanup of abandoned result queues are tracked in [#645](https://github.com/llm-d/llm-d-batch-gateway/issues/645).
 
 When the dispatcher is used, the inference gateway endpoint configuration lives entirely on the dispatcher side: the batch-processor does not need to know about gateway URLs, TLS settings, or routing modes. The batch-processor only needs the pool name, the connector type, and the connector endpoint.
 
@@ -109,7 +113,7 @@ The dispatcher (llm-d-async) already supports the Redis sorted-set flow with dis
 --redis.ss.result-queue-name llm-d-async:results:optimized-baseline
 ```
 
-The queue names must match those derived by the batch-processor's async resolver (`llm-d-async:requests:{pool_name}` / `llm-d-async:results:{pool_name}`).
+The request queue must match the name derived by the batch-processor's async resolver. The result queue shown here is a fallback; each Batch Processor request carries its replica-specific result destination.
 
 The dispatcher pulls up to `max_SYS × budget` requests per poll cycle and forwards them to the inference gateway. See the [llm-d-async README](https://github.com/llm-d/llm-d-async/blob/main/README.md) and [Helm chart values](https://github.com/llm-d/llm-d-async/tree/main/charts/async-processor) for the full configuration.
 
@@ -210,7 +214,7 @@ Result messages follow the format defined in the [llm-d-async README — Results
 
 ### Dispatcher (writes to result queue)
 
-After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to the result queue (e.g., `llm-d-async:results:{pool_name}`). The `metadata` from the original request is carried through so the consumer can route the result.
+After the dispatcher receives a response from the inference gateway (success or failure), it writes the result to the replica-specific result queue carried on the request (e.g., `llm-d-async:results:{pool_name}:{processor_id}`).
 
 ### Consumer (Batch-Processor)
 
@@ -224,7 +228,7 @@ Because a job's pipeline is short-lived but the result queue is long-lived and s
 2. Converts each raw result into a `ResultItem` (preserving the HTTP status, or mapping non-HTTP failures to an error result).
 3. Fans that `ResultItem` out to **every currently-subscribed result channel** — it does not itself filter by job or model.
 
-Broadcasters outlive individual jobs, so a single `GetResult()` consumer per pool keeps draining the queue even as jobs start and finish.
+Broadcasters outlive individual jobs, so a single `GetResult()` consumer per pool and Processor replica keeps draining that replica's result queue even as jobs start and finish.
 
 #### ResultCollector (per-job)
 

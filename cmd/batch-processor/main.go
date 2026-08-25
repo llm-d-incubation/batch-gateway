@@ -51,7 +51,10 @@ func main() {
 
 func run() error {
 	// load configuration & logging setup
-	hostname, _ := os.Hostname()
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("get Processor hostname: %w", err)
+	}
 	logger := klog.NewKlogr().WithValues("hostname", hostname, "service", "batch-processor")
 	ctx := logr.NewContext(context.Background(), logger)
 
@@ -108,7 +111,7 @@ func run() error {
 		cfg.TerminateOnObservabilityFailure,
 	)
 
-	procClients, err := buildProcessorClients(ctx, cfg)
+	procClients, err := buildProcessorClients(ctx, cfg, hostname)
 	if err != nil {
 		logger.Error(err, "Failed to build processor clients")
 		return err
@@ -273,7 +276,7 @@ func waitObservabilityFatalError(ctx context.Context, obsFatalCh <-chan error, w
 }
 
 // buildProcessorClients constructs all processor clients using the same backend as the apiserver
-func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*clientset.Clientset, error) {
+func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig, processorID string) (*clientset.Clientset, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	cfg.DBClientCfg.RedisCfg.ServiceName = "batch-processor"
@@ -297,6 +300,7 @@ func buildProcessorClients(ctx context.Context, cfg *config.ProcessorConfig) (*c
 		opts = append(opts, clientset.WithPerModelInference(resolved.PerModel))
 	}
 	if resolved.Async != nil {
+		resolved.Async.ConsumerID = processorID
 		opts = append(opts, clientset.WithAsyncInference(*resolved.Async))
 	}
 	clients, err := clientset.NewClientset(ctx, ucom.ComponentProcessor, opts...)

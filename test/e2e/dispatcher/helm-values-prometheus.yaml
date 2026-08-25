@@ -21,7 +21,6 @@ ap:
     batchSize: 10
     queuesConfig:
       - queue_name: "llm-d-async:requests:sim-pool-prom"
-        result_queue_name: "llm-d-async:results:sim-pool-prom"
         request_path_url: "/v1/completions"
         igw_base_url: "http://vllm-sim.default.svc.cluster.local:8000"
         gate_type: "prometheus-query"
