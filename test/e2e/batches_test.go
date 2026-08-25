@@ -728,9 +728,11 @@ func doTestProgressPolling(t *testing.T) {
 
 	// 5 fast requests (max_tokens=1, ~150ms each) complete almost immediately.
 	// 15 slow requests (max_tokens=60, ~6s each at the simulator's 100ms
-	// inter-token latency) keep the batch in_progress long enough for polling
-	// to observe completed > 0, and still finish inside the wait below when a
-	// single-worker dispatcher runs them one at a time.
+	// inter-token latency) keep the batch in_progress for at least one slow
+	// request's duration when they all run in parallel, and still finish
+	// inside the wait below when a single-worker dispatcher runs them one at
+	// a time. Polling starts as soon as the batch is in_progress and runs
+	// every 500ms so the window is observed in both layouts.
 	var lines []string
 	for i := 1; i <= 5; i++ {
 		lines = append(lines, fmt.Sprintf(
@@ -744,9 +746,6 @@ func doTestProgressPolling(t *testing.T) {
 	batchID := mustCreateBatch(t, fileID)
 
 	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
-
-	// Wait a few seconds for fast requests to complete and progress to flush.
-	time.Sleep(5 * time.Second)
 
 	client := newClient()
 	ctx := context.Background()
@@ -767,7 +766,7 @@ func doTestProgressPolling(t *testing.T) {
 		if terminalBatchStatuses[b.Status] {
 			break
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if !sawNonZeroCompleted {
