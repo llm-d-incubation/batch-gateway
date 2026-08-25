@@ -48,8 +48,6 @@ func (p *Processor) executeJobAsync(ctx context.Context, params *jobExecutionPar
 		sloDeadline = params.task.SLO
 	}
 
-	logPassThroughHeaders(params, logger)
-
 	// Setup pipeline.
 
 	tracker := pipeline.NewProgressTracker(
@@ -150,17 +148,6 @@ func (p *Processor) buildRequestDispatcher(modelMap *modelMapFile, pending *pipe
 			return nil, err
 		}
 		return pipeline.NewPreDispatcher(aimd), nil
-	}
-}
-
-func logPassThroughHeaders(params *jobExecutionParams, logger logr.Logger) {
-	passThroughHeaders := params.jobInfo.PassThroughHeaders
-	if len(passThroughHeaders) > 0 {
-		headerNames := make([]string, 0, len(passThroughHeaders))
-		for k := range passThroughHeaders {
-			headerNames = append(headerNames, k)
-		}
-		logger.V(logging.DEBUG).Info("pass-through headers attached to job", "headerNames", headerNames)
 	}
 }
 

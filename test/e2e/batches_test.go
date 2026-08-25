@@ -400,26 +400,16 @@ func doTestPassThroughHeaders(t *testing.T) {
 		t.Errorf("expected empty error_file_id, got %q", finalBatch.ErrorFileID)
 	}
 
-	// Verify processor logs contain the pass-through header names.
-	// Skip when kubectl is unavailable — the batch completion above already
-	// validates the core pass-through functionality.
-	if !testKubectlAvailable {
-		t.Skip("kubectl not available, skipping processor log verification")
+	// Verify the processor attached the pass-through header names to the job:
+	// the process-batch span for this batch carries them as a tag.
+	span := waitForBatchSpan(t, "process-batch", batchID, 60*time.Second)
+	got, ok := span.tag(attrPassThroughHeaders)
+	if !ok {
+		t.Fatalf("process-batch span for %s has no %q tag; tags: %v", batchID, attrPassThroughHeaders, span.Tags)
 	}
-
-	out, err := exec.Command("kubectl", "logs",
-		"-l", fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease),
-		"-n", testNamespace,
-		"--tail=500",
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("kubectl logs failed: %v\n%s", err, out)
-	}
-
-	logs := string(out)
 	for headerName := range testPassThroughHeaders {
-		if !strings.Contains(logs, headerName) {
-			t.Errorf("expected processor logs to contain header name %q, but it was not found", headerName)
+		if !strings.Contains(got, headerName) {
+			t.Errorf("expected %q in %s=%q on the process-batch span for %s", headerName, attrPassThroughHeaders, got, batchID)
 		}
 	}
 }

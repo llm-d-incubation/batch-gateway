@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"testing"
@@ -82,6 +83,76 @@ func doTestOtelTraces(t *testing.T) {
 	}
 
 	t.Logf("Jaeger returned %d trace(s) for service batch-gateway", len(result.Data))
+}
+
+// attrPassThroughHeaders is the span attribute the processor sets on
+// process-batch with the names of the forwarded client headers
+// (internal/util/otel AttrPassThroughHeaders).
+const attrPassThroughHeaders = "batch.pass_through_headers"
+
+// jaegerSpan is the subset of Jaeger's span JSON the tests read.
+type jaegerSpan struct {
+	OperationName string `json:"operationName"`
+	Tags          []struct {
+		Key   string `json:"key"`
+		Value any    `json:"value"`
+	} `json:"tags"`
+}
+
+// tag returns the string form of a span tag. OTel array attributes reach
+// Jaeger as a JSON-encoded string, so callers match on substrings.
+func (s jaegerSpan) tag(key string) (string, bool) {
+	for _, tag := range s.Tags {
+		if tag.Key == key {
+			return fmt.Sprint(tag.Value), true
+		}
+	}
+	return "", false
+}
+
+// waitForBatchSpan polls Jaeger for the span named operation whose batch.id
+// tag is batchID, retrying while the trace is still being indexed. It skips
+// the test when Jaeger is unreachable.
+func waitForBatchSpan(t *testing.T, operation, batchID string, timeout time.Duration) jaegerSpan {
+	t.Helper()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	if resp, err := client.Get(testJaegerURL + "/"); err != nil {
+		t.Skipf("Jaeger not reachable at %s, skipping trace verification: %v", testJaegerURL, err)
+	} else {
+		resp.Body.Close()
+	}
+
+	query := fmt.Sprintf("%s/api/traces?service=batch-gateway&operation=%s&tags=%s&lookback=1h&limit=20",
+		testJaegerURL, url.QueryEscape(operation), url.QueryEscape(fmt.Sprintf(`{"batch.id":%q}`, batchID)))
+	deadline := time.Now().Add(timeout)
+	for {
+		resp, err := client.Get(query)
+		if err != nil {
+			t.Fatalf("failed to query Jaeger API: %v", err)
+		}
+		var result struct {
+			Data []struct {
+				Spans []jaegerSpan `json:"spans"`
+			} `json:"data"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if decodeErr != nil {
+			t.Fatalf("failed to decode Jaeger response: %v", decodeErr)
+		}
+		for _, trace := range result.Data {
+			for _, span := range trace.Spans {
+				if id, ok := span.tag("batch.id"); ok && id == batchID && span.OperationName == operation {
+					return span
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %q span with batch.id=%s in Jaeger within %v", operation, batchID, timeout)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // testPprof verifies that pprof endpoints are reachable on both observability

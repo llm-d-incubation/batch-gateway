@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -69,6 +71,9 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	}
 	if params.jobInfo.BatchJob != nil {
 		spanAttrs = append(spanAttrs, attribute.String(uotel.AttrInputFileID, params.jobInfo.BatchJob.InputFileID))
+	}
+	if len(params.jobInfo.PassThroughHeaders) > 0 {
+		spanAttrs = append(spanAttrs, attribute.StringSlice(uotel.AttrPassThroughHeaders, slices.Sorted(maps.Keys(params.jobInfo.PassThroughHeaders))))
 	}
 	ctx, span := uotel.StartSpan(ctx, "process-batch",
 		trace.WithAttributes(spanAttrs...),
