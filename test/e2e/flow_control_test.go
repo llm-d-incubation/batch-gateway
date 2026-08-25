@@ -150,6 +150,7 @@ func doTestRetryOnShed(t *testing.T) {
 		}
 	}
 	errorsBefore := getRequestErrors(t, testModelB)
+	outcomesBefore := getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))
 
 	batchID, stopLoad := submitSaturatingBatch(t, "retry-shed")
 
@@ -166,6 +167,11 @@ func doTestRetryOnShed(t *testing.T) {
 	}
 	if batch.RequestCounts.Failed != 0 {
 		t.Errorf("expected 0 failed, got %d", batch.RequestCounts.Failed)
+	}
+	// The EPP shed batch requests (checked in submitSaturatingBatch) and yet
+	// every request completed: the processor retried each shed response.
+	if shed := assertOutputMatchesEPPOutcomes(t, batch, outcomesBefore, getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))); shed != 0 {
+		t.Errorf("expected no shed status in the output after retries, got %d", shed)
 	}
 
 	// Each shed request hit at least one shed response before succeeding, so
@@ -203,6 +209,7 @@ func doTestRetryOnShed(t *testing.T) {
 func doTestRetryExhaustion(t *testing.T) {
 	t.Helper()
 
+	outcomesBefore := getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))
 	batchID, stopLoad := submitSaturatingBatch(t, "exhaust")
 
 	t.Log("waiting for the processor to exhaust retries on a shed request")
@@ -233,26 +240,9 @@ func doTestRetryExhaustion(t *testing.T) {
 	if finalBatch.OutputFileID == "" {
 		t.Fatal("expected output file with shed responses, but OutputFileID is empty")
 	}
-	result := fetchOutputFile(t, finalBatch)
-	var shed, other int
-	for _, line := range strings.Split(result, "\n") {
-		var rl batchResultLine
-		if err := json.Unmarshal([]byte(line), &rl); err != nil || rl.Response == nil {
-			continue
-		}
-		switch rl.Response.StatusCode {
-		case http.StatusOK:
-		case http.StatusTooManyRequests, http.StatusServiceUnavailable:
-			shed++
-		default:
-			other++
-			t.Errorf("unexpected status %d in output line: %s", rl.Response.StatusCode, line)
-		}
+	if shed := assertOutputMatchesEPPOutcomes(t, finalBatch, outcomesBefore, getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))); shed == 0 {
+		t.Errorf("expected at least one shed status (503/429) in the output file, found none")
 	}
-	if shed == 0 {
-		t.Errorf("expected at least one 429/503 shed response in output file, found none")
-	}
-	t.Logf("output file contains %d shed response(s) (429/503) and %d other non-200", shed, other)
 
 	assertRequestErrors(t, testModelB)
 }
@@ -547,23 +537,54 @@ func getEPPDispatchedCount(t *testing.T, deployment string) float64 {
 	return count
 }
 
-// getEPPShedCount sums the EPP flow-control request counter over every
-// outcome other than Dispatched (rejected on saturation, evicted on TTL): the
-// requests the EPP answered with 429/503 instead of forwarding.
-func getEPPShedCount(t *testing.T, deployment string) float64 {
+// EPP flow-control outcomes for the batch band, as labelled on
+// inference_extension_flow_control_request_queue_duration_seconds_count.
+// Each maps to the status the EPP answers with (GIE v1.5.0
+// requestcontrol/admission.go translateFlowControlOutcome).
+const (
+	eppOutcomeDispatched       = "Dispatched"
+	eppOutcomeEvictedTTL       = "EvictedTTL"       // 503 "request timed out in queue"
+	eppOutcomeRejectedCapacity = "RejectedCapacity" // 429, priority band byte budget full
+	eppBatchPriority           = "-1"               // the batch-sheddable InferenceObjective
+)
+
+var eppOutcomeLabelPattern = regexp.MustCompile(`outcome="([^"]+)"`)
+
+// getEPPBatchOutcomes returns the EPP's flow-control request counter for the
+// batch priority band, keyed by outcome. Interactive traffic (priority 100)
+// is excluded so a test can prove that batch requests specifically were
+// shed.
+func getEPPBatchOutcomes(t *testing.T, deployment string) map[string]float64 {
 	t.Helper()
 
 	metrics := scrapeEPPMetrics(t, deployment)
-	var total float64
+	outcomes := make(map[string]float64)
 	for _, match := range eppDispatchedCountPattern.FindAllStringSubmatch(metrics, -1) {
-		if strings.Contains(match[1], `outcome="Dispatched"`) {
+		labels := match[1]
+		if !strings.Contains(labels, fmt.Sprintf(`priority=%q`, eppBatchPriority)) {
+			continue
+		}
+		outcome := eppOutcomeLabelPattern.FindStringSubmatch(labels)
+		if outcome == nil {
 			continue
 		}
 		value, err := strconv.ParseFloat(match[2], 64)
 		if err != nil {
 			t.Fatalf("failed to parse flow-control count for %s: %v", deployment, err)
 		}
-		total += value
+		outcomes[outcome[1]] += value
+	}
+	return outcomes
+}
+
+// shedCount sums every batch-band outcome other than Dispatched: the
+// requests the EPP answered with 429/503 instead of forwarding.
+func shedCount(outcomes map[string]float64) float64 {
+	var total float64
+	for outcome, count := range outcomes {
+		if outcome != eppOutcomeDispatched {
+			total += count
+		}
 	}
 	return total
 }
@@ -594,21 +615,69 @@ func waitForEPPSaturation(t *testing.T, deployment string, timeout time.Duration
 	t.Fatalf("EPP %s did not report a saturated pool within %v (last=%.2f)", deployment, timeout, last)
 }
 
-// waitForEPPShed polls until the EPP's shed count advances past before.
-func waitForEPPShed(t *testing.T, deployment string, before float64, timeout time.Duration) {
+// waitForEPPShed polls until the EPP has shed at least one batch-band request
+// beyond the counts in before.
+func waitForEPPShed(t *testing.T, deployment string, before map[string]float64, timeout time.Duration) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
 	var last float64
 	for time.Now().Before(deadline) {
-		last = getEPPShedCount(t, deployment)
-		if last > before {
-			t.Logf("EPP %s shed count advanced from %.0f to %.0f", deployment, before, last)
+		last = shedCount(getEPPBatchOutcomes(t, deployment))
+		if last > shedCount(before) {
+			t.Logf("EPP %s batch-band shed count advanced from %.0f to %.0f", deployment, shedCount(before), last)
 			return
 		}
 		time.Sleep(1 * time.Second)
 	}
-	t.Fatalf("EPP %s did not shed any request within %v (before=%.0f, last=%.0f)", deployment, timeout, before, last)
+	t.Fatalf("EPP %s did not shed any batch request within %v (before=%.0f, last=%.0f)", deployment, timeout, shedCount(before), last)
+}
+
+// assertOutputMatchesEPPOutcomes checks that the non-200 lines in a batch's
+// output file are exactly the statuses the EPP's batch-band outcome deltas
+// account for: 503 only if requests were evicted on TTL, 429 only if
+// requests were rejected on band capacity, nothing else, and every failed
+// request is one of them. It returns the number of shed lines.
+func assertOutputMatchesEPPOutcomes(t *testing.T, batch *openai.Batch, before, after map[string]float64) int {
+	t.Helper()
+
+	evicted := after[eppOutcomeEvictedTTL] - before[eppOutcomeEvictedTTL]
+	rejected := after[eppOutcomeRejectedCapacity] - before[eppOutcomeRejectedCapacity]
+	t.Logf("EPP batch-band deltas: EvictedTTL=%.0f RejectedCapacity=%.0f", evicted, rejected)
+
+	result := fetchOutputFile(t, batch)
+	byStatus := make(map[int]int)
+	for _, line := range strings.Split(result, "\n") {
+		var rl batchResultLine
+		if err := json.Unmarshal([]byte(line), &rl); err != nil || rl.Response == nil {
+			continue
+		}
+		byStatus[rl.Response.StatusCode]++
+	}
+	shed := byStatus[http.StatusServiceUnavailable] + byStatus[http.StatusTooManyRequests]
+	for status, n := range byStatus {
+		switch status {
+		case http.StatusOK:
+		case http.StatusServiceUnavailable:
+			if evicted == 0 {
+				t.Errorf("%d output line(s) with 503 but the EPP evicted no batch request on TTL", n)
+			}
+		case http.StatusTooManyRequests:
+			if rejected == 0 {
+				t.Errorf("%d output line(s) with 429 but the EPP rejected no batch request on capacity", n)
+			}
+		default:
+			t.Errorf("%d output line(s) with unexpected status %d", n, status)
+		}
+	}
+	if int64(shed) != batch.RequestCounts.Failed {
+		t.Errorf("failed=%d but %d output line(s) carry a shed status (503/429)", batch.RequestCounts.Failed, shed)
+	}
+	if float64(shed) > evicted+rejected {
+		t.Errorf("%d shed lines exceed the EPP's %.0f shed outcomes", shed, evicted+rejected)
+	}
+	t.Logf("output statuses: %v", byStatus)
+	return shed
 }
 
 func getEPPDispatchedCountAndSample(t *testing.T, deployment string) (float64, string) {

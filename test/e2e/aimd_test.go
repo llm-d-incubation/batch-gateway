@@ -115,7 +115,7 @@ func submitSaturatingBatch(t *testing.T, prefix string, extra ...string) (string
 	t.Helper()
 
 	eppDeployment := eppDeploymentFor(testModelB)
-	shedBefore := getEPPShedCount(t, eppDeployment)
+	shedBefore := getEPPBatchOutcomes(t, eppDeployment)
 
 	chokeEngine(t, testSimServiceB)
 	stopLoad := startInteractiveLoad(t, testModelB, interactiveLoadConcurrency)
