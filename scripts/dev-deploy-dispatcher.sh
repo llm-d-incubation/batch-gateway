@@ -163,21 +163,6 @@ ${VLLM_SIM_SCRAPE}"
     log "Prometheus scrape config updated with vllm-sim target"
 fi
 
-# ── Enable fake metrics on vllm-sim ──────────────────────────────────────────
-step "Patching vllm-sim to enable --fake-metrics..."
-# --fake-metrics requires a JSON argument with initial metric values.
-# Replace the full args array to avoid duplicate appends on re-runs.
-CURRENT_ARGS=$(kubectl get deployment "${VLLM_SIM_NAME}" --namespace "${NAMESPACE}" \
-    -o jsonpath='{.spec.template.spec.containers[0].args}')
-
-if echo "${CURRENT_ARGS}" | grep -q "fake-metrics"; then
-    log "vllm-sim already has --fake-metrics, skipping patch"
-else
-    kubectl patch deployment "${VLLM_SIM_NAME}" --namespace "${NAMESPACE}" --type=json \
-        -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--fake-metrics"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"{\"kv-cache-usage\": 0, \"waiting-requests\": 0, \"running-requests\": 0}"}]'
-    kubectl rollout status deployment/"${VLLM_SIM_NAME}" --namespace "${NAMESPACE}" --timeout=120s
-fi
-
 # ── Reconfigure processor for async dispatch ─────────────────────────────────
 PROCESSOR_ASYNC_VALUES="${REPO_ROOT}/test/e2e/dispatcher/processor-async-values.yaml"
 
