@@ -755,6 +755,12 @@ func patchEngineConfig(t *testing.T, simService string, body string) {
 
 // ── Generic helpers ──────────────────────────────────────────────────────
 
+// shQuote wraps s in single quotes for safe interpolation into a /bin/sh
+// script, escaping any single quotes it contains.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // assertSliceEqual verifies that want and got contain the same elements
 // (order-independent, no duplicates allowed in got).
 func assertSliceEqual(t *testing.T, want, got []string) {

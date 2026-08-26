@@ -325,8 +325,9 @@ func startInteractiveLoad(t *testing.T, model string, concurrency int) func() {
 
 	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8081/v1/chat/completions", eppDeploymentFor(model), testNamespace)
 	body := fmt.Sprintf(`{"model":%q,"max_tokens":%d,"messages":[{"role":"user","content":"interactive"}]}`, model, saturationMaxTokens)
-	script := fmt.Sprintf(`for i in $(seq 1 %d); do (while true; do curl -sS -o /dev/null -m 300 -X POST %s -H 'content-type: application/json' -H 'x-gateway-inference-objective: interactive-default-%s' -d '%s'; done) & done; wait`,
-		concurrency, url, model, body)
+	objective := fmt.Sprintf("x-gateway-inference-objective: interactive-default-%s", model)
+	script := fmt.Sprintf(`for i in $(seq 1 %d); do (while true; do curl -sS -o /dev/null -m 300 -X POST %s -H 'content-type: application/json' -H %s -d %s; done) & done; wait`,
+		concurrency, shQuote(url), shQuote(objective), shQuote(body))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cmd := exec.CommandContext(ctx, "kubectl", "exec", "-n", testNamespace, e2eCurlPod, "--", "sh", "-c", script)

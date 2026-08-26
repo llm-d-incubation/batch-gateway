@@ -609,7 +609,7 @@ func saturateSim(t *testing.T) func() {
 	ensureE2ECurlPod(t)
 	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/v1/completions", testSimService, testNamespace)
 	body := fmt.Sprintf(`{"model":%q,"prompt":"park","max_tokens":5}`, testModel)
-	script := fmt.Sprintf(`for i in $(seq 1 %d); do curl -sS -o /dev/null -m 600 -X POST %s -H 'content-type: application/json' -d '%s' & done; wait`, parkedRequests, url, body)
+	script := fmt.Sprintf(`for i in $(seq 1 %d); do curl -sS -o /dev/null -m 600 -X POST %s -H 'content-type: application/json' -d %s & done; wait`, parkedRequests, shQuote(url), shQuote(body))
 	ctx, cancel := context.WithCancel(t.Context())
 	cmd := exec.CommandContext(ctx, "kubectl", "exec", "-n", testNamespace, e2eCurlPod, "--", "sh", "-c", script)
 	if err := cmd.Start(); err != nil {
