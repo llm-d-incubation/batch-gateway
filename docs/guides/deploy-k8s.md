@@ -1047,6 +1047,8 @@ kubectl rollout status deployment/${PROMETHEUS_NAME} -n ${LLM_NAMESPACE} --timeo
 <details>
 <summary>Deploy async-processor</summary>
 
+> Do not set `result_queue_name` inside `queuesConfig`. Batch Processor replicas provide their own result destinations on each request; a static per-queue value overrides that routing in llm-d Async versions through v0.9.0. When upgrading, remove the per-queue override and wait for the Async Processor rollout to complete before upgrading the Batch Processors. Reversing this order strands results even with one Processor replica.
+
 ```bash
 DISPATCHER_RELEASE=dispatcher
 DISPATCHER_VERSION=${DISPATCHER_VERSION:-v0.7.3}
@@ -1076,7 +1078,6 @@ ap:
     batchSize: 10
     queuesConfig:
       - queue_name: "llm-d-async:requests:${LLMD_POOL_NAME}"
-        result_queue_name: "llm-d-async:results:${LLMD_POOL_NAME}"
         request_path_url: "/v1/chat/completions"
         igw_base_url: "http://${INTERNAL_GW_SVC}.${BATCH_INTERNAL_GATEWAY_NAMESPACE}.svc.cluster.local/${LLM_NAMESPACE}/${MODEL_NAME}"
         gate_type: "prometheus-budget"

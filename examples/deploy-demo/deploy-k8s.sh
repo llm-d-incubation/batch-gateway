@@ -813,7 +813,6 @@ ap:
     batchSize: 10
     queuesConfig:
       - queue_name: "llm-d-async:requests:${LLMD_POOL_NAME}"
-        result_queue_name: "llm-d-async:results:${LLMD_POOL_NAME}"
         request_path_url: "/v1/chat/completions"
         igw_base_url: "${igw_base_url}"
         gate_type: "prometheus-budget"

@@ -403,8 +403,9 @@ processor:
     # Async dispatch mode (alternative to sync).
     # Set dispatchMode: "async" and configure asyncDispatch.models instead
     # of modelGateways. Each model maps to a Redis-backed inference pool.
-    # Queue names can be set explicitly; when omitted they are derived from
+    # Queue base names can be set explicitly; when omitted they are derived from
     # inferencePoolName (deprecated — set explicit names for new deployments).
+    # The Processor appends its replica identity to each result queue base name.
     # dispatchMode: "async"
     # asyncDispatch:
     #   resultPollTimeout: "30s"
@@ -413,12 +414,12 @@ processor:
     #       inferencePoolName: "pool-a"
     #       inferenceObjective: "batch-sheddable-a"  # optional: GIE InferenceObjective CRD name
     #       requestQueueName: "llm-d-async:requests:pool-a"  # optional: explicit request queue
-    #       resultQueueName: "llm-d-async:results:pool-a"    # optional: explicit result queue
+    #       resultQueueName: "llm-d-async:results:pool-a"    # optional: explicit result queue base
     #     "mistral":
     #       inferencePoolName: "pool-b"
     #       inferenceObjective: "batch-sheddable-b"
     #       requestQueueName: "llm-d-async:requests:pool-b"
-    #       resultQueueName: "llm-d-async:results:pool-b"
+    #       resultQueueName: "llm-d-async:results:pool-b"    # optional: explicit result queue base
     defaultOutputExpirationSeconds: 7776000  # 90 days
     progressTTLSeconds: 86400  # 24 hours
     # Whether to send x-gateway-inference-fairness-id on inference requests.

@@ -41,6 +41,7 @@ type AsyncModelPoolConfig struct {
 // AsyncClientConfig holds the resolved configuration for async dispatch.
 type AsyncClientConfig struct {
 	RedisURL          string
+	ConsumerID        string // identity of this Batch Processor replica
 	Models            map[string]AsyncModelPoolConfig
 	ResultPollTimeout time.Duration // per-poll timeout in the result dispatcher loop
 }
@@ -72,8 +73,8 @@ func (r *AsyncGatewayResolver) Models() []string {
 }
 
 // SharedClientFor returns a shared client for the given model.
-// Reuses the same client across calls — results are not routed
-// per-request, any consumer can read them.
+// Reuses the same client across calls. Results for this Processor replica are
+// isolated on its consumer-specific result queue.
 func (r *AsyncGatewayResolver) SharedClientFor(modelID string) AsyncInferenceClient {
 	if r.clientFactories != nil {
 		if factory, ok := r.clientFactories[modelID]; ok {
@@ -113,6 +114,10 @@ func (r *AsyncGatewayResolver) Close() error {
 // NewAsyncResolver creates an AsyncGatewayResolver with one shared pool
 // (producer) per model/pool pair.
 func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatewayResolver, error) {
+	if config.ConsumerID == "" {
+		return nil, fmt.Errorf("consumerID must not be empty")
+	}
+
 	opts, err := redis.ParseURL(config.RedisURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse async inference Redis URL: %w", err)
@@ -147,6 +152,15 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 		if resQueue == "" {
 			resQueue = asyncQueuePrefix + "results:" + mcfg.PoolName
 		}
+		// Each Processor consumes from its own result queue so another healthy
+		// replica cannot consume and discard its results.
+		resQueue = resQueue + ":" + config.ConsumerID
+		logger.Info(
+			"Configured async inference queues",
+			"model", model,
+			"requestQueue", reqQueue,
+			"resultQueue", resQueue,
+		)
 
 		p, err := producer.NewRedisSortedSetProducer(
 			producer.RedisSortedSetConfig{

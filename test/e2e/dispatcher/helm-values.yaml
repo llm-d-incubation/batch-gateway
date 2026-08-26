@@ -20,14 +20,12 @@ ap:
     batchSize: 10
     queuesConfig:
       - queue_name: "llm-d-async:requests:sim-pool"
-        result_queue_name: "llm-d-async:results:sim-pool"
         request_path_url: "/v1/completions"
         igw_base_url: "http://vllm-sim.default.svc.cluster.local:8000"
         gate_type: "redis"
         gate_params:
           address: "redis-master.default.svc.cluster.local:6379"
       - queue_name: "llm-d-async:requests:sim-pool-gate"
-        result_queue_name: "llm-d-async:results:sim-pool-gate"
         request_path_url: "/v1/completions"
         igw_base_url: "http://vllm-sim.default.svc.cluster.local:8000"
         gate_type: "redis"
