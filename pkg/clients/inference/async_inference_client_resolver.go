@@ -155,6 +155,12 @@ func NewAsyncResolver(config AsyncClientConfig, logger logr.Logger) (*AsyncGatew
 		// Each Processor consumes from its own result queue so another healthy
 		// replica cannot consume and discard its results.
 		resQueue = resQueue + ":" + config.ConsumerID
+		logger.Info(
+			"Configured async inference queues",
+			"model", model,
+			"requestQueue", reqQueue,
+			"resultQueue", resQueue,
+		)
 
 		p, err := producer.NewRedisSortedSetProducer(
 			producer.RedisSortedSetConfig{

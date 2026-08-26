@@ -422,8 +422,13 @@ func testDispatcherMultiReplicaBatch(t *testing.T) {
 		batchIDs = append(batchIDs, mustCreateBatch(t, fileID))
 	}
 
+	completionDeadline := time.Now().Add(3 * time.Minute)
 	for _, batchID := range batchIDs {
-		batch, results := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCompleted)
+		remaining := time.Until(completionDeadline)
+		if remaining <= 0 {
+			t.Fatalf("batches did not complete within the shared timeout")
+		}
+		batch, results := waitForBatchStatus(t, batchID, remaining, openai.BatchStatusCompleted)
 
 		if batch.RequestCounts.Total != requestsPerBatch {
 			t.Errorf("batch %s: total requests = %d, want %d", batchID, batch.RequestCounts.Total, requestsPerBatch)
