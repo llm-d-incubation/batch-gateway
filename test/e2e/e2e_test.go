@@ -59,16 +59,14 @@ var (
 	// graceful shutdown). It should always point to a simulator with predictable
 	// inter-token latency. Defaults to testModel for dev-deploy where all models
 	// are simulated.
-	testSimModel        = getEnvOrDefault("TEST_SIM_MODEL", testModel)
-	testModel429        = getEnvOrDefault("TEST_MODEL_429", "sim-model-429")
-	testModelAlwaysFail = getEnvOrDefault("TEST_MODEL_ALWAYS_FAIL", "sim-model-always-fail")
-	testModelAIMD       = getEnvOrDefault("TEST_MODEL_AIMD", "sim-model-aimd")
+	testSimModel = getEnvOrDefault("TEST_SIM_MODEL", testModel)
 
-	// testSimService* hold the Kubernetes service names for the simulators.
-	// Must match VLLM_SIM_*_NAME in dev-common.sh (overridable via env).
+	// testSimService* hold the Kubernetes service names for the vllm-vcr
+	// simulators. Must match VLLM_SIM_*_NAME in dev-common.sh (overridable via
+	// env). testSimControlPort is the vllm-vcr control API port on each service.
 	testSimService     = getEnvOrDefault("TEST_SIM_SERVICE", "vllm-sim")
-	testSimService429  = getEnvOrDefault("TEST_SIM_SERVICE_429", "vllm-sim-429")
-	testSimServiceAIMD = getEnvOrDefault("TEST_SIM_SERVICE_AIMD", "vllm-sim-aimd")
+	testSimServiceB    = getEnvOrDefault("TEST_SIM_SERVICE_B", "vllm-sim-b")
+	testSimControlPort = getEnvOrDefault("TEST_SIM_CONTROL_PORT", "8001")
 
 	// testJSONL is a valid batch input file with two requests.
 	// max_tokens is kept small so batches finish quickly. Default TEST_MODEL (sim-model)

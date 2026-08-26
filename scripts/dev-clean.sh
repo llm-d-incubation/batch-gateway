@@ -57,9 +57,6 @@ cleanup_kubernetes_resources() {
     kubectl delete clusterrole,clusterrolebinding "${PROMETHEUS_NAME}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${VLLM_SIM_B_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
-    kubectl delete deployment,svc "${VLLM_SIM_429_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
-    kubectl delete deployment,svc "${VLLM_SIM_ALWAYS_FAIL_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
-    kubectl delete deployment,svc "${VLLM_SIM_AIMD_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
     kubectl delete deployment,svc "${MINIO_NAME}" -n "${NAMESPACE}" --ignore-not-found=true
 
     # Delete e2e helper pods (created by test runs, safe to ignore if absent)

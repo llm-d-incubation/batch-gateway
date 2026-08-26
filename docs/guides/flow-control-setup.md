@@ -203,7 +203,7 @@ model_gateways:
 #### Key Considerations
 
 - **`request_timeout`**: With flow control enabled, requests may spend time in the GIE queue before reaching the backend. Set this high enough to accommodate queuing time plus inference time. 5 minutes is a reasonable starting point.
-- **`max_retries` and `max_backoff`**: When the system is saturated, GIE sheds batch requests with HTTP 429. Retry backoff slows resubmission pressure, while AIMD separately lowers per-endpoint concurrency (`aimd.backoff_factor`) and later raises it gradually (`aimd.additive_increase`) as successes accumulate.
+- **`max_retries` and `max_backoff`**: When the system is saturated, GIE sheds batch requests: a queued request whose TTL expires gets HTTP 503 ("request timed out in queue"), and a request that finds its priority band's byte budget full gets HTTP 429. Retry backoff slows resubmission pressure, while AIMD separately lowers per-endpoint concurrency (`aimd.backoff_factor`) and later raises it gradually (`aimd.additive_increase`) as successes accumulate.
 - **AIMD with flow control**: Flow control decides queueing/shedding priority in GIE, and AIMD controls how aggressively the processor feeds each endpoint. Together they provide two layers of backpressure response: Router-side admission/shedding plus processor-side concurrency adaptation. Set `aimd.enabled: false` to use fixed concurrency without adaptive behavior.
 - **`concurrency.global`**: A hard ceiling across all endpoints. When AIMD is enabled, per-endpoint limits self-regulate via backpressure, so the global limit mostly acts as a burst ceiling. Size it high enough to avoid being the first bottleneck (e.g., `perEndpoint × expected_endpoint_count × 2`).
 - **`concurrency.perEndpoint`**: Sizing depends on backend topology. For a single vLLM instance, 10–20 is reasonable. For a GIE/EPP pool routing to N replicas, set it higher (e.g., `20 × N`) since the pool absorbs more concurrency. With AIMD enabled, starting high is safer — AIMD backs off quickly on 429s but recovers slowly at `+additiveIncrease` per window. Starting too low means underutilizing the backend until AIMD crawls up.
@@ -297,7 +297,7 @@ Key metrics to watch when running batch and interactive workloads together:
 | `inference_extension_flow_control_queue_size` | GIE | Batch band queue growing = saturation approaching; at 1.0, new batch requests are shed instead of queued |
 | `inference_extension_flow_control_request_queue_duration_seconds` | GIE | High queue time in batch band = sustained saturation |
 | Request evictions (TTL) | GIE flow control | Batch evictions = SLO deadlines being missed |
-| 429 response rate | Batch Gateway metrics | High 429 rate = flow control is shedding batch |
+| 503/429 response rate | Batch Gateway metrics | High 503 (queue TTL) or 429 (band capacity) rate = flow control is shedding batch |
 | Batch job completion rate | Batch Gateway metrics | Should meet SLO deadlines under normal load |
 
 ## Summary

@@ -41,6 +41,9 @@ const (
 	AttrOutputFileID = "batch.output_file.id"
 	AttrErrorFileID  = "batch.error_file.id"
 	AttrTenantID     = "tenant.id"
+	// AttrPassThroughHeaders lists the names of the client headers forwarded to
+	// inference for this batch.
+	AttrPassThroughHeaders = "batch.pass_through_headers"
 	// Job-level request counts as span attributes for persistent trace-based analysis.
 	// These complement the ephemeral Redis progress store (UpdateProgressCounts),
 	// which is TTL-based and used for real-time status polling only.

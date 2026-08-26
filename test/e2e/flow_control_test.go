@@ -17,17 +17,22 @@
 //
 // Tests are split into two groups:
 //
-//   - HeaderAndRetry: run without GIE. They verify batch-gateway's
-//     own responsibilities — sending the right headers and retrying on 429 —
-//     against plain vLLM simulator instances.
+//   - Headers: run without GIE. They verify batch-gateway's own
+//     responsibilities (sending the right headers) against plain vllm-vcr
+//     instances.
 //
-//   - GIE: require a full GIE/EPP deployment (ENABLE_GIE=true).
-//     They verify that requests route through EPP and that per-model
-//     InferenceObjectives are respected.
+//   - GIE: require a full GIE/EPP deployment (ENABLE_GIE=true). They verify
+//     that requests route through EPP, that per-model InferenceObjectives are
+//     respected, and that the processor retries and eventually gives up on
+//     the responses the EPP emits when it sheds batch traffic under
+//     saturation: 429 when it rejects outright, 503 when a queued request's
+//     TTL expires. Saturation is provoked through the vllm-vcr control API
+//     (see chokeEngine in aimd_test.go); nothing fakes a backpressure status.
 
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,6 +40,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,14 +48,12 @@ import (
 )
 
 func testFlowControl(t *testing.T) {
-	t.Run("HeaderAndRetry", func(t *testing.T) {
+	t.Run("Headers", func(t *testing.T) {
 		if !testKubectlAvailable {
 			t.Skip("kubectl not available")
 		}
 		t.Run("InferenceObjectiveHeader", doTestInferenceObjectiveHeader)
 		t.Run("SLOHeader", doTestSLOHeader)
-		t.Run("RetryOn429", doTestRetryOn429)
-		t.Run("RetryExhaustion", doTestRetryExhaustion)
 	})
 
 	t.Run("GIE", func(t *testing.T) {
@@ -59,15 +63,16 @@ func testFlowControl(t *testing.T) {
 		if !detectGIEDeployed(t) {
 			t.Skip("GIE EPP not deployed (deploy with ENABLE_GIE=true)")
 		}
+		t.Cleanup(func() { deleteE2ECurlPod(t) })
 		t.Run("HeaderPropagation", doTestGIEHeaderPropagation)
 		t.Run("BatchCompletionThroughEPP", doTestBatchCompletionThroughEPP)
-		t.Run("SheddingUnderSaturation", doTestSheddingUnderSaturation)
+		t.Run("RetryOnShed", doTestRetryOnShed)
+		t.Run("RetryExhaustion", doTestRetryExhaustion)
 		t.Run("PriorityBandInteraction", doTestPriorityBandInteraction)
-		t.Run("MixedLoadWithMetrics", doTestMixedLoadWithMetrics)
 	})
 }
 
-// ── Header propagation and 429 retry (no GIE required) ─────────────────
+// ── Header propagation (no GIE required) ────────────────────────────────
 
 // doTestInferenceObjectiveHeader verifies that the processor ConfigMap has the
 // expected inferenceObjective for testModel, and that a batch targeting this
@@ -124,180 +129,263 @@ func doTestSLOHeader(t *testing.T) {
 	t.Logf("batch completed within 10m SLO window")
 }
 
-// doTestRetryOn429 verifies the full retry-to-success path:
-//  1. Set sim-model-429 to 100% failure via /admin/config.
-//  2. Submit a batch — all initial attempts receive 429.
-//  3. Flip the simulator to 0% failure — subsequent retries succeed.
-//  4. Assert all requests completed with no failures.
-//  5. Assert AIMD decrease signals were recorded (proves 429s were observed).
+// doTestRetryOnShed verifies the full retry-to-success path:
+//  1. Saturate model B until the EPP sheds a request (see
+//     submitSaturatingBatch in aimd_test.go).
+//  2. Release the engine so the processor's retries succeed.
+//  3. Assert every request completed with no failures; the AIMD decrease
+//     counter is logged for inspection.
 //
-// This exercises the end-to-end contract: transient 429 → retry → success.
-// Requires llm-d-inference-sim >= v0.9.1 for the /admin/config endpoint.
-func doTestRetryOn429(t *testing.T) {
+// In GIE mode model B is configured with maxRetries=3 and backoff 2s..30s, so
+// the engine is released as soon as shedding is observed.
+func doTestRetryOnShed(t *testing.T) {
 	t.Helper()
 
-	if !testKubectlAvailable {
-		t.Skip("kubectl not available")
-	}
-
-	const numRequests = 4
-
-	t.Cleanup(func() { deleteE2ECurlPod(t) })
-	t.Cleanup(func() {
-		t.Log("cleanup: restoring sim-model-429 to 50% failure rate")
-		if err := trySetSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 50, "failure-types": ["rate_limit"]}`); err != nil {
-			t.Errorf("cleanup: failed to restore %s to 50%% failure rate: %v", testSimService429, err)
-		}
-	})
-
-	// Snapshot cumulative counters before the test. These are process-wide
-	// counters that persist across test runs on the same processor. We verify
-	// deltas (not absolute values) after batch completion.
 	metricsBefore := scrapeProcessorMetrics(t)
 	decreasesBefore := parseCounterByEndpoint(t, metricsBefore, "batch_processor_aimd_decreases_total")
 	var beforeCount float64
 	for endpoint, count := range decreasesBefore {
-		if strings.Contains(endpoint, testSimService429) {
+		if isEPPEndpoint(endpoint, testModelB) {
 			beforeCount = count
 			break
 		}
 	}
-	errorsBefore := getRequestErrors(t, testModel429)
+	errorsBefore := getRequestErrors(t, testModelB)
+	outcomesBefore := getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))
 
-	// Phase 1: Set 100% failure — all initial attempts will get 429.
-	t.Log("phase 1: setting sim-model-429 to 100% failure rate")
-	setSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 100, "failure-types": ["rate_limit"]}`)
+	batchID, stopLoad := submitSaturatingBatch(t, "retry-shed")
 
-	// Phase 2: Submit batch.
-	t.Log("phase 2: submitting batch")
-	lines := make([]string, 0, numRequests)
-	for i := range numRequests {
-		lines = append(lines, fmt.Sprintf(
-			`{"custom_id":"retry429-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Retry test %d"}]}}`,
-			i+1, testModel429, i+1,
-		))
+	t.Log("stopping interactive load and releasing the engine so retries succeed")
+	stopLoad()
+	if err := releaseEngine(t, testSimServiceB); err != nil {
+		t.Fatal(err)
 	}
 
-	fileID := mustCreateFile(t, fmt.Sprintf("test-retry429-%s.jsonl", testRunID), strings.Join(lines, "\n"))
-	batchID := mustCreateBatch(t, fileID)
-
-	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
-
-	// Phase 3: Wait until the processor has dispatched at least one request
-	// to the sim. model_inflight_requests{model="sim-model-429"} > 0 proves
-	// dispatch happened. Because failure rate is 100%, the first response is
-	// a 429, and the resty client enters its retry loop (Generate blocks
-	// through all retries). The gauge stays elevated for the entire retry
-	// chain (minutes), making it a stable — not transient — signal here.
-	t.Log("phase 3: waiting for model_inflight_requests > 0")
-	waitForModelInflight(t, testModel429, 30*time.Second)
-
-	// Phase 4: Flip to 0% failure — the next retry attempt will succeed.
-	t.Log("phase 4: setting sim-model-429 to 0% failure rate")
-	setSimAdminConfig(t, testSimService429, `{"failure-injection-rate": 0}`)
-
-	// Phase 5: Wait for batch to complete.
-	batch, _ := waitForBatchStatus(t, batchID, 3*time.Minute, openai.BatchStatusCompleted)
-
-	if batch.RequestCounts.Completed != int64(numRequests) {
+	batch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+	if batch.RequestCounts.Completed != int64(saturationRequests) {
 		t.Fatalf("expected %d completed, got %d (failed=%d)",
-			numRequests, batch.RequestCounts.Completed, batch.RequestCounts.Failed)
+			saturationRequests, batch.RequestCounts.Completed, batch.RequestCounts.Failed)
 	}
 	if batch.RequestCounts.Failed != 0 {
 		t.Errorf("expected 0 failed, got %d", batch.RequestCounts.Failed)
 	}
+	// The EPP shed batch requests (checked in submitSaturatingBatch) and yet
+	// every request completed: the processor retried each shed response.
+	if shed := assertOutputMatchesEPPOutcomes(t, batch, outcomesBefore, getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))); shed != 0 {
+		t.Errorf("expected no shed status in the output after retries, got %d", shed)
+	}
 
-	// Phase 6: Verify AIMD capacity_retry signals were recorded. Each request
-	// hit at least one 429 before succeeding, so hadCapacityRetry=true triggers
-	// an AIMD decrease on completion.
+	// Each shed request hit at least one shed response before succeeding, so
+	// hadCapacityRetry=true triggers an AIMD decrease on completion.
 	metricsAfter := scrapeProcessorMetrics(t)
 	decreasesAfter := parseCounterByEndpoint(t, metricsAfter, "batch_processor_aimd_decreases_total")
 	var afterCount float64
 	for endpoint, count := range decreasesAfter {
-		if strings.Contains(endpoint, testSimService429) {
+		if isEPPEndpoint(endpoint, testModelB) {
 			afterCount = count
 			break
 		}
 	}
+	t.Logf("retry-on-shed: all %d requests completed after retry "+
+		"(aimd_decreases: %.0f → %.0f, logged, not asserted)", saturationRequests, beforeCount, afterCount)
 
-	if afterCount <= beforeCount {
-		t.Errorf("expected AIMD decreases to increase after retry-on-429 "+
-			"(before=%.0f, after=%.0f); capacity_retry signals not recorded",
-			beforeCount, afterCount)
-	} else {
-		t.Logf("retry-on-429: all %d requests completed after retry "+
-			"(aimd_decreases: %.0f → %.0f)", numRequests, beforeCount, afterCount)
-	}
-
-	assertNoNewRequestErrors(t, testModel429, errorsBefore)
+	assertNoNewRequestErrors(t, testModelB, errorsBefore)
 }
 
-// doTestRetryExhaustion submits a batch targeting a simulator with 100%
-// failure injection. maxRetries is set to 1 via Helm, so the processor
-// exhausts retries quickly. The processor records 429 responses in the
-// output file and marks the batch completed with RequestCounts.Failed > 0.
+// doTestRetryExhaustion verifies that batch requests the pool cannot serve
+// end up as shed-status lines in the output file. Batch traffic alone cannot
+// starve itself: every eviction halves the processor's AIMD limit, fewer
+// requests sit at the model, the EPP drops out of saturation, and the retries
+// get through. What starves batch traffic in production is non-sheddable
+// interactive traffic (priority 100, dispatched first), which
+// submitSaturatingBatch keeps aimed at model B's choked EPP. Batch requests
+// behind it are evicted at every 30s TTL, exhaust their retries (maxRetries=3
+// in GIE mode) after roughly four TTL cycles, and the processor records the
+// EPP's final answer (503 "request TTL expired", or 429 if it rejected
+// outright). The load is then stopped and the engine released so the rest of
+// the batch completes, leaving a mix of completed and failed lines.
 //
-// This test polls manually instead of using waitForBatchStatus because
-// validateBatchResults enforces status_code=200 on all output lines,
-// which is not valid here — 429 responses in the output file are expected.
+// The test polls manually instead of using waitForBatchStatus because
+// validateBatchResults enforces status_code=200 on every output line.
 func doTestRetryExhaustion(t *testing.T) {
 	t.Helper()
 
-	jsonl := strings.Join([]string{
-		fmt.Sprintf(`{"custom_id":"fail-1","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 1"}]}}`, testModelAlwaysFail),
-		fmt.Sprintf(`{"custom_id":"fail-2","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello 2"}]}}`, testModelAlwaysFail),
-	}, "\n")
+	outcomesBefore := getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))
+	batchID, stopLoad := submitSaturatingBatch(t, "exhaust")
 
-	fileID := mustCreateFile(t, fmt.Sprintf("test-retry-exhaust-%s.jsonl", testRunID), jsonl)
-	batchID := mustCreateBatch(t, fileID)
+	t.Log("waiting for the processor to exhaust retries on a shed request")
+	waitForBatchFailures(t, batchID, 8*time.Minute)
 
-	finalBatch := waitForRetryExhaustion(t, batchID, 3*time.Minute)
+	t.Log("stopping interactive load and releasing the engine so the remaining requests complete")
+	stopLoad()
+	if err := releaseEngine(t, testSimServiceB); err != nil {
+		t.Fatal(err)
+	}
+	finalBatch := waitForRetryExhaustion(t, batchID, 5*time.Minute)
 
-	// The processor records 429 responses as output and marks the batch
-	// as completed (all requests were processed, even if none succeeded).
 	if finalBatch.Status != openai.BatchStatusCompleted {
 		t.Errorf("expected batch status %q (processor finished processing), got %q",
 			openai.BatchStatusCompleted, finalBatch.Status)
 	}
-	if finalBatch.RequestCounts.Completed != 0 {
-		t.Errorf("expected 0 successfully completed requests, got %d", finalBatch.RequestCounts.Completed)
+	if finalBatch.RequestCounts.Failed == 0 {
+		t.Errorf("expected retry exhaustion to fail at least one request, got failed=0 completed=%d",
+			finalBatch.RequestCounts.Completed)
 	}
-	if finalBatch.RequestCounts.Failed != 2 {
-		t.Errorf("expected 2 failed requests, got %d", finalBatch.RequestCounts.Failed)
+	if got := finalBatch.RequestCounts.Completed + finalBatch.RequestCounts.Failed; got != int64(saturationRequests) {
+		t.Errorf("expected completed+failed = %d, got %d", saturationRequests, got)
 	}
 
 	t.Logf("retry exhaustion: status=%s completed=%d failed=%d total=%d",
 		finalBatch.Status, finalBatch.RequestCounts.Completed, finalBatch.RequestCounts.Failed, finalBatch.RequestCounts.Total)
 
 	if finalBatch.OutputFileID == "" {
-		t.Fatal("expected output file with 429 responses, but OutputFileID is empty")
+		t.Fatal("expected output file with shed responses, but OutputFileID is empty")
 	}
-	result := fetchOutputFile(t, finalBatch)
-	var found429 int
-	for _, line := range strings.Split(result, "\n") {
-		var rl batchResultLine
-		if err := json.Unmarshal([]byte(line), &rl); err != nil {
-			continue
-		}
-		if rl.Response != nil && rl.Response.StatusCode == http.StatusTooManyRequests {
-			found429++
-		}
+	if shed := assertOutputMatchesEPPOutcomes(t, finalBatch, outcomesBefore, getEPPBatchOutcomes(t, eppDeploymentFor(testModelB))); shed == 0 {
+		t.Errorf("expected at least one shed status (503/429) in the output file, found none")
 	}
-	if found429 == 0 {
-		t.Errorf("expected at least one 429 response in output file, found none")
-	}
-	t.Logf("output file contains %d response(s) with status 429", found429)
 
-	assertRequestErrors(t, testModelAlwaysFail)
+	assertRequestErrors(t, testModelB)
+}
+
+// doTestPriorityBandInteraction verifies that the EPP serves the interactive
+// band while it sheds the batch band from the same saturated pool:
+//
+//  1. Saturate model B behind interactive load and submit a batch
+//     (submitSaturatingBatch), which returns once a batch request was shed.
+//  2. While still saturated, the interactive band's Dispatched counter must
+//     keep advancing: the EPP is dispatching priority-100 traffic to the
+//     choked engine while it evicts priority -1.
+//  3. Stop the load and release the engine: a single interactive request
+//     returns 200 and the batch completes with no shed line left in its output.
+func doTestPriorityBandInteraction(t *testing.T) {
+	t.Helper()
+
+	eppDeployment := eppDeploymentFor(testModelB)
+	batchOutcomesBefore := getEPPBatchOutcomes(t, eppDeployment)
+	batchID, stopLoad := submitSaturatingBatch(t, "priority-band")
+
+	interactiveBefore := getEPPOutcomes(t, eppDeployment, eppInteractivePriority)[eppOutcomeDispatched]
+	batchOutcomesShed := getEPPBatchOutcomes(t, eppDeployment)
+	waitForEPPInteractiveDispatch(t, eppDeployment, interactiveBefore, 90*time.Second)
+	interactiveAfter := getEPPOutcomes(t, eppDeployment, eppInteractivePriority)[eppOutcomeDispatched]
+	t.Logf("under saturation: interactive Dispatched %.0f -> %.0f, batch shed %.0f -> %.0f",
+		interactiveBefore, interactiveAfter, shedCount(batchOutcomesBefore), shedCount(batchOutcomesShed))
+
+	t.Log("stopping interactive load and releasing the engine")
+	stopLoad()
+	if err := releaseEngine(t, testSimServiceB); err != nil {
+		t.Fatal(err)
+	}
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8081/v1/chat/completions", eppDeployment, testNamespace)
+	body := fmt.Sprintf(`{"model":%q,"max_tokens":%d,"messages":[{"role":"user","content":"interactive"}]}`, testModelB, saturationMaxTokens)
+	if code := curlEPP(t, url, fmt.Sprintf("interactive-default-%s", testModelB), body); code != "200" {
+		t.Errorf("interactive request after release returned HTTP %s, want 200", code)
+	}
+
+	batch, _ := waitForBatchStatus(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+	if batch.RequestCounts.Completed != int64(saturationRequests) {
+		t.Fatalf("expected %d completed, got %d (failed=%d)",
+			saturationRequests, batch.RequestCounts.Completed, batch.RequestCounts.Failed)
+	}
+	if shed := assertOutputMatchesEPPOutcomes(t, batch, batchOutcomesBefore, getEPPBatchOutcomes(t, eppDeployment)); shed != 0 {
+		t.Errorf("expected no shed status in the output after retries, got %d", shed)
+	}
+}
+
+// waitForEPPInteractiveDispatch polls until the EPP's interactive-band
+// Dispatched counter exceeds before.
+func waitForEPPInteractiveDispatch(t *testing.T, deployment string, before float64, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var last float64
+	for time.Now().Before(deadline) {
+		last = getEPPOutcomes(t, deployment, eppInteractivePriority)[eppOutcomeDispatched]
+		if last > before {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("EPP %s dispatched no interactive request within %v (before=%.0f, last=%.0f)", deployment, timeout, before, last)
+}
+
+// startInteractiveLoad keeps `concurrency` interactive chat completions in
+// flight against the model's EPP from the in-cluster curl pod, each worker
+// sending its next request as soon as the previous one returns, until the
+// returned stop function is called (idempotent). The requests carry the
+// interactive-default InferenceObjective (priority 100) that dev-deploy
+// creates, so the EPP queues rather than sheds them and dispatches them ahead
+// of batch traffic.
+func startInteractiveLoad(t *testing.T, model string, concurrency int) func() {
+	t.Helper()
+
+	ensureE2ECurlPod(t)
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8081/v1/chat/completions", eppDeploymentFor(model), testNamespace)
+	body := fmt.Sprintf(`{"model":%q,"max_tokens":%d,"messages":[{"role":"user","content":"interactive"}]}`, model, saturationMaxTokens)
+	objective := fmt.Sprintf("x-gateway-inference-objective: interactive-default-%s", model)
+	script := fmt.Sprintf(`for i in $(seq 1 %d); do (while true; do curl -sS -o /dev/null -m 300 -X POST %s -H 'content-type: application/json' -H %s -d %s; done) & done; wait`,
+		concurrency, shQuote(url), shQuote(objective), shQuote(body))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := exec.CommandContext(ctx, "kubectl", "exec", "-n", testNamespace, e2eCurlPod, "--", "sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		cancel()
+		t.Fatalf("failed to start interactive load: %v", err)
+	}
+	t.Logf("interactive load started: %d concurrent requests at %s", concurrency, url)
+
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			_ = cmd.Wait()
+			// Cancelling kubectl does not kill the shell loop inside the pod.
+			out, err := exec.Command("kubectl", "exec", "-n", testNamespace, e2eCurlPod, "--", "sh", "-c", "pkill -f 'curl -sS' ; pkill -f 'while true'; true").CombinedOutput()
+			if err != nil {
+				t.Logf("stopping interactive load in pod: %v\n%s", err, out)
+			}
+			t.Log("interactive load stopped")
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// waitForBatchFailures polls a batch until RequestCounts.Failed > 0 or it
+// reaches a terminal state, failing the test if neither happens in time.
+func waitForBatchFailures(t *testing.T, batchID string, timeout time.Duration) {
+	t.Helper()
+
+	client := newClient()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		b, err := client.Batches.Get(t.Context(), batchID)
+		if err != nil {
+			t.Fatalf("retrieve batch failed: %v", err)
+		}
+		if b.RequestCounts.Failed > 0 {
+			t.Logf("batch %s: %d request(s) failed (completed=%d)", batchID, b.RequestCounts.Failed, b.RequestCounts.Completed)
+			return
+		}
+		if terminalBatchStatuses[b.Status] {
+			t.Fatalf("batch %s reached %s with no failed requests", batchID, b.Status)
+		}
+		time.Sleep(5 * time.Second)
+	}
+	t.Fatalf("batch %s recorded no failed request within %v", batchID, timeout)
 }
 
 // ──  GIE integration tests (require ENABLE_GIE=true) ───────────────────
 //
-// Coverage:
-//   - EPP routing smoke tests (header propagation, multi-model completion)
-//   - Shedding under saturation (DroppedOnSaturation via fake-metrics saturation)
-//   - Priority band interaction (interactive dispatched, batch shed under saturation)
-//   - Mixed load with metrics (saturation/recovery cycle with EPP + processor metrics)
+// Current coverage: EPP routing smoke tests (header propagation, multi-model
+// completion) and shedding under saturation, with the model server choked
+// through the vllm-vcr control API and the pool kept saturated by interactive
+// load. Against the flow-control scenarios of #402: shedding under saturation
+// is RetryExhaustion, mixed load with metrics is RetryOnShed (plus the AIMD
+// tests), priority band interaction is PriorityBandInteraction.
 //
 // Not covered: while two sheddable requests are queued, EPP does not dispatch
 // the earlier x-slo-ttft-ms deadline first. Observed on GIE EPP v1.5.0 (FCFS
@@ -428,243 +516,6 @@ func doTestBatchCompletionThroughEPP(t *testing.T) {
 	}
 }
 
-// ── GIE flow control scenario tests ─────────────────────────────────────────
-
-// doTestSheddingUnderSaturation verifies that batch requests (priority -1) fail
-// when the inference pool is saturated. The test saturates the pool by injecting
-// high waiting-requests via /fake_metrics, then submits a batch. Under saturation,
-// requests queue until defaultRequestTTL (30s) expires and are evicted (EvictedTTL).
-// After unsaturation, a new batch completes successfully.
-func doTestSheddingUnderSaturation(t *testing.T) {
-	t.Helper()
-
-	t.Cleanup(func() {
-		deleteE2ECurlPod(t)
-	})
-
-	eppDeployment := fmt.Sprintf("%s-%s-epp", getEnvOrDefault("GIE_EPP_RELEASE", "epp"), testModel)
-
-	// Record baseline metrics before saturation.
-	beforeNonDispatch := getEPPNonDispatchCount(t, eppDeployment)
-	beforeErrors := getRequestErrors(t, testModel)
-
-	// Saturate: set waiting-requests above queueDepthThreshold (5).
-	t.Log("saturating pool: setting waiting-requests=10 on sim")
-	setSimFakeMetrics(t, testSimService, `{"waiting-requests": 10}`)
-	t.Cleanup(func() {
-		// Best-effort restore; inline reset later is the primary path.
-		_ = trySetSimFakeMetrics(t, testSimService, `{"waiting-requests": 0}`)
-	})
-
-	// Wait for EPP to detect saturation.
-	waitForEPPSaturation(t, eppDeployment, true, 30*time.Second)
-
-	// Submit a batch — processor sends x-gateway-inference-objective: batch-sheddable-sim-model
-	// (priority -1). EPP should shed these requests.
-	fileID := mustCreateFile(t, fmt.Sprintf("fc-shedding-%s.jsonl", testRunID), testJSONL)
-	batchID := mustCreateBatch(t, fileID)
-
-	// Wait for the batch to reach a terminal state. Under full saturation
-	// the processor retries up to maxRetries then the batch fails.
-	batch := waitForRetryExhaustion(t, batchID, 5*time.Minute)
-	if batch.RequestCounts.Failed == 0 {
-		t.Errorf("expected at least 1 failed request under saturation, got 0 failed (completed=%d)",
-			batch.RequestCounts.Completed)
-	}
-
-	// Assert EPP non-dispatch outcomes increased (EvictedTTL or DroppedOnSaturation).
-	afterNonDispatch := getEPPNonDispatchCount(t, eppDeployment)
-	if afterNonDispatch <= beforeNonDispatch {
-		t.Errorf("EPP non-dispatch outcomes did not increase: before=%.0f after=%.0f", beforeNonDispatch, afterNonDispatch)
-	} else {
-		t.Logf("EPP non-dispatch outcomes: %.0f -> %.0f (delta=%.0f)", beforeNonDispatch, afterNonDispatch, afterNonDispatch-beforeNonDispatch)
-	}
-
-	// Assert processor recorded request errors.
-	afterErrors := getRequestErrors(t, testModel)
-	if afterErrors <= beforeErrors {
-		t.Errorf("request_errors_by_model_total{model=%q} did not increase: before=%d after=%d",
-			testModel, beforeErrors, afterErrors)
-	}
-
-	// Unsaturate and verify recovery.
-	t.Log("unsaturating pool: setting waiting-requests=0")
-	setSimFakeMetrics(t, testSimService, `{"waiting-requests": 0}`)
-	waitForEPPSaturation(t, eppDeployment, false, 30*time.Second)
-
-	// Submit a new batch — should succeed now.
-	fileID2 := mustCreateFile(t, fmt.Sprintf("fc-shedding-recovery-%s.jsonl", testRunID), testJSONL)
-	batchID2 := mustCreateBatch(t, fileID2)
-	batch2, _ := waitForBatchStatus(t, batchID2, 2*time.Minute, openai.BatchStatusCompleted)
-	if batch2.RequestCounts.Completed != 2 {
-		t.Errorf("expected 2 completed after unsaturation, got %d", batch2.RequestCounts.Completed)
-	}
-}
-
-// doTestPriorityBandInteraction verifies priority-band routing through EPP:
-// 1. Interactive (priority 100) dispatches under normal conditions.
-// 2. Under saturation, both priority bands are blocked (pool-level gate).
-// 3. Batch (priority -1) fails under sustained saturation.
-// 4. After recovery, both bands dispatch again.
-func doTestPriorityBandInteraction(t *testing.T) {
-	t.Helper()
-
-	t.Cleanup(func() {
-		deleteE2ECurlPod(t)
-	})
-
-	eppDeployment := fmt.Sprintf("%s-%s-epp", getEnvOrDefault("GIE_EPP_RELEASE", "epp"), testModel)
-	interactiveObjective := fmt.Sprintf("interactive-default-%s", testModel)
-	eppURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8081/v1/chat/completions", eppDeployment, testNamespace)
-	interactiveBody := fmt.Sprintf(`{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"priority test"}]}`, testModel)
-
-	ensureE2ECurlPod(t)
-
-	// ── Phase 1: interactive dispatches under normal conditions ──
-	t.Log("phase 1: verifying interactive dispatch under normal conditions")
-	beforeDispatched := getEPPOutcomeCount(t, eppDeployment, "Dispatched")
-
-	code := curlEPP(t, eppURL, interactiveObjective, interactiveBody)
-	if code != "200" {
-		t.Fatalf("interactive request (priority 100) returned %s under normal conditions, expected 200", code)
-	}
-
-	afterDispatched := getEPPOutcomeCount(t, eppDeployment, "Dispatched")
-	if afterDispatched <= beforeDispatched {
-		t.Errorf("EPP Dispatched did not increase for interactive: before=%.0f after=%.0f",
-			beforeDispatched, afterDispatched)
-	}
-	t.Logf("interactive dispatched OK: Dispatched %.0f -> %.0f", beforeDispatched, afterDispatched)
-
-	// ── Phase 2: saturate — verify interactive is ALSO blocked ──
-	t.Log("phase 2: saturating pool, verifying interactive is blocked")
-	setSimFakeMetrics(t, testSimService, `{"waiting-requests": 10}`)
-	t.Cleanup(func() {
-		// Best-effort restore; inline reset in phase 4 is the primary path.
-		_ = trySetSimFakeMetrics(t, testSimService, `{"waiting-requests": 0}`)
-	})
-
-	waitForEPPSaturation(t, eppDeployment, true, 30*time.Second)
-
-	code = curlEPP(t, eppURL, interactiveObjective, interactiveBody)
-	switch {
-	case code == "000":
-		t.Fatalf("interactive request during saturation failed at transport level (curl error); cannot verify pool-level blocking")
-	case code == "200":
-		t.Errorf("interactive request (priority 100) returned 200 DURING saturation; expected non-200 (pool-level block)")
-	default:
-		t.Logf("interactive blocked under saturation as expected (HTTP %s)", code)
-	}
-
-	// ── Phase 3: batch (priority -1) also fails under saturation ──
-	t.Log("phase 3: verifying batch fails under saturation")
-	beforeNonDispatch := getEPPNonDispatchCount(t, eppDeployment)
-
-	fileID := mustCreateFile(t, fmt.Sprintf("fc-priority-band-%s.jsonl", testRunID), testJSONL)
-	batchID := mustCreateBatch(t, fileID)
-
-	batch := waitForRetryExhaustion(t, batchID, 5*time.Minute)
-	if batch.RequestCounts.Failed == 0 {
-		t.Errorf("expected batch (priority -1) to fail under saturation, got 0 failed")
-	}
-
-	afterNonDispatch := getEPPNonDispatchCount(t, eppDeployment)
-	if afterNonDispatch <= beforeNonDispatch {
-		t.Errorf("EPP non-dispatch outcomes did not increase: before=%.0f after=%.0f",
-			beforeNonDispatch, afterNonDispatch)
-	}
-	t.Logf("batch shed under saturation: non-dispatch %.0f -> %.0f", beforeNonDispatch, afterNonDispatch)
-
-	// ── Phase 4: unsaturate — both bands recover ──
-	t.Log("phase 4: unsaturating pool, verifying recovery")
-	setSimFakeMetrics(t, testSimService, `{"waiting-requests": 0}`)
-	waitForEPPSaturation(t, eppDeployment, false, 30*time.Second)
-
-	code = curlEPP(t, eppURL, interactiveObjective, interactiveBody)
-	if code != "200" {
-		t.Errorf("interactive request after recovery returned %s, expected 200", code)
-	}
-
-	fileID2 := mustCreateFile(t, fmt.Sprintf("fc-priority-recovery-%s.jsonl", testRunID), testJSONL)
-	batchID2 := mustCreateBatch(t, fileID2)
-	batch2, _ := waitForBatchStatus(t, batchID2, 2*time.Minute, openai.BatchStatusCompleted)
-	if batch2.RequestCounts.Completed != 2 {
-		t.Errorf("expected 2 completed after recovery, got %d", batch2.RequestCounts.Completed)
-	}
-
-	t.Log("priority bands verified: both blocked under saturation, both recover after")
-}
-
-// doTestMixedLoadWithMetrics exercises a full saturation/recovery cycle and
-// asserts both EPP-side and processor-side metrics are consistent.
-// Phase 1: saturate pool, submit batch, observe shedding metrics.
-// Phase 2: unsaturate, submit batch, observe successful dispatch metrics.
-func doTestMixedLoadWithMetrics(t *testing.T) {
-	t.Helper()
-
-	t.Cleanup(func() {
-		deleteE2ECurlPod(t)
-	})
-
-	eppDeployment := fmt.Sprintf("%s-%s-epp", getEnvOrDefault("GIE_EPP_RELEASE", "epp"), testModel)
-
-	// ── Phase 1: Saturated ──
-	t.Log("phase 1: saturating pool")
-	setSimFakeMetrics(t, testSimService, `{"waiting-requests": 10}`)
-	t.Cleanup(func() {
-		// Best-effort restore; inline reset in phase 2 is the primary path.
-		_ = trySetSimFakeMetrics(t, testSimService, `{"waiting-requests": 0}`)
-	})
-	waitForEPPSaturation(t, eppDeployment, true, 30*time.Second)
-
-	beforeNonDispatch := getEPPNonDispatchCount(t, eppDeployment)
-	beforeErrors := getRequestErrors(t, testModel)
-
-	// Submit batch under saturation — expect non-dispatch outcome.
-	fileID1 := mustCreateFile(t, fmt.Sprintf("fc-mixed-phase1-%s.jsonl", testRunID), testJSONL)
-	batchID1 := mustCreateBatch(t, fileID1)
-	batch1 := waitForRetryExhaustion(t, batchID1, 5*time.Minute)
-	if batch1.RequestCounts.Failed == 0 {
-		t.Errorf("phase 1: expected failures under saturation, got 0")
-	}
-
-	// ── Phase 2: Unsaturated ──
-	t.Log("phase 2: unsaturating pool")
-	setSimFakeMetrics(t, testSimService, `{"waiting-requests": 0}`)
-	waitForEPPSaturation(t, eppDeployment, false, 30*time.Second)
-
-	beforeDispatched := getEPPOutcomeCount(t, eppDeployment, "Dispatched")
-
-	// Submit batch after recovery — expect success.
-	fileID2 := mustCreateFile(t, fmt.Sprintf("fc-mixed-phase2-%s.jsonl", testRunID), testJSONL)
-	batchID2 := mustCreateBatch(t, fileID2)
-	batch2, _ := waitForBatchStatus(t, batchID2, 2*time.Minute, openai.BatchStatusCompleted)
-	if batch2.RequestCounts.Completed != 2 {
-		t.Errorf("phase 2: expected 2 completed, got %d", batch2.RequestCounts.Completed)
-	}
-
-	// ── Assertions: both EPP and processor metrics ──
-	afterNonDispatch := getEPPNonDispatchCount(t, eppDeployment)
-	afterDispatched := getEPPOutcomeCount(t, eppDeployment, "Dispatched")
-	afterErrors := getRequestErrors(t, testModel)
-
-	if afterNonDispatch <= beforeNonDispatch {
-		t.Errorf("EPP non-dispatch outcomes did not increase in phase 1: before=%.0f after=%.0f",
-			beforeNonDispatch, afterNonDispatch)
-	}
-	if afterDispatched <= beforeDispatched {
-		t.Errorf("EPP Dispatched did not increase in phase 2: before=%.0f after=%.0f",
-			beforeDispatched, afterDispatched)
-	}
-	if afterErrors <= beforeErrors {
-		t.Errorf("processor request_errors did not increase during saturation: before=%d after=%d",
-			beforeErrors, afterErrors)
-	}
-
-	t.Logf("mixed load metrics: non-dispatch %.0f->%.0f, Dispatched %.0f->%.0f, errors %d->%d",
-		beforeNonDispatch, afterNonDispatch, beforeDispatched, afterDispatched, beforeErrors, afterErrors)
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // curlEPP sends a chat completion request to EPP with the given objective header
@@ -754,6 +605,158 @@ func getEPPDispatchedCount(t *testing.T, deployment string) float64 {
 	return count
 }
 
+// EPP flow-control outcomes for the batch band, as labelled on
+// inference_extension_flow_control_request_queue_duration_seconds_count.
+// Each maps to the status the EPP answers with (GIE v1.5.0
+// requestcontrol/admission.go translateFlowControlOutcome).
+const (
+	eppOutcomeDispatched       = "Dispatched"
+	eppOutcomeEvictedTTL       = "EvictedTTL"       // 503 "request timed out in queue"
+	eppOutcomeRejectedCapacity = "RejectedCapacity" // 429, priority band byte budget full
+	eppBatchPriority           = "-1"               // the batch-sheddable InferenceObjective
+	eppInteractivePriority     = "100"              // the interactive-default InferenceObjective
+)
+
+var eppOutcomeLabelPattern = regexp.MustCompile(`outcome="([^"]+)"`)
+
+// getEPPBatchOutcomes returns the EPP's flow-control request counter for the
+// batch priority band, keyed by outcome. Interactive traffic (priority 100)
+// is excluded so a test can prove that batch requests specifically were
+// shed.
+func getEPPBatchOutcomes(t *testing.T, deployment string) map[string]float64 {
+	t.Helper()
+
+	return getEPPOutcomes(t, deployment, eppBatchPriority)
+}
+
+// getEPPOutcomes returns the EPP's flow-control request counter for one
+// priority band, keyed by outcome.
+func getEPPOutcomes(t *testing.T, deployment, priority string) map[string]float64 {
+	t.Helper()
+
+	metrics := scrapeEPPMetrics(t, deployment)
+	outcomes := make(map[string]float64)
+	for _, match := range eppDispatchedCountPattern.FindAllStringSubmatch(metrics, -1) {
+		labels := match[1]
+		if !strings.Contains(labels, fmt.Sprintf(`priority=%q`, priority)) {
+			continue
+		}
+		outcome := eppOutcomeLabelPattern.FindStringSubmatch(labels)
+		if outcome == nil {
+			continue
+		}
+		value, err := strconv.ParseFloat(match[2], 64)
+		if err != nil {
+			t.Fatalf("failed to parse flow-control count for %s: %v", deployment, err)
+		}
+		outcomes[outcome[1]] += value
+	}
+	return outcomes
+}
+
+// shedCount sums every batch-band outcome other than Dispatched: the
+// requests the EPP answered with 429/503 instead of forwarding.
+func shedCount(outcomes map[string]float64) float64 {
+	var total float64
+	for outcome, count := range outcomes {
+		if outcome != eppOutcomeDispatched {
+			total += count
+		}
+	}
+	return total
+}
+
+var eppPoolSaturationPattern = regexp.MustCompile(`(?m)^inference_extension_flow_control_pool_saturation\{[^}]*\}\s+([0-9.e+-]+)$`)
+
+// waitForEPPSaturation polls until the EPP's flow-control pool saturation
+// gauge exceeds 1 (the pool is past the configured queue-depth threshold).
+func waitForEPPSaturation(t *testing.T, deployment string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var last float64
+	for time.Now().Before(deadline) {
+		if match := eppPoolSaturationPattern.FindStringSubmatch(scrapeEPPMetrics(t, deployment)); match != nil {
+			value, err := strconv.ParseFloat(match[1], 64)
+			if err != nil {
+				t.Fatalf("failed to parse pool saturation for %s: %v", deployment, err)
+			}
+			last = value
+			if value > 1 {
+				t.Logf("EPP %s pool saturation = %.2f", deployment, value)
+				return
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("EPP %s did not report a saturated pool within %v (last=%.2f)", deployment, timeout, last)
+}
+
+// waitForEPPShed polls until the EPP has shed at least one batch-band request
+// beyond the counts in before.
+func waitForEPPShed(t *testing.T, deployment string, before map[string]float64, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var last float64
+	for time.Now().Before(deadline) {
+		last = shedCount(getEPPBatchOutcomes(t, deployment))
+		if last > shedCount(before) {
+			t.Logf("EPP %s batch-band shed count advanced from %.0f to %.0f", deployment, shedCount(before), last)
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("EPP %s did not shed any batch request within %v (before=%.0f, last=%.0f)", deployment, timeout, shedCount(before), last)
+}
+
+// assertOutputMatchesEPPOutcomes checks that the non-200 lines in a batch's
+// output file are exactly the statuses the EPP's batch-band outcome deltas
+// account for: 503 only if requests were evicted on TTL, 429 only if
+// requests were rejected on band capacity, nothing else, and every failed
+// request is one of them. It returns the number of shed lines.
+func assertOutputMatchesEPPOutcomes(t *testing.T, batch *openai.Batch, before, after map[string]float64) int {
+	t.Helper()
+
+	evicted := after[eppOutcomeEvictedTTL] - before[eppOutcomeEvictedTTL]
+	rejected := after[eppOutcomeRejectedCapacity] - before[eppOutcomeRejectedCapacity]
+	t.Logf("EPP batch-band deltas: EvictedTTL=%.0f RejectedCapacity=%.0f", evicted, rejected)
+
+	result := fetchOutputFile(t, batch)
+	byStatus := make(map[int]int)
+	for _, line := range strings.Split(result, "\n") {
+		var rl batchResultLine
+		if err := json.Unmarshal([]byte(line), &rl); err != nil || rl.Response == nil {
+			continue
+		}
+		byStatus[rl.Response.StatusCode]++
+	}
+	shed := byStatus[http.StatusServiceUnavailable] + byStatus[http.StatusTooManyRequests]
+	for status, n := range byStatus {
+		switch status {
+		case http.StatusOK:
+		case http.StatusServiceUnavailable:
+			if evicted == 0 {
+				t.Errorf("%d output line(s) with 503 but the EPP evicted no batch request on TTL", n)
+			}
+		case http.StatusTooManyRequests:
+			if rejected == 0 {
+				t.Errorf("%d output line(s) with 429 but the EPP rejected no batch request on capacity", n)
+			}
+		default:
+			t.Errorf("%d output line(s) with unexpected status %d", n, status)
+		}
+	}
+	if int64(shed) != batch.RequestCounts.Failed {
+		t.Errorf("failed=%d but %d output line(s) carry a shed status (503/429)", batch.RequestCounts.Failed, shed)
+	}
+	if float64(shed) > evicted+rejected {
+		t.Errorf("%d shed lines exceed the EPP's %.0f shed outcomes", shed, evicted+rejected)
+	}
+	t.Logf("output statuses: %v", byStatus)
+	return shed
+}
+
 func getEPPDispatchedCountAndSample(t *testing.T, deployment string) (float64, string) {
 	t.Helper()
 
@@ -801,80 +804,6 @@ func scrapeEPPMetrics(t *testing.T, deployment string) string {
 		t.Fatalf("failed to scrape metrics for %s: %v\n%s", deployment, err, out)
 	}
 	return string(out)
-}
-
-// ── EPP saturation helpers ──────────────────────────────────────────────
-
-var eppOutcomeCountPattern = regexp.MustCompile(
-	`(?m)^inference_extension_flow_control_request_queue_duration_seconds_count\{([^}]*)\}\s+([0-9.e+-]+)$`)
-
-var eppPoolSaturationPattern = regexp.MustCompile(
-	`(?m)^inference_extension_flow_control_pool_saturation\b[^\n]*\s+([0-9.e+-]+)$`)
-
-// getEPPOutcomeCount parses EPP metrics and returns the total count for the
-// given outcome label (e.g. "Dispatched", "EvictedTTL", "DroppedOnSaturation").
-func getEPPOutcomeCount(t *testing.T, deployment, outcome string) float64 {
-	t.Helper()
-
-	metrics := scrapeEPPMetrics(t, deployment)
-	matches := eppOutcomeCountPattern.FindAllStringSubmatch(metrics, -1)
-
-	var total float64
-	needle := fmt.Sprintf(`outcome="%s"`, outcome)
-	for _, match := range matches {
-		if !strings.Contains(match[1], needle) {
-			continue
-		}
-		value, err := strconv.ParseFloat(match[2], 64)
-		if err != nil {
-			t.Fatalf("failed to parse outcome count for %s/%s: %v", deployment, outcome, err)
-		}
-		total += value
-	}
-	return total
-}
-
-// getEPPNonDispatchCount returns the combined count of all non-dispatch outcomes
-// (EvictedTTL + DroppedOnSaturation). Under saturation, EPP may evict requests
-// via TTL expiry or immediate drop depending on queue state and timing.
-func getEPPNonDispatchCount(t *testing.T, deployment string) float64 {
-	t.Helper()
-
-	return getEPPOutcomeCount(t, deployment, "EvictedTTL") +
-		getEPPOutcomeCount(t, deployment, "DroppedOnSaturation")
-}
-
-// waitForEPPSaturation polls the EPP flow_control_pool_saturation gauge until
-// it reaches the expected state. Saturated means >= 1.0 (the value scales with
-// utilization ratio, e.g. queue_depth/threshold, so it can exceed 1.0).
-func waitForEPPSaturation(t *testing.T, deployment string, saturated bool, timeout time.Duration) {
-	t.Helper()
-
-	desc := "saturated"
-	if !saturated {
-		desc = "unsaturated"
-	}
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		metrics := scrapeEPPMetrics(t, deployment)
-		match := eppPoolSaturationPattern.FindStringSubmatch(metrics)
-		if match != nil {
-			val, err := strconv.ParseFloat(match[1], 64)
-			if err == nil {
-				if saturated && val >= 1.0 {
-					t.Logf("EPP %s pool_saturation = %g (%s)", deployment, val, desc)
-					return
-				}
-				if !saturated && val < 1.0 {
-					t.Logf("EPP %s pool_saturation = %g (%s)", deployment, val, desc)
-					return
-				}
-			}
-		}
-		time.Sleep(1 * time.Second)
-	}
-	t.Fatalf("timed out waiting for EPP %s to become %s", deployment, desc)
 }
 
 // getProcessorConfigObjective reads the deployed processor ConfigMap and

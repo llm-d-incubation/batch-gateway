@@ -23,8 +23,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -716,114 +714,52 @@ func deleteE2ECurlPod(t *testing.T) {
 	}
 }
 
-// ── Simulator admin helpers ──────────────────────────────────────────────
+// ── Simulator control API helpers ────────────────────────────────────────
 
-// trySetSimAdminConfig sends a POST to the simulator's /admin/config endpoint
-// via a curl pod running in the cluster. It returns an error so cleanup paths
-// can report restore failures without halting the rest of cleanup.
-func trySetSimAdminConfig(t *testing.T, simService string, body string) error {
+// tryPatchEngineConfig sends a PATCH to the vllm-vcr control API of the given
+// simulator service via a curl pod running in the cluster. body is a JSON
+// object of config fields (see the vllm-vcr "Runtime control API" docs); the
+// change applies to the next request the engine admits, no restart needed. It
+// returns an error so cleanup paths can log instead of failing the test.
+func tryPatchEngineConfig(t *testing.T, simService string, body string) error {
 	t.Helper()
 
 	ensureE2ECurlPod(t)
 
-	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/admin/config", simService, testNamespace)
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:%s/config", simService, testNamespace, testSimControlPort)
 	out, err := exec.Command("kubectl", "exec",
 		"-n", testNamespace,
 		e2eCurlPod,
 		"--",
-		"curl", "-sS", "-X", "POST",
+		"curl", "-sS", "-X", "PATCH",
 		"-H", "Content-Type: application/json",
 		"-d", body,
-		"--fail",
+		"--fail", "--max-time", "10",
 		url,
 	).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("POST %s failed: %w\n%s", url, err, out)
+		return fmt.Errorf("PATCH %s failed: %w\n%s", url, err, out)
 	}
-	t.Logf("POST %s: %s", url, strings.TrimSpace(string(out)))
+	t.Logf("PATCH %s: %s", url, strings.TrimSpace(string(out)))
 	return nil
 }
 
-// setSimAdminConfig sends a POST to the simulator's /admin/config endpoint
-// via a curl pod running in the cluster. It is used to dynamically change
-// failure injection at runtime without restarting the simulator deployment.
-func setSimAdminConfig(t *testing.T, simService string, body string) {
+// patchEngineConfig is tryPatchEngineConfig that fails the test on error.
+func patchEngineConfig(t *testing.T, simService string, body string) {
 	t.Helper()
 
-	if err := trySetSimAdminConfig(t, simService, body); err != nil {
+	if err := tryPatchEngineConfig(t, simService, body); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// trySetSimFakeMetrics sends a POST to the simulator's /fake_metrics endpoint
-// via a curl pod running in the cluster. It returns an error so cleanup paths
-// can report restore failures without halting the rest of cleanup.
-// Requires the simulator to be started with --fake-metrics flag.
-func trySetSimFakeMetrics(t *testing.T, simService string, body string) error {
-	t.Helper()
-
-	ensureE2ECurlPod(t)
-
-	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/fake_metrics", simService, testNamespace)
-	out, err := exec.Command("kubectl", "exec",
-		"-n", testNamespace,
-		e2eCurlPod,
-		"--",
-		"curl", "-sS", "-X", "POST",
-		"-H", "Content-Type: application/json",
-		"-d", body,
-		"--fail",
-		url,
-	).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("POST %s failed: %w\n%s", url, err, out)
-	}
-	t.Logf("POST %s: %s", url, strings.TrimSpace(string(out)))
-	return nil
-}
-
-// setSimFakeMetrics sends a POST to the simulator's /fake_metrics endpoint
-// via a curl pod running in the cluster. Used to dynamically control the
-// metrics values reported by the simulator (e.g. waiting-requests, kv-cache-usage)
-// for EPP utilization-detector saturation testing.
-func setSimFakeMetrics(t *testing.T, simService string, body string) {
-	t.Helper()
-
-	if err := trySetSimFakeMetrics(t, simService, body); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// waitForModelInflight polls the processor's model_inflight_requests metric
-// until it reports > 0 for the given model, proving that at least one request
-// has been dispatched. With 100% failure injection, the gauge remains elevated
-// for the full retry chain duration (minutes) because Generate() blocks through
-// all resty retries, making this a stable signal — not transient.
-func waitForModelInflight(t *testing.T, model string, timeout time.Duration) {
-	t.Helper()
-
-	re := regexp.MustCompile(fmt.Sprintf(
-		`model_inflight_requests\{[^}]*model=%q[^}]*\}\s+(\d+)`, model))
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		body := scrapeProcessorMetrics(t)
-		if m := re.FindStringSubmatch(body); m != nil {
-			val, err := strconv.Atoi(m[1])
-			if err != nil {
-				t.Fatalf("failed to parse model_inflight_requests value %q: %v", m[1], err)
-			}
-			if val > 0 {
-				t.Logf("model_inflight_requests{model=%q} = %d", model, val)
-				return
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for model_inflight_requests{model=%q} > 0", model)
 }
 
 // ── Generic helpers ──────────────────────────────────────────────────────
+
+// shQuote wraps s in single quotes for safe interpolation into a /bin/sh
+// script, escaping any single quotes it contains.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // assertSliceEqual verifies that want and got contain the same elements
 // (order-independent, no duplicates allowed in got).
