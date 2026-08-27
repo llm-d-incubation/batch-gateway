@@ -136,8 +136,12 @@ func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err 
 		return nil, err
 	}
 
+	spanProcessor := sdktrace.WithBatcher(exporter)
+	if os.Getenv("OTEL_SYNC_SPAN_EXPORT") == "true" {
+		spanProcessor = sdktrace.WithSyncer(exporter)
+	}
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		spanProcessor,
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
