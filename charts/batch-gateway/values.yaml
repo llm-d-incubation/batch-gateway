@@ -2,6 +2,10 @@
 global:
   imagePullSecrets: []
 
+  # Additional inference API paths accepted by both the API server and processor.
+  # Standard OpenAI Batch API endpoints are always allowed.
+  extraEndpoints: []
+
   # Shared pod security context for all components.
   # All three components (apiserver, processor, gc) must run with the same UID/GID
   # when sharing files on a PVC. Per-component overrides are possible via

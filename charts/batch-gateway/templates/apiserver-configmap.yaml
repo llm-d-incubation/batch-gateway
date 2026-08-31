@@ -60,6 +60,12 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+      {{- if .Values.global.extraEndpoints }}
+      extra_endpoints:
+        {{- range .Values.global.extraEndpoints }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
     file_api:
       default_expiration_seconds: {{ .Values.apiserver.config.fileAPI.defaultExpirationSeconds }}
       max_size_bytes: {{ .Values.apiserver.config.fileAPI.maxSizeBytes }}

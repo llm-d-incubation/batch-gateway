@@ -46,14 +46,22 @@ import (
 var _ common.ApiHandler = (*BatchAPIHandler)(nil)
 
 type BatchAPIHandler struct {
-	config  *common.ServerConfig
-	clients *clientset.Clientset
+	config            *common.ServerConfig
+	clients           *clientset.Clientset
+	endpointAllowlist openai.EndpointAllowlist
 }
 
 func NewBatchAPIHandler(config *common.ServerConfig, clients *clientset.Clientset) *BatchAPIHandler {
+	endpointAllowlist, err := openai.NewEndpointAllowlist(config.BatchAPI.ExtraEndpoints)
+	if err != nil {
+		// ServerConfig.Validate rejects this at startup. Fail closed if a caller
+		// constructs an unvalidated config directly.
+		endpointAllowlist = openai.EndpointAllowlist{}
+	}
 	return &BatchAPIHandler{
-		config:  config,
-		clients: clients,
+		config:            config,
+		clients:           clients,
+		endpointAllowlist: endpointAllowlist,
 	}
 }
 
@@ -102,7 +110,7 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// validate request
-	if err := batchReq.Validate(); err != nil {
+	if err := batchReq.ValidateWithEndpointAllowlist(c.endpointAllowlist); err != nil {
 		logger.Error(err, "failed to validate request")
 		apiErr := openai.NewAPIError(http.StatusBadRequest, "", err.Error(), nil)
 		common.WriteAPIError(w, r, apiErr)

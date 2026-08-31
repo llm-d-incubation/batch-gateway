@@ -109,6 +109,22 @@ tests:
           path: data["config.yaml"]
           pattern: 'enable_tls: false'
 
+  - it: should render shared extra endpoints
+    set:
+      global.extraEndpoints:
+        - /v1/classify
+        - /v1/pooling
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'extra_endpoints:\n\s+- "/v1/classify"\n\s+- "/v1/pooling"'
+
+  - it: should omit extra endpoints by default
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "extra_endpoints:"
+
   - it: should not render ConfigMap when apiserver is disabled
     set:
       apiserver.enabled: false

@@ -13,6 +13,12 @@ data:
     task_wait_time: {{ .Values.processor.config.taskWaitTime | quote }}
     poll_interval: {{ .Values.processor.config.pollInterval | quote }}
     num_workers: {{ .Values.processor.config.numWorkers }}
+    {{- if .Values.global.extraEndpoints }}
+    extra_endpoints:
+      {{- range .Values.global.extraEndpoints }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- end }}
     concurrency:
       global: {{ .Values.processor.config.concurrency.global }}
       per_endpoint: {{ .Values.processor.config.concurrency.perEndpoint }}

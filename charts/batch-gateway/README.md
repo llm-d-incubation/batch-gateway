@@ -72,7 +72,23 @@ helm upgrade my-release ./charts/batch-gateway \
 ```
 
 ## Configuration
+
 For a complete list of parameters, see [values.yaml](./values.yaml).
+
+### Additional inference endpoints
+
+Batch Gateway accepts the standard OpenAI Batch API endpoints by default. To use an endpoint supplied by an OpenAI-compatible backend, add it explicitly to the shared allowlist:
+
+```yaml
+global:
+  extraEndpoints:
+    - /v1/classify
+    - /v1/pooling
+```
+
+The chart renders this list into both the API server and processor configurations. Each value must be an absolute path beginning with exactly one slash and cannot contain a host, query string, fragment, or escaped path. Invalid values cause startup validation to fail.
+
+The endpoint remains batch-scoped: every request URL in the input JSONL must exactly match the endpoint declared when creating the batch. The configured path is forwarded unchanged in synchronous and asynchronous dispatch modes. Omitting `global.extraEndpoints` preserves the default OpenAI-only behavior.
 
 ## Usage
 
