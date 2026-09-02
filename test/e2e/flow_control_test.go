@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/v3"
+	"gopkg.in/yaml.v3"
 )
 
 func testFlowControl(t *testing.T) {
@@ -806,21 +807,47 @@ func scrapeEPPMetrics(t *testing.T, deployment string) string {
 	return string(out)
 }
 
+// processorObjectiveConfig is the subset of the processor config.yaml that
+// decides which inference objective a model gets. The precedence in
+// inferenceObjectiveFor mirrors config.ProcessorConfig.InferenceObjectiveFor.
+type processorObjectiveConfig struct {
+	DispatchMode  string `yaml:"dispatch_mode"`
+	AsyncDispatch struct {
+		Models map[string]struct {
+			InferenceObjective string `yaml:"inference_objective"`
+		} `yaml:"models"`
+	} `yaml:"async_dispatch"`
+	GlobalInferenceGateway *struct {
+		InferenceObjective string `yaml:"inference_objective"`
+	} `yaml:"global_inference_gateway"`
+	ModelGateways map[string]struct {
+		InferenceObjective string `yaml:"inference_objective"`
+	} `yaml:"model_gateways"`
+}
+
+func (c *processorObjectiveConfig) inferenceObjectiveFor(model string) string {
+	if c.DispatchMode == "async" {
+		return c.AsyncDispatch.Models[model].InferenceObjective
+	}
+	if c.GlobalInferenceGateway != nil {
+		return c.GlobalInferenceGateway.InferenceObjective
+	}
+	return c.ModelGateways[model].InferenceObjective
+}
+
 // getProcessorConfigObjective reads the deployed processor ConfigMap and
-// returns the inferenceObjective value for the given model.
+// returns the inference objective the processor resolves for the given model.
 func getProcessorConfigObjective(t *testing.T, model string) string {
 	t.Helper()
 
 	cmName := fmt.Sprintf("%s-processor-config", testHelmRelease)
 	cm := kubectlGetConfigMap(t, cmName)
 
-	pattern := regexp.MustCompile(fmt.Sprintf(`(?m)"?%s"?:\s*\n(?:.*\n)*?\s+inference_objective:\s*"?([^"\s]+)"?`, regexp.QuoteMeta(model)))
-	match := pattern.FindStringSubmatch(cm)
-	if match == nil {
-		t.Logf("inferenceObjective not found for model %q in ConfigMap (may use global default)", model)
-		return ""
+	var cfg processorObjectiveConfig
+	if err := yaml.Unmarshal([]byte(cm), &cfg); err != nil {
+		t.Fatalf("failed to parse processor ConfigMap %s: %v", cmName, err)
 	}
-	return strings.TrimSpace(match[1])
+	return cfg.inferenceObjectiveFor(model)
 }
 
 // resolveExpectedObjective returns the inference objective value that the
