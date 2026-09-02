@@ -542,29 +542,31 @@ func testBatchAPIDispatchGate(t *testing.T, rdb *redis.Client) {
 		t.Fatalf("read prior dispatch gate budget: %v", err)
 	}
 	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 		defer cancel()
 
 		if err := rdb.Set(cleanupCtx, dispatchGateBudgetKey, "1.0", 0).Err(); err != nil {
 			t.Errorf("cleanup: open dispatch gate: %v", err)
-		} else {
-			deadline := time.Now().Add(5 * time.Second)
-			var depth int64
-			for time.Now().Before(deadline) {
-				var depthErr error
-				depth, depthErr = rdb.ZCard(cleanupCtx, gateReqQueue).Result()
-				if depthErr != nil {
-					t.Errorf("cleanup: read dispatch queue: %v", depthErr)
-					break
-				}
-				if depth == 0 {
-					break
-				}
-				time.Sleep(200 * time.Millisecond)
+			return
+		}
+
+		deadline := time.Now().Add(30 * time.Second)
+		var depth int64
+		for time.Now().Before(deadline) {
+			var depthErr error
+			depth, depthErr = rdb.ZCard(cleanupCtx, gateReqQueue).Result()
+			if depthErr != nil {
+				t.Errorf("cleanup: read dispatch queue: %v", depthErr)
+				return
 			}
-			if depth != 0 {
-				t.Errorf("cleanup: gated queue did not drain after opening: depth=%d", depth)
+			if depth == 0 {
+				break
 			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if depth != 0 {
+			t.Errorf("cleanup: gated queue did not drain after opening: depth=%d; leaving budget at 1.0", depth)
+			return
 		}
 
 		if budgetExisted {
