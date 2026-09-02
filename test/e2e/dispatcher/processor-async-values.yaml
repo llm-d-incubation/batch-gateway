@@ -6,5 +6,7 @@ processor:
       models:
         sim-model:
           inferencePoolName: "sim-pool"
+        sim-model-gate:
+          inferencePoolName: "sim-pool-gate"
         sim-model-inject:
           inferencePoolName: "sim-pool-inject"

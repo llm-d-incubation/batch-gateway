@@ -716,6 +716,39 @@ func deleteE2ECurlPod(t *testing.T) {
 
 // ── Simulator control API helpers ────────────────────────────────────────
 
+type simStats struct {
+	RequestsReceived  int64 `json:"requests_received"`
+	RequestsCompleted int64 `json:"requests_completed"`
+	RequestsFailed    int64 `json:"requests_failed"`
+	RequestsAborted   int64 `json:"requests_aborted"`
+	Running           int64 `json:"running"`
+	Waiting           int64 `json:"waiting"`
+}
+
+func getSimStats(t *testing.T, simService string) simStats {
+	t.Helper()
+
+	ensureE2ECurlPod(t)
+
+	url := fmt.Sprintf("http://%s.%s.svc.cluster.local:%s/stats", simService, testNamespace, testSimControlPort)
+	out, err := exec.Command("kubectl", "exec",
+		"-n", testNamespace,
+		e2eCurlPod,
+		"--",
+		"curl", "-sS", "--fail", "--max-time", "10",
+		url,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("GET %s failed: %v\n%s", url, err, out)
+	}
+
+	var stats simStats
+	if err := json.Unmarshal(out, &stats); err != nil {
+		t.Fatalf("decode %s response: %v\n%s", url, err, out)
+	}
+	return stats
+}
+
 // tryPatchEngineConfig sends a PATCH to the vllm-vcr control API of the given
 // simulator service via a curl pod running in the cluster. body is a JSON
 // object of config fields (see the vllm-vcr "Runtime control API" docs); the
