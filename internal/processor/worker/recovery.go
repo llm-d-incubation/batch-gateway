@@ -68,13 +68,23 @@ type recoveryResult struct {
 func (p *Processor) recoverOwnedJobs(ctx context.Context) {
 	logger := logr.FromContextOrDiscard(ctx)
 
-	items, _, _, err := p.batchDB.DBGet(ctx, &db.BatchQuery{
-		ProcessorID: p.processorID,
-		NonTerminal: true,
-	}, true, 0, 1000)
-	if err != nil {
-		logger.Error(err, "Startup recovery: failed to query owned jobs")
-		return
+	const pageSize = 1000
+	var items []*db.BatchItem
+	cursor := 0
+	for {
+		batch, nextCursor, more, err := p.batchDB.DBGet(ctx, &db.BatchQuery{
+			ProcessorID: p.processorID,
+			NonTerminal: true,
+		}, false, cursor, pageSize)
+		if err != nil {
+			logger.Error(err, "Startup recovery: failed to query owned jobs")
+			return
+		}
+		items = append(items, batch...)
+		if !more {
+			break
+		}
+		cursor = nextCursor
 	}
 
 	if len(items) == 0 {

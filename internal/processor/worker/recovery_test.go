@@ -257,6 +257,58 @@ func TestRecoverOwnedJobs(t *testing.T) {
 		// Should not panic — just logs the error and returns.
 		p.recoverOwnedJobs(ctx)
 	})
+
+	t.Run("paginates when owned jobs exceed page size", func(t *testing.T) {
+		workDir := t.TempDir()
+		p, batchDB, spyQueue := newRecoveryTestProcessorWithQueryFilter(t, workDir)
+
+		pagedDB := &pageSizeBatchDB{inner: batchDB, maxPageSize: 2}
+		p.batchDB = pagedDB
+
+		for i := 1; i <= 5; i++ {
+			id := fmt.Sprintf("paged-%d", i)
+			seedDBJobWithStatus(t, batchDB, id, "tenant-1", openai.BatchStatusInProgress, nil)
+			setProcessorID(t, batchDB, id, p.processorID)
+			createJobDir(t, p, id, "tenant-1")
+		}
+
+		ctx := testLoggerCtx(t)
+		p.recoverOwnedJobs(ctx)
+
+		if spyQueue.EnqueueCalls() != 5 {
+			t.Errorf("expected 5 re-enqueue calls across pages, got %d", spyQueue.EnqueueCalls())
+		}
+		if pagedDB.getCalls < 3 {
+			t.Errorf("expected at least 3 DBGet calls for 5 items with page size 2, got %d", pagedDB.getCalls)
+		}
+	})
+}
+
+type pageSizeBatchDB struct {
+	inner       db.BatchDBClient
+	maxPageSize int
+	getCalls    int
+}
+
+func (p *pageSizeBatchDB) DBStore(ctx context.Context, item *db.BatchItem) error {
+	return p.inner.DBStore(ctx, item)
+}
+func (p *pageSizeBatchDB) DBGet(ctx context.Context, query *db.BatchQuery, includeStatic bool, start, limit int) ([]*db.BatchItem, int, bool, error) {
+	p.getCalls++
+	effectiveLimit := limit
+	if p.maxPageSize > 0 && (limit <= 0 || limit > p.maxPageSize) {
+		effectiveLimit = p.maxPageSize
+	}
+	return p.inner.DBGet(ctx, query, includeStatic, start, effectiveLimit)
+}
+func (p *pageSizeBatchDB) DBUpdate(ctx context.Context, item *db.BatchItem, expectedStatus []byte) error {
+	return p.inner.DBUpdate(ctx, item, expectedStatus)
+}
+func (p *pageSizeBatchDB) DBDelete(ctx context.Context, ids []string) ([]string, error) {
+	return p.inner.DBDelete(ctx, ids)
+}
+func (p *pageSizeBatchDB) Close() error {
+	return p.inner.Close()
 }
 
 // setProcessorID updates a stored BatchItem's ProcessorID in the mock DB.
