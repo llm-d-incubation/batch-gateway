@@ -57,12 +57,10 @@ func (c *PostgresBatchQueueClient) Close() error {
 	return c.close()
 }
 
-// PQEnqueue makes a job available for dequeue and notifies listening processors.
-// For new jobs (created via DBStore), the row already exists with status 'validating'
-// and processor_id = NULL — the WHERE guard makes the UPDATE a no-op and only the
-// NOTIFY fires.
-// For re-enqueued jobs (recovery/GC), this resets status to 'validating' and clears
-// processor_id so the job becomes visible to PQDequeue again.
+// PQEnqueue re-enqueues a previously claimed job back to the queue (e.g. from
+// GC recovery or processor graceful shutdown). It resets status to 'validating',
+// clears processor_id so the job becomes visible to PQDequeue again, and bumps
+// epoch to fence out any zombie writes from the previous owner.
 // The UPDATE is guarded to only affect non-terminal jobs that are currently claimed
 // by a processor, preventing accidental resurrection of completed/failed work.
 func (c *PostgresBatchQueueClient) PQEnqueue(ctx context.Context, jobPriority *api.BatchJobPriority) error {

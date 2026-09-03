@@ -93,8 +93,12 @@ func (c *PostgresBatchDBClient) DBStore(ctx context.Context, item *api.BatchItem
 		err = fmt.Errorf("item is nil")
 		return
 	}
+	var processorID any = item.ProcessorID
+	if item.ProcessorID == "" {
+		processorID = nil
+	}
 	if err = c.store(ctx, &item.BaseIndexes, &item.BaseContents, map[string]any{
-		colProcessorID: item.ProcessorID,
+		colProcessorID: processorID,
 		colPriority:    item.Priority,
 		colEpoch:       item.Epoch,
 	}); err != nil {
