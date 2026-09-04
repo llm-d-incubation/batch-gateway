@@ -808,13 +808,13 @@ func TestPlanFileSource_Produce_StorageRangedReads(t *testing.T) {
 	defer func() { _ = resolver.Close() }()
 
 	source := NewPlanFileSource(PlanFileSourceConfig{
-		Storage:   filesClient,
-		InputRef:  inputRef,
-		PlansDir:  plansDir,
-		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
-		Resolver:  resolver,
-		Cfg:       config.NewConfig(),
-		Logger:    logr.Discard(),
+		Storage:  filesClient,
+		InputRef: inputRef,
+		PlansDir: plansDir,
+		ModelMap: &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
+		Resolver: resolver,
+		Cfg:      config.NewConfig(),
+		Logger:   logr.Discard(),
 	})
 
 	out := make(chan pipeline.RequestItem, 10)
@@ -864,13 +864,13 @@ func TestPlanFileSource_Produce_StorageRangedReads_Error(t *testing.T) {
 	defer func() { _ = resolver.Close() }()
 
 	source := NewPlanFileSource(PlanFileSourceConfig{
-		Storage:   filesClient,
-		InputRef:  inputRef,
-		PlansDir:  plansDir,
-		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
-		Resolver:  resolver,
-		Cfg:       config.NewConfig(),
-		Logger:    logr.Discard(),
+		Storage:  filesClient,
+		InputRef: inputRef,
+		PlansDir: plansDir,
+		ModelMap: &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
+		Resolver: resolver,
+		Cfg:      config.NewConfig(),
+		Logger:   logr.Discard(),
 	})
 
 	out := make(chan pipeline.RequestItem, 10)
@@ -918,13 +918,13 @@ func TestPlanFileSource_Produce_StorageRangedReads_CancelledContext(t *testing.T
 	defer func() { _ = resolver.Close() }()
 
 	source := NewPlanFileSource(PlanFileSourceConfig{
-		Storage:   filesClient,
-		InputRef:  inputRef,
-		PlansDir:  plansDir,
-		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
-		Resolver:  resolver,
-		Cfg:       config.NewConfig(),
-		Logger:    logr.Discard(),
+		Storage:  filesClient,
+		InputRef: inputRef,
+		PlansDir: plansDir,
+		ModelMap: &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
+		Resolver: resolver,
+		Cfg:      config.NewConfig(),
+		Logger:   logr.Discard(),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
