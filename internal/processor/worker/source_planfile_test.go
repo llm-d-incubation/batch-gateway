@@ -882,3 +882,60 @@ func TestPlanFileSource_Produce_StorageRangedReads_Error(t *testing.T) {
 		t.Fatalf("expected errRequestInputRead, got %v", err)
 	}
 }
+
+func TestPlanFileSource_Produce_StorageRangedReads_CancelledContext(t *testing.T) {
+	dir := t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "c-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"model": "m1", "prompt": "hello"}},
+	}
+
+	var rawInput bytes.Buffer
+	data, _ := json.Marshal(requests[0])
+	data = append(data, '\n')
+	rawInput.Write(data)
+
+	entries := []planEntry{
+		{Offset: 0, Length: uint32(len(data))},
+	}
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
+	storageName := "test-input-file.jsonl"
+	folderName := "tenant_tenant-1"
+	if _, err := filesClient.Store(context.Background(), storageName, folderName, 0, 0, bytes.NewReader(rawInput.Bytes())); err != nil {
+		t.Fatalf("Store input: %v", err)
+	}
+
+	inputRef := &inputFileRef{
+		storageName: storageName,
+		folderName:  folderName,
+	}
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		Storage:   filesClient,
+		InputRef:  inputRef,
+		PlansDir:  plansDir,
+		ModelMap:  &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
+		Resolver:  resolver,
+		Cfg:       config.NewConfig(),
+		Logger:    logr.Discard(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	out := make(chan pipeline.RequestItem, 10)
+	err := source.Produce(ctx, out)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}

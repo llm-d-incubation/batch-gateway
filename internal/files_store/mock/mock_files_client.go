@@ -145,7 +145,10 @@ func (m *MockBatchFilesClient) Retrieve(ctx context.Context, fileName, folderNam
 }
 
 // RetrieveRange retrieves a byte range [offset, offset+length) from a file.
-func (m *MockBatchFilesClient) RetrieveRange(_ context.Context, fileName, folderName string, offset int64, length int64) (io.ReadCloser, error) {
+func (m *MockBatchFilesClient) RetrieveRange(ctx context.Context, fileName, folderName string, offset int64, length int64) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	filePath := filepath.Join(m.rootDir, folderName, fileName)
 
 	file, err := os.Open(filePath)
