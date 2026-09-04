@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	mockfiles "github.com/llm-d/llm-d-batch-gateway/internal/files_store/mock"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/pipeline"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
@@ -759,5 +762,180 @@ func TestPlanFileSource_Produce_CancellationProducesAllEntries(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("missing custom_id %q after cancelled Produce", want)
 		}
+	}
+}
+
+func TestPlanFileSource_Produce_StorageRangedReads(t *testing.T) {
+	dir := t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "c-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"model": "m1", "prompt": "hello"}},
+		{CustomID: "c-2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"model": "m1", "prompt": "world"}},
+	}
+
+	var (
+		rawInput bytes.Buffer
+		entries  []planEntry
+	)
+	for _, req := range requests {
+		data, _ := json.Marshal(req)
+		data = append(data, '\n')
+		offset := int64(rawInput.Len())
+		entries = append(entries, planEntry{
+			Offset: offset,
+			Length: uint32(len(data)),
+		})
+		rawInput.Write(data)
+	}
+
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
+	storageName := "test-input-file.jsonl"
+	folderName := "tenant_tenant-1"
+	if _, err := filesClient.Store(context.Background(), storageName, folderName, 0, 0, bytes.NewReader(rawInput.Bytes())); err != nil {
+		t.Fatalf("Store input: %v", err)
+	}
+
+	inputRef := &inputFileRef{
+		storageName: storageName,
+		folderName:  folderName,
+	}
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		Storage:  filesClient,
+		InputRef: inputRef,
+		PlansDir: plansDir,
+		ModelMap: &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 2},
+		Resolver: resolver,
+		Cfg:      config.NewConfig(),
+		Logger:   logr.Discard(),
+	})
+
+	out := make(chan pipeline.RequestItem, 10)
+	if err := source.Produce(context.Background(), out); err != nil {
+		t.Fatalf("Produce error: %v", err)
+	}
+
+	var items []pipeline.RequestItem
+	for item := range out {
+		items = append(items, item)
+	}
+
+	if len(items) != 2 {
+		t.Fatalf("produced %d items, want 2", len(items))
+	}
+	if items[0].CustomID != "c-1" {
+		t.Errorf("item 0 CustomID = %q, want %q", items[0].CustomID, "c-1")
+	}
+	if items[1].CustomID != "c-2" {
+		t.Errorf("item 1 CustomID = %q, want %q", items[1].CustomID, "c-2")
+	}
+	if items[0].ModelID != "m1" {
+		t.Errorf("item 0 ModelID = %q, want %q", items[0].ModelID, "m1")
+	}
+	if items[0].RequestID == "" {
+		t.Error("expected non-empty RequestID")
+	}
+}
+
+func TestPlanFileSource_Produce_StorageRangedReads_Error(t *testing.T) {
+	dir := t.TempDir()
+
+	entries := []planEntry{
+		{Offset: 0, Length: 50},
+	}
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
+	inputRef := &inputFileRef{
+		storageName: "nonexistent.jsonl",
+		folderName:  "tenant_tenant-1",
+	}
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		Storage:  filesClient,
+		InputRef: inputRef,
+		PlansDir: plansDir,
+		ModelMap: &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
+		Resolver: resolver,
+		Cfg:      config.NewConfig(),
+		Logger:   logr.Discard(),
+	})
+
+	out := make(chan pipeline.RequestItem, 10)
+	err := source.Produce(context.Background(), out)
+	if err == nil {
+		t.Fatal("expected error from non-existent storage file, got nil")
+	}
+	if !errors.Is(err, errRequestInputRead) {
+		t.Fatalf("expected errRequestInputRead, got %v", err)
+	}
+}
+
+func TestPlanFileSource_Produce_StorageRangedReads_CancelledContext(t *testing.T) {
+	dir := t.TempDir()
+
+	requests := []batch_types.Request{
+		{CustomID: "c-1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"model": "m1", "prompt": "hello"}},
+	}
+
+	var rawInput bytes.Buffer
+	data, _ := json.Marshal(requests[0])
+	data = append(data, '\n')
+	rawInput.Write(data)
+
+	entries := []planEntry{
+		{Offset: 0, Length: uint32(len(data))},
+	}
+	plansDir := filepath.Join(dir, "plans")
+	writePlanFile(t, plansDir, "m1", entries)
+
+	filesClient := mockfiles.NewMockBatchFilesClient(t.TempDir())
+	storageName := "test-input-file.jsonl"
+	folderName := "tenant_tenant-1"
+	if _, err := filesClient.Store(context.Background(), storageName, folderName, 0, 0, bytes.NewReader(rawInput.Bytes())); err != nil {
+		t.Fatalf("Store input: %v", err)
+	}
+
+	inputRef := &inputFileRef{
+		storageName: storageName,
+		folderName:  folderName,
+	}
+
+	client := &mockInferenceClient{}
+	resolver := inference.NewSingleClientResolver(client)
+	defer func() { _ = resolver.Close() }()
+
+	source := NewPlanFileSource(PlanFileSourceConfig{
+		Storage:  filesClient,
+		InputRef: inputRef,
+		PlansDir: plansDir,
+		ModelMap: &modelMapFile{SafeToModel: map[string]string{"m1": "m1"}, LineCount: 1},
+		Resolver: resolver,
+		Cfg:      config.NewConfig(),
+		Logger:   logr.Discard(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	out := make(chan pipeline.RequestItem, 10)
+	err := source.Produce(ctx, out)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }

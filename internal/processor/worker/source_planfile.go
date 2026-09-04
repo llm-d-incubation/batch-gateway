@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 
+	filesapi "github.com/llm-d/llm-d-batch-gateway/internal/files_store/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/pipeline"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
@@ -22,6 +24,8 @@ import (
 
 // PlanFileSource reads plan files and input JSONL to produce RequestItems.
 type PlanFileSource struct {
+	storage            filesapi.BatchFilesClient
+	inputRef           *inputFileRef
 	inputFile          *os.File
 	plansDir           string
 	modelMap           *modelMapFile
@@ -36,6 +40,8 @@ type PlanFileSource struct {
 var _ pipeline.RequestSource = (*PlanFileSource)(nil)
 
 type PlanFileSourceConfig struct {
+	Storage            filesapi.BatchFilesClient
+	InputRef           *inputFileRef
 	InputFile          *os.File
 	PlansDir           string
 	ModelMap           *modelMapFile
@@ -49,6 +55,8 @@ type PlanFileSourceConfig struct {
 
 func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 	return &PlanFileSource{
+		storage:            cfg.Storage,
+		inputRef:           cfg.InputRef,
 		inputFile:          cfg.InputFile,
 		plansDir:           cfg.PlansDir,
 		modelMap:           cfg.ModelMap,
@@ -61,11 +69,10 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 	}
 }
 
-// Produce sends one item per plan entry to the channel. It always reads the
-// input line so each item retains the original custom_id: cancel / expire
-// drain still needs that identity in the error file even when inference is
-// skipped. Context cancellation is handled by the dispatcher drain path.
-func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
+// Produce sends one item per plan entry to the channel. It reads the input
+// line so each item retains the original custom_id. Context cancellation is
+// respected during storage reads and channel sends.
+func (s *PlanFileSource) Produce(ctx context.Context, outgoingRequestCh chan<- pipeline.RequestItem) error {
 	defer close(outgoingRequestCh)
 
 	for safeModelID, modelID := range s.modelMap.SafeToModel {
@@ -76,7 +83,7 @@ func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pip
 		}
 
 		for _, entry := range entries {
-			item, err := s.readEntry(entry, modelID)
+			item, err := s.readEntry(ctx, entry, modelID)
 			if err != nil {
 				return err
 			}
@@ -87,10 +94,34 @@ func (s *PlanFileSource) Produce(_ context.Context, outgoingRequestCh chan<- pip
 	return nil
 }
 
-func (s *PlanFileSource) readEntry(entry planEntry, modelID string) (*pipeline.RequestItem, error) {
-	buf := make([]byte, entry.Length)
-	if _, err := s.inputFile.ReadAt(buf, entry.Offset); err != nil {
-		return nil, fmt.Errorf("%w at offset %d: %w", errRequestInputRead, entry.Offset, err)
+func (s *PlanFileSource) readEntry(ctx context.Context, entry planEntry, modelID string) (*pipeline.RequestItem, error) {
+	var buf []byte
+	if s.storage != nil && s.inputRef != nil {
+		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		rc, err := s.storage.RetrieveRange(reqCtx, s.inputRef.storageName, s.inputRef.folderName, entry.Offset, int64(entry.Length))
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("%w at offset %d: %w", errRequestInputRead, entry.Offset, err)
+		}
+		defer rc.Close()
+
+		buf, err = io.ReadAll(rc)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("%w at offset %d: %w", errRequestInputRead, entry.Offset, err)
+		}
+	} else if s.inputFile != nil {
+		buf = make([]byte, entry.Length)
+		if _, err := s.inputFile.ReadAt(buf, entry.Offset); err != nil {
+			return nil, fmt.Errorf("%w at offset %d: %w", errRequestInputRead, entry.Offset, err)
+		}
+	} else {
+		return nil, fmt.Errorf("%w: no storage or input file provided", errRequestInputRead)
 	}
 
 	trimmed := bytes.TrimSuffix(buf, []byte{'\n'})
