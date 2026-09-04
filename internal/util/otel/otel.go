@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -33,6 +34,15 @@ import (
 )
 
 const defaultServiceName = "batch-gateway"
+
+// The exporter types OTEL_TRACES_EXPORTER selects between.
+const (
+	exporterTypeOTLP    = "otlp"
+	exporterTypeConsole = "console"
+	exporterTypeNone    = "none"
+
+	defaultExporterType = exporterTypeOTLP
+)
 
 // Span attribute keys for batch-gateway resources.
 const (
@@ -106,27 +116,23 @@ func DetachedContext(ctx context.Context, name string) (context.Context, trace.S
 	return StartSpan(bgCtx, name, trace.WithLinks(links...))
 }
 
-// InitTracer sets up an OpenTelemetry TracerProvider with an OTLP gRPC exporter.
-// It reads the endpoint from the OTEL_EXPORTER_OTLP_ENDPOINT environment variable.
-// If the endpoint is not set, tracing is disabled (no-op) and a nil shutdown function is returned.
-// The service name defaults to "batch-gateway" and can be overridden via OTEL_SERVICE_NAME.
+// InitTracer sets up an OpenTelemetry TracerProvider.
+// Configuration is done via environment variables:
+// - OTEL_TRACES_EXPORTER: Span exporter, "otlp", "console" or "none" (default: otlp)
+// - OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint, consumed by the otlp exporter
+// - OTEL_SERVICE_NAME: Service name (default: "batch-gateway")
+//
+// The propagator is installed unconditionally, before the exporter type is resolved, so
+// trace context received by this process is still forwarded downstream even when
+// OTEL_TRACES_EXPORTER=none.
 func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err error) {
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if endpoint == "" {
-		logr.FromContextOrDiscard(ctx).Info("OTEL_EXPORTER_OTLP_ENDPOINT not set, tracing disabled")
-		return func(context.Context) error { return nil }, nil
-	}
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	exporterType := traceExporterType(ctx)
 
 	serviceName := os.Getenv("OTEL_SERVICE_NAME")
 	if serviceName == "" {
 		serviceName = defaultServiceName
-	}
-
-	// The OTLP exporter respects standard OTel env vars (OTEL_EXPORTER_OTLP_ENDPOINT,
-	// OTEL_EXPORTER_OTLP_INSECURE, etc.) automatically.
-	exporter, err := otlptracegrpc.New(ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	res, err := resource.New(ctx,
@@ -136,14 +142,63 @@ func InitTracer(ctx context.Context) (shutdown func(context.Context) error, err 
 		return nil, err
 	}
 
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+	opt := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
-	)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
+	}
 
-	logr.FromContextOrDiscard(ctx).Info("OpenTelemetry tracing initialized", "endpoint", endpoint, "service", serviceName)
+	// "none" registers no span processor at all. Spans are still created and
+	// propagated, so instrumented code and context propagation are unaffected.
+	if exporterType != exporterTypeNone {
+		exporter, err := newSpanExporter(ctx, exporterType)
+		if err != nil {
+			return nil, err
+		}
+		opt = append(opt, sdktrace.WithBatcher(exporter))
+	}
+
+	tp := sdktrace.NewTracerProvider(opt...)
+	otel.SetTracerProvider(tp)
+
+	logr.FromContextOrDiscard(ctx).Info("OpenTelemetry tracing initialized",
+		"exporter", exporterType,
+		"service", serviceName,
+		"endpoint", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 	return tp.Shutdown, nil
+}
+
+// traceExporterType resolves OTEL_TRACES_EXPORTER to one of the types
+// newSpanExporter builds:
+//
+//   - otlp: export spans through gRPC to an opentelemetry collector
+//   - console: pretty print spans on stdout, for development
+//   - none: create spans but export nothing
+//
+// An unrecognised value falls back to otlp with a logged warning rather than
+// failing startup.
+func traceExporterType(ctx context.Context) string {
+	exporterType := os.Getenv("OTEL_TRACES_EXPORTER")
+	if exporterType == "" {
+		return defaultExporterType
+	}
+
+	switch exporterType {
+	case exporterTypeOTLP, exporterTypeConsole, exporterTypeNone:
+		return exporterType
+	default:
+		logr.FromContextOrDiscard(ctx).Info("unsupported OTEL_TRACES_EXPORTER, falling back to otlp", "value", exporterType)
+		return defaultExporterType
+	}
+}
+
+// newSpanExporter builds the exporter named by exporterType, which traceExporterType
+// has already narrowed to otlp or console; "none" is handled by the caller and never
+// reaches here. The otlp exporter respects the standard OTel env vars
+// (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_INSECURE, etc.) automatically.
+func newSpanExporter(ctx context.Context, exporterType string) (sdktrace.SpanExporter, error) {
+	if exporterType == exporterTypeConsole {
+		return stdouttrace.New(stdouttrace.WithPrettyPrint())
+	}
+
+	return otlptracegrpc.New(ctx)
 }
