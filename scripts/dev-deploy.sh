@@ -816,6 +816,14 @@ install_vllm_sim() {
     local sim_model="$2"
     local time_to_first_token_ms="$3"
     local inter_token_latency_ms="$4"
+    local served_model_name="${sim_model}"
+    local vllm_extra_args="--reasoning-parser none --tool-call-parser none"
+
+    if [[ "${ENABLE_DISPATCHER}" == "true" && "${sim_model}" == "${VLLM_SIM_MODEL}" ]]; then
+        # The composed dispatch-gate E2E routes this dedicated model alias to sim-pool-gate.
+        served_model_name=""
+        vllm_extra_args="--served-model-name ${sim_model} sim-model-gate ${vllm_extra_args}"
+    fi
 
     step "Installing vllm-vcr '${sim_name}' (model: ${sim_model}, ttft=${time_to_first_token_ms}ms, itl=${inter_token_latency_ms}ms)..."
 
@@ -843,9 +851,9 @@ spec:
         - name: MODEL
           value: ${VLLM_SIM_HF_MODEL}
         - name: SERVED_MODEL_NAME
-          value: ${sim_model}
+          value: "${served_model_name}"
         - name: VLLM_EXTRA_ARGS
-          value: "--reasoning-parser none --tool-call-parser none"
+          value: "${vllm_extra_args}"
         - name: MOCK_TTFT_MS
           value: "${time_to_first_token_ms}"
         - name: MOCK_ITL_MS

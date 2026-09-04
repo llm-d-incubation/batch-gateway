@@ -44,6 +44,7 @@ var (
 	gatePool              = "sim-pool-gate"
 	gateReqQueue          = "llm-d-async:requests:" + gatePool
 	gateResultQueue       = "llm-d-async:results:" + gatePool
+	gateModel             = "sim-model-gate"
 	dispatchGateBudgetKey = "dispatch-gate-budget"
 
 	scrapePool        = "sim-pool-scrape"
@@ -149,6 +150,9 @@ func TestDispatcher(t *testing.T) {
 	})
 	t.Run("DispatchGate", func(t *testing.T) {
 		testDispatcherRedisGate(t, rdb)
+	})
+	t.Run("BatchAPIDispatchGate", func(t *testing.T) {
+		testBatchAPIDispatchGate(t, rdb)
 	})
 	t.Run("EndpointScrapeGate", func(t *testing.T) {
 		testDispatcherEndpointScrapeGate(t, rdb)
@@ -519,6 +523,173 @@ func testDispatcherRedisGate(t *testing.T, rdb *redis.Client) {
 			return
 		}
 		t.Logf("Skipped stale result %s", result.ID)
+	}
+}
+
+func testBatchAPIDispatchGate(t *testing.T, rdb *redis.Client) {
+	ctx := context.Background()
+	queueDepth, err := rdb.ZCard(ctx, gateReqQueue).Result()
+	if err != nil {
+		t.Fatalf("read initial dispatch queue: %v", err)
+	}
+	if queueDepth != 0 {
+		t.Fatalf("gated queue is not clean before test: depth=%d", queueDepth)
+	}
+
+	previousBudget, err := rdb.Get(ctx, dispatchGateBudgetKey).Result()
+	budgetExisted := err == nil
+	if err != nil && err != redis.Nil {
+		t.Fatalf("read prior dispatch gate budget: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+
+		if err := rdb.Set(cleanupCtx, dispatchGateBudgetKey, "1.0", 0).Err(); err != nil {
+			t.Errorf("cleanup: open dispatch gate: %v", err)
+			return
+		}
+
+		deadline := time.Now().Add(30 * time.Second)
+		var depth int64
+		for time.Now().Before(deadline) {
+			var depthErr error
+			depth, depthErr = rdb.ZCard(cleanupCtx, gateReqQueue).Result()
+			if depthErr != nil {
+				t.Errorf("cleanup: read dispatch queue: %v", depthErr)
+				return
+			}
+			if depth == 0 {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if depth != 0 {
+			t.Errorf("cleanup: gated queue did not drain after opening: depth=%d; leaving budget at 1.0", depth)
+			return
+		}
+
+		if budgetExisted {
+			if err := rdb.Set(cleanupCtx, dispatchGateBudgetKey, previousBudget, 0).Err(); err != nil {
+				t.Errorf("cleanup: restore dispatch gate budget: %v", err)
+			}
+		} else if err := rdb.Del(cleanupCtx, dispatchGateBudgetKey).Err(); err != nil {
+			t.Errorf("cleanup: remove dispatch gate budget: %v", err)
+		}
+	})
+
+	if err := rdb.Set(ctx, dispatchGateBudgetKey, "0.0", 0).Err(); err != nil {
+		t.Fatalf("close dispatch gate: %v", err)
+	}
+	t.Log("Gate closed (budget=0.0)")
+
+	// The Redis gate polls every 500ms. Wait for it to observe the closed budget
+	// before creating the batch so the request cannot race through the gate.
+	time.Sleep(2 * time.Second)
+
+	before := getSimStats(t, testSimService)
+	if before.Running != 0 || before.Waiting != 0 {
+		t.Fatalf("simulator is not idle before test: running=%d waiting=%d", before.Running, before.Waiting)
+	}
+	const customID = "batch-api-gate-1"
+	jsonl := fmt.Sprintf(
+		`{"custom_id":"%s","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":5,"messages":[{"role":"user","content":"Hello composed gate"}]}}`,
+		customID, gateModel)
+	fileID := mustCreateFile(t, fmt.Sprintf("dispatcher-batch-api-gate-%s.jsonl", testRunID), jsonl)
+	batchID := mustCreateBatch(t, fileID)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		queueDepth, err = rdb.ZCard(ctx, gateReqQueue).Result()
+		if err != nil {
+			t.Fatalf("read dispatch queue: %v", err)
+		}
+		if queueDepth > 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if queueDepth == 0 {
+		t.Fatalf("batch request did not appear in gated queue within 30s")
+	}
+	// Keep the gate closed across several Async poll intervals, then re-check the
+	// queue and the engine's authoritative received counter.
+	time.Sleep(2 * time.Second)
+	queueDepth, err = rdb.ZCard(ctx, gateReqQueue).Result()
+	if err != nil {
+		t.Fatalf("re-read dispatch queue: %v", err)
+	}
+	if queueDepth != 1 {
+		t.Fatalf("gated queue depth = %d, want 1 while budget is zero", queueDepth)
+	}
+
+	batch, err := newClient().Batches.Get(ctx, batchID)
+	if err != nil {
+		t.Fatalf("retrieve gated batch: %v", err)
+	}
+	if terminalBatchStatuses[batch.Status] {
+		t.Fatalf("batch reached terminal status %q while dispatch gate was closed", batch.Status)
+	}
+	if batch.RequestCounts.Total != 1 {
+		t.Fatalf("gated batch total requests = %d, want 1", batch.RequestCounts.Total)
+	}
+	if batch.RequestCounts.Completed != 0 || batch.RequestCounts.Failed != 0 {
+		t.Fatalf("gated batch counts = completed:%d failed:%d, want 0 and 0",
+			batch.RequestCounts.Completed, batch.RequestCounts.Failed)
+	}
+
+	gated := getSimStats(t, testSimService)
+	if gated.RequestsReceived != before.RequestsReceived {
+		t.Fatalf("inference received %d request(s) while gate was closed, want 0",
+			gated.RequestsReceived-before.RequestsReceived)
+	}
+	t.Logf("Batch %s is %s with queue depth %d; inference received no request", batchID, batch.Status, queueDepth)
+
+	if err := rdb.Set(ctx, dispatchGateBudgetKey, "1.0", 0).Err(); err != nil {
+		t.Fatalf("open dispatch gate: %v", err)
+	}
+	t.Log("Gate opened (budget=1.0)")
+
+	finalBatch, results := waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusCompleted)
+	if finalBatch.RequestCounts.Total != 1 {
+		t.Errorf("total requests = %d, want 1", finalBatch.RequestCounts.Total)
+	}
+	if finalBatch.RequestCounts.Completed != 1 {
+		t.Errorf("completed requests = %d, want 1", finalBatch.RequestCounts.Completed)
+	}
+	if finalBatch.RequestCounts.Failed != 0 {
+		t.Errorf("failed requests = %d, want 0", finalBatch.RequestCounts.Failed)
+	}
+	if results == nil {
+		t.Fatal("expected batch results")
+	}
+	if results.OutputLines != 1 || results.ErrorLines != 0 {
+		t.Fatalf("result lines = output:%d error:%d, want 1 and 0", results.OutputLines, results.ErrorLines)
+	}
+
+	var output batchResultLine
+	if err := json.Unmarshal([]byte(results.OutputBody), &output); err != nil {
+		t.Fatalf("decode batch output: %v", err)
+	}
+	if output.CustomID != customID {
+		t.Errorf("output custom_id = %q, want %q", output.CustomID, customID)
+	}
+
+	after := getSimStats(t, testSimService)
+	if got := after.RequestsReceived - before.RequestsReceived; got != 1 {
+		t.Errorf("inference requests received = %d, want exactly 1", got)
+	}
+	if got := after.RequestsCompleted - before.RequestsCompleted; got != 1 {
+		t.Errorf("inference requests completed = %d, want exactly 1", got)
+	}
+	if got := after.RequestsFailed - before.RequestsFailed; got != 0 {
+		t.Errorf("inference requests failed = %d, want 0", got)
+	}
+	if got := after.RequestsAborted - before.RequestsAborted; got != 0 {
+		t.Errorf("inference requests aborted = %d, want 0", got)
+	}
+	if after.Running != 0 || after.Waiting != 0 {
+		t.Errorf("simulator is not idle after test: running=%d waiting=%d", after.Running, after.Waiting)
 	}
 }
 
