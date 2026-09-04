@@ -39,5 +39,13 @@ type jobExecutionParams struct {
 	eventWatcher *db.BatchEventsChan
 	cancelUser   context.CancelFunc
 
+	// routing is the routing snapshot captured by runJob at job start and
+	// shared by every phase (ingestion, dispatch, collection). A mid-flight
+	// config reload swaps Processor.routing but never this reference, so one
+	// job always resolves gateways, endpoint limits and inference objectives
+	// against the same snapshot. Nil only in tests that drive individual
+	// phases directly; those fall back to the live routing state.
+	routing *routingSnapshot
+
 	requestCounts *openai.BatchRequestCounts
 }

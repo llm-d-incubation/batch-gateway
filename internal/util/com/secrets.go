@@ -35,6 +35,14 @@ const (
 	SecretKeyS3SecretAccessKey = "s3-secret-access-key"
 )
 
+// SecretFilePath returns the absolute path a key name resolves to under the
+// mounted secrets directory. Callers that need to stat or fingerprint secret
+// contents (e.g. the config reload watcher) use this so the path convention
+// stays in one place.
+func SecretFilePath(filename string) string {
+	return secretsMountPath + "/" + filename
+}
+
 // ReadSecretFile reads a secret value from the mounted secrets directory.
 // filename is the key name only (not a full path); the secrets mount path is prepended internally.
 // Returns an empty string without error if the file does not exist.

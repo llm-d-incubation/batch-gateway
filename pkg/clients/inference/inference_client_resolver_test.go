@@ -18,8 +18,12 @@ package inference
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,4 +300,152 @@ func TestGatewayResolver_ClientLabel(t *testing.T) {
 			t.Fatalf("ClientLabel(stranger) = %q, want \"unknown\"", label)
 		}
 	})
+}
+
+func TestResolverClosersWiring(t *testing.T) {
+	perModelCfg := map[string]GatewayClientConfig{
+		// m1 and m2 share identical settings → pooled into one client.
+		"m1": {URL: "http://shared:8000"},
+		"m2": {URL: "http://shared:8000"},
+		"m3": {URL: "http://other:8000"},
+	}
+	perModel, err := NewPerModelResolver(perModelCfg, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewPerModelResolver: %v", err)
+	}
+	// One closeable resource per unique gateway endpoint (per-model clients
+	// are HTTP clients, which implement io.Closer).
+	if got := len(perModel.closers); got != 2 {
+		t.Fatalf("per-model closers = %d, want 2 (one per unique endpoint)", got)
+	}
+	if err := perModel.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	global, err := NewGlobalResolver(GatewayClientConfig{URL: "http://shared:8000"}, testLogger(t))
+	if err != nil {
+		t.Fatalf("NewGlobalResolver: %v", err)
+	}
+	if got := len(global.closers); got != 1 {
+		t.Fatalf("global closers = %d, want 1", got)
+	}
+	if err := global.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Mock-injected resolvers hold no closeables: Close must stay a no-op.
+	mocks := NewPerModelClientResolver(map[string]InferenceClient{
+		"m1": &mockGenerateClient{},
+	})
+	if got := len(mocks.closers); got != 0 {
+		t.Fatalf("mock-client closers = %d, want 0", got)
+	}
+	if err := mocks.Close(); err != nil {
+		t.Fatalf("Close (mocks): %v", err)
+	}
+}
+
+type mockGenerateClient struct{}
+
+func (m *mockGenerateClient) Generate(_ context.Context, _ *GenerateRequest) (*GenerateResponse, *ClientError) {
+	return &GenerateResponse{StatusCode: 200}, nil
+}
+
+type closableStubClient struct {
+	stubClient
+	closed atomic.Bool
+}
+
+func (c *closableStubClient) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+// countingCloser records how many times Close ran and returns a fixed error.
+type countingCloser struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (c *countingCloser) Close() error {
+	c.calls.Add(1)
+	return c.err
+}
+
+// TestGatewayResolverCloseIdempotent: a resolver can be closed from several
+// places (the swap grace-period timer, processor Stop, tests) and wraps
+// arbitrary io.Closer implementations that need not tolerate double-close.
+// Repeated and concurrent Close calls must run the underlying closers
+// exactly once and return the same error to every caller.
+func TestGatewayResolverCloseIdempotent(t *testing.T) {
+	wantErr := errors.New("close failed")
+	closer := &countingCloser{err: wantErr}
+	r := &GatewayResolver{closers: []io.Closer{closer}}
+
+	const callers = 8
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = r.Close()
+		}()
+	}
+	wg.Wait()
+
+	if got := closer.calls.Load(); got != 1 {
+		t.Fatalf("underlying Close ran %d times, want exactly 1", got)
+	}
+	for i, err := range errs {
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Close (caller %d) = %v, want %v", i, err, wantErr)
+		}
+	}
+
+	// A further sequential Close reuses the cached result.
+	if err := r.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("subsequent Close = %v, want %v", err, wantErr)
+	}
+	if got := closer.calls.Load(); got != 1 {
+		t.Fatalf("underlying Close ran %d times after a repeat call, want 1", got)
+	}
+}
+
+// TestNewPerModelResolverFailureClosesCreatedClients: when client
+// construction fails partway through the per-model loop, the clients
+// already built for earlier gateways must be closed — a failed reload is
+// retried every poll, so leaked HTTP transports would accumulate. The pool
+// must close each unique client exactly once (models sharing a config hold
+// the same client).
+func TestNewPerModelResolverFailureClosesCreatedClients(t *testing.T) {
+	first := &closableStubClient{stubClient: stubClient{id: "first"}}
+
+	orig := newInferenceClient
+	var calls atomic.Int32
+	newInferenceClient = func(*HTTPClientConfig, logr.Logger) (InferenceClient, error) {
+		if calls.Add(1) == 1 {
+			return first, nil
+		}
+		return nil, errors.New("invalid TLS material")
+	}
+	defer func() { newInferenceClient = orig }()
+
+	// m1 and m2 share identical settings (one pooled client); the other
+	// endpoint triggers the second, failing construction. Map iteration
+	// order is irrelevant: exactly one client is created before the failure.
+	r, err := NewPerModelResolver(map[string]GatewayClientConfig{
+		"m1": {URL: "http://shared:8000"},
+		"m2": {URL: "http://shared:8000"},
+		"m3": {URL: "http://other:8000", APIKey: "k"},
+	}, testLogger(t))
+	if err == nil {
+		t.Fatal("expected NewPerModelResolver to fail when a gateway client cannot be constructed")
+	}
+	if r != nil {
+		t.Fatal("failed construction must not return a resolver")
+	}
+	if !first.closed.Load() {
+		t.Fatal("client created before the failing gateway must be closed")
+	}
 }

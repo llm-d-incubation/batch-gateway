@@ -386,3 +386,30 @@ func TestInitMetrics_Twice_DoesNotError(t *testing.T) {
 		}
 	})
 }
+
+// TestInitMetrics_Twice_ReloadMetricsStayRegistered: a repeated InitMetrics
+// re-creates every collector; the reload metric package vars must adopt the
+// already-registered instances, otherwise Record/Set write into orphaned
+// collectors and the Prometheus endpoint keeps serving the stale, empty one.
+func TestInitMetrics_Twice_ReloadMetricsStayRegistered(t *testing.T) {
+	withIsolatedPromRegistry(t, func(reg *prometheus.Registry) {
+		cfg := *config.NewConfig()
+		if err := InitMetrics(cfg); err != nil {
+			t.Fatalf("first InitMetrics: %v", err)
+		}
+		if err := InitMetrics(cfg); err != nil {
+			t.Fatalf("second InitMetrics: %v", err)
+		}
+
+		RecordModelGatewayReload(ResultSuccess)
+		SetModelGatewayReloadLastSuccess(time.Unix(1234, 0))
+
+		f := collectFamilies(t, reg)
+		if v := counterWithLabels(f["batch_processor_model_gateway_reload_total"], map[string]string{"result": ResultSuccess}); v != 1 {
+			t.Fatalf("reload counter{success}=%v, want 1 (updates must hit the registered collector)", v)
+		}
+		if v := gaugeValue(f["batch_processor_model_gateway_reload_last_success_timestamp_seconds"]); v != 1234 {
+			t.Fatalf("reload last-success gauge=%v, want 1234 (updates must hit the registered collector)", v)
+		}
+	})
+}

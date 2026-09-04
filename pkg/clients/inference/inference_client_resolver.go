@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -73,13 +74,18 @@ const ErrCodeModelNotFound = "model_not_found"
 //  3. Return nil — the caller should treat this as a request-level error.
 //
 // GatewayResolver is immutable after construction — safe for concurrent reads.
-// TODO: When dynamic config reload is added, wrap with atomic.Pointer[GatewayResolver]
-// and swap the entire resolver on reload.
+// Dynamic config reload builds a fresh GatewayResolver and swaps it
+// atomically into the processor's routing state (see
+// internal/processor/worker/config_reload.go); old resolvers are closed
+// after a grace period once they fall out of the routing path.
 type GatewayResolver struct {
 	globalClient InferenceClient
 	modelClients map[string]InferenceClient
 	clientURLs   map[InferenceClient]string
 	closers      []io.Closer
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewGlobalResolver creates a GatewayResolver where all models resolve to a
@@ -93,7 +99,15 @@ func NewGlobalResolver(config GatewayClientConfig, logger logr.Logger) (*Gateway
 	return &GatewayResolver{
 		globalClient: client,
 		clientURLs:   map[InferenceClient]string{client: config.URL},
+		closers:      asClosers([]InferenceClient{client}),
 	}, nil
+}
+
+// newInferenceClient is the client constructor used by NewPerModelResolver.
+// Declared as a var so tests can substitute a failing constructor over
+// closeable fakes when asserting failure-path cleanup.
+var newInferenceClient = func(config *HTTPClientConfig, logger logr.Logger) (InferenceClient, error) {
+	return NewInferenceClient(config, logger)
 }
 
 // NewPerModelResolver creates a GatewayResolver that routes each model to its
@@ -109,8 +123,17 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 			modelClients[model] = client
 			continue
 		}
-		client, err := NewInferenceClient(gw.toHTTPClientConfig(), logger)
+		client, err := newInferenceClient(gw.toHTTPClientConfig(), logger)
 		if err != nil {
+			// Close the clients already built for earlier gateways: the
+			// caller (config reload) retries failed construction every
+			// poll, so leaked HTTP transports would accumulate. Iterating
+			// the pool closes each unique client exactly once.
+			for _, pooled := range pool {
+				if closer, ok := pooled.(io.Closer); ok {
+					_ = closer.Close()
+				}
+			}
 			return nil, fmt.Errorf("failed to create inference client for model %q (url %s): %w", model, gw.URL, err)
 		}
 		pool[gw] = client
@@ -118,7 +141,24 @@ func NewPerModelResolver(configs map[string]GatewayClientConfig, logger logr.Log
 		modelClients[model] = client
 	}
 
-	return &GatewayResolver{modelClients: modelClients, clientURLs: urls}, nil
+	closers := make([]InferenceClient, 0, len(pool))
+	for _, client := range pool {
+		closers = append(closers, client)
+	}
+
+	return &GatewayResolver{modelClients: modelClients, clientURLs: urls, closers: asClosers(closers)}, nil
+}
+
+// asClosers returns the io.Closer views of clients that support closing.
+// Mock clients used in tests do not implement io.Closer and are skipped.
+func asClosers(clients []InferenceClient) []io.Closer {
+	closers := make([]io.Closer, 0, len(clients))
+	for _, c := range clients {
+		if closer, ok := c.(io.Closer); ok {
+			closers = append(closers, closer)
+		}
+	}
+	return closers
 }
 
 // IsGlobal returns true if the resolver routes all models to a single global
@@ -173,16 +213,25 @@ func (r *GatewayResolver) ClientLabel(c InferenceClient) string {
 	return "unknown"
 }
 
-// Close releases resources held by the resolver (e.g. Redis connections for
-// async dispatch). Safe to call on resolvers that hold no closeable resources.
+// Close releases resources held by the resolver (e.g. HTTP transports).
+// Safe to call on resolvers that hold no closeable resources.
+//
+// Close is idempotent and safe for concurrent use: a resolver can be closed
+// from several places (the swap grace-period timer, processor Stop, tests),
+// and the resolver contract allows arbitrary io.Closer implementations that
+// do not necessarily tolerate double-close. Only the first call closes the
+// underlying resources; every call returns the same error.
 func (r *GatewayResolver) Close() error {
-	var errs []error
-	for _, c := range r.closers {
-		if err := c.Close(); err != nil {
-			errs = append(errs, err)
+	r.closeOnce.Do(func() {
+		var errs []error
+		for _, c := range r.closers {
+			if err := c.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
-	}
-	return errors.Join(errs...)
+		r.closeErr = errors.Join(errs...)
+	})
+	return r.closeErr
 }
 
 // NewSingleClientResolver wraps a single InferenceClient in a GatewayResolver
@@ -194,6 +243,7 @@ func NewSingleClientResolver(c InferenceClient) *GatewayResolver {
 	return &GatewayResolver{
 		globalClient: c,
 		clientURLs:   map[InferenceClient]string{c: "test"},
+		closers:      asClosers([]InferenceClient{c}),
 	}
 }
 

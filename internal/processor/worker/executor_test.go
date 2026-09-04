@@ -1666,6 +1666,70 @@ func TestRecordE2ELatency(t *testing.T) {
 // Test helpers: metric gathering
 // =====================================================================
 
+// reloadFailureCount reads the model gateway reload counter for
+// result="failed" from the default registry (0 if not yet recorded).
+func reloadFailureCount(t *testing.T) float64 {
+	t.Helper()
+	m := findMetric(t, "batch_processor_model_gateway_reload_total", map[string]string{"result": metrics.ResultFailed})
+	if m == nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+// TestExecuteJob_UsesPinnedRoutingSnapshot: execution MUST resolve gateway
+// clients from the routing snapshot pinned by runJob at job start
+// (params.routing), not from the processor's live routing state. Reproduces
+// F1's mid-flight reload: after ingestion a config swap replaces the live
+// plane; without pinning, dispatch would resolve against a different plane
+// than the one ingestion validated against.
+func TestExecuteJob_UsesPinnedRoutingSnapshot(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.WorkDir = t.TempDir()
+
+	var liveCalls, pinnedCalls atomic.Int32
+	counting := func(counter *atomic.Int32) func(context.Context, *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+		return func(_ context.Context, _ *inference.GenerateRequest) (*inference.GenerateResponse, *inference.ClientError) {
+			counter.Add(1)
+			return &inference.GenerateResponse{
+				RequestID: "server-req-1",
+				Response:  []byte(`{"choices":[{"message":{"content":"hello"}}]}`),
+			}, nil
+		}
+	}
+
+	requests := []batch_types.Request{
+		{CustomID: "r1", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+		{CustomID: "r2", Method: "POST", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "m1"}},
+	}
+	// Live routing resolves through liveMock (post-reload plane).
+	env, jobInfo := setupExecutionJob(t, cfg, &mockInferenceClient{generateFn: counting(&liveCalls)}, requests, map[string]string{"m1": "m1"})
+
+	// The job pinned its snapshot before the reload: pinnedMock stands in for
+	// the gateway plane the job's ingestion phase validated against.
+	pinned := &routingSnapshot{
+		resolver: inference.NewSingleClientResolver(&mockInferenceClient{generateFn: counting(&pinnedCalls)}),
+	}
+
+	counts, err := env.p.executeJob(testLoggerCtx(t), &jobExecutionParams{
+		updater: env.updater,
+		jobInfo: jobInfo,
+		routing: pinned,
+	})
+	if err != nil {
+		t.Fatalf("executeJob: %v", err)
+	}
+	if counts.Completed != 2 {
+		t.Fatalf("Completed = %d, want 2", counts.Completed)
+	}
+	if got := pinnedCalls.Load(); got != 2 {
+		t.Fatalf("pinned snapshot client calls = %d, want 2 (execution must dispatch via the pinned snapshot)", got)
+	}
+	if got := liveCalls.Load(); got != 0 {
+		t.Fatalf("live routing client calls = %d, want 0 (execution must not observe the swapped-in routing)", got)
+	}
+}
+
 func findMetric(t *testing.T, name string, labels map[string]string) *dto.Metric {
 	t.Helper()
 	mfs, err := prometheus.DefaultGatherer.Gather()

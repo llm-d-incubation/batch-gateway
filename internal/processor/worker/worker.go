@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -67,6 +68,26 @@ type Processor struct {
 	// and reuses concrete clients for identical endpoint configs.
 	endpointLimits map[inference.InferenceClient]*endpointLimit
 
+	// routing is the live, atomically swapped routing plane (sync mode).
+	// Set by initConcurrencyControls in Run(); until then, routingState()
+	// falls back to a bootstrap snapshot built from inference +
+	// endpointLimits. See routing.go and config_reload.go.
+	routing atomic.Pointer[routingSnapshot]
+
+	// makeGuard builds the double-release guard for semaphores created
+	// after initConcurrencyControls (e.g. per-endpoint limiters created by
+	// config reload). Nil before Run().
+	makeGuard func(name string) func()
+
+	// watcherWG tracks the config-reload watcher goroutine, whose lifecycle
+	// is bound to the polling loop (see Run).
+	watcherWG sync.WaitGroup
+
+	// gwReloadPath / gwReloadInterval configure hot reload of
+	// model_gateways / global_inference_gateway. Zero interval disables it.
+	gwReloadPath     string
+	gwReloadInterval time.Duration
+
 	poller  *Poller
 	updater *StatusUpdater
 
@@ -79,11 +100,22 @@ type Processor struct {
 	files          *fileManager
 }
 
+// ProcessorOption configures optional Processor features.
+type ProcessorOption func(*Processor)
+
+// WithModelGatewayConfigReload enables hot reload of the model gateway
+// routing plane from the given config file. A zero or negative interval
+// disables the watcher (default).
+func WithModelGatewayConfigReload(configPath string, interval time.Duration) ProcessorOption {
+	return func(p *Processor) { p.gwReloadPath, p.gwReloadInterval = configPath, interval }
+}
+
 func NewProcessor(
 	cfg *config.ProcessorConfig,
 	clients *clientset.Clientset,
 	processorID string,
 	logger logr.Logger,
+	opts ...ProcessorOption,
 ) (*Processor, error) {
 	if cfg.NumWorkers <= 0 {
 		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, semaphore.ErrCap)
@@ -93,7 +125,7 @@ func NewProcessor(
 	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
-	return &Processor{
+	p := &Processor{
 		cfg:            cfg,
 		processorID:    processorID,
 		poller:         poller,
@@ -104,7 +136,11 @@ func NewProcessor(
 		inference:      clients.Inference,
 		asyncInference: clients.AsyncInference,
 		files:          newFileManager(clients.File, clients.FileDB),
-	}, nil
+	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p, nil
 }
 
 // Run starts processor orchestration and enters the polling loop.
@@ -135,6 +171,19 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 		return err
 	}
 
+	// Start the model gateway config watcher (no-op unless reload is enabled).
+	// Must run after initConcurrencyControls so the routing snapshot exists
+	// and makeGuard is available for reload-created endpoint limiters.
+	// The watcher is bound to pollingCtx (not the job-base ctx): once the
+	// processor stops accepting work — guard shutdown or SIGTERM — the route
+	// plane must stop mutating too. Cancel first, then wait for the watcher
+	// to exit so Run returning guarantees no config swap is still in flight.
+	p.startModelGatewayWatcher(pollingCtx)
+	defer func() {
+		stopAccepting()
+		p.watcherWG.Wait()
+	}()
+
 	// If async inference is used (llm-d-async), set up a registry of ResultBroadcasters.
 	// These will propagate results from the async queues to the JobExecutor's individual result collectors.
 	if p.asyncInference != nil {
@@ -154,14 +203,14 @@ func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting co
 	// Create semaphores here (not in NewProcessor) so the double-release guard
 	// callback can capture stopAccepting. This keeps semaphores immutable after
 	// construction — no mutex, no OnDoubleRelease method.
-	makeGuard := func(name string) func() {
+	p.makeGuard = func(name string) func() {
 		return func() {
 			logger.Error(fmt.Errorf("semaphore double-release"), "Initiating graceful shutdown", "semaphore", name)
 			stopAccepting()
 		}
 	}
 	var err error
-	p.tokens, err = semaphore.New(p.cfg.NumWorkers, makeGuard("num-workers"))
+	p.tokens, err = semaphore.New(p.cfg.NumWorkers, p.makeGuard("num-workers"))
 	if err != nil {
 		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
 	}
@@ -176,36 +225,35 @@ func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting co
 	}
 
 	cc := &p.cfg.Concurrency
-	p.globalSem, err = semaphore.New(cc.Global, makeGuard("global-concurrency"))
+	p.globalSem, err = semaphore.New(cc.Global, p.makeGuard("global-concurrency"))
 	if err != nil {
 		return fmt.Errorf("global semaphore (concurrency.global=%d): %w", cc.Global, err)
 	}
 
-	clients := p.inference.Clients()
-	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
-	for _, client := range clients {
-		epLabel := p.inference.ClientLabel(client)
-		epSem, epErr := semaphore.NewAdaptive(cc.PerEndpoint, makeGuard("endpoint-concurrency"))
-		if epErr != nil {
-			return fmt.Errorf("endpoint semaphore (concurrency.per_endpoint=%d): %w", cc.PerEndpoint, epErr)
-		}
-		var epAIMD *semaphore.AIMDController
-		if cc.AIMD.Enabled {
-			epAIMD = semaphore.NewAIMDController(
-				semaphore.AIMDConfig{
-					MinLimit:         cc.AIMD.Min,
-					MaxLimit:         cc.PerEndpoint,
-					BackoffFactor:    cc.AIMD.BackoffFactor,
-					AdditiveIncrease: cc.AIMD.AdditiveIncrease,
-				},
-				cc.PerEndpoint,
-				func(limit int) { epSem.SetLimit(limit) },
-				logger.WithValues("endpoint", epLabel),
-			)
-			metrics.SetAIMDConcurrencyLimit(epLabel, float64(cc.PerEndpoint))
-		}
-		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD, label: epLabel}
+	p.endpointLimits, err = p.buildEndpointLimits(p.inference, nil, logger)
+	if err != nil {
+		return fmt.Errorf("endpoint semaphore (concurrency.per_endpoint=%d): %w", cc.PerEndpoint, err)
 	}
+	clients := p.inference.Clients()
+
+	// Publish the initial routing snapshot. This also anchors the reload
+	// baseline: re-resolving the startup config gives the diff/equality
+	// reference for the first config change (best-effort — a missing
+	// secret file just drops diff fidelity for that first reload).
+	routing := p.routingState()
+	routing.endpointLimits = p.endpointLimits
+	if resolved, resolveErr := config.ResolveModelGateways(p.cfg); resolveErr != nil {
+		logger.Error(resolveErr, "Failed to resolve model gateways for reload baseline; first config change will report all models as added")
+	} else {
+		routing.gateways = resolved
+	}
+	if filesHash, hashErr := referencedFilesHash(p.cfg); hashErr != nil {
+		logger.Error(hashErr, "Failed to hash referenced gateway files for reload baseline; the first successful reload will rebuild routing once to anchor the digest")
+	} else {
+		routing.referencedFilesHash = &filesHash
+	}
+	p.routing.Store(routing)
+
 	const highCardinalityThreshold = 50
 	if cc.AIMD.Enabled && len(clients) > highCardinalityThreshold {
 		logger.Info("AIMD metrics may cause high cardinality: "+
@@ -228,6 +276,12 @@ func (p *Processor) initConcurrencyControls(logger logr.Logger, stopAccepting co
 }
 
 // Stop gracefully stops the processor, waiting for all workers to finish.
+// Once workers drain it also closes the currently installed routing
+// snapshot's resolver when that resolver was created by a config reload:
+// Clientset.Close releases only the startup resolver, so without this the
+// last swapped-in resolver's HTTP transports would leak for the rest of the
+// process lifetime. Safe to call when reload never ran (snapshot resolver
+// equals the startup resolver) or when Run was never called.
 func (p *Processor) Stop(ctx context.Context) {
 	logger := logr.FromContextOrDiscard(ctx)
 	done := make(chan struct{})
@@ -242,6 +296,24 @@ func (p *Processor) Stop(ctx context.Context) {
 
 	case <-done: // all workers have finished
 		logger.V(logging.INFO).Info("All workers have finished")
+	}
+
+	p.closeReloadedRouting(logger)
+}
+
+// closeReloadedRouting closes the live routing snapshot's resolver when it
+// is a reload-created resolver (not the startup one owned by the Clientset).
+// Expected callers have already exited the watcher (Run waits for it), so no
+// swap can race this read.
+func (p *Processor) closeReloadedRouting(logger logr.Logger) {
+	s := p.routing.Load()
+	if s == nil || s.resolver == nil || s.resolver == p.inference {
+		return
+	}
+	if err := s.resolver.Close(); err != nil {
+		logger.Error(err, "Failed to close reloaded model gateway clients on shutdown")
+	} else {
+		logger.V(logging.INFO).Info("Closed reloaded model gateway clients on shutdown")
 	}
 }
 

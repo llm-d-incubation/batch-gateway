@@ -17,7 +17,6 @@ import (
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/config"
 	"github.com/llm-d/llm-d-batch-gateway/internal/processor/pipeline"
 	batch_types "github.com/llm-d/llm-d-batch-gateway/internal/shared/types"
-	"github.com/llm-d/llm-d-batch-gateway/pkg/clients/inference"
 )
 
 // PlanFileSource reads plan files and input JSONL to produce RequestItems.
@@ -25,7 +24,7 @@ type PlanFileSource struct {
 	inputFile          *os.File
 	plansDir           string
 	modelMap           *modelMapFile
-	resolver           *inference.GatewayResolver
+	routing            *routingSnapshot
 	cfg                *config.ProcessorConfig
 	passThroughHeaders map[string]string
 	sloDeadline        time.Time
@@ -39,7 +38,7 @@ type PlanFileSourceConfig struct {
 	InputFile          *os.File
 	PlansDir           string
 	ModelMap           *modelMapFile
-	Resolver           *inference.GatewayResolver
+	Routing            *routingSnapshot
 	Cfg                *config.ProcessorConfig
 	PassThroughHeaders map[string]string
 	SLODeadline        time.Time
@@ -52,7 +51,7 @@ func NewPlanFileSource(cfg PlanFileSourceConfig) *PlanFileSource {
 		inputFile:          cfg.InputFile,
 		plansDir:           cfg.PlansDir,
 		modelMap:           cfg.ModelMap,
-		resolver:           cfg.Resolver,
+		routing:            cfg.Routing,
 		cfg:                cfg.Cfg,
 		passThroughHeaders: cfg.PassThroughHeaders,
 		sloDeadline:        cfg.SLODeadline,
@@ -139,7 +138,7 @@ func (s *PlanFileSource) mergeHeaders(headers map[string]string, modelID string)
 		}
 	}
 
-	if obj := s.cfg.InferenceObjectiveFor(modelID); obj != "" {
+	if obj := s.inferenceObjective(modelID); obj != "" {
 		headers[inferenceObjectiveHeader] = obj
 	}
 
@@ -150,4 +149,15 @@ func (s *PlanFileSource) mergeHeaders(headers map[string]string, modelID string)
 	}
 
 	return headers
+}
+
+// inferenceObjective returns the objective configured for the given lookup
+// key. The routing snapshot reflects the current (possibly hot-reloaded)
+// gateway config. When no snapshot is wired (unit tests without Run()),
+// fall back to the static config.
+func (s *PlanFileSource) inferenceObjective(modelID string) string {
+	if s.routing != nil {
+		return s.routing.objectiveFor(modelID)
+	}
+	return s.cfg.InferenceObjectiveFor(modelID)
 }

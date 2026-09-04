@@ -101,6 +101,8 @@ var (
 	aimdConcurrencyLimit          *prometheus.GaugeVec
 	aimdDecreasesTotal            *prometheus.CounterVec
 	aimdIncreasesTotal            *prometheus.CounterVec
+	modelGatewayReloadTotal       *prometheus.CounterVec
+	modelGatewayReloadLastSuccess prometheus.Gauge
 )
 
 // FileType labels for file upload metrics.
@@ -308,6 +310,24 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		[]string{"endpoint"},
 	)
 
+	// Model gateway config hot-reload outcomes. A sustained non-zero
+	// failure rate means the on-disk config is being edited but the running
+	// routing plane does not reflect it.
+	modelGatewayReloadTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "batch_processor_model_gateway_reload_total",
+			Help: "Total number of model gateway config reload attempts by result (success/failure)",
+		},
+		[]string{"result"},
+	)
+
+	modelGatewayReloadLastSuccess = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "batch_processor_model_gateway_reload_last_success_timestamp_seconds",
+			Help: "Unix timestamp of the last successful model gateway config reload",
+		},
+	)
+
 	// metrics to register
 	metricsToRegister := []prometheus.Collector{
 		jobProcessingDuration,
@@ -329,11 +349,31 @@ func InitMetrics(cfg config.ProcessorConfig) error {
 		aimdConcurrencyLimit,
 		aimdDecreasesTotal,
 		aimdIncreasesTotal,
+		modelGatewayReloadTotal,
+		modelGatewayReloadLastSuccess,
 	}
 
 	for _, metric := range metricsToRegister {
 		if err := prometheus.Register(metric); err != nil {
-			if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if already, ok := err.(prometheus.AlreadyRegisteredError); ok {
+				// A repeated InitMetrics (tests, in-process restart)
+				// re-created every collector, leaving the package vars
+				// pointing at fresh, unregistered instances. Adopt the
+				// already-registered collector for the reload metrics so
+				// RecordModelGatewayReload / SetModelGatewayReloadLastSuccess
+				// keep writing to what the Prometheus endpoint serves.
+				// (The older metrics keep their pre-existing
+				// first-registration-wins behavior.)
+				switch metric {
+				case modelGatewayReloadTotal:
+					if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
+						modelGatewayReloadTotal = existing
+					}
+				case modelGatewayReloadLastSuccess:
+					if existing, ok := already.ExistingCollector.(prometheus.Gauge); ok {
+						modelGatewayReloadLastSuccess = existing
+					}
+				}
 				continue
 			}
 			return err
@@ -458,6 +498,18 @@ const (
 	AIMDSignal5xx           = "5xx"
 	AIMDSignalCapacityRetry = "capacity_retry"
 )
+
+// RecordModelGatewayReload increments the model gateway reload counter.
+// result is ResultSuccess or ResultFailed.
+func RecordModelGatewayReload(result string) {
+	modelGatewayReloadTotal.WithLabelValues(result).Inc()
+}
+
+// SetModelGatewayReloadLastSuccess records the timestamp of the last
+// successful model gateway config reload.
+func SetModelGatewayReloadLastSuccess(t time.Time) {
+	modelGatewayReloadLastSuccess.Set(float64(t.Unix()))
+}
 
 // E2E latency status labels. Must match the terminal states used in
 // job_runner.go, worker.go, and recovery.go.
