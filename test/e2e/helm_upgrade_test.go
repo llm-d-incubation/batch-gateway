@@ -83,7 +83,7 @@ func testHelmUpgrade(t *testing.T) {
 		rollCtx, rollCancel := context.WithTimeout(context.Background(), helmCmdTimeout)
 		defer rollCancel()
 		out, err = exec.CommandContext(rollCtx, "kubectl", "rollout", "status",
-			fmt.Sprintf("deployment/%s-processor", testHelmRelease), "-n", testNamespace, "--timeout=180s",
+			fmt.Sprintf("statefulset/%s-processor", testHelmRelease), "-n", testNamespace, "--timeout=180s",
 		).CombinedOutput()
 		if err != nil {
 			t.Errorf("cleanup: rollout wait failed: %v%s\n%s", err, execContextFailureHint(err), out)
@@ -194,21 +194,28 @@ func kubectlGetConfigMap(t *testing.T, name string) string {
 	return result
 }
 
-func waitForRollout(t *testing.T, deployment string) {
+func waitForRollout(t *testing.T, name string) {
 	t.Helper()
 
-	t.Logf("waiting for rollout of %s...", deployment)
+	// Auto-detect whether the resource is a Deployment or StatefulSet.
+	kind := "deployment"
+	if out, err := exec.Command("kubectl", "get", "statefulset/"+name, "-n", testNamespace).CombinedOutput(); err == nil && len(out) > 0 {
+		kind = "statefulset"
+	}
+
+	resource := fmt.Sprintf("%s/%s", kind, name)
+	t.Logf("waiting for rollout of %s...", resource)
 	ctx, cancel := context.WithTimeout(context.Background(), helmCmdTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "kubectl", "rollout", "status",
-		fmt.Sprintf("deployment/%s", deployment),
+		resource,
 		"-n", testNamespace,
 		"--timeout=180s",
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("rollout of %s failed: %v%s\n%s", deployment, err, execContextFailureHint(err), out)
+		t.Fatalf("rollout of %s failed: %v%s\n%s", resource, err, execContextFailureHint(err), out)
 	}
-	t.Logf("rollout of %s complete", deployment)
+	t.Logf("rollout of %s complete", resource)
 }
 
 // parseModelGatewayMaxRetries returns model_gateways[model].max_retries from processor config.yaml.

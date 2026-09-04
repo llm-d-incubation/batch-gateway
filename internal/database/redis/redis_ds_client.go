@@ -48,7 +48,6 @@ const (
 	eventKeysPrefix      = keysPrefix + "event:"
 	statusKeysPrefix     = keysPrefix + "status:"
 	priorityQueueKeyName = queueKeysPrefix + "priority"
-	inFlightKeyName      = keysPrefix + "inflight"
 	eventChanSize        = 100
 	eventReadCount       = 4
 	eventReadTimeout     = 20 * time.Second
@@ -61,51 +60,13 @@ const (
 )
 
 var (
-	//go:embed redis_common.lua
-	commonLua string
-
-	//go:embed redis_store.lua
-	storeLua         string
-	redisScriptStore = goredis.NewScript(storeLua)
-
-	//go:embed redis_get_by_ids.lua
-	getByIDsLua         string
-	redisScriptGetByIDs = goredis.NewScript(commonLua + "\n" + getByIDsLua)
-
-	//go:embed redis_get_by_tags.lua
-	getByTagsLua         string
-	redisScriptGetByTags = goredis.NewScript(commonLua + "\n" + getByTagsLua)
-
-	//go:embed redis_get_by_expiry.lua
-	getByExpiryLua         string
-	redisScriptGetByExpiry = goredis.NewScript(commonLua + "\n" + getByExpiryLua)
-
-	//go:embed redis_get_by_purpose.lua
-	getByPurposeLua         string
-	redisScriptGetByPurpose = goredis.NewScript(commonLua + "\n" + getByPurposeLua)
-
-	//go:embed redis_get_by_tenant.lua
-	getByTenantLua         string
-	redisScriptGetByTenant = goredis.NewScript(commonLua + "\n" + getByTenantLua)
-
-	//go:embed redis_get_by_non_terminal.lua
-	getByNonTerminalLua         string
-	redisScriptGetByNonTerminal = goredis.NewScript(commonLua + "\n" + getByNonTerminalLua)
-
-	//go:embed redis_update_cas.lua
-	updateCASLua         string
-	redisScriptUpdateCAS = goredis.NewScript(updateCASLua)
-
 	//go:embed redis_pq_get_ids.lua
 	pqGetIDsLua         string
 	redisScriptPQGetIDs = goredis.NewScript(pqGetIDsLua)
 
-	_ db_api.BatchDBClient            = (*BatchDBClientRedis)(nil)
-	_ db_api.FileDBClient             = (*FileDBClientRedis)(nil)
 	_ db_api.BatchPriorityQueueClient = (*ExchangeDBClientRedis)(nil)
 	_ db_api.BatchEventChannelClient  = (*ExchangeDBClientRedis)(nil)
 	_ db_api.BatchStatusClient        = (*ExchangeDBClientRedis)(nil)
-	_ db_api.InFlightClient           = (*ExchangeDBClientRedis)(nil)
 )
 
 type DSClientRedis struct {
@@ -117,48 +78,8 @@ type DSClientRedis struct {
 	onceClose          *sync.Once
 }
 
-type BatchDBClientRedis struct {
-	*DSClientRedis
-}
-
-type FileDBClientRedis struct {
-	*DSClientRedis
-}
-
 type ExchangeDBClientRedis struct {
 	*DSClientRedis
-}
-
-// NewBatchDBClientRedis returns a new redis based batch db client.
-// Provide either an already created baseRedisClient (that can be shared between multiple higher level redis based clients),
-// or a conf and opTimeout for creating a new base redis client dedicated to this higher level client.
-func NewBatchDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
-	redisClient *BatchDBClientRedis, err error) {
-
-	if baseRedisClient == nil {
-		baseRedisClient, err = NewDSClientRedis(ctx, conf, opTimeout)
-		if err != nil {
-			return nil, err
-		}
-	}
-	redisClient = &BatchDBClientRedis{DSClientRedis: baseRedisClient}
-	return
-}
-
-// NewFilesDBClientRedis returns a new redis based file db client.
-// Provide either an already created baseRedisClient (that can be shared between multiple higher level redis based clients),
-// or a conf and opTimeout for creating a new base redis client dedicated to this higher level client.
-func NewFileDBClientRedis(ctx context.Context, baseRedisClient *DSClientRedis, conf *uredis.RedisClientConfig, opTimeout time.Duration) (
-	redisClient *FileDBClientRedis, err error) {
-
-	if baseRedisClient == nil {
-		baseRedisClient, err = NewDSClientRedis(ctx, conf, opTimeout)
-		if err != nil {
-			return nil, err
-		}
-	}
-	redisClient = &FileDBClientRedis{DSClientRedis: baseRedisClient}
-	return
 }
 
 // NewExchangeDBClientRedis returns a new redis based exchange db client.

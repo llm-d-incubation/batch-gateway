@@ -1,12 +1,14 @@
 {{- if .Values.processor.enabled -}}
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "batch-gateway.processor.fullname" . }}
   labels:
     {{- include "batch-gateway.processor.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.processor.replicaCount }}
+  serviceName: {{ include "batch-gateway.processor.fullname" . }}
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "batch-gateway.processor.selectorLabels" . | nindent 6 }}

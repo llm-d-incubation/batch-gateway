@@ -72,7 +72,7 @@ func TestBatchStore(t *testing.T) {
 		item := newTestBatchItem("batch-1", testTenantID)
 
 		mock.ExpectExec("INSERT INTO "+testTable).
-			WithArgs("batch-1", testTenantID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WithArgs("batch-1", testTenantID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 		if err := client.DBStore(ctx, item); err != nil {
@@ -117,8 +117,8 @@ func TestBatchGet(t *testing.T) {
 		item := newTestBatchItem("batch-1", testTenantID)
 		tags, _ := packTags(item.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, "", int64(0), int64(0), item.Status, item.Spec)
 
 		// The SQL LIMIT is limit+1 because get() fetches an extra row to determine
 		// if more results exist beyond the requested page.
@@ -157,8 +157,8 @@ func TestBatchGet(t *testing.T) {
 		item := newTestBatchItem("batch-1", testTenantID)
 		tags, _ := packTags(item.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus}).
-			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, "", int64(0), int64(0), item.Status)
 
 		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE").
 			WithArgs(testTenantID, 0, 11).
@@ -191,9 +191,9 @@ func TestBatchGet(t *testing.T) {
 		tags1, _ := packTags(item1.Tags)
 		tags2, _ := packTags(item2.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-			AddRow(item1.ID, item1.TenantID, item1.Expiry, &tags1, item1.Status, item1.Spec).
-			AddRow(item2.ID, item2.TenantID, item2.Expiry, &tags2, item2.Status, item2.Spec)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+			AddRow(item1.ID, item1.TenantID, item1.Expiry, &tags1, "", int64(0), int64(0), item1.Status, item1.Spec).
+			AddRow(item2.ID, item2.TenantID, item2.Expiry, &tags2, "", int64(0), int64(0), item2.Status, item2.Spec)
 
 		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE").
 			WithArgs([]string{"batch-1", "batch-2"}, 0, 11).
@@ -222,8 +222,8 @@ func TestBatchGet(t *testing.T) {
 		item.Tags = api.Tags{"env": "prod", "team": "ml"}
 		tags, _ := packTags(item.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, "", int64(0), int64(0), item.Status, item.Spec)
 
 		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE").
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), 0, 11).
@@ -254,8 +254,8 @@ func TestBatchGet(t *testing.T) {
 		item := newTestBatchItem("batch-1", testTenantID)
 		tags, _ := packTags(item.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, "", int64(0), int64(0), item.Status, item.Spec)
 
 		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE .+NOT IN").
 			WithArgs(0, 11).
@@ -283,8 +283,8 @@ func TestBatchGet(t *testing.T) {
 		item := newTestBatchItem("batch-1", testTenantID)
 		tags, _ := packTags(item.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, "", int64(0), int64(0), item.Status, item.Spec)
 
 		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE .+NOT IN").
 			WithArgs(testTenantID, 0, 11).
@@ -315,8 +315,8 @@ func TestBatchGet(t *testing.T) {
 		item := newTestBatchItem("batch-1", testTenantID)
 		tags, _ := packTags(item.Tags)
 
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-			AddRow(item.ID, item.TenantID, item.Expiry, &tags, item.Status, item.Spec)
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+			AddRow(item.ID, item.TenantID, item.Expiry, &tags, "", int64(0), int64(0), item.Status, item.Spec)
 
 		mock.ExpectQuery("SELECT .+ FROM "+testTable+" WHERE").
 			WithArgs(pgxmock.AnyArg(), 0, 11).

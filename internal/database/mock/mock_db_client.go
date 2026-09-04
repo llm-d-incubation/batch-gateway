@@ -18,6 +18,7 @@ limitations under the License.
 package mock
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -32,6 +33,10 @@ type MockDBClient[T any, Q any] struct {
 	items           sync.Map
 	idGetter        func(*T) string
 	baseQueryGetter func(*Q) *api.BaseQuery
+
+	// QueryFilter is an optional callback for query-specific filtering beyond BaseQuery.
+	// When set, it is called for each item during DBGet. Return true to include the item.
+	QueryFilter func(item *T, query *Q) bool
 }
 
 // NewMockDBClient creates a new mock DB client.
@@ -64,12 +69,22 @@ func (m *MockDBClient[T, Q]) DBGet(
 	bq := m.baseQueryGetter(query)
 	var allMatches []*T
 
+	matchesAll := func(item *T) bool {
+		if !m.matchesFilters(*item, bq) {
+			return false
+		}
+		if m.QueryFilter != nil && !m.QueryFilter(item, query) {
+			return false
+		}
+		return true
+	}
+
 	// If IDs are specified, get by IDs
 	if len(bq.IDs) > 0 {
 		for _, id := range bq.IDs {
 			if value, ok := m.items.Load(id); ok {
 				if item, ok := value.(*T); ok {
-					if m.matchesFilters(*item, bq) {
+					if matchesAll(item) {
 						allMatches = append(allMatches, item)
 					}
 				}
@@ -79,7 +94,7 @@ func (m *MockDBClient[T, Q]) DBGet(
 		// Collect all items, applying filters
 		m.items.Range(func(key, value any) bool {
 			if item, ok := value.(*T); ok {
-				if m.matchesFilters(*item, bq) {
+				if matchesAll(item) {
 					allMatches = append(allMatches, item)
 				}
 			}
@@ -114,9 +129,36 @@ func (m *MockDBClient[T, Q]) DBUpdate(ctx context.Context, item *T, expectedStat
 	if id == "" {
 		return fmt.Errorf("item has empty ID")
 	}
-	if _, ok := m.items.Load(id); !ok {
+	existing, ok := m.items.Load(id)
+	if !ok {
 		return fmt.Errorf("cannot update item with ID '%s': item doesn't exist", id)
 	}
+
+	if existingItem, ok := existing.(*T); ok {
+		val := reflect.ValueOf(*existingItem)
+
+		// CAS: check expectedStatus matches current Status field.
+		if expectedStatus != nil {
+			statusField := val.FieldByName("Status")
+			if statusField.IsValid() && statusField.Kind() == reflect.Slice {
+				currentStatus, _ := statusField.Interface().([]byte)
+				if !bytes.Equal(currentStatus, expectedStatus) {
+					return fmt.Errorf("DBUpdate: %w", api.ErrConflict)
+				}
+			}
+		}
+
+		// Epoch fencing: if the update item has Epoch > 0, check it matches.
+		updateVal := reflect.ValueOf(*item)
+		epochField := updateVal.FieldByName("Epoch")
+		if epochField.IsValid() && epochField.Kind() == reflect.Int64 && epochField.Int() > 0 {
+			existingEpoch := val.FieldByName("Epoch")
+			if existingEpoch.IsValid() && existingEpoch.Int() != epochField.Int() {
+				return fmt.Errorf("DBUpdate: %w", api.ErrConflict)
+			}
+		}
+	}
+
 	m.items.Store(id, item)
 	return nil
 }

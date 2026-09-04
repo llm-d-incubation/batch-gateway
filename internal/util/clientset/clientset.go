@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 
 	"github.com/go-logr/logr"
 	dbapi "github.com/llm-d/llm-d-batch-gateway/internal/database/api"
@@ -48,7 +49,6 @@ type Clientset struct {
 	Queue          dbapi.BatchPriorityQueueClient
 	Event          dbapi.BatchEventChannelClient
 	Status         dbapi.BatchStatusClient
-	InFlight       dbapi.InFlightClient
 	Inference      *inference.GatewayResolver
 	AsyncInference *inference.AsyncGatewayResolver
 }
@@ -91,31 +91,6 @@ func NewS3FileClient(ctx context.Context, cfg *s3client.Config) (fsapi.BatchFile
 	}
 	logr.FromContextOrDiscard(ctx).Info("S3 file client created", "region", cfg.Region, "endpoint", cfg.Endpoint)
 	return c, nil
-}
-
-// NewRedisDBClients creates Redis-backed batch and file database clients.
-// It reads the Redis URL from the mounted secrets when not set in the config.
-func NewRedisDBClients(ctx context.Context, cfg *uredis.RedisClientConfig) (dbapi.BatchDBClient, dbapi.FileDBClient, error) {
-	if cfg == nil {
-		return nil, nil, fmt.Errorf("redis config cannot be nil")
-	}
-	if cfg.Url == "" {
-		redisURL, err := ucom.ReadSecretFile(ucom.SecretKeyRedisURL)
-		if err != nil {
-			return nil, nil, err
-		}
-		cfg.Url = redisURL
-	}
-	batchDB, err := dbRedis.NewBatchDBClientRedis(ctx, nil, cfg, 0)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create redis batch-db client: %w", err)
-	}
-	fileDB, err := dbRedis.NewFileDBClientRedis(ctx, nil, cfg, 0)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create redis file-db client: %w", err)
-	}
-	logr.FromContextOrDiscard(ctx).Info("Redis-based database client created")
-	return batchDB, fileDB, nil
 }
 
 // NewPostgreSQLDBClients creates PostgreSQL-backed batch and file database clients.
@@ -194,7 +169,8 @@ func WithAsyncInference(cfg inference.AsyncClientConfig) Option {
 }
 
 // NewClientset creates the clients specified by the given options.
-func NewClientset(ctx context.Context, component ucom.Component, opts ...Option) (*Clientset, error) {
+// On error, any clients already created are closed before returning.
+func NewClientset(ctx context.Context, component ucom.Component, opts ...Option) (_ *Clientset, retErr error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
 	cfg := &clientsetConfig{}
@@ -203,6 +179,13 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 	}
 
 	cs := &Clientset{}
+	defer func() {
+		if retErr != nil {
+			if closeErr := cs.Close(); closeErr != nil {
+				logger.Error(closeErr, "failed to close partially constructed clientset")
+			}
+		}
+	}()
 
 	// build redis exchange client
 	if cfg.exchangeRedisCfg != nil {
@@ -224,7 +207,6 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 		cs.Queue = redisClient
 		cs.Event = redisClient
 		cs.Status = redisClient
-		cs.InFlight = redisClient
 	}
 
 	// build file store client
@@ -254,14 +236,6 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 	// build database client
 	if cfg.dbCfg != nil {
 		switch cfg.dbCfg.Type {
-		case sharedcfg.DBTypeRedis, sharedcfg.DBTypeValkey:
-			redisCfg := &cfg.dbCfg.RedisCfg
-			batchDB, fileDB, err := NewRedisDBClients(ctx, redisCfg)
-			if err != nil {
-				return nil, err
-			}
-			cs.BatchDB = batchDB
-			cs.FileDB = fileDB
 		case sharedcfg.DBTypePostgreSQL:
 			batchDB, fileDB, err := NewPostgreSQLDBClients(ctx, &cfg.dbCfg.PostgreSQLCfg)
 			if err != nil {
@@ -269,8 +243,23 @@ func NewClientset(ctx context.Context, component ucom.Component, opts ...Option)
 			}
 			cs.BatchDB = batchDB
 			cs.FileDB = fileDB
+
+			var processorID string
+			if component == ucom.ComponentProcessor {
+				processorID, err = os.Hostname()
+				if err != nil {
+					return nil, fmt.Errorf("failed to get hostname for processor ID: %w", err)
+				}
+			}
+			queueClient, err := postgresql.NewPostgresBatchQueueClient(ctx, &cfg.dbCfg.PostgreSQLCfg, processorID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create postgres queue client: %w", err)
+			}
+			// Postgres queue intentionally replaces the Redis queue set above.
+			// Redis is retained only for Event and Status channels.
+			cs.Queue = queueClient
 		default:
-			return nil, fmt.Errorf("unsupported database.type: %s (supported values: redis, valkey, postgresql)", cfg.dbCfg.Type)
+			return nil, fmt.Errorf("unsupported database.type: %s (supported values: postgresql)", cfg.dbCfg.Type)
 		}
 	}
 
@@ -337,11 +326,6 @@ func (cs *Clientset) Close() error {
 	}
 	if cs.File != nil {
 		if err := cs.File.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if cs.InFlight != nil {
-		if err := cs.InFlight.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

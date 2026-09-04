@@ -967,14 +967,14 @@ func assertRequestErrors(t *testing.T, model string) {
 func getProcessorLogsSince(t *testing.T, sinceTime string) string {
 	t.Helper()
 
-	deployment := fmt.Sprintf("%s-processor", testHelmRelease)
+	sts := fmt.Sprintf("%s-processor", testHelmRelease)
 	out, err := exec.Command("kubectl", "logs",
-		fmt.Sprintf("deployment/%s", deployment),
+		fmt.Sprintf("statefulset/%s", sts),
 		"-n", testNamespace,
 		fmt.Sprintf("--since-time=%s", sinceTime),
 	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl logs for %s failed: %v\n%s", deployment, err, out)
+		t.Fatalf("kubectl logs for %s failed: %v\n%s", sts, err, out)
 	}
 	return string(out)
 }

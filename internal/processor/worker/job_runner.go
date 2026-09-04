@@ -50,15 +50,7 @@ import (
 // Declared as var (not const) so tests can shorten it.
 var panicRecoveryTimeout = time.Minute
 
-// defaultHeartbeatInterval is the fallback heartbeat interval used when
-// the config value is zero. Matches ProcessorConfig.HeartbeatInterval default.
-const defaultHeartbeatInterval = 5 * time.Minute
-
 func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
-	// Clean up in-flight entry on exit (first defer = last to run via LIFO),
-	// ensuring the entry is removed regardless of how runJob terminates.
-	defer p.deleteInFlight(context.Background(), params.jobItem.ID)
-
 	// Restore parent trace context propagated from the apiserver via Redis tags
 	if len(params.jobInfo.TraceContext) > 0 {
 		propagator := otel.GetTextMapPropagator()
@@ -166,16 +158,6 @@ func (p *Processor) runJob(ctx context.Context, params *jobExecutionParams) {
 	// watch for cancel event
 	params.eventWatcher = eventWatcher
 	go p.watchCancel(ctx, params)
-
-	// Start heartbeat: periodically refreshes the in-flight entry so the
-	// orphan reconciler knows this job is still being actively processed.
-	// On each tick it also checks the DB status — if the reconciler acted
-	// (terminal status or reverted to validating), it aborts (neutral
-	// context.Canceled) to stop all in-flight requests. The processor's terminal
-	// CAS write will then fail with ErrConflict, and the processor yields.
-	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
-	defer heartbeatCancel()
-	go p.heartbeat(heartbeatCtx, params.jobItem.ID, func() { abortCause(context.Canceled) })
 
 	// ingestion: pre-process job (rejects unregistered-model requests early)
 	ingestCtx, ingestSpan := uotel.StartSpan(abortCtx, "ingest-and-plan")

@@ -83,11 +83,11 @@ func doTestPodDeleteMidJob(t *testing.T) {
 	waitForProcessorReady(t, 2*time.Minute)
 	t.Log("new processor pod is ready")
 
-	// The orphan reconciler detects the stranded in_progress job (not in
-	// queue, stale or missing in-flight entry) and transitions it to failed.
-	// Use waitForOrphanTerminal because the reconciler's transition preserves
-	// whatever request counts existed at crash time and does not upload files.
-	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusFailed)
+	// The processor is a StatefulSet — the restarted pod has the same identity
+	// (batch-gateway-processor-0) and recovers its own orphaned jobs via
+	// recoverOwnedJobs at startup. Since the SLO is still valid (24h window),
+	// the job is re-enqueued, re-processed, and completed.
+	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
 
 	t.Logf("pod delete: batch %s reached %s (completed=%d, failed=%d, total=%d)",
 		batchID, finalBatch.Status,
@@ -97,9 +97,8 @@ func doTestPodDeleteMidJob(t *testing.T) {
 }
 
 // doTestRollingRestartReEnqueue submits a batch, triggers a rolling restart of
-// the processor deployment, and verifies the GC reconciler transitions the
-// orphaned job to failed. Same SIGTERM -> orphan -> reconciler path as
-// PodDeleteMidJob, different trigger.
+// the processor StatefulSet, and verifies the restarted processor self-recovers
+// the orphaned job via recoverOwnedJobs and completes it.
 //
 // Rolling restart delivers SIGTERM only after the new pod is Ready (~12s).
 // To guarantee requests are still in-flight when SIGTERM arrives, we set the
@@ -132,12 +131,12 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
 	time.Sleep(2 * time.Second)
 
-	deployment := fmt.Sprintf("%s-processor", testHelmRelease)
-	t.Logf("triggering rolling restart of %s...", deployment)
+	sts := fmt.Sprintf("%s-processor", testHelmRelease)
+	t.Logf("triggering rolling restart of statefulset/%s...", sts)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
-		fmt.Sprintf("deployment/%s", deployment),
+		fmt.Sprintf("statefulset/%s", sts),
 		"-n", testNamespace,
 	).CombinedOutput()
 	if err != nil {
@@ -145,13 +144,17 @@ func doTestRollingRestartReEnqueue(t *testing.T) {
 	}
 	t.Logf("rollout restart triggered: %s", strings.TrimSpace(string(out)))
 
-	waitForRollout(t, deployment)
+	waitForRollout(t, sts)
 	waitForProcessorReady(t, 2*time.Minute)
 	t.Log("processor rollout complete and ready")
 
-	// Same reconciler path as PodDeleteMidJob: the orphaned job is detected
-	// and transitioned to failed.
-	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusFailed)
+	// Restore normal latency so the re-processed job completes quickly.
+	setSimAdminConfig(t, testSimService, `{"inter-token-latency":"100ms"}`)
+
+	// The processor is a StatefulSet — the restarted pod has the same identity
+	// and recovers its own orphaned jobs via recoverOwnedJobs. Since the SLO
+	// is still valid (24h window), the job is re-enqueued and completed.
+	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
 
 	t.Logf("rolling restart: batch %s reached %s (completed=%d, failed=%d, total=%d)",
 		batchID, finalBatch.Status,

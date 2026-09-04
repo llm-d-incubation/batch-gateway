@@ -222,7 +222,7 @@ func (c *ServerConfig) applyDefaults() {
 		c.ObservabilityPort = "8081"
 	}
 	if c.DBClientCfg.Type == "" {
-		c.DBClientCfg.Type = sharedcfg.DBTypeRedis
+		c.DBClientCfg.Type = sharedcfg.DBTypePostgreSQL
 	}
 	if c.ReadHeaderTimeoutSeconds <= 0 {
 		c.ReadHeaderTimeoutSeconds = DefaultReadHeaderTimeoutSeconds

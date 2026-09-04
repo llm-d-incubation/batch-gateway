@@ -27,8 +27,6 @@ import (
 
 // Database backend types.
 const (
-	DBTypeRedis      = "redis"
-	DBTypeValkey     = "valkey"
 	DBTypePostgreSQL = "postgresql"
 	DBTypeMock       = "mock"
 )
@@ -42,7 +40,7 @@ const (
 
 // DBClientConfig holds database client configuration shared by all components.
 type DBClientConfig struct {
-	// Type specifies the database backend: DBTypeRedis, DBTypeValkey, or DBTypePostgreSQL.
+	// Type specifies the database backend: DBTypePostgreSQL.
 	Type string `yaml:"type"`
 	// PostgreSQLCfg holds PostgreSQL connection settings (used when Type is "postgresql").
 	PostgreSQLCfg postgresql.PostgreSQLConfig `yaml:"postgresql"`

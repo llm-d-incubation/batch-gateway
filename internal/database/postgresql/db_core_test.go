@@ -126,10 +126,11 @@ func TestCoreStore_DBFailure(t *testing.T) {
 	contents := &api.BaseContents{Spec: []byte(`{}`), Status: []byte(`{}`)}
 
 	mock.ExpectExec("INSERT INTO").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(fmt.Errorf("connection refused"))
 
-	if err := core.store(context.Background(), idx, contents, nil); err == nil {
+	extras := map[string]any{colProcessorID: "", colPriority: int64(0), colEpoch: int64(0)}
+	if err := core.store(context.Background(), idx, contents, extras); err == nil {
 		t.Fatal("expected error on DB failure")
 	}
 }
@@ -142,10 +143,11 @@ func TestCoreStore_NilTags(t *testing.T) {
 	contents := &api.BaseContents{Spec: []byte(`{}`), Status: []byte(`{}`)}
 
 	mock.ExpectExec("INSERT INTO").
-		WithArgs("id-1", "t1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("id-1", "t1", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
-	if err := core.store(context.Background(), idx, contents, nil); err != nil {
+	extras := map[string]any{colProcessorID: "", colPriority: int64(0), colEpoch: int64(0)}
+	if err := core.store(context.Background(), idx, contents, extras); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -194,8 +196,8 @@ func TestCoreGet_Expired(t *testing.T) {
 	defer mock.Close()
 
 	tags := `{"purpose":"batch"}`
-	rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus, colSpec}).
-		AddRow("id-1", "t1", int64(100), &tags, []byte(`{}`), []byte(`{}`))
+	rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus, colSpec}).
+		AddRow("id-1", "t1", int64(100), &tags, "", int64(0), int64(0), []byte(`{}`), []byte(`{}`))
 
 	mock.ExpectQuery("SELECT .+ FROM batch_items WHERE").
 		WithArgs(0, 11).
@@ -221,10 +223,10 @@ func TestCoreGet_Pagination(t *testing.T) {
 
 		tags := `{"k":"v"}`
 		// Return limit+1 rows (3) to indicate more results exist.
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus}).
-			AddRow("id-1", "t1", int64(0), &tags, []byte(`{}`)).
-			AddRow("id-2", "t1", int64(0), &tags, []byte(`{}`)).
-			AddRow("id-3", "t1", int64(0), &tags, []byte(`{}`))
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus}).
+			AddRow("id-1", "t1", int64(0), &tags, "", int64(0), int64(0), []byte(`{}`)).
+			AddRow("id-2", "t1", int64(0), &tags, "", int64(0), int64(0), []byte(`{}`)).
+			AddRow("id-3", "t1", int64(0), &tags, "", int64(0), int64(0), []byte(`{}`))
 
 		// get() requests limit+1 rows from the DB.
 		mock.ExpectQuery("SELECT .+ FROM batch_items WHERE").
@@ -256,9 +258,9 @@ func TestCoreGet_Pagination(t *testing.T) {
 
 		tags := `{"k":"v"}`
 		// Return exactly limit rows (2) — no extra row means no more results.
-		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colStatus}).
-			AddRow("id-1", "t1", int64(0), &tags, []byte(`{}`)).
-			AddRow("id-2", "t1", int64(0), &tags, []byte(`{}`))
+		rows := pgxmock.NewRows([]string{colID, colTenantID, colExpiry, colTags, colProcessorID, colPriority, colEpoch, colStatus}).
+			AddRow("id-1", "t1", int64(0), &tags, "", int64(0), int64(0), []byte(`{}`)).
+			AddRow("id-2", "t1", int64(0), &tags, "", int64(0), int64(0), []byte(`{}`))
 
 		mock.ExpectQuery("SELECT .+ FROM batch_items WHERE").
 			WithArgs("t1", 0, 3).
@@ -293,7 +295,7 @@ func TestCoreUpdate_ValidationError(t *testing.T) {
 	idx := &api.BaseIndexes{ID: "", TenantID: "t1"}
 	contents := &api.BaseContents{Status: []byte(`{}`)}
 
-	if err := core.update(context.Background(), idx, contents, nil); err == nil {
+	if err := core.update(context.Background(), idx, contents, nil, nil, nil); err == nil {
 		t.Fatal("expected validation error for empty ID")
 	}
 }
@@ -309,7 +311,7 @@ func TestCoreUpdate_NonExistentID(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "missing").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
-	if err := core.update(context.Background(), idx, contents, nil); err == nil {
+	if err := core.update(context.Background(), idx, contents, nil, nil, nil); err == nil {
 		t.Fatal("expected error for non-existent ID")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -324,7 +326,7 @@ func TestCoreUpdate_NoFieldsToUpdate(t *testing.T) {
 	idx := &api.BaseIndexes{ID: "id-1", TenantID: "t1", Tags: nil}
 	contents := &api.BaseContents{}
 
-	if err := core.update(context.Background(), idx, contents, nil); err != nil {
+	if err := core.update(context.Background(), idx, contents, nil, nil, nil); err != nil {
 		t.Fatalf("expected nil for no-op update, got %v", err)
 	}
 }
@@ -340,7 +342,7 @@ func TestCoreUpdate_DBFailure(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), "id-1").
 		WillReturnError(fmt.Errorf("connection refused"))
 
-	if err := core.update(context.Background(), idx, contents, nil); err == nil {
+	if err := core.update(context.Background(), idx, contents, nil, nil, nil); err == nil {
 		t.Fatal("expected error on DB failure")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

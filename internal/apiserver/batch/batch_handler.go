@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -157,15 +156,6 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		attribute.String(uotel.AttrBatchID, batchID),
 	)
 
-	// store batch job
-	completionDuration, err := time.ParseDuration(batchReq.CompletionWindow)
-	if err != nil {
-		logger.Error(err, "failed to parse completion window duration")
-		common.WriteInternalServerError(w, r)
-		return
-	}
-	slo := time.Now().UTC().Add(completionDuration)
-
 	// Create openai.Batch object
 	batch := &openai.Batch{
 		ID: batchID,
@@ -184,9 +174,7 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: output_expires_after_anchor and output_expires_after_seconds are saved to database as tag. The cleanup service should delete the output file by this value
 	// Note that the output_expires_after_anchor is the file creation time, not the time the batch is created.
-	tags := api.Tags{
-		batch_types.TagSLO: fmt.Sprintf("%d", slo.UnixMicro()),
-	}
+	tags := api.Tags{}
 	if batchReq.OutputExpiresAfter != nil {
 		tags[batch_types.TagOutputExpiresAfterAnchor] = batchReq.OutputExpiresAfter.Anchor
 		tags[batch_types.TagOutputExpiresAfterSeconds] = fmt.Sprintf("%d", batchReq.OutputExpiresAfter.Seconds)
@@ -221,33 +209,6 @@ func (c *BatchAPIHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 
 	if err := c.clients.BatchDB.DBStore(ctx, dbItem); err != nil {
 		logger.Error(err, "failed to store batch job")
-		common.WriteInternalServerError(w, r)
-		return
-	}
-
-	// enqueue job
-	bjpData := &batch_types.BatchJobPriorityData{
-		CreatedAt: createdAt,
-	}
-	bjpDataBytes, err := json.Marshal(bjpData)
-	if err != nil {
-		logger.Error(err, "failed to marshal batch job priority data")
-		if _, delErr := c.clients.BatchDB.DBDelete(ctx, []string{batchID}); delErr != nil {
-			logger.Error(delErr, "failed to cleanup batch job after marshal failure", "batch_id", batchID)
-		}
-		common.WriteInternalServerError(w, r)
-		return
-	}
-	bjp := &api.BatchJobPriority{
-		ID:   batchID,
-		SLO:  slo,
-		Data: bjpDataBytes,
-	}
-	if err := c.clients.Queue.PQEnqueue(ctx, bjp); err != nil {
-		logger.Error(err, "failed to enqueue batch job priority")
-		if _, delErr := c.clients.BatchDB.DBDelete(ctx, []string{batchID}); delErr != nil {
-			logger.Error(delErr, "failed to cleanup batch job after enqueue failure", "batch_id", batchID)
-		}
 		common.WriteInternalServerError(w, r)
 		return
 	}
@@ -520,38 +481,37 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to remove from the priority queue first.
-	// Reconstruct the exact SLO score from the stored tag.
-	removedFromQueue := false
-	sloStr, hasSLO := item.Tags[batch_types.TagSLO]
-	sloMicro, parseErr := strconv.ParseInt(sloStr, 10, 64)
-	if hasSLO && parseErr == nil {
-		slo := time.UnixMicro(sloMicro).UTC()
-		jobPriority := &api.BatchJobPriority{
-			ID:  batch.ID,
-			SLO: slo,
+	// PQDelete atomically transitions the job to cancelled (with cancelled_at)
+	// if it is still unclaimed. Returns 1 if cancelled, 0 if already claimed.
+	nDeleted, err := c.clients.Queue.PQDelete(ctx, &api.BatchJobPriority{ID: batch.ID})
+	if err != nil {
+		logger.Error(err, "failed to remove batch from queue")
+		common.WriteInternalServerError(w, r)
+		return
+	}
+
+	if nDeleted > 0 {
+		// Job was in queue — PQDelete already transitioned it to cancelled.
+		// Re-read the updated state and return it.
+		freshItem, apiErr := c.getBatchItemFromDB(r, "cancel")
+		if apiErr != nil {
+			common.WriteAPIError(w, r, *apiErr)
+			return
 		}
-		nDeleted, err := c.clients.Queue.PQDelete(ctx, jobPriority)
-		if err != nil {
-			logger.Error(err, "failed to remove batch from queue")
+		freshBatch, convErr := converter.DBItemToBatch(freshItem)
+		if convErr != nil {
+			logger.Error(convErr, "failed to convert database item to batch")
 			common.WriteInternalServerError(w, r)
 			return
 		}
-		removedFromQueue = nDeleted > 0
-	} else {
-		logger.Info("SLO tag missing or malformed, skipping queue removal", "key", batch_types.TagSLO, "hasSLO", hasSLO, "error", parseErr)
+		common.WriteJSONResponse(w, r, http.StatusOK, freshBatch)
+		return
 	}
 
-	if removedFromQueue {
-		// Job was in queue (not yet being processed) - directly cancel it
-		batch.Status = openai.BatchStatusCancelled
-		cancelledAt := time.Now().UTC().Unix()
-		batch.CancelledAt = &cancelledAt
-	} else {
-		// Job is being processed - mark as cancelling and send cancel event
-		batch.Status = openai.BatchStatusCancelling
-		cancellingAt := time.Now().UTC().Unix()
-		batch.CancellingAt = &cancellingAt
-	}
+	// Job is being processed — mark as cancelling and send cancel event.
+	batch.Status = openai.BatchStatusCancelling
+	cancellingAt := time.Now().UTC().Unix()
+	batch.CancellingAt = &cancellingAt
 
 	// Persist the status change *before* sending the cancel event to prevent a
 	// write-write race between the API server and the worker.
@@ -580,21 +540,19 @@ func (c *BatchAPIHandler) CancelBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the job is being processed, send the cancel event *after* DB update succeeds.
-	if !removedFromQueue {
-		event := []api.BatchEvent{
-			{
-				ID:   batch.ID,
-				Type: api.BatchEventCancel,
-				TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
-			},
-		}
-		_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
-		if err != nil {
-			logger.Error(err, "failed to send cancel event")
-			common.WriteInternalServerError(w, r)
-			return
-		}
+	// Send the cancel event *after* DB update succeeds.
+	event := []api.BatchEvent{
+		{
+			ID:   batch.ID,
+			Type: api.BatchEventCancel,
+			TTL:  c.config.BatchAPI.GetBatchEventTTLSeconds(),
+		},
+	}
+	_, err = c.clients.Event.ECProducerSendEvents(ctx, event)
+	if err != nil {
+		logger.Error(err, "failed to send cancel event")
+		common.WriteInternalServerError(w, r)
+		return
 	}
 
 	common.WriteJSONResponse(w, r, http.StatusOK, batch)

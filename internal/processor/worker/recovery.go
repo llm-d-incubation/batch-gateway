@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -60,53 +59,55 @@ type recoveryResult struct {
 	cancelPhase  string // non-empty → RecordCancellation is called
 }
 
-// recoverStaleJobs scans the workdir for leftover job directories from a previous
-// container execution and performs phase-aware recovery for each discovered job.
+// recoverOwnedJobs queries the DB for non-terminal jobs owned by this processor
+// (via processor_id) and recovers them. This handles both container-level crashes
+// (where emptyDir survives) and pod-level restarts within a StatefulSet (where
+// the processor identity is preserved across restarts).
 //
-// This handles container-level crashes (OOM kill, process panic) where K8s restarts
-// the container within the same pod and emptyDir survives. Pod-level failures
-// (node eviction, pod deletion) destroy emptyDir and are out of scope.
-//
-// Runs once at startup before the polling loop. Individual job recovery failures
-// do not prevent the processor from starting.
-func (p *Processor) recoverStaleJobs(ctx context.Context) {
+// Runs once at startup before the polling loop.
+func (p *Processor) recoverOwnedJobs(ctx context.Context) {
 	logger := logr.FromContextOrDiscard(ctx)
 
-	dirs, err := p.discoverStaleJobDirs()
-	if err != nil {
-		logger.Error(err, "Startup recovery: failed to scan workdir")
+	const pageSize = 1000
+	var items []*db.BatchItem
+	cursor := 0
+	for {
+		batch, nextCursor, more, err := p.batchDB.DBGet(ctx, &db.BatchQuery{
+			ProcessorID: p.processorID,
+			NonTerminal: true,
+		}, false, cursor, pageSize)
+		if err != nil {
+			logger.Error(err, "Startup recovery: failed to query owned jobs")
+			return
+		}
+		items = append(items, batch...)
+		if !more {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	if len(items) == 0 {
+		logger.V(logging.DEBUG).Info("Startup recovery: no owned jobs found")
 		return
 	}
 
-	if len(dirs) == 0 {
-		logger.V(logging.DEBUG).Info("Startup recovery: no stale job directories found")
-		return
-	}
-
-	logger.V(logging.INFO).Info("Startup recovery: found stale job directories", "count", len(dirs))
+	logger.V(logging.INFO).Info("Startup recovery: found owned jobs", "count", len(items))
 
 	var grp errgroup.Group
 	grp.SetLimit(p.cfg.Concurrency.Recovery)
 
-	for _, dir := range dirs {
-		jobID := filepath.Base(dir)
+	for _, item := range items {
 		grp.Go(func() error {
-			jlogger := logger.WithValues("jobId", jobID)
+			jlogger := logger.WithValues("jobId", item.ID)
 			jctx := logr.NewContext(ctx, jlogger)
-			if err := p.recoverJob(jctx, jobID); err != nil {
-				jlogger.Error(err, "Startup recovery: failed to recover job")
+			if recoverErr := p.recoverJob(jctx, item.ID); recoverErr != nil {
+				jlogger.Error(recoverErr, "Startup recovery: failed to recover owned job")
 			}
-			return nil // individual failures shouldn't block other recoveries
+			return nil
 		})
 	}
 	_ = grp.Wait()
-}
-
-// discoverStaleJobDirs returns paths to job directories left over from a previous execution.
-// The workdir layout is <WorkDir>/<tenantHash>/jobs/<jobID>/.
-func (p *Processor) discoverStaleJobDirs() ([]string, error) {
-	pattern := filepath.Join(p.cfg.WorkDir, "*", jobsDirName, "*")
-	return filepath.Glob(pattern)
 }
 
 // recoverJob is the single routing point for startup recovery. Each recover*
@@ -408,16 +409,10 @@ func (p *Processor) extractRequestCounts(dbItem *db.BatchItem) *openai.BatchRequ
 }
 
 // extractRecoverySLO recovers the exact SLO deadline for queue re-enqueue.
-// Prefer the stored microsecond tag so later CancelBatch can reconstruct the same queue score.
 func (p *Processor) extractRecoverySLO(dbItem *db.BatchItem, jobInfo *batch_types.JobInfo) (*time.Time, error) {
-	if dbItem != nil {
-		if sloStr, ok := dbItem.Tags[batch_types.TagSLO]; ok {
-			sloMicro, err := strconv.ParseInt(sloStr, 10, 64)
-			if err == nil {
-				slo := time.UnixMicro(sloMicro).UTC()
-				return &slo, nil
-			}
-		}
+	if dbItem != nil && dbItem.Priority > 0 {
+		slo := time.UnixMicro(dbItem.Priority).UTC()
+		return &slo, nil
 	}
 
 	if jobInfo.BatchJob.ExpiresAt != nil {

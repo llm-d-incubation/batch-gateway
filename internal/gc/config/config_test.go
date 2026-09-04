@@ -99,60 +99,6 @@ file_client:
 	}
 }
 
-func TestLoad_RedisDatabase(t *testing.T) {
-	path := writeTempConfig(t, `
-db_client:
-  type: "redis"
-  redis:
-    db: 2
-    enable_tls: true
-file_client:
-  type: "fs"
-  fs:
-    base_path: "/tmp/files"
-`)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.DBClientCfg.Type != "redis" {
-		t.Errorf("expected db_client.type redis, got %s", cfg.DBClientCfg.Type)
-	}
-	if cfg.DBClientCfg.RedisCfg.DB != 2 {
-		t.Errorf("expected redis db 2, got %d", cfg.DBClientCfg.RedisCfg.DB)
-	}
-	if !cfg.DBClientCfg.RedisCfg.EnableTLS {
-		t.Error("expected redis enable_tls to be true")
-	}
-}
-
-func TestLoad_ValkeyDatabase(t *testing.T) {
-	path := writeTempConfig(t, `
-db_client:
-  type: "valkey"
-  redis:
-    db: 2
-    enable_tls: true
-file_client:
-  type: "fs"
-  fs:
-    base_path: "/tmp/files"
-`)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.DBClientCfg.Type != "valkey" {
-		t.Errorf("expected db_client.type valkey, got %s", cfg.DBClientCfg.Type)
-	}
-	if cfg.DBClientCfg.RedisCfg.DB != 2 {
-		t.Errorf("expected redis db 2, got %d", cfg.DBClientCfg.RedisCfg.DB)
-	}
-	if !cfg.DBClientCfg.RedisCfg.EnableTLS {
-		t.Error("expected redis enable_tls to be true")
-	}
-}
-
 func TestLoad_PostgreSQLDatabase(t *testing.T) {
 	path := writeTempConfig(t, `
 db_client:
@@ -519,61 +465,5 @@ file_client:
 				t.Fatalf("expected error for metrics_addr %q", addr)
 			}
 		})
-	}
-}
-
-func TestLoad_RedisConfigTuning(t *testing.T) {
-	path := writeTempConfig(t, `
-db_client:
-  type: "redis"
-  redis:
-    db: 3
-    enable_tls: true
-    insecure: true
-    timeout: "5s"
-    max_retries: 5
-    min_retry_backoff: "100ms"
-    max_retry_backoff: "2s"
-    pool_timeout: "10s"
-    conn_max_idle_time: "5m"
-    conn_max_lifetime: "30m"
-file_client:
-  type: "fs"
-  fs:
-    base_path: "/tmp/files"
-`)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.DBClientCfg.RedisCfg.DB != 3 {
-		t.Errorf("expected db 3, got %d", cfg.DBClientCfg.RedisCfg.DB)
-	}
-	if !cfg.DBClientCfg.RedisCfg.EnableTLS {
-		t.Error("expected enable_tls to be true")
-	}
-	if !cfg.DBClientCfg.RedisCfg.Insecure {
-		t.Error("expected insecure to be true")
-	}
-	if cfg.DBClientCfg.RedisCfg.Timeout != 5*time.Second {
-		t.Errorf("expected timeout 5s, got %v", cfg.DBClientCfg.RedisCfg.Timeout)
-	}
-	if cfg.DBClientCfg.RedisCfg.MaxRetries != 5 {
-		t.Errorf("expected max_retries 5, got %d", cfg.DBClientCfg.RedisCfg.MaxRetries)
-	}
-	if cfg.DBClientCfg.RedisCfg.MinRetryBackoff != 100*time.Millisecond {
-		t.Errorf("expected min_retry_backoff 100ms, got %v", cfg.DBClientCfg.RedisCfg.MinRetryBackoff)
-	}
-	if cfg.DBClientCfg.RedisCfg.MaxRetryBackoff != 2*time.Second {
-		t.Errorf("expected max_retry_backoff 2s, got %v", cfg.DBClientCfg.RedisCfg.MaxRetryBackoff)
-	}
-	if cfg.DBClientCfg.RedisCfg.PoolTimeout != 10*time.Second {
-		t.Errorf("expected pool_timeout 10s, got %v", cfg.DBClientCfg.RedisCfg.PoolTimeout)
-	}
-	if cfg.DBClientCfg.RedisCfg.ConnMaxIdleTime != 5*time.Minute {
-		t.Errorf("expected conn_max_idle_time 5m, got %v", cfg.DBClientCfg.RedisCfg.ConnMaxIdleTime)
-	}
-	if cfg.DBClientCfg.RedisCfg.ConnMaxLifetime != 30*time.Minute {
-		t.Errorf("expected conn_max_lifetime 30m, got %v", cfg.DBClientCfg.RedisCfg.ConnMaxLifetime)
 	}
 }

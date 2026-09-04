@@ -215,14 +215,6 @@ type ProcessorConfig struct {
 	// FileClient holds configuration for the shared file storage client (fs or s3).
 	FileClientCfg sharedcfg.FileClientConfig `yaml:"file_client"`
 
-	// HeartbeatInterval controls how often the processor refreshes its in-flight
-	// entry for a running job. The orphan reconciler uses staleness (no heartbeat
-	// for > reconciler interval) to detect abandoned jobs.
-	// Must be shorter than the reconciler's interval so that active jobs are
-	// never mistaken for orphans.
-	// Zero means use the default (5 minutes).
-	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
-
 	// DispatchMode selects the inference dispatch backend.
 	// "sync" (default): direct HTTP via InferenceClient.
 	// "async": submit via llm-d-async producer, collect from result queue.
@@ -358,7 +350,7 @@ func NewConfig() *ProcessorConfig {
 		ShutdownTimeout:                 30 * time.Second,
 		WorkDir:                         "/var/lib/batch-gateway/processor",
 		DBClientCfg: sharedcfg.DBClientConfig{
-			Type: sharedcfg.DBTypeRedis,
+			Type: sharedcfg.DBTypePostgreSQL,
 		},
 		FileClientCfg: sharedcfg.FileClientConfig{
 			Type: sharedcfg.FileTypeMock,
@@ -371,8 +363,7 @@ func NewConfig() *ProcessorConfig {
 		DefaultOutputExpirationSeconds: 90 * 24 * 60 * 60, // 90 days
 		ProgressTTLSeconds:             24 * 60 * 60,      // 24 hours
 
-		HeartbeatInterval: 5 * time.Minute,
-		DispatchMode:      DispatchModeSync,
+		DispatchMode: DispatchModeSync,
 		AsyncDispatchConfig: AsyncDispatchConfig{
 			ResultPollTimeout: 5 * time.Second,
 		},
@@ -399,9 +390,6 @@ func (c *ProcessorConfig) Validate() error {
 
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("shutdown_timeout must be > 0")
-	}
-	if c.HeartbeatInterval <= 0 {
-		return fmt.Errorf("heartbeat_interval must be > 0")
 	}
 	if c.Addr == "" {
 		return fmt.Errorf("addr cannot be empty")

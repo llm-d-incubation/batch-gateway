@@ -19,6 +19,7 @@ package converter
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/llm-d/llm-d-batch-gateway/internal/database/api"
 	"github.com/llm-d/llm-d-batch-gateway/internal/shared/openai"
@@ -44,6 +45,16 @@ func BatchToDBItem(batch *openai.Batch, tenantID string, tags api.Tags) (*api.Ba
 		expiry = *batch.ExpiresAt
 	}
 
+	var priority int64
+	if batch.CompletionWindow != "" && batch.CreatedAt > 0 {
+		d, err := time.ParseDuration(batch.CompletionWindow)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse completion window %q: %w", batch.CompletionWindow, err)
+		}
+		slo := time.Unix(batch.CreatedAt, 0).Add(d)
+		priority = slo.UnixMicro()
+	}
+
 	item := &api.BatchItem{}
 	item.ID = batch.ID
 	item.TenantID = tenantID
@@ -51,6 +62,7 @@ func BatchToDBItem(batch *openai.Batch, tenantID string, tags api.Tags) (*api.Ba
 	item.Tags = tags
 	item.Spec = specData
 	item.Status = statusData
+	item.Priority = priority
 
 	return item, nil
 }

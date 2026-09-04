@@ -20,12 +20,33 @@ package api
 type BatchItem struct {
 	BaseIndexes
 	BaseContents
+
+	// ProcessorID identifies the processor pod that owns this job.
+	// Set atomically with the status transition to in_progress during dequeue.
+	// Empty when the job is queued (validating) or in a terminal state.
+	ProcessorID string
+
+	// Priority determines dequeue order (lower = higher priority).
+	// Stores SLO.UnixMicro() — jobs with earlier deadlines are dequeued first.
+	Priority int64
+
+	// Epoch is a fencing token incremented on every ownership change (dequeue,
+	// recovery, GC reclaim). Processor writes include WHERE epoch = N so a
+	// zombie whose lease was reclaimed cannot overwrite the new owner's state.
+	Epoch int64
+
+	// BumpEpoch signals that DBUpdate should atomically increment the epoch
+	// in addition to checking it. Set by the GC reconciler when reclaiming
+	// an orphan — this is an ownership change (like a Raft term bump).
+	BumpEpoch bool
 }
 
 // BatchQuery specifies parameters for retrieving batches from the database.
 type BatchQuery struct {
 	BaseQuery
-	NonTerminal bool
+	NonTerminal    bool
+	ProcessorID    string
+	HasProcessorID bool // filter for processor_id IS NOT NULL (owned jobs)
 }
 
 // BatchDBClient is the typed database client for batch objects.

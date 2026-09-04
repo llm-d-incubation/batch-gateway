@@ -122,6 +122,7 @@ func (s *StatusUpdater) UpdatePersistentStatus(
 		BaseContents: db.BaseContents{
 			Status: statusBytes,
 		},
+		Epoch: dbJob.Epoch,
 	}, nil); err != nil {
 		return err
 	}

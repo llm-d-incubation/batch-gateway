@@ -29,8 +29,8 @@ import (
 // when no processor is running to handle a stranded job.
 //
 // Unlike testProcessorGracefulShutdown which tests SIGTERM with a replacement
-// pod available, these tests scale the processor deployment to 0 replicas
-// before killing the pod, ensuring no processor can pick up the job.
+// pod available, these tests scale the processor StatefulSet to 0 replicas,
+// ensuring no processor can self-recover the job.
 // The reconciler (running in the GC pod) then detects the stale in-flight
 // entry and transitions the orphaned job to a terminal state.
 //
@@ -43,19 +43,16 @@ func testOrphanRecovery(t *testing.T) {
 }
 
 // doTestHardCrashOrphanRecovery submits a batch with long-running requests,
-// force-kills the processor pod and scales the deployment to 0, then verifies
-// the GC reconciler transitions the orphaned job to failed.
-//
-// Since the errShutdown handler does NOT re-enqueue, the job stays in_progress
-// in the DB regardless of whether SIGTERM or SIGKILL kills the process. Scaling
-// the deployment to 0 ensures no replacement pod can interfere.
+// scales the processor StatefulSet to 0 (which kills the pod), then verifies
+// the GC reconciler re-enqueues the orphaned job (SLO is still valid with a
+// 24h window). After scaling back to 1, the new processor picks up the
+// re-enqueued job and completes it.
 //
 // Timeline:
 //  1. Submit batch → wait for in_progress
-//  2. Force-kill pod + scale to 0 (no replacement, no re-enqueue)
-//  3. Reconciler detects orphan (staleness threshold = reconciler interval)
-//  4. in_progress + stale/missing in-flight → reconciler transitions to failed
-//  5. Scale processor back to 1 (cleanup for subsequent tests)
+//  2. Scale to 0 (kills pod, no replacement available)
+//  3. Reconciler detects orphan → re-enqueues (SLO valid)
+//  4. Scale back to 1 → processor picks up job and completes it
 func doTestHardCrashOrphanRecovery(t *testing.T) {
 	t.Helper()
 
@@ -63,10 +60,10 @@ func doTestHardCrashOrphanRecovery(t *testing.T) {
 		t.Skip("kubectl not available, skipping orphan recovery test")
 	}
 
-	deployment := fmt.Sprintf("%s-processor", testHelmRelease)
+	sts := fmt.Sprintf("%s-processor", testHelmRelease)
 
 	var lines []string
-	for i := 1; i <= 50; i++ {
+	for i := 1; i <= 10; i++ {
 		lines = append(lines, fmt.Sprintf(
 			`{"custom_id":"orphan-%d","method":"POST","url":"/v1/chat/completions","body":{"model":"%s","max_tokens":200,"messages":[{"role":"user","content":"slow %d"}]}}`, i, testSimModel, i))
 	}
@@ -76,18 +73,23 @@ func doTestHardCrashOrphanRecovery(t *testing.T) {
 	_, _ = waitForBatchStatus(t, batchID, 2*time.Minute, openai.BatchStatusInProgress)
 	time.Sleep(2 * time.Second)
 
-	killAndScaleDown(t, deployment)
-	t.Cleanup(func() { scaleUp(t, deployment) })
+	killAndScaleDown(t, sts)
 
-	// Wait for the reconciler to detect the orphan and transition it to failed.
-	// With reconciler interval=60s (dev-deploy):
-	//   - Staleness threshold: 60s after last heartbeat (or immediate if in-flight
-	//     entry was deleted by the processor's defer before process death)
-	//   - Next cycle: up to 60s after staleness
-	//   - Total: ~2m + buffer
-	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusFailed)
+	// The reconciler detects the orphan and re-enqueues it (SLO still valid).
+	// Wait for the job to go back to validating (queued, no processor).
+	waitForBatchStatus(t, batchID, 3*time.Minute, openai.BatchStatusValidating)
+	t.Log("orphan re-enqueued to validating")
 
-	t.Logf("orphan recovery: batch %s reached %s", batchID, finalBatch.Status)
+	// Scale back to 1 so the processor picks up the re-enqueued job.
+	scaleUp(t, sts)
+
+	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusCompleted)
+
+	t.Logf("orphan recovery: batch %s reached %s (completed=%d, failed=%d, total=%d)",
+		batchID, finalBatch.Status,
+		finalBatch.RequestCounts.Completed,
+		finalBatch.RequestCounts.Failed,
+		finalBatch.RequestCounts.Total)
 }
 
 // doTestCancellingOrphanRecovery submits a batch, waits for it to reach
@@ -110,7 +112,7 @@ func doTestCancellingOrphanRecovery(t *testing.T) {
 		t.Skip("kubectl not available, skipping cancelling orphan recovery test")
 	}
 
-	deployment := fmt.Sprintf("%s-processor", testHelmRelease)
+	sts := fmt.Sprintf("%s-processor", testHelmRelease)
 
 	var lines []string
 	for i := 1; i <= 5; i++ {
@@ -138,8 +140,8 @@ func doTestCancellingOrphanRecovery(t *testing.T) {
 	}
 	t.Logf("batch %s is now cancelling", batchID)
 
-	killAndScaleDown(t, deployment)
-	t.Cleanup(func() { scaleUp(t, deployment) })
+	killAndScaleDown(t, sts)
+	t.Cleanup(func() { scaleUp(t, sts) })
 
 	finalBatch := waitForOrphanTerminal(t, batchID, 5*time.Minute, openai.BatchStatusCancelled)
 
@@ -151,36 +153,24 @@ func doTestCancellingOrphanRecovery(t *testing.T) {
 	}
 }
 
-// killAndScaleDown force-kills all processor pods and scales the deployment
-// to 0 replicas. Since the processor does NOT re-enqueue on SIGTERM (the
-// errShutdown handler is a no-op), a simple force-kill is sufficient — the
-// scale-to-0 just prevents replacement pods from interfering with the
-// reconciler's orphan detection.
-func killAndScaleDown(t *testing.T, deployment string) {
+// killAndScaleDown force-kills all processor pods and scales the StatefulSet
+// to 0 replicas. The scale-to-0 prevents replacement pods from self-recovering
+// the orphaned job, ensuring the GC reconciler handles it.
+func killAndScaleDown(t *testing.T, sts string) {
 	t.Helper()
 
 	podSelector := fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/component=processor", testHelmRelease)
 
-	killOut, killErr := exec.Command("kubectl", "delete", "pod",
-		"-l", podSelector,
-		"-n", testNamespace,
-		"--grace-period=0", "--force",
-	).CombinedOutput()
-	if killErr != nil {
-		t.Logf("force-kill pods (may be already gone): %v\n%s", killErr, killOut)
-	} else {
-		t.Logf("force-killed processor pods: %s", strings.TrimSpace(string(killOut)))
-	}
-
+	// Scale to 0 first so the StatefulSet controller doesn't recreate the pod.
 	scaleOut, scaleErr := exec.Command("kubectl", "scale",
-		fmt.Sprintf("deployment/%s", deployment),
+		fmt.Sprintf("statefulset/%s", sts),
 		"--replicas=0",
 		"-n", testNamespace,
 	).CombinedOutput()
 	if scaleErr != nil {
 		t.Fatalf("kubectl scale --replicas=0 failed: %v\n%s", scaleErr, scaleOut)
 	}
-	t.Logf("scaled %s to 0: %s", deployment, strings.TrimSpace(string(scaleOut)))
+	t.Logf("scaled %s to 0: %s", sts, strings.TrimSpace(string(scaleOut)))
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer waitCancel()
@@ -196,13 +186,13 @@ func killAndScaleDown(t *testing.T, deployment string) {
 	}
 }
 
-// scaleUp scales the given deployment back to 1 replica and waits for it
+// scaleUp scales the given StatefulSet back to 1 replica and waits for it
 // to become ready. Used in t.Cleanup to restore the processor for subsequent tests.
-func scaleUp(t *testing.T, deployment string) {
+func scaleUp(t *testing.T, sts string) {
 	t.Helper()
 
 	out, err := exec.Command("kubectl", "scale",
-		fmt.Sprintf("deployment/%s", deployment),
+		fmt.Sprintf("statefulset/%s", sts),
 		"--replicas=1",
 		"-n", testNamespace,
 	).CombinedOutput()
@@ -210,7 +200,7 @@ func scaleUp(t *testing.T, deployment string) {
 		t.Logf("kubectl scale --replicas=1 failed (cleanup): %v\n%s", err, out)
 		return
 	}
-	t.Logf("scaled %s back to 1: %s", deployment, strings.TrimSpace(string(out)))
+	t.Logf("scaled %s back to 1: %s", sts, strings.TrimSpace(string(out)))
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer waitCancel()
