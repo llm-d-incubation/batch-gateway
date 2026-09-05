@@ -119,6 +119,30 @@ tests:
           path: data["config.yaml"]
           pattern: 'extra_endpoints:\n\s+- "/v1/classify"\n\s+- "/v1/pooling"'
 
+  - it: should prefer API server extra endpoints over the global value
+    set:
+      global.extraEndpoints:
+        - /v1/global
+      apiserver.config.batchAPI.extraEndpoints:
+        - /v1/apiserver
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'extra_endpoints:\n\s+- "/v1/apiserver"'
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: '/v1/global'
+
+  - it: should allow API server extra endpoints to explicitly override global with empty
+    set:
+      global.extraEndpoints:
+        - /v1/global
+      apiserver.config.batchAPI.extraEndpoints: []
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "extra_endpoints:"
+
   - it: should omit extra endpoints by default
     asserts:
       - notMatchRegex:

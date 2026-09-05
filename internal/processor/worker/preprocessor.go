@@ -306,7 +306,7 @@ func extractAndValidateLine(line []byte, endpointAllowlist openai.EndpointAllowl
 	if !endpointAllowlist.IsValid(req.URL) {
 		return requestMeta{}, fmt.Errorf("invalid endpoint: %s", req.URL)
 	}
-	if batchEndpoint != "" && req.URL != batchEndpoint {
+	if req.URL != batchEndpoint {
 		return requestMeta{}, fmt.Errorf("request endpoint %q does not match batch endpoint %q", req.URL, batchEndpoint)
 	}
 	if req.Body.Model == "" {

@@ -32,7 +32,13 @@ func validRequest() CreateBatchRequest {
 func TestEndpointAllowlist(t *testing.T) {
 	t.Run("defaults and extensions", func(t *testing.T) {
 		defaults := EndpointAllowlist{}
-		for _, endpoint := range defaultEndpoints {
+		for _, endpoint := range []Endpoint{
+			EndpointResponses,
+			EndpointChatCompletions,
+			EndpointEmbeddings,
+			EndpointCompletions,
+			EndpointModerations,
+		} {
 			if !defaults.IsValid(endpoint.String()) {
 				t.Errorf("zero-value allowlist rejected default endpoint %q", endpoint)
 			}

@@ -39,16 +39,6 @@ const (
 	EndpointModerations     Endpoint = "/v1/moderations"
 )
 
-// defaultEndpoints is the canonical set of OpenAI Batch API endpoints.
-// Declared as an array (not slice) so it cannot be appended to or resliced.
-var defaultEndpoints = [5]Endpoint{
-	EndpointResponses,
-	EndpointChatCompletions,
-	EndpointEmbeddings,
-	EndpointCompletions,
-	EndpointModerations,
-}
-
 // EndpointAllowlist reports which batch endpoints are accepted. The zero value accepts
 // exactly the OpenAI Batch API endpoints.
 type EndpointAllowlist struct {
@@ -87,12 +77,16 @@ func (a EndpointAllowlist) IsValid(endpoint string) bool {
 }
 
 func isDefaultEndpoint(endpoint Endpoint) bool {
-	for _, candidate := range defaultEndpoints {
-		if endpoint == candidate {
-			return true
-		}
+	switch endpoint {
+	case EndpointResponses,
+		EndpointChatCompletions,
+		EndpointEmbeddings,
+		EndpointCompletions,
+		EndpointModerations:
+		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func validateEndpointPath(endpoint string) error {

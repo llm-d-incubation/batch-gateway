@@ -60,9 +60,13 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
-      {{- if .Values.global.extraEndpoints }}
+      {{- $extraEndpoints := .Values.global.extraEndpoints }}
+      {{- if ne .Values.apiserver.config.batchAPI.extraEndpoints nil }}
+      {{- $extraEndpoints = .Values.apiserver.config.batchAPI.extraEndpoints }}
+      {{- end }}
+      {{- if $extraEndpoints }}
       extra_endpoints:
-        {{- range .Values.global.extraEndpoints }}
+        {{- range $extraEndpoints }}
         - {{ . | quote }}
         {{- end }}
       {{- end }}

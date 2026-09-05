@@ -51,18 +51,16 @@ type BatchAPIHandler struct {
 	endpointAllowlist openai.EndpointAllowlist
 }
 
-func NewBatchAPIHandler(config *common.ServerConfig, clients *clientset.Clientset) *BatchAPIHandler {
+func NewBatchAPIHandler(config *common.ServerConfig, clients *clientset.Clientset) (*BatchAPIHandler, error) {
 	endpointAllowlist, err := openai.NewEndpointAllowlist(config.BatchAPI.ExtraEndpoints)
 	if err != nil {
-		// ServerConfig.Validate rejects this at startup. Fail closed if a caller
-		// constructs an unvalidated config directly.
-		endpointAllowlist = openai.EndpointAllowlist{}
+		return nil, fmt.Errorf("extra endpoints: %w", err)
 	}
 	return &BatchAPIHandler{
 		config:            config,
 		clients:           clients,
 		endpointAllowlist: endpointAllowlist,
-	}
+	}, nil
 }
 
 func (c *BatchAPIHandler) GetRoutes() []common.Route {

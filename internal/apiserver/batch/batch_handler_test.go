@@ -67,8 +67,27 @@ func setupTestHandlerWithConfig(config *common.ServerConfig) *BatchAPIHandler {
 		Event:  mockapi.NewMockBatchEventChannelClient(),
 		Status: mockapi.NewMockBatchStatusClient(),
 	}
-	handler := NewBatchAPIHandler(config, clients)
+	handler, err := NewBatchAPIHandler(config, clients)
+	if err != nil {
+		panic(fmt.Sprintf("NewBatchAPIHandler() with valid test config: %v", err))
+	}
 	return handler
+}
+
+func TestNewBatchAPIHandler_InvalidExtraEndpoint(t *testing.T) {
+	config := &common.ServerConfig{
+		BatchAPI: common.BatchAPIConfig{ExtraEndpoints: []string{"/v1/classify?mode=test"}},
+	}
+	handler, err := NewBatchAPIHandler(config, &clientset.Clientset{})
+	if err == nil {
+		t.Fatal("NewBatchAPIHandler() expected error for invalid extra endpoint")
+	}
+	if handler != nil {
+		t.Fatal("NewBatchAPIHandler() returned a handler with invalid configuration")
+	}
+	if !strings.Contains(err.Error(), "extra endpoints") {
+		t.Fatalf("NewBatchAPIHandler() error = %q, want extra endpoints context", err)
+	}
 }
 
 func TestBatchHandler(t *testing.T) {
@@ -1068,7 +1087,10 @@ func TestBatchHandler(t *testing.T) {
 				Event:  failingEvent,
 				Status: mockapi.NewMockBatchStatusClient(),
 			}
-			handler := NewBatchAPIHandler(&common.ServerConfig{}, clients)
+			handler, err := NewBatchAPIHandler(&common.ServerConfig{}, clients)
+			if err != nil {
+				t.Fatalf("NewBatchAPIHandler(): %v", err)
+			}
 
 			batchID := "batch-test-cancel-event-fail"
 			batch := openai.Batch{
@@ -1174,7 +1196,10 @@ func TestBatchHandler(t *testing.T) {
 				Event:  failingEvent,
 				Status: mockapi.NewMockBatchStatusClient(),
 			}
-			handler := NewBatchAPIHandler(&common.ServerConfig{}, clients)
+			handler, err := NewBatchAPIHandler(&common.ServerConfig{}, clients)
+			if err != nil {
+				t.Fatalf("NewBatchAPIHandler(): %v", err)
+			}
 
 			batchID := "batch-test-cancel-retry-event-fail"
 			cancellingAt := int64(1700000001)
