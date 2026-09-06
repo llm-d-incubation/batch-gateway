@@ -240,36 +240,42 @@ func testGenerate(t *testing.T) {
 		}
 	})
 
-	t.Run("should use endpoint from request", func(t *testing.T) {
-		endpoint := ""
-		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			endpoint = r.URL.Path
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
-		}))
-		t.Cleanup(testServer.Close)
+	t.Run("should preserve configured non-default endpoint", func(t *testing.T) {
+		for _, endpoint := range []string{"/v1/classify", "/v1/pooling"} {
+			t.Run(endpoint, func(t *testing.T) {
+				var receivedPath string
+				testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					receivedPath = r.URL.Path
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "test"})
+				}))
+				t.Cleanup(testServer.Close)
 
-		client, err := NewInferenceClient(&HTTPClientConfig{
-			BaseURL: testServer.URL,
-			Timeout: 10 * time.Second,
-		}, testLogger(t))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+				client, err := NewInferenceClient(&HTTPClientConfig{
+					BaseURL: testServer.URL,
+					Timeout: 10 * time.Second,
+				}, testLogger(t))
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
 
-		req := &GenerateRequest{
-			RequestID: "test",
-			Endpoint:  "/v1/chat/completions",
-			Params: map[string]interface{}{
-				"messages": []map[string]interface{}{
-					{"role": "user", "content": "test"},
-				},
-			},
-		}
+				req := &GenerateRequest{
+					RequestID: "test",
+					Endpoint:  endpoint,
+					Params: map[string]interface{}{
+						"model": "classifier",
+						"input": "test",
+					},
+				}
 
-		_, _ = client.Generate(context.Background(), req)
-		if endpoint != "/v1/chat/completions" {
-			t.Errorf("got endpoint %v, want %v", endpoint, "/v1/chat/completions")
+				_, genErr := client.Generate(context.Background(), req)
+				if genErr != nil {
+					t.Fatalf("Generate() error = %v", genErr)
+				}
+				if receivedPath != endpoint {
+					t.Errorf("got endpoint %q, want configured endpoint %q", receivedPath, endpoint)
+				}
+			})
 		}
 	})
 
