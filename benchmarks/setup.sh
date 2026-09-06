@@ -350,8 +350,11 @@ VALUESEOF
         log "  Waiting for EPP to be ready..."
         ${K} -n "${NAMESPACE}" wait --for=condition=available deployment/${epp_release}-epp --timeout=120s
 
-        # Create InferenceObjective CRDs
-        log "  Creating InferenceObjective CRDs"
+        # Create InferenceObjective CRDs in both API groups.
+        # The EPP prefers the llm-d.ai group when both are installed;
+        # creating in both ensures priority assignment works regardless
+        # of which CRD versions the cluster has.
+        log "  Creating InferenceObjective CRDs (both API groups)"
         ${K} -n "${NAMESPACE}" apply -f - <<EOOBJ
 apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferenceObjective
@@ -373,6 +376,25 @@ spec:
     group: inference.networking.k8s.io
     name: ${epp_release}
 EOOBJ
+        ${K} -n "${NAMESPACE}" apply -f - <<EOOBJ2
+apiVersion: llm-d.ai/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: interactive-default
+spec:
+  priority: 100
+  poolRef:
+    name: ${epp_release}
+---
+apiVersion: llm-d.ai/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: batch-sheddable
+spec:
+  priority: -1
+  poolRef:
+    name: ${epp_release}
+EOOBJ2
         log "  EPP ready: ${epp_release}-epp:8081 (scenario ${SCENARIO})"
     fi
 else
@@ -403,7 +425,7 @@ else
             --set router.epp.image.registry=ghcr.io \
             --set router.epp.image.repository=llm-d/llm-d-inference-scheduler \
             --set router.epp.image.tag=${ROUTER_EPP_TAG} \
-            --set router.epp.pluginsConfigFile=optimized-baseline-plugins.yaml \
+            --set router.epp.pluginsConfigFile=$(if [ "${SCENARIO}" = "4" ]; then echo "flow-control-plugins.yaml"; elif [ "${SCENARIO}" = "3" ]; then echo "admission-control-plugins.yaml"; else echo "default-plugins.yaml"; fi) \
             --set router.epp.resources.requests.cpu=4 \
             --set router.epp.resources.requests.memory=8Gi \
             --set router.epp.resources.limits.memory=16Gi \
@@ -552,8 +574,10 @@ else
 fi
 
 # --- Scenarios 3/4: InferenceObjective CRDs for priority assignment ---
+# Created in both API groups: the EPP prefers llm-d.ai when both are
+# installed, so omitting it causes priority assignment to be silently ignored.
 if [ "${SCENARIO}" = "3" ] || [ "${SCENARIO}" = "4" ]; then
-    log "Deploying InferenceObjective CRDs for priority assignment"
+    log "Deploying InferenceObjective CRDs for priority assignment (both API groups)"
     ${K} -n "${NAMESPACE}" apply -f - <<EOF
 apiVersion: inference.networking.x-k8s.io/v1alpha2
 kind: InferenceObjective
@@ -575,6 +599,25 @@ spec:
     group: inference.networking.k8s.io
     name: ${GUIDE_NAME}
 EOF
+    ${K} -n "${NAMESPACE}" apply -f - <<EOF2
+apiVersion: llm-d.ai/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: interactive-default
+spec:
+  priority: 100
+  poolRef:
+    name: ${GUIDE_NAME}
+---
+apiVersion: llm-d.ai/v1alpha2
+kind: InferenceObjective
+metadata:
+  name: batch-sheddable
+spec:
+  priority: -1
+  poolRef:
+    name: ${GUIDE_NAME}
+EOF2
     log "  Created InferenceObjective: interactive-default (priority 100)"
     log "  Created InferenceObjective: batch-sheddable (priority -1)"
 fi
